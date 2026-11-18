@@ -1,0 +1,19 @@
+# Build & Packaged Artifacts
+dist/
+macos-app/.build/
+macos-app/.swiftpm/
+
+# Python Caches & Runtime State
+__pycache__/
+*.py[cod]
+.pytest_cache/
+scheduler/.state/
+.state/
+
+# OS & Secrets Safety
+.DS_Store
+*.svg
+*session*.json
+*.pem
+*.key
+.env

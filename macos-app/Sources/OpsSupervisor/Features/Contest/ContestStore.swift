@@ -1,0 +1,170 @@
+import Combine
+import Foundation
+
+/// Central @MainActor ViewModel coordinating decoupled fast-local (~60ms) and async-SSH NPU refreshes.
+@MainActor
+final class ContestStore: ObservableObject {
+    @Published var snapshot: SupervisorSnapshot?
+    @Published var workspaces: [WorkspaceEntry] = []
+    @Published var sshHosts: [SSHHostEntry] = []
+    @Published var activeSSHHost: String = "npu"
+
+    @Published var selectedWorkspace: String = "/Users/winbeau/Competitions/ops-bench"
+    @Published var selectedProblemTitle: String? = "ConcatD"
+
+    @Published var isRefreshingLocal: Bool = false
+    @Published var isRefreshingNpu: Bool = false
+    @Published var pollIntervalSec: Int = 10
+    @Published var bannerMessage: String?
+    @Published var errorMessage: String?
+
+    let repository = OpsRepository()
+    private var pollTimer: Timer?
+
+    init() {
+        reschedulePolling()
+        Task { await bootstrap() }
+    }
+
+    func bootstrap() async {
+        await refreshLocal()
+        async let wsLoad: () = reloadWorkspaces()
+        async let sshLoad: () = reloadSSHHosts()
+        async let npuLoad: () = refreshNpu(silent: true)
+        _ = await (wsLoad, sshLoad, npuLoad)
+    }
+
+    func refreshAll() async {
+        await refreshLocal()
+        await refreshNpu(silent: false)
+    }
+
+    func refreshLocal() async {
+        if isRefreshingLocal { return }
+        isRefreshingLocal = true
+        defer { isRefreshingLocal = false }
+        do {
+            let localSnap = try await repository.fetchLocalSnapshot(workspace: selectedWorkspace)
+            if let existingNpu = snapshot?.npu, existingNpu.online {
+                snapshot = localSnap.updatingNpu(existingNpu)
+            } else {
+                snapshot = localSnap
+            }
+            if selectedProblemTitle == nil || !localSnap.problems.contains(where: { $0.title == selectedProblemTitle }) {
+                selectedProblemTitle = localSnap.problems.first?.title
+            }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshNpu(silent: Bool = false) async {
+        if isRefreshingNpu { return }
+        isRefreshingNpu = true
+        defer { isRefreshingNpu = false }
+        do {
+            let npu = try await repository.fetchNpuTelemetry(workspace: selectedWorkspace, host: activeSSHHost)
+            if let cur = snapshot {
+                snapshot = cur.updatingNpu(npu)
+            }
+        } catch {
+            if !silent { errorMessage = error.localizedDescription }
+        }
+    }
+
+    func reschedulePolling() {
+        pollTimer?.invalidate()
+        guard pollIntervalSec > 0 else { return }
+        pollTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(pollIntervalSec), repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                await self.refreshLocal()
+                await self.refreshNpu(silent: true)
+            }
+        }
+    }
+
+    // MARK: - Workspaces & SSH
+
+    func reloadWorkspaces() async {
+        if let res = try? await repository.listWorkspaces() {
+            workspaces = res.workspaces
+            if let act = res.activeWorkspace, !act.isEmpty {
+                selectedWorkspace = act
+            }
+        }
+    }
+
+    func switchWorkspace(_ path: String) async {
+        selectedWorkspace = path
+        try? await repository.selectWorkspace(path)
+        await reloadWorkspaces()
+        await refreshAll()
+    }
+
+    func reloadSSHHosts() async {
+        if let res = try? await repository.listSSHHosts() {
+            sshHosts = res.hosts
+            activeSSHHost = res.activeHost
+        }
+    }
+
+    func selectSSHHost(_ alias: String) async {
+        activeSSHHost = alias
+        try? await repository.selectSSHHost(alias)
+        await reloadSSHHosts()
+        await refreshNpu(silent: false)
+    }
+
+    // MARK: - Queue & Gate Mutations
+
+    func updateScheduler(autoConsumer: Bool? = nil, closingReserve: Int? = nil, noiseFloor: Double? = nil) async {
+        do {
+            try await repository.updateQueueConfig(autoConsumer: autoConsumer, closingReserve: closingReserve, noiseFloor: noiseFloor)
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func approveCandidate(problem: String, sha: String, note: String) async {
+        do {
+            try await repository.approveSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
+            bannerMessage = "Approved & enqueued \(problem) \(String(sha.prefix(7)))"
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func skipCandidate(problem: String, sha: String) async {
+        do {
+            try await repository.skipSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, reason: "held via Parhelion")
+            bannerMessage = "Skipped \(problem) \(String(sha.prefix(7)))"
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func restoreBest(problem: String) async {
+        do {
+            try await repository.restoreBestSubmission(workspace: selectedWorkspace, problem: problem)
+            bannerMessage = "Queued historical best SHA restore for \(problem)"
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func drainQueueOnce() async {
+        bannerMessage = "Running rate-limited queue consumer…"
+        do {
+            bannerMessage = try await repository.drainQueueOnce(workspace: selectedWorkspace)
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+}

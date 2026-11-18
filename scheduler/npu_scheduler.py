@@ -1,0 +1,1027 @@
+"""NPU Task Sequence Scheduler: Split-Phase Pipeline + 2-Queue MLFQ + WSPT + Aging.
+
+Implements:
+  1. Semantic Task Classification:
+     `BUILD`, `FAST-LANE`, `PRECISION`, `PROFILER`, `STRESS`, `WAITING-DIE`
+  2. 2-Queue Multi-Level Feedback Queue (Corbato / OSTEP Ch. 8):
+     - `Q0` (`FAST-LANE`, <= 180s quantum): interactive smoke + targeted boundary subset
+       with per-problem attained-service allotment (anti-gaming Rule 4)
+     - `Q1` (`BATCH-GATE`, <= 1200s quantum): full extended suite + stress + profiler spectrum
+     - Anti-Starvation Aging (Rule 5): continuous linear aging `wait_sec / tau` + hard
+       promotion `Q1 -> Q0*` after `max_wait_promote_sec = 1800s`
+  3. Smith's Rule / WSPT & Gittins Value-Density Priority:
+     `wspt_priority = (difficulty * recoverable_headroom * cb_factor) / est_service_sec + aging_boost`
+  4. Strictly Read-Only Live SSH + Local Process/Log Correlation Probe:
+     Reads `/proc/locks`, `/proc/<pid>`, `ps`, and `npu-smi` on `ssh npu` WITHOUT ever
+     opening or touching any `.lock` file via `flock`/`fcntl`, and correlates remote
+     waiters with local `npu-test.py` / `opsb test` processes and in-flight logs.
+  5. Split-Phase Execution (`schedule_test`):
+     Decouples 32-core CPU compilation & pure-host `walk_model.py` checks from the
+     single-die NPU lock so compile errors consume 0.0s of NPU time.
+"""
+from __future__ import annotations
+
+import dataclasses
+import datetime
+import json
+import os
+import pathlib
+import re
+import shlex
+import statistics
+import subprocess
+import time
+from typing import Any
+
+from .estimator import PROBLEM_DIFFICULTY, ScoreEstimator, resolve_sha
+from .gate import GateConfig, SubmissionGate
+
+NPU_TASK_TAGS: tuple[str, ...] = (
+    "BUILD",
+    "FAST-LANE",
+    "PRECISION",
+    "PROFILER",
+    "STRESS",
+    "WAITING-DIE",
+)
+
+# Empirically measured non-queued Q1 validation durations (seconds) across 10 problems
+MEDIAN_Q1_SERVICE_SEC_FALLBACK: dict[str, float] = {
+    "CTCLossV2": 85.7,
+    "ConcatD": 134.3,
+    "SyncBatchNormGatherStats": 153.7,
+    "QuantUpdateScatter": 160.8,
+    "PReluGradUpdate": 249.6,
+    "LayerNormV3": 298.5,
+    "StridedSliceGrad": 591.3,
+    "ConfusionTransposeD": 631.3,
+    "MultilabelMarginLoss": 803.0,
+    "PadV3Grad": 861.5,
+}
+
+VENDOR_TO_PROBLEM: dict[str, str] = {
+    "concat_d": "ConcatD",
+    "confusion_transpose": "ConfusionTransposeD",
+    "ctc_loss_v2": "CTCLossV2",
+    "layer_norm_v3": "LayerNormV3",
+    "multilabel_margin_loss": "MultilabelMarginLoss",
+    "pad_v3_grad": "PadV3Grad",
+    "p_relu_grad_update": "PReluGradUpdate",
+    "prelu_grad_update": "PReluGradUpdate",
+    "quant_update_scatter": "QuantUpdateScatter",
+    "strided_slice_grad": "StridedSliceGrad",
+    "sync_batch_norm_gather_stats": "SyncBatchNormGatherStats",
+}
+
+
+@dataclasses.dataclass
+class NpuTask:
+    pid: int
+    title: str
+    sha: str | None
+    short_sha: str | None
+    state: str          # ACTIVE | CPU_BUILD | WAITING
+    tag: str            # BUILD | FAST-LANE | PRECISION | PROFILER | STRESS | WAITING-DIE
+    mlfq_level: str     # Q0 | Q0* | Q1 | CPU
+    die: int | None
+    elapsed_sec: int
+    est_service_sec: float
+    wspt_base: float
+    aging_boost: float
+    wspt_priority: float
+    dispatch_rank: int
+    starved: bool
+    detail: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+@dataclasses.dataclass
+class ProblemPriority:
+    rank: int
+    title: str
+    difficulty: int
+    board_status: str
+    current_score: float
+    historical_best_score: float
+    historical_best_sha: str | None
+    frontier_top1: float
+    recoverable_headroom: float
+    weighted_headroom: float
+    est_q0_sec: float
+    est_q1_sec: float
+    wspt_q0: float
+    wspt_q1: float
+    circuit_state: str
+    in_flight_tag: str | None
+    recommended_lane: str
+    recommended_action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return dataclasses.asdict(self)
+
+
+# Read-only remote probe script: NEVER opens or flocks any .lock file!
+_REMOTE_READONLY_PROBE = r"""
+import datetime, glob, json, os, pathlib, re, subprocess, time
+
+t0 = time.monotonic()
+KNOWN = [
+    "ConcatD", "ConfusionTransposeD", "CTCLossV2", "LayerNormV3",
+    "MultilabelMarginLoss", "PadV3Grad", "PReluGradUpdate",
+    "QuantUpdateScatter", "StridedSliceGrad", "SyncBatchNormGatherStats",
+]
+VENDORS = {
+    "concat_d": "ConcatD", "confusion_transpose": "ConfusionTransposeD",
+    "ctc_loss_v2": "CTCLossV2", "layer_norm_v3": "LayerNormV3",
+    "multilabel_margin_loss": "MultilabelMarginLoss", "pad_v3_grad": "PadV3Grad",
+    "p_relu_grad_update": "PReluGradUpdate", "prelu_grad_update": "PReluGradUpdate",
+    "quant_update_scatter": "QuantUpdateScatter", "strided_slice_grad": "StridedSliceGrad",
+    "sync_batch_norm_gather_stats": "SyncBatchNormGatherStats",
+}
+SHA40 = re.compile(r"\b([0-9a-f]{40})\b")
+
+# 1. CPU & Memory
+load_1, load_5, load_15 = 0.0, 0.0, 0.0
+try:
+    lp = pathlib.Path("/proc/loadavg").read_text().split()
+    load_1, load_5, load_15 = float(lp[0]), float(lp[1]), float(lp[2])
+except Exception:
+    pass
+
+# 2. NPU-SMI (read-only)
+env = os.environ.copy()
+lib_dirs = [
+    "/opt/driver/driver/lib64",
+    "/opt/driver/driver/lib64/common",
+    "/opt/driver/driver/lib64/driver",
+    "/opt/toolchain/latest/latest/lib64",
+]
+env["LD_LIBRARY_PATH"] = ":".join(lib_dirs + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []))
+devices = []
+try:
+    smi = subprocess.run(["npu-smi", "info"], env=env, capture_output=True, text=True, timeout=2.5)
+    if smi.returncode == 0:
+        lines = smi.stdout.splitlines()
+        i = 0
+        while i < len(lines) - 1:
+            l1, l2 = lines[i].strip(), lines[i + 1].strip()
+            if l1.startswith("|") and l2.startswith("|") and "/" in l1 and "/" in l2:
+                c1 = [x.strip() for x in l1.strip("|").split("|")]
+                c2 = [x.strip() for x in l2.strip("|").split("|")]
+                if len(c1) >= 3 and len(c2) >= 3:
+                    p1, health, m1 = c1[0].split(), c1[1], c1[2].split()
+                    p2, bus_id, m2 = c2[0].split(), c2[1], c2[2].split()
+                    if len(p1) >= 2 and p1[0].isdigit() and health in ("OK", "Warning", "Error", "Alarm"):
+                        slashes = re.findall(r"(\d+)\s*/\s*(\d+)", c2[2])
+                        hu, ht = (int(slashes[-1][0]), int(slashes[-1][1])) if slashes else (0, 65536)
+                        devices.append({
+                            "npu_id": int(p1[0]),
+                            "chip_id": int(p2[0]) if p2 and p2[0].isdigit() else 0,
+                            "soc_name": p1[1] if p1[1].lower().startswith("accel") else "Accel" + p1[1],
+                            "health": health,
+                            "bus_id": bus_id,
+                            "power_w": float(m1[0]) if m1 and re.match(r"^[\d.]+$", m1[0]) else None,
+                            "temp_c": int(float(m1[1])) if len(m1) > 1 and re.match(r"^[\d.]+$", m1[1]) else None,
+                            "aicore_pct": int(float(m2[0])) if m2 and re.match(r"^[\d.]+$", m2[0]) else 0,
+                            "hbm_used_mib": hu,
+                            "hbm_total_mib": ht,
+                        })
+                        i += 2
+                        continue
+            i += 1
+except Exception:
+    pass
+
+# 3. Process table
+procs = {}
+try:
+    out = subprocess.check_output(["ps", "-eo", "pid,ppid,etimes,pcpu,rss,args", "--no-headers"], text=True, timeout=2.0)
+    for line in out.splitlines():
+        parts = line.strip().split(None, 5)
+        if len(parts) >= 6 and parts[0].isdigit():
+            pid = int(parts[0])
+            procs[pid] = {
+                "pid": pid,
+                "ppid": int(parts[1]) if parts[1].isdigit() else 0,
+                "elapsed_sec": int(parts[2]) if parts[2].isdigit() else 0,
+                "cpu_pct": float(parts[3]) if re.match(r"^[\d.]+$", parts[3]) else 0.0,
+                "rss_kib": int(parts[4]) if parts[4].isdigit() else 0,
+                "cmd": parts[5],
+            }
+except Exception:
+    pass
+
+children = {}
+for pid, p in procs.items():
+    children.setdefault(p["ppid"], []).append(pid)
+
+def descendants(rpid):
+    res, stack, seen = [], [rpid], set()
+    while stack:
+        cur = stack.pop()
+        if cur in seen:
+            continue
+        seen.add(cur)
+        res.append(cur)
+        stack.extend(children.get(cur, []))
+    return res
+
+# 4. Read /proc/locks matched against stat() inodes (strictly read-only, zero open() on locks!)
+inodes = {}
+for p in glob.glob("/srv/work*.lock"):
+    try:
+        st = os.stat(p)
+        inodes[f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"] = os.path.basename(p)
+    except OSError:
+        pass
+
+die_holders = {}
+waiting_roots = set()
+try:
+    for line in pathlib.Path("/proc/locks").read_text().splitlines():
+        for ikey, bname in inodes.items():
+            if ikey in line:
+                parts = line.split()
+                if len(parts) >= 5 and parts[4].isdigit():
+                    pid = int(parts[4])
+                    mode = parts[3].upper()
+                    m_die = re.search(r"device(\d+)\.lock$", bname)
+                    if m_die:
+                        d_idx = int(m_die.group(1))
+                        if "WRITE" in mode and "->" not in line:
+                            die_holders[d_idx] = pid
+                        else:
+                            waiting_roots.add(pid)
+                    elif bname.endswith("validation.lock"):
+                        waiting_roots.add(pid)
+except Exception:
+    pass
+
+for pid, p in procs.items():
+    if "bench-device" in p["cmd"] and "flock" in p["cmd"] and pid not in die_holders.values():
+        waiting_roots.add(pid)
+
+holder_trees = {}
+covered_pids = set()
+for d_idx, h_pid in die_holders.items():
+    t = descendants(h_pid)
+    holder_trees[d_idx] = t
+    covered_pids.update(t)
+    pp = procs.get(h_pid, {}).get("ppid", 0)
+    if pp:
+        covered_pids.add(pp)
+
+waiting_roots = {pid for pid in waiting_roots if pid not in covered_pids and pid in procs}
+
+def infer_meta(pids):
+    prob, sha = None, None
+    for pid in pids:
+        cmd = procs.get(pid, {}).get("cmd", "")
+        if not prob:
+            for k in KNOWN:
+                if k in cmd or k.lower() in cmd.lower():
+                    prob = k
+                    break
+        if not prob:
+            for vk, vn in VENDORS.items():
+                if vk in cmd.lower():
+                    prob = vn
+                    break
+        if not sha:
+            m = SHA40.search(cmd)
+            if m:
+                sha = m.group(1)
+            else:
+                mr = re.search(r"bench-results/[^/]+/([0-9a-f]{7,40})", cmd)
+                if mr:
+                    sha = mr.group(1)
+        if not prob or not sha:
+            try:
+                cwd = os.readlink(f"/proc/{pid}/cwd")
+                if not prob:
+                    for k in KNOWN:
+                        if f"/{k}" in cwd:
+                            prob = k
+                            break
+                if prob and not sha:
+                    hf = pathlib.Path(f"/srv/work/{prob}/.git/HEAD")
+                    if hf.is_file():
+                        ht = hf.read_text().strip()
+                        if re.fullmatch(r"[0-9a-f]{40}", ht):
+                            sha = ht
+            except Exception:
+                pass
+    return prob, sha
+
+def classify(pids, holds_die):
+    if not holds_die:
+        return "WAITING-DIE", "Waiting for exclusive NPU die lock"
+    joined = "\n".join(procs.get(pid, {}).get("cmd", "") for pid in pids)
+    low = joined.lower()
+    if "profiler" in low or "kperf" in low:
+        mc = re.search(r"--(?:ref-)?worker\s+(\S+)", joined)
+        return "PROFILER", (f"profiler ({mc.group(1)})" if mc else "Hardware kernel profiling (profiler)")
+    if any(w in low for w in ("build.sh", "cmake", "/ccec", "compiler", "kernelc", "ninja")):
+        return "BUILD", "Compiling KernelC host/kernel package"
+    if "--fast" in low or "fast_lane=1" in low or "fast-lane" in low:
+        return "FAST-LANE", "Q0 fast-lane smoke & targeted cases"
+    if "stress" in low or "determinism" in low or "det_bad" in low:
+        return "STRESS", "Multi-run determinism & stress gate"
+    return "PRECISION", "Extended precision & boundary suite"
+
+raw_tasks = []
+die_locks = []
+max_dies = max(1, len(devices))
+for d_idx in range(max_dies):
+    h_pid = die_holders.get(d_idx)
+    if h_pid is not None and h_pid in procs:
+        tree = holder_trees.get(d_idx, [h_pid])
+        prob, sha = infer_meta(tree)
+        tag, det = classify(tree, True)
+        el = procs[h_pid]["elapsed_sec"]
+        die_locks.append({"die": d_idx, "state": "HELD", "holder_pid": h_pid, "problem": prob, "sha": sha, "tag": tag, "elapsed_sec": el})
+        raw_tasks.append({"pid": h_pid, "die": d_idx, "state": "ACTIVE", "tag": tag, "problem": prob, "sha": sha, "elapsed_sec": el, "detail": det})
+    else:
+        die_locks.append({"die": d_idx, "state": "FREE", "holder_pid": None, "problem": None, "sha": None, "tag": None, "elapsed_sec": 0})
+
+for w_pid in sorted(waiting_roots, key=lambda x: procs[x]["elapsed_sec"], reverse=True):
+    tree = descendants(w_pid)
+    covered_pids.update(tree)
+    prob, sha = infer_meta(tree)
+    w_cmd = procs[w_pid]["cmd"]
+    is_fast = ("--fast" in w_cmd or "FAST_LANE=1" in w_cmd)
+    mode = "flock_waitqueue" if "flock " in w_cmd else "spin_poll_10s"
+    raw_tasks.append({
+        "pid": w_pid, "die": None, "state": "WAITING", "tag": "WAITING-DIE",
+        "problem": prob, "sha": sha, "elapsed_sec": procs[w_pid]["elapsed_sec"],
+        "fast": is_fast, "wait_mechanism": mode,
+        "detail": f"Waiting for NPU die ({mode})",
+    })
+
+# 5. Detect decoupled CPU-only builds outside NPU lock (compiler / cmake / ccec)
+for pid, p in procs.items():
+    if pid in covered_pids:
+        continue
+    low = p["cmd"].lower()
+    if any(k in low for k in ("compiler", "/ccec", "cmake")) and ("sdk" in low or "bench" in low or "tikcfw" in low):
+        # Group by parent bash/python if applicable
+        rpid = p["ppid"] if p["ppid"] in procs and p["ppid"] > 100 else pid
+        if rpid in covered_pids:
+            continue
+        tree = descendants(rpid)
+        covered_pids.update(tree)
+        prob, sha = infer_meta(tree)
+        raw_tasks.append({
+            "pid": rpid, "die": None, "state": "CPU_BUILD", "tag": "BUILD",
+            "problem": prob, "sha": sha, "elapsed_sec": procs.get(rpid, p)["elapsed_sec"],
+            "fast": True, "detail": "Decoupled 32-core CPU compile (no NPU die lock held)",
+        })
+
+print(json.dumps({
+    "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "probe_latency_ms": round((time.monotonic() - t0) * 1000, 1),
+    "cpu_cores": os.cpu_count() or 32,
+    "load_1m": round(load_1, 2),
+    "load_5m": round(load_5, 2),
+    "devices": devices,
+    "die_locks": die_locks,
+    "raw_tasks": raw_tasks,
+}))
+"""
+
+
+def _parse_ps_etime(etime_str: str) -> int:
+    """Parse macOS/POSIX `ps -o etime` (`[[dd-]hh:]mm:ss`) into integer seconds."""
+    s = etime_str.strip()
+    days = 0
+    if "-" in s:
+        d_part, s = s.split("-", 1)
+        if d_part.isdigit():
+            days = int(d_part)
+    parts = [int(p) for p in s.split(":") if p.isdigit()]
+    if len(parts) == 3:
+        return days * 86400 + parts[0] * 3600 + parts[1] * 60 + parts[2]
+    if len(parts) == 2:
+        return days * 86400 + parts[0] * 60 + parts[1]
+    if len(parts) == 1:
+        return parts[0]
+    return 0
+
+
+class NpuTaskScheduler:
+    """MLFQ (Q0/Q1) + WSPT Value-Density + Aging scheduler and live NPU queue inspector."""
+
+    def __init__(
+        self,
+        workspace: pathlib.Path,
+        estimator: ScoreEstimator | None = None,
+        gate: SubmissionGate | None = None,
+        config: GateConfig | None = None,
+        npu_host: str = "npu",
+    ) -> None:
+        self.workspace = workspace.resolve()
+        self.estimator = estimator or ScoreEstimator(self.workspace)
+        self.config = config or GateConfig()
+        self.gate = gate or SubmissionGate(self.workspace, estimator=self.estimator, config=self.config)
+        self.npu_host = npu_host
+        self.service_sec_map = self._learn_service_durations()
+
+    def _learn_service_durations(self) -> dict[str, float]:
+        """Learn empirical non-queued Q1 service times from local results/<Title>/*/result.json."""
+        durations = dict(MEDIAN_Q1_SERVICE_SEC_FALLBACK)
+        for title in self.estimator.problems_meta:
+            samples: list[float] = []
+            res_dir = self.workspace / "results" / title
+            if not res_dir.is_dir():
+                continue
+            for rj in res_dir.glob("*/result.json"):
+                vlog = rj.parent / "validation.log"
+                if not vlog.is_file():
+                    continue
+                try:
+                    txt = vlog.read_text(errors="replace")
+                except OSError:
+                    continue
+                if "EXTENDED_PASSED" not in txt or "Waiting for a free NPU die" in txt or "FAST_LANE=1" in txt:
+                    continue
+                st_v = vlog.stat()
+                st_r = rj.stat()
+                birth = getattr(st_v, "st_birthtime", st_v.st_ctime)
+                dt = st_r.st_mtime - birth
+                if 15.0 <= dt <= 1800.0:
+                    samples.append(dt)
+            if len(samples) >= 2:
+                durations[title] = round(float(statistics.median(samples)), 1)
+        return durations
+
+    def est_service_sec(self, title: str, fast: bool = False) -> float:
+        full_sec = self.service_sec_map.get(title, 300.0)
+        if fast:
+            return round(min(90.0, max(45.0, 0.30 * full_sec)), 1)
+        return round(full_sec, 1)
+
+    def compute_wspt(
+        self,
+        title: str,
+        fast: bool = False,
+        wait_sec: int = 0,
+    ) -> tuple[float, float, float, str]:
+        """Compute `(wspt_base, aging_boost, wspt_priority, mlfq_level)` for a task."""
+        ledger = self.estimator.get_problem_ledger(title)
+        cb = self.gate.get_circuit_breaker(title)
+        p_sec = self.est_service_sec(title, fast=fast)
+
+        # Effective headroom: boost CRITICAL_RESTORE (board == 0), dampen OPEN circuit breaker
+        headroom = ledger.recoverable_headroom
+        if ledger.current_score <= 0.0:
+            headroom = max(headroom, ledger.historical_best_mean + 25.0, 60.0)
+        cb_factor = 0.25 if cb.state == "OPEN" else 1.0
+
+        wspt_base = round((ledger.difficulty * headroom * cb_factor) / max(30.0, p_sec), 4)
+        aging_boost = round(max(0, wait_sec) / max(60.0, self.config.aging_tau_sec), 4)
+
+        if fast and wait_sec <= self.config.q0_quantum_sec:
+            mlfq = "Q0"
+        elif not fast and wait_sec >= 1800:
+            # OSTEP Rule 5 anti-starvation promotion
+            mlfq = "Q0*"
+        else:
+            mlfq = "Q1"
+
+        return wspt_base, aging_boost, round(wspt_base + aging_boost, 4), mlfq
+
+    def _scan_local_inflight(self) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """Scan local `npu-test.py` processes and unfinished `results/<Title>/<SHA>/validation.log`."""
+        local_waiters: list[dict[str, Any]] = []
+        inflight_sha_by_title: dict[str, str] = {}
+
+        # 1. Check unfinished validation.log files (newest per problem)
+        for title in self.estimator.problems_meta:
+            res_dir = self.workspace / "results" / title
+            if not res_dir.is_dir():
+                continue
+            candidates: list[tuple[float, str]] = []
+            for sub in res_dir.iterdir():
+                if not sub.is_dir() or not re.fullmatch(r"[0-9a-f]{40}", sub.name.lower()):
+                    continue
+                vlog = sub / "validation.log"
+                rj = sub / "result.json"
+                if vlog.is_file() and not rj.is_file():
+                    candidates.append((vlog.stat().st_mtime, sub.name.lower()))
+            if candidates:
+                candidates.sort(reverse=True)
+                inflight_sha_by_title[title] = candidates[0][1]
+
+        # 2. Check local macOS `ps` for active `npu-test.py <Title>` or `opsb test <Title>` callers
+        try:
+            out = subprocess.check_output(["ps", "-eo", "pid,etime,args"], text=True, timeout=2.0)
+            seen_titles: set[str] = set()
+            for line in out.splitlines():
+                if "npu-test.py" not in line and "opsb test" not in line and "schedule-test" not in line:
+                    continue
+                if "grep" in line or "uv run" in line:
+                    continue
+                parts = line.strip().split(None, 2)
+                if len(parts) < 3 or not parts[0].isdigit():
+                    continue
+                el_sec = _parse_ps_etime(parts[1])
+                cmd = parts[2]
+                matched_title = next((t for t in self.estimator.problems_meta if re.search(rf"\b{t}\b", cmd)), None)
+                if matched_title and matched_title not in seen_titles:
+                    seen_titles.add(matched_title)
+                    local_waiters.append({
+                        "local_pid": int(parts[0]),
+                        "title": matched_title,
+                        "elapsed_sec": el_sec,
+                        "fast": "--fast" in cmd,
+                        "sha": inflight_sha_by_title.get(matched_title),
+                    })
+        except Exception:
+            pass
+
+        return local_waiters, inflight_sha_by_title
+
+    def inspect_live_queue(self, offline: bool = False) -> dict[str, Any]:
+        """Probe remote NPU server read-only (zero lock touch) and enrich with MLFQ+WSPT."""
+        local_waiters, inflight_shas = self._scan_local_inflight()
+
+        remote_data: dict[str, Any] | None = None
+        ssh_error: str | None = None
+        if not offline:
+            try:
+                proc = subprocess.run(
+                    [
+                        "ssh",
+                        "-o",
+                        "BatchMode=yes",
+                        "-o",
+                        "ConnectTimeout=3",
+                        self.npu_host,
+                        "python3 -c " + shlex.quote(_REMOTE_READONLY_PROBE),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=6.0,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    remote_data = json.loads(proc.stdout.strip().splitlines()[-1])
+                else:
+                    ssh_error = (proc.stderr or proc.stdout).strip()[:200] or f"ssh rc={proc.returncode}"
+            except Exception as exc:
+                ssh_error = str(exc)[:200]
+
+        if remote_data is None:
+            # Graceful offline synthesis from local in-flight processes
+            raw_tasks = [
+                {
+                    "pid": lw["local_pid"],
+                    "die": None,
+                    "state": "WAITING",
+                    "tag": "WAITING-DIE",
+                    "problem": lw["title"],
+                    "sha": lw["sha"],
+                    "elapsed_sec": lw["elapsed_sec"],
+                    "fast": lw["fast"],
+                    "detail": "Local npu-test session (SSH offline/skipped)",
+                }
+                for lw in local_waiters
+            ]
+            remote_data = {
+                "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "probe_latency_ms": 0.0,
+                "cpu_cores": 32,
+                "load_1m": None,
+                "load_5m": None,
+                "devices": [],
+                "die_locks": [],
+                "raw_tasks": raw_tasks,
+                "offline": True,
+                "ssh_error": ssh_error,
+            }
+
+        # Correlate remote unidentified WAITING python3 -c processes with local `npu-test.py` by elapsed_sec
+        unmatched_local = list(local_waiters)
+        # Remove problems already identified on remote
+        known_remote_titles = {t.get("problem") for t in remote_data.get("raw_tasks", []) if t.get("problem")}
+        unmatched_local = [lw for lw in unmatched_local if lw["title"] not in known_remote_titles]
+
+        for rt in remote_data.get("raw_tasks", []):
+            if not rt.get("problem") and rt.get("state") == "WAITING" and unmatched_local:
+                r_el = int(rt.get("elapsed_sec", 0))
+                best_lw = min(unmatched_local, key=lambda lw: abs(lw["elapsed_sec"] - r_el))
+                if abs(best_lw["elapsed_sec"] - r_el) <= 45:
+                    rt["problem"] = best_lw["title"]
+                    rt["sha"] = best_lw["sha"]
+                    rt["fast"] = best_lw["fast"]
+                    unmatched_local.remove(best_lw)
+            if rt.get("problem") and not rt.get("sha"):
+                rt["sha"] = inflight_shas.get(rt["problem"])
+
+        # Build MLFQ + WSPT enriched NpuTask list
+        enriched: list[NpuTask] = []
+        starvation_warnings: list[str] = []
+
+        for rt in remote_data.get("raw_tasks", []):
+            title = rt.get("problem") or "Unknown"
+            sha = resolve_sha(self.workspace, title, rt.get("sha")) if title != "Unknown" and rt.get("sha") else rt.get("sha")
+            short_sha = sha[:7] if sha else None
+            state = str(rt.get("state", "WAITING"))
+            tag = str(rt.get("tag", "WAITING-DIE"))
+            el_sec = int(rt.get("elapsed_sec", 0))
+            is_fast = bool(rt.get("fast", False) or tag == "FAST-LANE")
+
+            if state == "CPU_BUILD":
+                mlfq = "CPU"
+                est_s = 35.0
+                w_base, age_b, w_prio = 0.0, 0.0, 0.0
+                starved = False
+            elif title in self.estimator.problems_meta:
+                wait_for_aging = el_sec if state == "WAITING" else 0
+                w_base, age_b, w_prio, mlfq = self.compute_wspt(title, fast=is_fast, wait_sec=wait_for_aging)
+                # OSTEP Rule 4a demotion if active task exceeded Q0 quantum (180s)
+                if state == "ACTIVE" and is_fast and el_sec > self.config.q0_quantum_sec:
+                    mlfq = "Q1"
+                est_s = self.est_service_sec(title, fast=(mlfq == "Q0"))
+                starved = state == "WAITING" and el_sec >= 1800
+                if starved:
+                    starvation_warnings.append(
+                        f"{title} ({short_sha or '?'}) waiting {el_sec // 60}m in {rt.get('wait_mechanism', 'poll')} "
+                        f"— promoted to Q0* (priority={w_prio:.2f})"
+                    )
+            else:
+                mlfq = "Q0" if is_fast else "Q1"
+                est_s = 90.0 if is_fast else 300.0
+                w_base = 0.1
+                age_b = round(el_sec / max(60.0, self.config.aging_tau_sec), 4) if state == "WAITING" else 0.0
+                w_prio = round(w_base + age_b, 4)
+                starved = state == "WAITING" and el_sec >= 1800
+
+            enriched.append(
+                NpuTask(
+                    pid=int(rt.get("pid", 0)),
+                    title=title,
+                    sha=sha,
+                    short_sha=short_sha,
+                    state=state,
+                    tag=tag if tag in NPU_TASK_TAGS else "PRECISION",
+                    mlfq_level=mlfq,
+                    die=rt.get("die"),
+                    elapsed_sec=el_sec,
+                    est_service_sec=est_s,
+                    wspt_base=w_base,
+                    aging_boost=age_b,
+                    wspt_priority=w_prio,
+                    dispatch_rank=0,
+                    starved=starved,
+                    detail=str(rt.get("detail", "")),
+                )
+            )
+
+        # Order queue: ACTIVE first -> CPU_BUILD -> Q0 / Q0* by wspt_priority desc -> Q1 by wspt_priority desc
+        def _sort_key(t: NpuTask) -> tuple[int, float, int]:
+            if t.state == "ACTIVE":
+                tier = 4
+            elif t.state == "CPU_BUILD":
+                tier = 3
+            elif t.mlfq_level in ("Q0", "Q0*"):
+                tier = 2
+            else:
+                tier = 1
+            return (tier, t.wspt_priority, t.elapsed_sec)
+
+        enriched.sort(key=_sort_key, reverse=True)
+        w_rank = 0
+        for item in enriched:
+            if item.state == "WAITING":
+                w_rank += 1
+                item.dispatch_rank = w_rank
+
+        return {
+            "sampled_at": remote_data.get("sampled_at"),
+            "probe_latency_ms": remote_data.get("probe_latency_ms"),
+            "offline": bool(remote_data.get("offline", False)),
+            "ssh_error": remote_data.get("ssh_error"),
+            "cpu_cores": remote_data.get("cpu_cores", 32),
+            "load_1m": remote_data.get("load_1m"),
+            "load_5m": remote_data.get("load_5m"),
+            "devices": remote_data.get("devices", []),
+            "die_locks": remote_data.get("die_locks", []),
+            "starvation_warnings": starvation_warnings,
+            "tasks": [t.to_dict() for t in enriched],
+        }
+
+    def rank_problem_priorities(self, live_tasks: list[dict[str, Any]] | None = None) -> list[ProblemPriority]:
+        """Rank all 10 contest problems by WSPT Value-Density across Q0 and Q1."""
+        active_tag_by_title: dict[str, str] = {}
+        for t in live_tasks or []:
+            p = t.get("title")
+            if p and p not in active_tag_by_title:
+                active_tag_by_title[p] = f"{t.get('state')}:{t.get('tag')}"
+
+        rows: list[ProblemPriority] = []
+        for title in sorted(self.estimator.problems_meta):
+            ledger = self.estimator.get_problem_ledger(title)
+            cb = self.gate.get_circuit_breaker(title)
+            q0_s = self.est_service_sec(title, fast=True)
+            q1_s = self.est_service_sec(title, fast=False)
+            wspt_q0, _, _, _ = self.compute_wspt(title, fast=True, wait_sec=0)
+            wspt_q1, _, _, _ = self.compute_wspt(title, fast=False, wait_sec=0)
+            weighted_hr = round(ledger.difficulty * ledger.recoverable_headroom, 2)
+
+            if ledger.current_score <= 0.0:
+                rec_lane = "Q1 (CRITICAL_RESTORE)"
+                rec_act = (
+                    f"Submit verified SHA {(ledger.historical_best_sha or '')[:7]} immediately "
+                    f"to recover +{ledger.historical_best_mean:.1f} pts from 0"
+                )
+            elif cb.state == "OPEN":
+                rec_lane = "HOLD (SWITCH_BASELINE)"
+                rec_act = "Circuit OPEN (6 non-improving shots in 12h); redesign algorithm locally before NPU slot"
+            elif ledger.recoverable_headroom < 15.0:
+                rec_lane = "DEPRIORITIZE (NEAR_FRONTIER)"
+                rec_act = f"Within {ledger.recoverable_headroom:.1f} pts of site-wide #1 ({ledger.frontier_top1:.1f}); yield NPU to high-headroom ops"
+            elif q1_s >= 400.0:
+                rec_lane = "Q0 -> Q1 (SPLIT_ITERATE)"
+                rec_act = f"Iterate in Q0 --fast ({q0_s:.0f}s vs {q1_s:.0f}s Q1, {q1_s / q0_s:.1f}x faster); run Q1 once before submit"
+            else:
+                rec_lane = "Q0 / Q1 (HIGH_DENSITY)"
+                rec_act = f"High WSPT value density ({wspt_q1:.2f} w-pts/s); prioritize hidden-band throughput"
+
+            rows.append(
+                ProblemPriority(
+                    rank=0,
+                    title=title,
+                    difficulty=ledger.difficulty,
+                    board_status=ledger.board_status,
+                    current_score=ledger.current_score,
+                    historical_best_score=ledger.historical_best_score,
+                    historical_best_sha=ledger.historical_best_sha,
+                    frontier_top1=ledger.frontier_top1,
+                    recoverable_headroom=ledger.recoverable_headroom,
+                    weighted_headroom=weighted_hr,
+                    est_q0_sec=q0_s,
+                    est_q1_sec=q1_s,
+                    wspt_q0=wspt_q0,
+                    wspt_q1=wspt_q1,
+                    circuit_state=cb.state,
+                    in_flight_tag=active_tag_by_title.get(title),
+                    recommended_lane=rec_lane,
+                    recommended_action=rec_act,
+                )
+            )
+
+        # Rank by Q0/effective WSPT priority (with CRITICAL_RESTORE boosted natively via compute_wspt)
+        rows.sort(key=lambda r: (r.current_score <= 0.0, r.wspt_q1, r.weighted_headroom), reverse=True)
+        for idx, row in enumerate(rows, 1):
+            row.rank = idx
+        return rows
+
+    def schedule_test(
+        self,
+        title: str,
+        sha: str | None = None,
+        fast: bool = False,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Split-Phase + Cooperative MLFQ/WSPT NPU test entry point (`opsb test`).
+
+        Phase A (CPU_PREFILTER): Verifies git clean/pushed, syncs server repo under
+          repo-scoped lock, runs pure-host `validation/walk_model.py` (if present) and
+          32-core CPU `build.sh` WITHOUT holding `bench-device{0,1}.lock`.
+        Phase B (NPU_DIE_EXEC): Registers priority ticket `(mlfq_level, wspt_base, tau)`
+          in `/tmp/opsb-npu-tickets/`, acquires `bench-device{0,1}.lock` in WSPT
+          priority order, runs `FAST_LANE=1` (`Q0`) or full validation (`Q1`), and writes
+          `results/<Title>/<SHA>/{validation.log,result.json}`.
+        """
+        if title not in self.estimator.problems_meta:
+            raise ValueError(f"Unknown problem title: {title}")
+
+        pmeta = self.estimator.problems_meta[title]
+        repo = self.workspace / pmeta.get("path", f"bench/{title}")
+        canonical_sha = resolve_sha(self.workspace, title, sha)
+        wspt_base, _, wspt_prio, mlfq = self.compute_wspt(title, fast=fast, wait_sec=0)
+        est_sec = self.est_service_sec(title, fast=fast)
+        walk_script_exists = (repo / "validation" / "walk_model.py").is_file()
+
+        plan = {
+            "title": title,
+            "sha": canonical_sha,
+            "short_sha": canonical_sha[:7] if canonical_sha else None,
+            "fast_lane": fast,
+            "mlfq_level": mlfq,
+            "quantum_sec": self.config.q0_quantum_sec if fast else 1200,
+            "est_service_sec": est_sec,
+            "wspt_priority": wspt_prio,
+            "phases": [
+                {
+                    "phase": "A_CPU_PREFILTER",
+                    "holds_npu_die_lock": False,
+                    "steps": (
+                        ["git fetch & detached checkout", "python3 validation/walk_model.py"]
+                        if walk_script_exists
+                        else ["git fetch & detached checkout"]
+                    )
+                    + ["32-core CPU CMake + Compiler KernelC build (build.sh)"],
+                },
+                {
+                    "phase": "B_NPU_DIE_EXEC",
+                    "holds_npu_die_lock": True,
+                    "lock_files": [
+                        "/srv/work-device0.lock",
+                        "/srv/work-device1.lock",
+                    ],
+                    "ticket_dir": "/tmp/opsb-npu-tickets",
+                    "env": {"FAST_LANE": "1" if fast else "0"},
+                    "steps": [
+                        "Cooperative MLFQ + WSPT + Aging ticket admission",
+                        "Exclusive per-die flock + VISIBLE_DEVICES pin",
+                        "Sample + targeted smoke (<180s)" if fast else "Full extended + stress/DET + profiler spectrum",
+                    ],
+                },
+            ],
+            "dry_run": dry_run,
+        }
+
+        if dry_run:
+            return plan
+
+        # Live execution checks (identical safety contract to tools/npu-test.py + Split-Phase)
+        dirty = subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip()
+        if dirty:
+            raise RuntimeError(f"Commit local changes in {title} before NPU validation")
+        slug = pmeta.get("slug") or title.lower()
+        url = f"https://git.invalid/bench-{slug}.git"
+        cred_raw = subprocess.check_output(
+            ["git", "credential", "fill"],
+            input=f"url={url}\n\n",
+            text=True,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+        cred = dict(line.split("=", 1) for line in cred_raw.splitlines() if "=" in line)
+
+        remote_runner = r"""
+import datetime, fcntl, glob, json, os, pathlib, subprocess, sys, tempfile, time
+
+cfg = json.load(sys.stdin)
+root = pathlib.Path('/srv/work')
+root.mkdir(parents=True, exist_ok=True)
+repo = root / cfg['title']
+logdir = root.parent / 'bench-results' / cfg['title'] / cfg['sha']
+logdir.mkdir(parents=True, exist_ok=True)
+
+# Phase A: Per-problem repo lock ONLY (zero NPU die lock held during git sync + walk_model + CPU build!)
+repo_lock = pathlib.Path(f"/tmp/opsb-repo-{cfg['title']}.lock").open('a')
+fcntl.flock(repo_lock, fcntl.LOCK_EX)
+
+env = os.environ.copy()
+env['GIT_TERMINAL_PROMPT'] = '0'
+with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
+    askpass = pathlib.Path(auth) / 'askpass.py'
+    askpass.write_text('#!/usr/bin/env python3\nimport os,sys\nprint(os.environ["TASK_GIT_USERNAME" if "username" in sys.argv[1].lower() else "TASK_GIT_PASSWORD"])\n')
+    askpass.chmod(0o700)
+    env.update(GIT_ASKPASS=str(askpass), TASK_GIT_USERNAME=cfg.pop('username'), TASK_GIT_PASSWORD=cfg.pop('password'))
+    if not repo.exists():
+        subprocess.run(['git', '-c', 'credential.helper=', 'clone', cfg['url'], str(repo)], env=env, check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'credential.helper=', 'fetch', 'origin', '--prune'], env=env, check=True)
+    subprocess.run(['git', '-C', str(repo), '-c', 'credential.helper=', 'checkout', '--detach', '--force', cfg['sha']], env=env, check=True)
+    del env['TASK_GIT_USERNAME'], env['TASK_GIT_PASSWORD'], env['GIT_ASKPASS']
+
+env['FAST_LANE'] = '1' if cfg['fast'] else '0'
+log_f = (logdir / 'validation.log').open('w')
+def emit(msg):
+    log_f.write(msg + '\n')
+    log_f.flush()
+    print(msg, flush=True)
+
+emit(f"Verified commit: {cfg['sha']}")
+emit(f"FAST_LANE={env['FAST_LANE']} MLFQ={cfg['mlfq']}")
+
+# Optional Phase A1: Pure-host state-machine walk check
+walk_py = repo / 'validation' / 'walk_model.py'
+if walk_py.is_file():
+    emit("[PHASE-A] Running pure-host walk_model.py (no NPU lock)...")
+    wproc = subprocess.run(['python3', str(walk_py)], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    log_f.write(wproc.stdout)
+    log_f.flush()
+    print(wproc.stdout, end='', flush=True)
+    if wproc.returncode != 0:
+        emit("VALIDATION_FAILED rc=2 (walk_model failed in Phase A)")
+        (logdir / 'result.json').write_text(json.dumps({'title': cfg['title'], 'sha': cfg['sha'], 'exit_code': 2, 'phase': 'WALK_MODEL', 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + '\n')
+        sys.exit(2)
+
+# Phase B: Cooperative MLFQ + WSPT Priority Ticket Queue -> Exclusive NPU Die Lock
+ticket_dir = pathlib.Path('/tmp/opsb-npu-tickets')
+ticket_dir.mkdir(parents=True, exist_ok=True)
+my_pid = os.getpid()
+t0 = time.time()
+ticket_path = ticket_dir / f"{my_pid}.json"
+
+def update_ticket():
+    wait_s = max(0.0, time.time() - t0)
+    age = wait_s / max(60.0, cfg['aging_tau'])
+    mlfq_now = 'Q0*' if (not cfg['fast'] and wait_s >= 1800) else cfg['mlfq']
+    ticket_path.write_text(json.dumps({
+        'pid': my_pid, 'title': cfg['title'], 'sha': cfg['sha'],
+        'tier': 2 if mlfq_now in ('Q0', 'Q0*') else 1,
+        'prio': cfg['wspt_base'] + age, 'created': t0,
+    }))
+
+def am_top_ticket():
+    update_ticket()
+    mine = json.loads(ticket_path.read_text())
+    for tf in ticket_dir.glob('*.json'):
+        try:
+            other = json.loads(tf.read_text())
+            opid = int(other['pid'])
+            if opid == my_pid:
+                continue
+            if not pathlib.Path(f"/proc/{opid}").exists():
+                tf.unlink(missing_ok=True)
+                continue
+            if (other['tier'], other['prio'], -other['created']) > (mine['tier'], mine['prio'], -mine['created']):
+                return False
+        except Exception:
+            continue
+    return True
+
+legacy_lock = (root.parent / 'bench-validation.lock').open('a')
+fcntl.flock(legacy_lock, fcntl.LOCK_SH)
+devices = int(os.environ.get('TASK_DEVICES', '1'))
+slot = None
+announced = False
+try:
+    while slot is None:
+        if am_top_ticket():
+            for idx in range(devices):
+                h = (root.parent / f'bench-device{idx}.lock').open('a')
+                try:
+                    fcntl.flock(h, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    slot = (idx, h)
+                    break
+                except BlockingIOError:
+                    h.close()
+        if slot is None:
+            if not announced:
+                emit('Waiting for a free NPU die')
+                announced = True
+            time.sleep(3)
+finally:
+    ticket_path.unlink(missing_ok=True)
+
+env['VISIBLE_DEVICES'] = str(slot[0])
+emit(f"Using NPU die {slot[0]} (VISIBLE_DEVICES={slot[0]})")
+p = subprocess.Popen(['bash', 'validation/run-npu.sh'], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+for line in p.stdout:
+    log_f.write(line)
+    log_f.flush()
+    print(line, end='', flush=True)
+code = p.wait()
+log_f.close()
+(logdir / 'result.json').write_text(json.dumps({'title': cfg['title'], 'sha': cfg['sha'], 'exit_code': code, 'fast_lane': cfg['fast'], 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + '\n')
+sys.exit(code)
+"""
+        dest = self.workspace / "results" / title / canonical_sha
+        dest.mkdir(parents=True, exist_ok=True)
+        basename = "validation-fast" if fast else "validation"
+        cfg_payload = {
+            "title": title,
+            "url": url,
+            "sha": canonical_sha,
+            "username": cred["username"],
+            "password": cred["password"],
+            "fast": fast,
+            "mlfq": mlfq,
+            "wspt_base": wspt_base,
+            "aging_tau": self.config.aging_tau_sec,
+        }
+        with (dest / f"{basename}.log").open("w") as local_log:
+            proc = subprocess.Popen(
+                ["ssh", "-o", "BatchMode=yes", self.npu_host, "python3 -c " + shlex.quote(remote_runner)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            proc.stdin.write(json.dumps(cfg_payload))
+            proc.stdin.close()
+            cfg_payload.clear()
+            for line in proc.stdout:
+                local_log.write(line)
+                local_log.flush()
+            rc = proc.wait()
+
+        res_obj = {
+            "title": title,
+            "sha": canonical_sha,
+            "exit_code": rc,
+            "fast_lane": fast,
+            "mlfq_level": mlfq,
+            "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        res_name = "result-fast.json" if fast else "result.json"
+        (dest / res_name).write_text(json.dumps(res_obj, indent=2) + "\n")
+        return {**plan, "result": res_obj}
