@@ -46,6 +46,24 @@ SHA_RE = re.compile(r"\b([0-9a-f]{40})\b")
 SHORT_SHA_RE = re.compile(r"\b([0-9a-f]{7,12})\b")
 
 
+def _parse_proc_stat() -> dict[str, tuple[int, int]]:
+    out: dict[str, tuple[int, int]] = {}
+    try:
+        for line in pathlib.Path("/proc/stat").read_text().splitlines():
+            if not line.startswith("cpu"):
+                continue
+            parts = line.split()
+            name = parts[0]
+            nums = [int(x) for x in parts[1:] if x.isdigit()]
+            if len(nums) >= 4:
+                idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+                total = sum(nums)
+                out[name] = (idle, total)
+    except Exception:
+        pass
+    return out
+
+
 def read_cpu_and_load() -> dict[str, Any]:
     cores = os.cpu_count() or 1
     load_1, load_5, load_15 = 0.0, 0.0, 0.0
@@ -58,6 +76,43 @@ def read_cpu_and_load() -> dict[str, Any]:
             running_procs, total_procs = int(r_s), int(t_s)
     except Exception:
         pass
+
+    # Compute overall & per-core % from /proc/stat delta
+    state_dir = pathlib.Path.home() / ".opsb"
+    prev_file = state_dir / "cpu_stat_prev.json"
+    cur_stat = _parse_proc_stat()
+    prev_stat: dict[str, list[int]] = {}
+    if prev_file.is_file():
+        try:
+            obj = json.loads(prev_file.read_text())
+            if time.time() - float(obj.get("ts", 0)) < 120:
+                prev_stat = obj.get("stat") or {}
+        except Exception:
+            pass
+    if not prev_stat:
+        time.sleep(0.05)
+        prev_stat = {k: [v[0], v[1]] for k, v in cur_stat.items()}
+        cur_stat = _parse_proc_stat()
+
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        prev_file.write_text(json.dumps({"ts": time.time(), "stat": {k: [v[0], v[1]] for k, v in cur_stat.items()}}))
+    except Exception:
+        pass
+
+    def calc_pct(key: str) -> float:
+        if key not in cur_stat or key not in prev_stat:
+            return 0.0
+        c_idle, c_tot = cur_stat[key]
+        p_idle, p_tot = prev_stat[key][0], prev_stat[key][1]
+        dt = c_tot - p_tot
+        if dt <= 0:
+            return 0.0
+        return round(max(0.0, min(100.0, (1.0 - (c_idle - p_idle) / dt) * 100.0)), 1)
+
+    usage_pct = calc_pct("cpu")
+    per_core = [calc_pct(f"cpu{i}") for i in range(cores)]
+
     return {
         "cores": cores,
         "load_1m": round(load_1, 2),
@@ -65,6 +120,8 @@ def read_cpu_and_load() -> dict[str, Any]:
         "load_15m": round(load_15, 2),
         "running_threads": running_procs,
         "total_threads": total_procs,
+        "usage_pct": usage_pct,
+        "per_core_pct": per_core,
     }
 
 
@@ -82,6 +139,7 @@ def read_memory() -> dict[str, Any]:
         pass
     total_kib = info.get("MemTotal", 0)
     avail_kib = info.get("MemAvailable", info.get("MemFree", 0))
+    cached_kib = info.get("Buffers", 0) + info.get("Cached", 0) + info.get("SReclaimable", 0)
     used_kib = max(0, total_kib - avail_kib)
     return {
         "total_mib": round(total_kib / 1024),
@@ -89,6 +147,7 @@ def read_memory() -> dict[str, Any]:
         "available_mib": round(avail_kib / 1024),
         "total_gib": round(total_kib / (1024 * 1024), 1),
         "used_gib": round(used_kib / (1024 * 1024), 1),
+        "cached_gib": round(cached_kib / (1024 * 1024), 1),
     }
 
 
@@ -472,7 +531,6 @@ def build_snapshot() -> dict[str, Any]:
             }
         )
 
-    probe_ms = round((time.monotonic() - t0) * 1000, 1)
     primary_dev = npu["devices"][0] if npu["devices"] else {
         "npu_id": 0,
         "chip_id": 0,
@@ -486,6 +544,36 @@ def build_snapshot() -> dict[str, Any]:
         "hbm_total_mib": 65536,
     }
 
+    now_ts = round(time.time(), 1)
+    hbm_pct = round((primary_dev.get("hbm_used_mib", 0) / max(1, primary_dev.get("hbm_total_mib", 65536))) * 100.0, 2)
+    ram_pct = round((mem.get("used_mib", 0) / max(1, mem.get("total_mib", 1))) * 100.0, 2)
+    sample_pt = {
+        "ts": now_ts,
+        "aicore_pct": float(primary_dev.get("aicore_pct") or 0.0),
+        "power_w": float(primary_dev.get("power_w") or 0.0),
+        "temp_c": int(primary_dev.get("temp_c") or 0),
+        "hbm_pct": hbm_pct,
+        "cpu_pct": float(cpu.get("usage_pct") or 0.0),
+        "ram_pct": ram_pct,
+    }
+
+    ring_file = pathlib.Path.home() / ".opsb" / "telemetry_ring.json"
+    history: list[dict[str, Any]] = []
+    try:
+        if ring_file.is_file():
+            loaded = json.loads(ring_file.read_text())
+            if isinstance(loaded, list):
+                history = [p for p in loaded if now_ts - float(p.get("ts", 0)) <= 1800]
+        if not history or now_ts - float(history[-1].get("ts", 0)) >= 1.5:
+            history.append(sample_pt)
+        history = history[-90:]
+        ring_file.parent.mkdir(parents=True, exist_ok=True)
+        ring_file.write_text(json.dumps(history, separators=(",", ":")))
+    except Exception:
+        history = [sample_pt]
+
+    probe_ms = round((time.monotonic() - t0) * 1000, 1)
+
     return {
         "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "probe_latency_ms": probe_ms,
@@ -498,6 +586,7 @@ def build_snapshot() -> dict[str, Any]:
         "npu_processes": npu.get("npu_processes", []),
         "cpu": cpu,
         "memory": mem,
+        "history": history,
         "die_locks": die_locks_info,
         "tasks": tasks,
     }

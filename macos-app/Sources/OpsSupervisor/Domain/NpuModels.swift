@@ -1,5 +1,26 @@
 import Foundation
 
+struct TelemetrySample: Codable, Identifiable, Hashable {
+    var id: Double { ts }
+    let ts: Double
+    let aicorePct: Double
+    let powerW: Double
+    let tempC: Int
+    let hbmPct: Double
+    let cpuPct: Double
+    let ramPct: Double
+
+    enum CodingKeys: String, CodingKey {
+        case ts
+        case aicorePct = "aicore_pct"
+        case powerW = "power_w"
+        case tempC = "temp_c"
+        case hbmPct = "hbm_pct"
+        case cpuPct = "cpu_pct"
+        case ramPct = "ram_pct"
+    }
+}
+
 struct NpuTelemetry: Codable {
     let online: Bool
     let sshHost: String
@@ -13,11 +34,12 @@ struct NpuTelemetry: Codable {
     let primaryNpu: NpuDevice?
     let cpu: CpuMetrics?
     let memory: MemoryMetrics?
+    let history: [TelemetrySample]?
     let dieLocks: [DieLockInfo]
     let tasks: [NpuTaskItem]
 
     enum CodingKeys: String, CodingKey {
-        case online, hostname, arch, error, cpu, memory, tasks
+        case online, hostname, arch, error, cpu, memory, history, tasks
         case sshHost = "ssh_host"
         case rttMs = "rtt_ms"
         case probeLatencyMs = "probe_latency_ms"
@@ -61,6 +83,8 @@ struct CpuMetrics: Codable {
     let load15m: Double
     let runningThreads: Int
     let totalThreads: Int
+    let usagePct: Double?
+    let perCorePct: [Double]?
 
     enum CodingKeys: String, CodingKey {
         case cores
@@ -69,6 +93,8 @@ struct CpuMetrics: Codable {
         case load15m = "load_15m"
         case runningThreads = "running_threads"
         case totalThreads = "total_threads"
+        case usagePct = "usage_pct"
+        case perCorePct = "per_core_pct"
     }
 }
 
@@ -78,6 +104,7 @@ struct MemoryMetrics: Codable {
     let availableMib: Int
     let totalGib: Double
     let usedGib: Double
+    let cachedGib: Double?
 
     enum CodingKeys: String, CodingKey {
         case totalMib = "total_mib"
@@ -85,6 +112,7 @@ struct MemoryMetrics: Codable {
         case availableMib = "available_mib"
         case totalGib = "total_gib"
         case usedGib = "used_gib"
+        case cachedGib = "cached_gib"
     }
 }
 

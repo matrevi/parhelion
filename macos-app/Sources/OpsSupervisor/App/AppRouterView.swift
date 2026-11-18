@@ -56,6 +56,7 @@ struct AppRouterView: View {
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
                 Picker("Poll", selection: $store.pollIntervalSec) {
+                    Text("2s").tag(2)
                     Text("5s").tag(5)
                     Text("10s").tag(10)
                     Text("30s").tag(30)

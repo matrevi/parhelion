@@ -5,6 +5,7 @@ import Foundation
 @MainActor
 final class ContestStore: ObservableObject {
     @Published var snapshot: SupervisorSnapshot?
+    @Published var telemetryHistory: [TelemetrySample] = []
     @Published var workspaces: [WorkspaceEntry] = []
     @Published var sshHosts: [SSHHostEntry] = []
     @Published var activeSSHHost: String = "npu"
@@ -14,7 +15,7 @@ final class ContestStore: ObservableObject {
 
     @Published var isRefreshingLocal: Bool = false
     @Published var isRefreshingNpu: Bool = false
-    @Published var pollIntervalSec: Int = 10
+    @Published var pollIntervalSec: Int = 5
     @Published var bannerMessage: String?
     @Published var errorMessage: String?
 
@@ -68,9 +69,22 @@ final class ContestStore: ObservableObject {
             if let cur = snapshot {
                 snapshot = cur.updatingNpu(npu)
             }
+            mergeTelemetryHistory(from: npu)
         } catch {
             if !silent { errorMessage = error.localizedDescription }
         }
+    }
+
+    private func mergeTelemetryHistory(from npu: NpuTelemetry) {
+        var byTs: [Int: TelemetrySample] = [:]
+        for pt in telemetryHistory {
+            byTs[Int(pt.ts)] = pt
+        }
+        for pt in (npu.history ?? []) {
+            byTs[Int(pt.ts)] = pt
+        }
+        let merged = byTs.values.sorted { $0.ts < $1.ts }
+        telemetryHistory = Array(merged.suffix(120))
     }
 
     func reschedulePolling() {
