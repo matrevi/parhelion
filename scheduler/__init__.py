@@ -5,9 +5,22 @@ and the `opsb` CLI to manage:
   1. Expected Score Estimation & Empirical Frontier Headroom (`estimator.py`)
   2. 4-Stage Statistical & Safety Submission Gate + Token Bucket (`gate.py`)
   3. Split-Phase + MLFQ (Q0/Q1) + WSPT Value-Density NPU Scheduler (`npu_scheduler.py`)
-  4. Active CLI & JSON IPC Bridge (`cli_bridge.py`)
+  4. B0 Baseline Bucket Backfill Lane (`backfill.py`, `backfill_status.py`)
+  5. Active CLI & JSON IPC Bridge (`cli_bridge.py`)
 """
 
+from .backfill import (
+    LANE_BACKFILL,
+    TICKET_TIER,
+    BackfillConfig,
+    BackfillLedger,
+    BackfillScheduler,
+    bucket_key,
+    build_perf_plan,
+    coalesce_sessions,
+    session_key_for,
+    ticket_rank,
+)
 from .calibration import BenchmarkCalibrator, project_capped_simplex
 from .estimator import (
     CROSS_CORE_OPS,
@@ -42,7 +55,17 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "BackfillConfig",
+    "BackfillLedger",
+    "BackfillScheduler",
     "BenchmarkCalibrator",
+    "LANE_BACKFILL",
+    "TICKET_TIER",
+    "bucket_key",
+    "build_perf_plan",
+    "coalesce_sessions",
+    "session_key_for",
+    "ticket_rank",
     "CROSS_CORE_OPS",
     "NPU_TASK_TAGS",
     "PROBLEM_DIFFICULTY",

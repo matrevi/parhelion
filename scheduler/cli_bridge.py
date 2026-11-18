@@ -24,6 +24,7 @@ import time
 from typing import Any
 
 from .calibration import BenchmarkCalibrator
+from .backfill import BackfillScheduler, offline_npu_sentinel
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
@@ -82,6 +83,7 @@ class SchedulerEngine:
             self.workspace,
             estimator=self.estimator,
             verified_escapes=self.verified_escapes,
+            state_dir=self.state_dir,
         )
         self.estimator._calibrator = self.calibrator
         self.gate = SubmissionGate(
@@ -97,6 +99,16 @@ class SchedulerEngine:
             config=self.config,
             npu_host=self.npu_host,
         )
+        # B0 lowest-priority backfill lane (shares the calibrator so no double fit)
+        self.backfill_lane = BackfillScheduler(
+            self.workspace,
+            state_dir=self.state_dir,
+            estimator=self.estimator,
+            calibrator=self.calibrator,
+            npu_scheduler=self.npu_scheduler,
+            npu_host=self.npu_host,
+        )
+        self.calibrator.backfill = self.backfill_lane
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_file.is_file():
@@ -419,8 +431,10 @@ class SchedulerEngine:
         unweighted_total = round(sum(x["current_score"] for x in ledgers), 2)
 
         cal_summaries: dict[str, dict[str, Any]] = {}
+        cal_docs: dict[str, dict[str, Any]] = {}
         for title in sorted(self.estimator.problems_meta):
             cdoc = self.calibrator.load_or_calibrate(title)
+            cal_docs[title] = cdoc
             cal_summaries[title] = {
                 "mae_pts": cdoc.get("mae_pts"),
                 "rmse_pts": cdoc.get("rmse_pts"),
@@ -482,6 +496,8 @@ class SchedulerEngine:
             },
             "circuit_breakers": cbs,
             "calibrations": cal_summaries,
+            # B0 lane: additive field (client banner reads `unpaired_total` / `running`)
+            "backfill": self.backfill_lane.summary(cal_docs),
             "problem_priorities": [p.to_dict() for p in priorities],
             "config": self.config.to_dict(),
         }
@@ -954,6 +970,109 @@ class SchedulerEngine:
             raise ValueError(f"Unknown problem title: {title}")
         return self.calibrator.diagnose_problem(title)
 
+    # -- B0 backfill lane (`opsb bench backfill` button + automatic tick) ---------
+    def backfill(
+        self,
+        title: str | None = None,
+        sha: str | None = None,
+        force: bool = True,
+        dry_run: bool = False,
+        wait_sec: float | None = None,
+        execute: bool = True,
+        offline: bool = False,
+    ) -> dict[str, Any]:
+        """One B0 lane tick.
+
+        `force=True` (the “立即补测” button) bypasses the AUTO throttle only — the die is
+        still never taken while an operator ticket (`tier >= 1`) is waiting or a die lock
+        is held, and `--dry-run` performs the full admission proof without touching the die.
+        """
+        self.refresh_models()
+        if title and title not in self.estimator.problems_meta:
+            raise ValueError(f"Unknown problem title: {title}")
+        if wait_sec is not None:
+            self.backfill_lane.save_config(force_max_wait_sec=float(wait_sec))
+
+        sha_note = None
+        if sha:
+            pinned = self.estimator.get_problem_ledger(title or "").active_board_sha if title else None
+            sha_note = {
+                "requested": sha[:12],
+                "pinned_baseline": (pinned or "")[:12] or None,
+                "matches_pinned": bool(pinned and pinned.lower().startswith(sha.lower()[:7])),
+            }
+
+        npu: dict[str, Any] | None = None
+        if offline:
+            npu = offline_npu_sentinel()
+        else:
+            try:
+                npu = self.npu_scheduler.inspect_live_queue()
+            except Exception as exc:  # fail closed, keep the plan printable
+                npu = offline_npu_sentinel(str(exc)[:160])
+
+        before = self.backfill_lane.scan_unpaired()
+        if title:
+            before = [r for r in before if r["title"] == title]
+        out = self.backfill_lane.dispatch(
+            force=force,
+            dry_run=bool(dry_run or not execute),
+            title=title,
+            npu=npu,
+        )
+        after = self.backfill_lane.scan_unpaired()
+        if title:
+            after = [r for r in after if r["title"] == title]
+        queued_after = self.backfill_lane.plan()
+        if title:
+            queued_after = [j for j in queued_after if j["title"] == title]
+
+        measured = out.get("measured") or {}
+        return {
+            "ok": True,
+            "action": "backfill",
+            "lane": "B0",
+            "tier": 0,
+            "title": title,
+            "force": bool(force),
+            "dry_run": bool(dry_run or not execute),
+            "sha_request": sha_note,
+            "unpaired_before": len(before),
+            "unpaired_after": len(after),
+            "paired_now": max(0, len(before) - len(after)),
+            "dispatched": bool(out.get("dispatched")),
+            "result": out.get("result"),
+            "reason": out.get("reason"),
+            "blocked_by": out.get("blocked_by") or [],
+            "measured": measured,
+            "measured_count": len(measured),
+            "session": out.get("session") or out.get("plan"),
+            "admission": out.get("admission"),
+            "remote": out.get("remote"),
+            "queued_remaining": len(queued_after),
+            "queued_remaining_buckets": sum(int(j["bucket_count"]) for j in queued_after),
+            "eta_sec": round(sum(float(j["est_sec"]) for j in queued_after), 1),
+            "ledger_sha": self.backfill_lane.ledger.sha256(),
+            "generated_at": _utc_now(),
+        }
+
+    def backfill_auto(self) -> dict[str, Any] | None:
+        """Event-driven AUTO tick: called right after an operator session releases the die.
+
+        Never raises (a backfill must never break `opsb test`), never waits on the lock
+        (`auto_max_wait_sec = 0` ⇒ single non-blocking attempt), and costs one local scan
+        plus at most one read-only SSH probe when there is actually something to pair.
+        """
+        try:
+            cfg = self.backfill_lane.config()
+            if not (cfg.enabled and cfg.auto_dispatch):
+                return None
+            if not self.backfill_lane.plan():
+                return None
+            return self.backfill_lane.dispatch(force=False, dry_run=False)
+        except Exception:
+            return None
+
     def verify_escape(self, title: str, bad_sha: str, good_sha: str) -> dict[str, Any]:
         """Verify regression test between escaped `bad_sha` and passing `good_sha`, clearing `ESCAPE_LOCK`."""
         self.refresh_models()
@@ -1179,6 +1298,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cal = sub.add_parser("calibrate", parents=[common], help="Fit Simplex MAP calibration & write calibration.json")
     p_cal.add_argument("--title", default=None, help="Optional single problem title (defaults to all 10)")
 
+    p_bf = sub.add_parser(
+        "backfill",
+        parents=[common],
+        help="B0 lowest-priority baseline perf-bucket backfill lane (auto-detect, dedup, idempotent)",
+    )
+    p_bf.add_argument("--title", default=None, help="Operator problem title (default: whole B0 queue)")
+    p_bf.add_argument("--sha", default=None, help="Optional baseline SHA hint (validated against the pinned board)")
+    p_bf.add_argument("--auto", action="store_true", help="Automatic mode: honour throttle, never wait for the die")
+    p_bf.add_argument("--force", action="store_true", default=True, help="Bypass AUTO throttle only (manual one-click)")
+    p_bf.add_argument("--dry-run", action="store_true", help="Admission proof + session plan, no die acquisition")
+    p_bf.add_argument("--wait-sec", type=float, default=None, help="Max seconds to wait for an idle die")
+    p_bf.add_argument("--offline", action="store_true", help="Skip the read-only NPU telemetry probe")
+
     p_bst = sub.add_parser("bench-status", parents=[common], help="Inspect stratified calibration & 6x5 coverage grid")
     p_bst.add_argument("--title", default=None, help="Optional single problem title")
 
@@ -1258,8 +1390,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             if not args.dry_run:
                 res = payload.get("result") or {}
+                # Event-driven B0 tick: the die was just released and no operator ticket
+                # can exist yet -> strictly bounded, silent, never raises.
+                if not args.build_only:
+                    engine.backfill_auto()
                 print(json.dumps(res, ensure_ascii=False))
                 return int(res.get("exit_code", 0))
+        elif args.command == "backfill":
+            payload = engine.backfill(
+                title=args.title,
+                sha=args.sha,
+                force=(False if args.auto else bool(args.force)),
+                dry_run=args.dry_run,
+                wait_sec=args.wait_sec,
+                offline=args.offline,
+            )
         elif args.command == "calibrate":
             payload = engine.calibrate(title=args.title)
         elif args.command == "bench-status":

@@ -43,7 +43,12 @@ NPU_TASK_TAGS: tuple[str, ...] = (
     "PROFILER",
     "STRESS",
     "WAITING-DIE",
+    "BACKFILL",  # B0 lane: baseline perf-bucket pairing only (never preempts Q0/Q1)
 )
+
+#: Lexicographic ticket tiers shared with `scheduler/backfill.py` and `tools/npu-test.py`.
+#: Higher wins; `prio`/aging only reorder *inside* the same tier.
+LANE_TICKET_TIER: dict[str, int] = {"B0": 0, "Q1": 1, "Q0": 2, "Q0*": 2}
 
 # Empirically measured non-queued Q1 validation durations (seconds) across 10 problems
 MEDIAN_Q1_SERVICE_SEC_FALLBACK: dict[str, float] = {
@@ -335,6 +340,8 @@ def classify(pids, holds_die):
         return "FAST-LANE", "Q0 fast-lane smoke & targeted cases"
     if "stress" in low or "determinism" in low or "det_bad" in low:
         return "STRESS", "Multi-run determinism & stress gate"
+    if "validation/perf.py" in low:
+        return "BACKFILL", "B0 baseline bucket pairing (perf-only, 0s build)"
     return "PRECISION", "Extended precision & boundary suite"
 
 raw_tasks = []
@@ -447,6 +454,46 @@ if ledger_f.is_file():
     except Exception:
         pass
 
+# 7. Cooperative WSPT tickets (`/tmp/opsb-npu-tickets/*.json`) — read-only, ZERO flock
+npu_tickets = []
+ticket_dir = pathlib.Path('/tmp/opsb-npu-tickets')
+if ticket_dir.is_dir():
+    now_ep = time.time()
+    for tf in sorted(ticket_dir.glob('*.json')):
+        try:
+            td = json.loads(tf.read_text())
+        except Exception:
+            continue
+        try:
+            tpid = int(td.get('pid') or 0)
+        except Exception:
+            continue
+        if tpid <= 0:
+            continue
+        alive = tpid in procs or pathlib.Path('/proc/%d' % tpid).exists()
+        try:
+            tier = int(td.get('tier', 1))
+        except Exception:
+            tier = 1
+        lane = td.get('lane') or ('B0' if tier <= 0 else ('Q0' if tier >= 2 else 'Q1'))
+        try:
+            created = float(td.get('created') or 0.0)
+        except Exception:
+            created = 0.0
+        npu_tickets.append({
+            'pid': tpid,
+            'title': td.get('title'),
+            'sha': td.get('sha'),
+            'tier': tier,
+            'lane': lane,
+            'kind': td.get('kind'),
+            'prio': round(float(td.get('prio') or 0.0), 4),
+            'fast': bool(td.get('fast')),
+            'created': created,
+            'waiting_sec': round(max(0.0, now_ep - created), 1) if created else 0.0,
+            'alive': bool(alive),
+        })
+
 print(json.dumps({
     "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "probe_latency_ms": round((time.monotonic() - t0) * 1000, 1),
@@ -456,6 +503,7 @@ print(json.dumps({
     "devices": devices,
     "die_locks": die_locks,
     "die_duty_10m": die_duty_10m,
+    "npu_tickets": npu_tickets,
     "raw_tasks": raw_tasks,
 }))
 """
@@ -680,6 +728,7 @@ class NpuTaskScheduler:
                 "load_5m": None,
                 "devices": [],
                 "die_locks": [],
+                "npu_tickets": [],
                 "raw_tasks": raw_tasks,
                 "offline": True,
                 "ssh_error": ssh_error,
@@ -793,6 +842,7 @@ class NpuTaskScheduler:
             "devices": remote_data.get("devices", []),
             "die_locks": remote_data.get("die_locks", []),
             "die_duty_10m": remote_data.get("die_duty_10m"),
+            "npu_tickets": remote_data.get("npu_tickets") or [],
             "starvation_warnings": starvation_warnings,
             "tasks": [t.to_dict() for t in enriched],
         }

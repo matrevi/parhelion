@@ -152,6 +152,7 @@ class BenchmarkCalibrator:
         estimator: ScoreEstimator | None = None,
         specs_root: pathlib.Path | None = None,
         verified_escapes: dict[str, dict[str, Any]] | None = None,
+        state_dir: pathlib.Path | None = None,
     ) -> None:
         self.workspace = workspace.resolve()
         self.estimator = estimator or ScoreEstimator(self.workspace)
@@ -160,6 +161,9 @@ class BenchmarkCalibrator:
             or (pathlib.Path(__file__).resolve().parents[1] / "bench-specs")
         )
         self.verified_escapes = verified_escapes or {}
+        # B0 backfill lane store (`<state>/backfill_timings.json`); built lazily on first use
+        self.state_dir = pathlib.Path(state_dir) if state_dir else None
+        self.backfill: Any = None
         self._perf_spec_cache: dict[str, dict[str, Any]] = {}
         self._timings_cache: dict[tuple[str, str, str | None], tuple[dict[str, float], dict[str, float], str | None, str]] = {}
         self._cal_cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -237,6 +241,73 @@ class BenchmarkCalibrator:
             "d5_escape_regressions": d5_escapes,
         }
 
+    # -- B0 backfill lane: paired-timing store (`<state>/backfill_timings.json`) -----
+    def _backfill_store(self) -> Any:
+        """Lazily build the `BackfillScheduler` used as the backfilled-pairing store."""
+        if self.backfill is None:
+            try:
+                from .backfill import BackfillScheduler
+
+                self.backfill = BackfillScheduler(
+                    self.workspace,
+                    state_dir=self.state_dir,
+                    estimator=self.estimator,
+                )
+            except Exception:
+                self.backfill = False
+        return self.backfill or None
+
+    def _backfill_pairings(self, title: str, sha: str) -> dict[str, Any] | None:
+        store = self._backfill_store()
+        if store is None or not sha:
+            return None
+        try:
+            return store.timings_for(title, sha)
+        except Exception:
+            return None
+
+    def unpaired_buckets(self, title: str, as_of: datetime.datetime | None = None) -> dict[str, Any]:
+        """Authoritative pairing census for the pinned baseline commit (B0 detection source).
+
+        Uses exactly the timing-selection path of `calibrate_problem()` so the census can
+        never disagree with `calibration.json::unpaired_bucket_count`.
+        """
+        ledger = self.estimator.get_problem_ledger(title, as_of=as_of)
+        perf_spec = self.load_perf_spec(title)
+        buckets = list(perf_spec.get("hidden_buckets") or [])
+        sha = ledger.active_board_sha or ""
+        timings: dict[str, float] = {}
+        soc: str | None = None
+        modality = "none"
+        if sha and buckets:
+            timings, _torch, soc, modality = self._extract_bucket_timings(
+                title, sha, buckets, allow_future_siblings=(as_of is None)
+            )
+        paired = [b["id"] for b in buckets if b["id"] in timings]
+        unpaired = [b for b in buckets if b["id"] not in timings]
+        return {
+            "title": title,
+            "baseline_sha": sha or None,
+            "baseline_short": sha[:7] if sha else None,
+            "bucket_count": len(buckets),
+            "paired_count": len(paired),
+            "unpaired_count": len(unpaired),
+            "paired_buckets": paired,
+            "unpaired_buckets": [b["id"] for b in unpaired],
+            "unpaired_details": [
+                {
+                    "id": b["id"],
+                    "stratum": b.get("stratum"),
+                    "dtype": b.get("dtype"),
+                    "description": b.get("description", ""),
+                }
+                for b in unpaired
+            ],
+            "modality": modality,
+            "runtime_soc": soc,
+            "observed_us": {k: round(float(v), 3) for k, v in timings.items()},
+        }
+
     def _extract_bucket_timings(
         self,
         title: str,
@@ -252,6 +323,8 @@ class BenchmarkCalibrator:
         repo = self.workspace / "bench" / title
         res_dir = self.workspace / "results" / title
         vlog = res_dir / sha / "validation.log"
+        backfill = self._backfill_pairings(title, sha)
+
 
         # Only scan sibling commits via C++ fingerprint when `allow_future_siblings` is True (live mode)
         best_perf = parse_validation_perf(vlog.read_text(errors="replace")) if vlog.is_file() else None
@@ -295,6 +368,16 @@ class BenchmarkCalibrator:
                         best_score_key = cand_key
 
         if best_perf is None:
+            # B0 backfill may have paired the baseline even when no `validation.log` exists at all
+            if backfill and backfill.get("cases"):
+                solo_res: tuple[dict[str, float], dict[str, float], str | None, str] = (
+                    {k: float(v) for k, v in (backfill["cases"] or {}).items() if v and v > 0},
+                    {},
+                    backfill.get("runtime_soc"),
+                    "profiler",
+                )
+                self._timings_cache[t_key] = solo_res
+                return solo_res
             empty_res: tuple[dict[str, float], dict[str, float], str | None, str] = ({}, {}, None, "none")
             self._timings_cache[t_key] = empty_res
             return empty_res
@@ -315,6 +398,21 @@ class BenchmarkCalibrator:
             for k, v in best_perf["dev_event_cases"].items():
                 raw_pool[k] = max(3.6, v - dev_ovh)
             modality = "dev_us"
+
+        # B0 backfill pairings are hardware `profiler` measurements of the same baseline commit:
+        # they only *fill holes* (never override a primary log timing) and must not cross a
+        # hardware epoch (the design doc's same-`RUNTIME_SOC` pairing invariant).
+        if backfill and backfill.get("cases"):
+            bf_cases = backfill["cases"] or {}
+            bf_soc = backfill.get("runtime_soc")
+            if not bf_soc or not soc or bf_soc == soc:
+                for k, v in bf_cases.items():
+                    if k in raw_pool or not isinstance(v, (int, float)) or v <= 0:
+                        continue
+                    raw_pool[k] = float(v)
+                    if modality == "none":
+                        modality = "profiler"
+                        soc = soc or bf_soc
 
         matched: dict[str, float] = {}
         for b in buckets:

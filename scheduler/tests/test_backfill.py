@@ -1,0 +1,557 @@
+"""B0 backfill lane tests (stdlib `unittest`; no NPU, no SSH, no die lock).
+
+    python3 -m unittest discover -s scheduler/tests -v
+    python3 -m pytest scheduler/tests -q     # also works when pytest is installed
+
+Everything here runs offline: the live telemetry probe is replaced by injected dicts,
+the remote session runner by a stub that returns `MS_PROF` log lines, and the unpaired
+census by a fake scanner.  No test touches `~/.opsb`, `results/`, or `ssh npu`.
+"""
+from __future__ import annotations
+
+import json
+import os
+import pathlib
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
+
+from scheduler.backfill import (  # noqa: E402
+    LANE_BACKFILL,
+    TICKET_TIER,
+    BackfillConfig,
+    BackfillLedger,
+    BackfillScheduler,
+    bucket_key,
+    build_perf_plan,
+    coalesce_sessions,
+    offline_npu_sentinel,
+    operator_tickets_waiting,
+    session_key_for,
+    ticket_rank,
+)
+
+SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]  # ops-supervisor/
+REAL_WORKSPACE = SUP_ROOT.parent
+BENCH_SPECS = SUP_ROOT / "bench-specs"
+SHA = "a" * 40
+
+
+def _row(title: str, bucket: str, headroom: float, sha: str = SHA) -> dict:
+    return {
+        "title": title,
+        "bucket": bucket,
+        "stratum": "M_MID_UB",
+        "dtype": "float32",
+        "baseline_sha": sha,
+        "baseline_short": sha[:7],
+        "modality": "profiler",
+        "runtime_soc": "soc-a",
+        "description": "",
+        "headroom_pts": headroom,
+        "key": bucket_key(title, bucket, sha),
+    }
+
+
+class _FakeScheduler(BackfillScheduler):
+    """BackfillScheduler with the unpaired census injected (no repo/log scanning)."""
+
+    def __init__(self, state_dir: pathlib.Path, rows: list[dict], **kw) -> None:
+        super().__init__(REAL_WORKSPACE, state_dir=state_dir, **kw)
+        self.rows = list(rows)
+        self.executed: list[dict] = []
+
+    def scan_unpaired(self) -> list[dict]:
+        return list(self.rows)
+
+    def _recording_runner(self, lines: list[str]):
+        def run(cfg: dict) -> dict:
+            self.executed.append(cfg)
+            return {"ok": bool(lines), "timing_lines": lines, "log": "/tmp/fake.log", "die": 0, "lock_wait_sec": 0.0}
+
+        return run
+
+
+def _free_npu() -> dict:
+    return {
+        "offline": False,
+        "ssh_error": None,
+        "die_locks": [{"die": 0, "state": "FREE", "holder_pid": None}],
+        "tasks": [],
+        "npu_tickets": [],
+    }
+
+
+class TicketPriorityProofTest(unittest.TestCase):
+    """Invariant 1: a B0 ticket can never outrank an operator ticket."""
+
+    def test_lane_tiers_are_strictly_ordered(self) -> None:
+        self.assertEqual(TICKET_TIER["B0"], 0)
+        self.assertEqual(TICKET_TIER["Q1"], 1)
+        self.assertEqual(TICKET_TIER["Q0"], 2)
+
+    def test_operator_ticket_always_wins_even_with_zero_prio(self) -> None:
+        b0 = {"tier": 0, "prio": 10_000.0, "created": 0.0}      # maximally aged backfill
+        q1 = {"tier": 1, "prio": 0.0001, "created": 9e9}         # freshest, lowest operator
+        self.assertGreater(ticket_rank(q1), ticket_rank(b0))
+        self.assertEqual(len(operator_tickets_waiting([b0, q1])), 1)
+
+    def test_backfill_tickets_do_not_count_as_operator_waiters(self) -> None:
+        tickets = [{"tier": 0, "prio": 5.0, "created": 1.0}, {"tier": 0, "prio": 9.0, "created": 2.0}]
+        self.assertEqual(operator_tickets_waiting(tickets), [])
+        self.assertEqual(operator_tickets_waiting(None), [])
+
+    def test_malformed_ticket_is_ignored_not_crashing(self) -> None:
+        # unparsable `tier` is ignored; missing `tier` defaults to 1 (fail-safe: blocks B0)
+        self.assertEqual(operator_tickets_waiting([{"tier": "x"}, {}]), [{}])
+
+
+class PlanPureFunctionTest(unittest.TestCase):
+    def test_coalesces_multiple_buckets_into_one_session(self) -> None:
+        rows = [_row("SyncBatchNormGatherStats", f"b{i}", 1.0) for i in range(5)]
+        sessions = coalesce_sessions(rows)
+        self.assertEqual(len(sessions), 1)
+        self.assertEqual(sessions[0]["bucket_count"], 5)
+        self.assertEqual(len(sessions[0]["bucket_keys"]), 5)
+
+    def test_one_session_per_operator_sorted_by_headroom(self) -> None:
+        rows = [_row("A", "a1", 1.0), _row("A", "a2", 2.0), _row("B", "b1", 10.0)]
+        sessions = coalesce_sessions(rows)
+        self.assertEqual([s["title"] for s in sessions], ["B", "A"])
+        self.assertEqual(sessions[1]["headroom_pts"], 3.0)
+        self.assertEqual(sessions[1]["buckets"], ["a2", "a1"])  # headroom desc, deterministic
+
+    def test_skip_keys_and_bucket_cap_are_honoured(self) -> None:
+        rows = [_row("A", f"a{i}", float(i)) for i in range(6)]
+        skip = {rows[-1]["key"]}
+        sessions = coalesce_sessions(rows, max_buckets=3, skip_bucket_keys=skip)
+        self.assertEqual(sessions[0]["bucket_count"], 3)
+        self.assertEqual(sessions[0]["deferred_buckets"], ["a1", "a0"])
+        self.assertNotIn(rows[-1]["key"], sessions[0]["bucket_keys"])
+
+    def test_session_key_is_content_addressed_and_order_insensitive(self) -> None:
+        self.assertEqual(
+            session_key_for("A", SHA, ["b", "a"]),
+            session_key_for("A", SHA, ["a", "b"]),
+        )
+        self.assertNotEqual(session_key_for("A", SHA, ["a"]), session_key_for("A", "b" * 40, ["a"]))
+
+    def test_bucket_key_changes_with_baseline(self) -> None:
+        self.assertNotEqual(bucket_key("A", "b", "1" * 40), bucket_key("A", "b", "2" * 40))
+
+    def test_perf_plan_variants(self) -> None:
+        batch = build_perf_plan("ap.add_argument('--cases', default='')", ["x", "y"])
+        self.assertEqual(batch["mode"], "cases_batch")
+        self.assertEqual(batch["runs"], [["--cases", "x,y"]])
+
+        full = build_perf_plan("ap.add_argument('--filter', default='')", ["x", "y"])
+        self.assertEqual(full["mode"], "full_spectrum")
+        self.assertEqual(full["runs"], [[]])
+
+        per = build_perf_plan("ap.add_argument('--case', default='')", [f"c{i}" for i in range(9)], max_runs=3)
+        self.assertEqual(per["mode"], "per_bucket")
+        self.assertEqual(len(per["runs"]), 3)
+
+        self.assertEqual(build_perf_plan("no flags", [])["runs"], [])
+
+
+class LedgerTest(unittest.TestCase):
+    def _ledger(self, tmp: str) -> BackfillLedger:
+        return BackfillLedger(pathlib.Path(tmp) / "ledger.jsonl")
+
+    def test_append_read_and_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self._ledger(tmp)
+            self.assertEqual(led.records(), [])
+            self.assertEqual(led.sha256(), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+            led.append({"event": "started", "session_key": "s1", "pid": os.getpid(), "started_epoch": 1.0})
+            first = led.sha256()
+            led.append({"event": "finished", "session_key": "s1", "result": "ok", "bucket_keys": ["k1"], "ended_epoch": 2.0})
+            self.assertEqual(len(led.records()), 2)
+            self.assertNotEqual(first, led.sha256())
+
+    def test_torn_tail_line_is_tolerated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self._ledger(tmp)
+            led.append({"event": "started", "session_key": "s1"})
+            with led.path.open("a") as fh:
+                fh.write('{"event": "finis')  # crash mid-write
+            self.assertEqual(len(led.records()), 1)
+
+    def test_success_and_attempt_joins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            led = self._ledger(tmp)
+            led.append({"event": "started", "session_key": "s1"})
+            led.append({"event": "finished", "session_key": "s1", "result": "ok",
+                        "bucket_keys": ["k1", "k2"], "ended_epoch": 10.0})
+            led.append({"event": "finished", "session_key": "s2", "result": "no_evidence",
+                        "bucket_keys": ["k3"], "ended_epoch": 20.0})
+            self.assertEqual(led.successful_bucket_keys(), {"k1", "k2"})
+            att = led.attempts_by_bucket_key()
+            self.assertEqual(att["k3"], [20.0])
+            self.assertEqual(att["k1"], [10.0])
+
+
+class AdmissionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = pathlib.Path(self.tmp.name)
+        self.sched = _FakeScheduler(self.state, [_row("A", "a1", 1.0)])
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_offline_telemetry_fails_closed_even_when_forced(self) -> None:
+        adm = self.sched.admission(force=True, npu=offline_npu_sentinel())
+        self.assertFalse(adm["allowed"])
+        self.assertIn("npu_telemetry_offline", adm["reasons"])
+
+    def test_held_die_blocks(self) -> None:
+        npu = _free_npu()
+        npu["die_locks"] = [{"die": 0, "state": "HELD", "holder_pid": 42}]
+        adm = self.sched.admission(force=True, npu=npu)
+        self.assertIn("die_lock_held", adm["reasons"])
+
+    def test_waiting_operator_ticket_blocks_even_forced(self) -> None:
+        """The core fairness invariant: the UI button sdkot jump an operator queue."""
+        npu = _free_npu()
+        npu["npu_tickets"] = [{"tier": 1, "title": "ConcatD", "prio": 0.2, "created": 1.0}]
+        adm = self.sched.admission(force=True, npu=npu)
+        self.assertFalse(adm["allowed"])
+        self.assertIn("operator_ticket_waiting", adm["reasons"])
+        self.assertEqual(adm["details"]["operator_ticket_titles"], ["ConcatD"])
+
+    def test_active_operator_session_blocks(self) -> None:
+        npu = _free_npu()
+        npu["tasks"] = [{"tag": "PROFILER", "title": "ConcatD"}]
+        self.assertIn("operator_session_active", self.sched.admission(force=True, npu=npu)["reasons"])
+
+    def test_idle_die_allows(self) -> None:
+        adm = self.sched.admission(force=True, npu=_free_npu())
+        self.assertTrue(adm["allowed"], adm["reasons"])
+        self.assertEqual((adm["lane"], adm["tier"]), (LANE_BACKFILL, 0))
+
+    def test_auto_throttle_blocks_but_force_bypasses(self) -> None:
+        self.sched.ledger.append({"event": "started", "session_key": "x", "started_epoch": self.sched.clock()})
+        auto = self.sched.admission(force=False, npu=_free_npu())
+        self.assertIn("throttle_min_interval", auto["reasons"])
+        forced = self.sched.admission(force=True, npu=_free_npu())
+        self.assertTrue(forced["allowed"], forced["reasons"])
+
+    def test_lane_disabled_blocks_auto_only(self) -> None:
+        self.sched.save_config(enabled=False)
+        self.assertIn("lane_disabled", self.sched.admission(force=False, npu=_free_npu())["reasons"])
+        self.assertTrue(self.sched.admission(force=True, npu=_free_npu())["allowed"])
+
+    def test_hourly_cap(self) -> None:
+        sched = _FakeScheduler(self.state, [_row("A", "a1", 1.0)])
+        sched.save_config(max_sessions_per_hour=2, min_interval_sec=0.0)
+        now = sched.clock()
+        for i in range(2):
+            sched.ledger.append({"event": "started", "session_key": f"s{i}", "started_epoch": now - 10 - i})
+        self.assertIn("throttle_hourly_cap", sched.admission(force=False, npu=_free_npu())["reasons"])
+
+
+class DispatchTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.state = pathlib.Path(self.tmp.name)
+        self.rows = [_row("A", "a1", 5.0), _row("A", "a2", 1.0), _row("B", "b1", 2.0)]
+        self.sched = _FakeScheduler(self.state, self.rows)
+        self.sched.save_config(min_interval_sec=0.0)
+        self.lines = [
+            "RUNTIME_SOC=soc-a",
+            "MS_PROF case=a1 median=12.50 min=11.00",
+            "MS_PROF case=a2 median=30.00 min=29.00",
+        ]
+        self.sched.runner = self.sched._recording_runner(self.lines)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_dry_run_never_executes(self) -> None:
+        out = self.sched.dispatch(force=True, dry_run=True, npu=_free_npu())
+        self.assertFalse(out["dispatched"])
+        self.assertEqual(out["reason"], "dry_run")
+        self.assertTrue(out["admission"]["allowed"])
+        self.assertEqual(self.sched.executed, [])
+        self.assertEqual(self.sched.ledger.records(), [])
+
+    def test_blocked_dispatch_never_executes(self) -> None:
+        npu = _free_npu()
+        npu["npu_tickets"] = [{"tier": 2, "title": "ConcatD", "prio": 9.0, "created": 1.0}]
+        out = self.sched.dispatch(force=True, dry_run=False, npu=npu)
+        self.assertFalse(out["dispatched"])
+        self.assertEqual(out["reason"], "admission_blocked")
+        self.assertEqual(self.sched.executed, [])
+
+    def test_one_session_coalesces_all_buckets_of_an_operator(self) -> None:
+        out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        self.assertTrue(out["dispatched"])
+        self.assertEqual(len(self.sched.executed), 1)
+        self.assertEqual(sorted(self.sched.executed[0]["buckets"]), ["a1", "a2"])
+        self.assertEqual(out["result"], "ok")
+        self.assertEqual(out["measured"]["a1"], 12.5)
+        # timings landed in the store, dedup keys are covered by a success record
+        store = self.sched.timings_for("A", SHA)
+        self.assertEqual(store["cases"]["a2"], 30.0)
+        self.assertEqual(store["runtime_soc"], "soc-a")
+        self.assertEqual(
+            self.sched.ledger.successful_bucket_keys(),
+            {bucket_key("A", "a1", SHA), bucket_key("A", "a2", SHA)},
+        )
+
+    def test_success_is_never_rerun(self) -> None:
+        self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        # Even if detection still reports the bucket (stale spec), the ledger stops it.
+        self.assertEqual([j["title"] for j in self.sched.plan()], ["B"])
+        again = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        self.assertEqual(again["reason"], "queue_empty")
+        self.assertEqual(len(self.sched.executed), 1)
+
+    def test_empty_queue_is_a_no_op(self) -> None:
+        sched = _FakeScheduler(self.state, [])
+        out = sched.dispatch(force=True, dry_run=False, npu=_free_npu())
+        self.assertEqual(out["reason"], "queue_empty")
+        self.assertFalse(out["dispatched"])
+
+    def test_no_evidence_arms_backoff_and_bounded_retries(self) -> None:
+        self.sched.runner = self.sched._recording_runner([])
+        out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        self.assertEqual(out["result"], "no_timing_evidence")
+        self.assertFalse(self.sched.timings_for("A", SHA))
+        # backoff: not retried immediately
+        self.assertNotIn("A", [j["title"] for j in self.sched.plan()])
+        # after the backoff window a retry is allowed again
+        later = self.sched.clock() + self.sched.config().backoff_sec + 1
+        self.assertIn("A", [j["title"] for j in self.sched.plan(now=later)])
+        # ... but only up to `max_attempts_per_key`
+        for _ in range(self.sched.config().max_attempts_per_key):
+            self.sched.ledger.append(
+                {
+                    "event": "finished",
+                    "session_key": "old",
+                    "result": "no_evidence",
+                    "bucket_keys": [bucket_key("A", "a1", SHA), bucket_key("A", "a2", SHA)],
+                    "ended_epoch": self.sched.clock(),
+                }
+            )
+        self.assertNotIn("A", [j["title"] for j in self.sched.plan(now=self.sched.clock() + 1e6)])
+
+    def test_exec_not_floor_is_normalized_for_exec_modality(self) -> None:
+        self.sched.runner = self.sched._recording_runner(
+            ["RUNTIME_SOC=soc-a", "a1 ws=1 call= 1.0/ 1.0/ 1.0 exec=  41.20"]
+        )
+        out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        self.assertEqual(out["result"], "ok")
+        self.assertAlmostEqual(out["measured"]["a1"], 34.0, places=3)  # 41.2 - 7.2 host floor
+
+
+class ResumeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sched = _FakeScheduler(pathlib.Path(self.tmp.name), [_row("A", "a1", 1.0)])
+        self.sched.save_config(min_interval_sec=0.0)
+        self.sched.runner = self.sched._recording_runner(["MS_PROF case=a1 median=1.0 min=1.0"])
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_dead_pid_started_record_is_stale_and_retryable(self) -> None:
+        self.sched.ledger.append(
+            {"event": "started", "session_key": "dead", "pid": 999_999_999, "started_epoch": self.sched.clock()}
+        )
+        self.assertIsNone(self.sched.inflight_running())
+        self.assertEqual(len(self.sched.stale_inflight()), 1)
+        out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu())
+        self.assertTrue(out["dispatched"])  # resumed, no manual cleanup needed
+
+    def test_live_pid_blocks_a_second_acquisition(self) -> None:
+        self.sched.ledger.append(
+            {"event": "started", "session_key": "live", "pid": os.getpid(), "started_epoch": self.sched.clock()}
+        )
+        self.assertIsNotNone(self.sched.inflight_running())
+        adm = self.sched.admission(force=True, npu=_free_npu())
+        self.assertIn("backfill_inflight", adm["reasons"])
+        self.assertFalse(self.sched.dispatch(force=True, dry_run=False, npu=_free_npu())["dispatched"])
+
+
+class StatusContractTest(unittest.TestCase):
+    REQUIRED = ("unpaired", "queued", "running", "last_run", "eta_sec", "ledger_sha")
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sched = _FakeScheduler(
+            pathlib.Path(self.tmp.name),
+            [_row("A", "a1", 5.0), _row("A", "a2", 1.0), _row("B", "b1", 2.0)],
+        )
+        self.sched.save_config(min_interval_sec=0.0)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_required_keys_present_and_consistent(self) -> None:
+        payload = self.sched.status(npu=_free_npu())
+        for key in self.REQUIRED:
+            self.assertIn(key, payload)
+        self.assertEqual(payload["lane"], "B0")
+        self.assertEqual(payload["tier"], 0)
+        self.assertEqual(payload["unpaired_count"], 3)
+        self.assertEqual(payload["queued_count"], 2)  # coalesced per operator
+        self.assertEqual(payload["eta_sec"], round(sum(j["est_sec"] for j in payload["queued"]), 1))
+        self.assertEqual(len(payload["ledger_sha"]), 64)
+        self.assertIsNone(payload["running"])
+        self.assertIsNone(payload["last_run"])
+
+    def test_eta_shrinks_after_a_session(self) -> None:
+        before = self.sched.status(npu=_free_npu())["eta_sec"]
+        self.sched.runner = self.sched._recording_runner(["MS_PROF case=a1 median=5.0 min=4.0",
+                                                          "MS_PROF case=a2 median=6.0 min=5.0"])
+        self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+        payload = self.sched.status(npu=_free_npu())
+        self.assertLess(payload["eta_sec"], before)
+        self.assertEqual(payload["last_run"]["title"], "A")
+        self.assertEqual(payload["last_run"]["measured_count"], 2)
+
+    def test_summary_matches_calibration_docs(self) -> None:
+        docs = {"A": {"unpaired_bucket_count": 3}, "B": {"unpaired_bucket_count": 0}}
+        summary = self.sched.summary(docs)
+        self.assertEqual(summary["unpaired_total"], 3)
+        self.assertEqual(summary["unpaired_by_operator"], {"A": 3})
+        self.assertTrue(summary["auto_enabled"])
+
+    def test_config_roundtrip_and_unknown_keys_ignored(self) -> None:
+        self.sched.save_config(min_interval_sec=42.0, bogus_key=1)
+        self.assertEqual(self.sched.config().min_interval_sec, 42.0)
+        self.assertFalse(hasattr(self.sched.config(), "bogus_key"))
+        self.assertEqual(BackfillConfig.from_dict(None), BackfillConfig())
+
+
+class CalibrationMergeTest(unittest.TestCase):
+    """Backfilled pairings must fill holes in `_extract_bucket_timings`, never override."""
+
+    TITLE = "SyncBatchNormGatherStats"
+
+    def _ws(self, tmp: str, log_lines: list[str] | None) -> pathlib.Path:
+        ws = pathlib.Path(tmp) / "ws"
+        if log_lines is not None:
+            d = ws / "results" / self.TITLE / SHA
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "validation.log").write_text("\n".join(log_lines) + "\n")
+        (ws / "results").mkdir(parents=True, exist_ok=True)
+        return ws
+
+    def _cal(self, ws: pathlib.Path, store_cases: dict | None, soc: str | None = "soc-a"):
+        from scheduler.calibration import BenchmarkCalibrator
+        from scheduler.estimator import ScoreEstimator
+
+        cal = BenchmarkCalibrator(ws, estimator=ScoreEstimator(ws), specs_root=BENCH_SPECS)
+        if store_cases is not None:
+
+            class _Store:
+                def timings_for(self, title, sha):
+                    return {"cases": store_cases, "runtime_soc": soc}
+
+            cal.backfill = _Store()
+        else:
+            cal.backfill = False
+        return cal
+
+    def _buckets(self) -> list[dict]:
+        spec = json.loads((BENCH_SPECS / self.TITLE / "cases_perf.json").read_text())
+        return spec["hidden_buckets"]
+
+    def test_backfill_fills_holes_without_overriding_the_log(self) -> None:
+        buckets = self._buckets()
+        b0, b1 = buckets[0]["id"], buckets[1]["id"]
+        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        cal = self._cal(ws, {b0: 99.0, b1: 21.5})
+        timings, _t, soc, modality = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
+        self.assertEqual(timings[b0], 11.0)   # primary log wins
+        self.assertEqual(timings[b1], 21.5)   # hole filled from B0
+        self.assertEqual(soc, "soc-a")
+        self.assertEqual(modality, "profiler")
+
+    def test_cross_soc_backfill_is_rejected(self) -> None:
+        buckets = self._buckets()
+        b0, b1 = buckets[0]["id"], buckets[1]["id"]
+        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        cal = self._cal(ws, {b1: 21.5}, soc="soc-b")
+        timings, _t, _soc, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
+        self.assertNotIn(b1, timings)  # hardware-epoch invariant preserved
+
+    def test_backfill_supplies_timings_when_no_log_exists(self) -> None:
+        buckets = self._buckets()
+        b0 = buckets[0]["id"]
+        ws = self._ws(tempfile.mkdtemp(), None)
+        cal = self._cal(ws, {b0: 12.0})
+        timings, _t, soc, modality = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
+        self.assertEqual(timings, {b0: 12.0})
+        self.assertEqual((soc, modality), ("soc-a", "profiler"))
+
+    def test_no_store_keeps_legacy_behaviour(self) -> None:
+        buckets = self._buckets()
+        b0 = buckets[0]["id"]
+        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        cal = self._cal(ws, None)
+        timings, _t, _s, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
+        self.assertEqual(timings, {b0: 11.0})
+
+
+@unittest.skipUnless((REAL_WORKSPACE / "bench" / "problems.json").is_file(), "real workspace unavailable")
+class RealWorkspaceReadOnlyTest(unittest.TestCase):
+    """Read-only invariants against the live 10-operator workspace (never writes state/)."""
+
+    def test_census_matches_calibration_unpaired_count(self) -> None:
+        from scheduler.calibration import BenchmarkCalibrator
+        from scheduler.estimator import ScoreEstimator
+
+        est = ScoreEstimator(REAL_WORKSPACE)
+        cal = BenchmarkCalibrator(REAL_WORKSPACE, estimator=est)
+        checked = 0
+        for title in sorted(est.problems_meta):
+            if not (BENCH_SPECS / title / "cases_perf.json").is_file():
+                continue
+            census = cal.unpaired_buckets(title)
+            doc = cal.calibrate_problem(title, persist=False)
+            self.assertEqual(census["unpaired_count"], doc["unpaired_bucket_count"], title)
+            self.assertEqual(
+                sorted(census["unpaired_buckets"]), sorted(doc["unpaired_buckets"]), title
+            )
+            checked += 1
+        self.assertGreaterEqual(checked, 8)
+
+    def test_bridge_status_is_additive_and_fast(self) -> None:
+        import time as _time
+
+        from scheduler.cli_bridge import SchedulerEngine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            t0 = _time.monotonic()
+            engine = SchedulerEngine(workspace=REAL_WORKSPACE, state_dir=pathlib.Path(tmp))
+            payload = engine.status(offline=True)
+            self.assertLess(_time.monotonic() - t0, 5.0)
+        for legacy in ("npu_queue", "submit_queue", "quota", "calibrations", "problem_priorities", "config"):
+            self.assertIn(legacy, payload)
+        bf = payload["backfill"]
+        self.assertEqual(bf["lane"], "B0")
+        self.assertEqual(bf["tier"], 0)
+        self.assertIn("unpaired_total", bf)
+
+    def test_backfill_dry_run_offline_touches_nothing(self) -> None:
+        from scheduler.cli_bridge import SchedulerEngine
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = pathlib.Path(tmp)
+            engine = SchedulerEngine(workspace=REAL_WORKSPACE, state_dir=state)
+            out = engine.backfill(title="ConcatD", dry_run=True, offline=True)
+            self.assertTrue(out["ok"])
+            self.assertFalse(out["dispatched"])
+            self.assertIn(out["reason"], ("queue_empty", "dry_run", "dry_run_admission_blocked"))
+            self.assertFalse((state / "backfill_ledger.jsonl").is_file())
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

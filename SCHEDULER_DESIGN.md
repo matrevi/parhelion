@@ -67,6 +67,10 @@ Active processes are classified into six semantic tags via read-only `/proc/lock
 `BUILD` · `FAST-LANE` · `PRECISION` · `PROFILER` · `STRESS` · `WAITING-DIE`.
 
 ### 2.2 Two-Queue MLFQ + WSPT Value-Density + Anti-Starvation Aging
+
+> **Three lanes today.** `Q0` (tier 2) and `Q1` (tier 1) are the operator lanes below; the
+> non-preemptible `B0` `BACKFILL` lane (tier 0) that pairs missing baseline buckets is
+> specified in §6 and can only ever run when no operator ticket is waiting.
 We combine **Multi-Level Feedback Queue** rules (Corbató 1962; Arpaci-Dusseau *OSTEP* Ch. 8; Gu et al. *Tiresias* NSDI'19) with **Smith's WSPT Rule** ($w_j / p_j$, Smith 1956) and **Gittins Index** value-density weighting:
 
 - **`Q0` (`FAST-LANE`, Interactive Probe Queue)**: Quantum $q_0 = 180\text{s}$ (`FAST_LANE=1`, expected duration $\hat{p}_{p,0} = \text{clamp}(0.30\,\hat{p}_{p,1}, 45\text{s}, 90\text{s})$). Runs sample + targeted boundary shapes + quick `profiler`. If an active `Q0` task exceeds $q_0 = 180\text{s}$, it is demoted to `Q1` (*OSTEP Rule 4a*). `FAST_LANE=1` artifacts are strictly barred from online submission at Stage 1.
@@ -203,4 +207,100 @@ python3 -m scheduler.cli_bridge verify-escape --title MultilabelMarginLoss --bad
 
 # Causal historical replay & accuracy verification
 python3 -m scheduler.cli_bridge retrospect --workspace /Users/winbeau/Competitions/ops-bench
+
+# B0 backfill lane (lowest priority, auto-detect + dedup + idempotent baseline bucket pairing)
+python3 -m scheduler.cli_bridge backfill [--title <T>] [--auto | --force] [--dry-run] [--offline]
+python3 -m scheduler.backfill_status --json [--offline] [--dispatch [--force] [--dry-run]]
 ```
+
+---
+
+## 6. B0 Backfill Lane — Automatic Baseline Bucket Pairing (`backfill.py`, `backfill_status.py`)
+
+### 6.1 The pathology: an orange banner nobody clicks
+`bench-specs/<Title>/cases_perf.json` is append-only, so **every spectrum revision strands the pinned baseline**: the new bucket ids have no paired hardware timing for `ledger.active_board_sha`, `BenchmarkCalibrator` sets `unpaired_bucket_count > 0`, `UNPAIRED_BUCKETS` fires, and the UI shows *“N perf bucket(s) missing baseline pairing → Backfill (~20s)”* — a **manual** button that only works if a human notices, and that silently degrades `predict_candidate()` whenever it is missed (`sigma` grows by `2.6 x` unpaired fraction).
+
+Live census on 2026-11-18 (`python3 -m scheduler.backfill_status --json`, 41 offline tests, 0 NPU time):
+
+| Operator | Unpaired / buckets | Modality of the pinned baseline | Sum headroom |
+|---|---:|---|---:|
+| SyncBatchNormGatherStats | **13 / 13** | `none` (`run-npu.sh` never invokes `perf.py`) | 42.49 pts |
+| PReluGradUpdate | **12 / 14** | `profiler` (2 buckets) + `dev_us` | 34.07 pts |
+| LayerNormV3 | 6 / 14 | `profiler` | 16.23 pts |
+| ConfusionTransposeD | 4 / 17 | `profiler` | 10.29 pts |
+| CTCLossV2 | 4 / 13 | `profiler` | 9.80 pts |
+| StridedSliceGrad | 3 / 16 | `profiler` + `exec` | 7.57 pts |
+| PadV3Grad | 3 / 17 | `exec` (0 `profiler`) | 6.27 pts |
+| MultilabelMarginLoss | 2 / 18 | `profiler` @ `soc-b` | 5.48 pts |
+| ConcatD · QuantUpdateScatter | **0 / 18 · 0 / 14** | complete | — |
+
+**47 unpaired buckets across 8 of 10 operators → coalesced into 8 sessions → `eta_sec = 176s` of die time** (throttle-bound `eta_wall_sec = 6476s` if left strictly to AUTO pacing). The banner's “4” was a per-operator number; the real deficit is an order of magnitude larger and structural — it grows with the spectrum, not with operator effort.
+
+### 6.2 Three lanes, one lexicographic admission order
+The NPU die now has **three** lanes and the ordering is a strict total order, not a heuristic:
+
+| Lane | Ticket `tier` | Owner | Quantum | Enters the die only when |
+|---|---:|---|---|---|
+| `Q0` `FAST-LANE` | **2** | `opsb test --fast` | `180s` | always (wins every tie) |
+| `Q1` `BATCH-GATE` | **1** | `opsb test` | `1200s` | always |
+| `B0` `BACKFILL` | **0** | this section | `session_timeout_sec = 180s` | no `tier >= 1` ticket exists **and** the die is idle |
+
+`tools/npu-test.py::am_top_ticket()` admits a waiter iff its `(tier, prio, -created)` tuple is the maximum; `scheduler/backfill.py::ticket_rank()` re-implements the identical comparison (unit-tested for agreement).
+
+**Lemma (operator non-starvation).** Let $O$ be any operator ticket (`tier_O ∈ {1,2}`) and $B$ any backfill ticket (`tier_B = 0`). Admission compares tuples lexicographically, so
+$$\text{admit}(O) \iff (\,tier_O, prio_O, -created_O\,) > (\,tier_O', prio_{O'}, -created_{O'}\,)\ \text{for all other } O'$$
+and since $tier_O > tier_B = 0$, we get `admit(B) ⇒ ¬∃O waiting`. Aging ($w_j/\tau_{age}$) and WSPT prio are only consulted **inside** a tier, so they can never lift `B0` above an operator: the bound is structural, not probabilistic. $\blacksquare$
+
+**Two more independent barriers** make the lemma hold even if admission were bypassed:
+1. The die is a kernel `flock(LOCK_EX)` on `bench-device0.lock`. `B0` performs only `LOCK_EX | LOCK_NB` attempts (never a blocking `flock -w`), so it can never enter the VFS waitqueue ahead of an operator's blocking locker — the “convoy starvation” pathology from §1.1.
+2. `B0` holds the die for **perf only** (`python3 validation/perf.py`, no `cmake`/`compiler`, no `git checkout`, no `build.sh`, no `results/` write, no repo lock) with `try/finally` unlock + `perf_timeout_sec` watchdog, so the worst-case delay it can impose on a newly arriving operator is one bounded perf pass (`~20s`), never a build.
+
+The client-side gate is stricter than the server-side one: `admission()` refuses to *dispatch* at all when telemetry is offline (`npu_telemetry_offline`, fail-closed), a die lock is `HELD`, `npu_tickets[]` contains any `tier >= 1` entry, or any `PROFILER/PRECISION/FAST-LANE/STRESS/BUILD` task is active. `force=True` — the UI button — bypasses **only** the AUTO throttle (`min_interval_sec`, `max_sessions_per_hour`, `lane_disabled`, backoff); it can never bypass these four hardware-priority predicates.
+
+### 6.3 State machine per dedup key
+Dedup key $\kappa = (\text{operator},\ \text{bucket\_id},\ \text{baseline\_sha})$; session key $=\text{sha256}(\text{operator}\Vert \text{baseline\_sha} \Vert \text{sorted buckets})[:16]$ (content addressed, hence re-submitting the same plan is a no-op).
+
+```
+                    ┌──────────── (stale pid, crash) ────────────┐
+                    ▼                                           │
+ UNPAIRED ──plan──▶ QUEUED ──admit──▶ RUNNING ──ok─────────▶ PAIRED  (terminal)
+    ▲               ▲    │              │
+    │               │    │              ├─ no_timing_evidence / perf_rc_nonzero ─▶ COOLDOWN
+    │               │    │              ├─ die_busy │ server_head_mismatch │ no_prebuilt_package
+    │               │    │              │        └──▶ QUEUED (zero die time spent) ──┐
+    └──(new sha)────┘    └──backoff─────┴─ max_attempts_per_key = 3 exhausted ──▶ GAVE_UP ┘
+```
+
+* **`PAIRED`** ⇒ the timing now lives in `<state>/backfill_timings.json` under `(title, sha)`, so `BenchmarkCalibrator._extract_bucket_timings()` merges it as an extra `profiler` source (holes only — a primary `validation.log` value always wins; a cross-`RUNTIME_SOC` pairing is rejected per §3.2), detection drops the bucket, and the ledger keeps an `ok` record for $\kappa$. Three independent layers therefore enforce *“已补过的永不重跑”*: paired ⇒ not unpaired ⇒ not queued; plus `successful_bucket_keys()` short-circuit; plus `attempts >= 3` ⇒ `GAVE_UP`.
+* **`baseline_sha` in the key** is what makes this self-healing across board changes: a new active commit re-opens exactly its own keys and nothing else.
+* **Resume after interruption**: a `started` record with a dead `pid` is `stale_inflight` (reported, never blocking) and the key becomes retryable immediately; a `started` record with a live `pid` is `running` and blocks a second acquisition of the same session (`backfill_inflight`) — single-flight, no double die grab, no reconciliation step needed because the plan is a pure function of `(specs, results, ledger, telemetry)`.
+
+### 6.4 Append-only ledger (`<state>/backfill_ledger.jsonl`)
+One `started` record and exactly one terminal record per session, `flock`-protected append, `sort_keys`, `fsync`; a torn tail line is tolerated by the reader (crash mid-write). Fields: `session_key`, `title`, `baseline_sha`, `buckets[]`, `bucket_keys[]`, `started_epoch/at`, `ended_epoch`, `duration_sec`, `result` (`ok | no_timing_evidence | perf_rc_nonzero | die_busy | server_head_mismatch | no_prebuilt_package | no_perf_script | ssh_timeout | runner_exception`), `measured{bucket: us}`, `measured_count`, `requested_count`, `runtime_soc`, `die`, `lock_wait_sec`, `log`, `pid`, `lane`, `tier`. `ledger_sha = sha256(file bytes)` is the client's cache key: unchanged sha ⇒ nothing happened. The remote side additionally appends die-time telemetry to `~/.opsb/backfill_sessions.jsonl` (kept separate from `die_ledger.jsonl` so the existing duty-cycle bars and macapp consumers are untouched).
+
+### 6.5 Observability contract — `python -m scheduler.backfill_status --json`
+Independent module entry (no new `opsb` subcommand, `cli/` untouched); pure `stdout` JSON:
+
+```json
+{"unpaired": [{"title","bucket","stratum","dtype","baseline_sha","modality","headroom_pts","key"}],
+ "queued":   [{"job_id","title","baseline_sha","buckets","bucket_count","headroom_pts","est_sec","attempts","waiting_sec","lane":"B0","tier":0}],
+ "running":  null,
+ "last_run": null,
+ "eta_sec":  176.0,
+ "ledger_sha": "e3b0c442…b855"}
+```
+plus additive `eta_wall_sec`, `stale_inflight[]`, `admission` (the full proof: `allowed`, `reasons[]`, `details.die_locks/operator_tickets_waiting/operator_ticket_owners`), `config`, `paired_via_backfill`, `derived_tiers`. `--dispatch` is the only mutating mode; `--dry-run` prints the session plan *and* the admission proof without touching the die; `--offline` is fail-closed (plan only). Runtime: **86 ms offline / 1.1 s live** for all 10 operators.
+
+`cli_bridge status` gains one additive field `backfill = {lane, tier, auto_enabled, unpaired_by_operator{}, unpaired_total, running, running_title, last_run, est_session_sec, ledger_sha}` computed from the already-loaded calibration docs (zero extra scans, `status` stays inside the app's `3.5 s` IPC budget), and a new `backfill` subcommand makes the existing `opsb bench backfill <Title>` button path (`cli/opsb_core/commands/bench_cmd.py → scheduler.cli_bridge backfill`) finally resolve to real work instead of a `127` fallback. The remote probe additionally publishes `npu_tickets[]` (read-only `/tmp/opsb-npu-tickets/*.json`) and a `BACKFILL` task tag for a B0 die holder.
+
+### 6.6 AUTO scheduling without a daemon
+No poller, no resident process (§ “no background loops”): the planner is pure, so scheduling is **event-driven** and the events already exist —
+1. `cli_bridge schedule-test` → after an operator session releases the die, `backfill_auto()` runs once (bounded: `auto_max_wait_sec = 0` ⇒ a single non-blocking attempt; silent; never raises, so `opsb test` can never regress).
+2. `opsb bench backfill <Title>` / `python -m scheduler.backfill_status --dispatch` — the same tick, driven by the app or a human.
+3. Every entry point is idempotent: tick with an empty queue costs one local scan and **zero** SSH/NPU work.
+
+Auto pacing (`BackfillConfig`, `<state>/backfill_config.json`): `min_interval_sec = 900`, `max_sessions_per_hour = 4`, `max_attempts_per_key = 3`, `backoff_sec = 3600`, `max_buckets_per_session = 32`, `est_session_sec = 22` (self-calibrating to the ledger median once `>= 2` successful sessions exist). At the measured `22s` per session, the whole 47-bucket deficit costs `176s` of die time — i.e. **≈ 1.1 % of one 4.4-hour operator day**, while removing the `2.6x` unpaired `sigma` penalty from every candidate estimate.
+
+### 6.7 Verification without occupying the die
+Per the hard constraint (“offline replay or `--dry-run`, never grab the die”), the lane ships with `scheduler/tests/test_backfill.py` (41 stdlib `unittest` cases, `0.7s`, no SSH): ticket-ordering proof, coalescing/dedup, `build_perf_plan` per repo flag dialect, ledger torn-tail/join semantics, all admission predicates (including *“a waiting Q1 ticket blocks even `force=True`”*), dry-run-never-executes, one-session-per-operator, never-rerun-after-success, backoff + `max_attempts`, dead-pid resume vs live-pid single-flight, `exec=` host-floor normalisation, the status contract, the calibration merge (holes filled, values never overridden, cross-SoC rejected), and three read-only real-workspace invariants (census `==` `calibration.json::unpaired_bucket_count` for all 10 operators; `status` additive + `< 5s`; dry-run writes nothing).
+
