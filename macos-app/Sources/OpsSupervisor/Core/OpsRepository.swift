@@ -65,6 +65,20 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(args)
     }
 
+    func jumpSubmitNow(workspace: String, problem: String, sha: String, note: String) async throws -> (Bool, String) {
+        let data = try await client.execute(
+            ["queue", "submit-now", problem, sha, "--note", note, "--workspace", workspace],
+            timeout: 10.0,
+            allowNonZeroExit: true
+        )
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? false
+            let err = (obj["error"] as? String) ?? "已启动提交"
+            return (ok, ok ? "已提交 \(problem) (\(String(sha.prefix(7)))) 至发送通道" : err)
+        }
+        return (false, "提交启动失败")
+    }
+
     func approveSubmission(workspace: String, problem: String, sha: String, note: String) async throws {
         _ = try await client.execute(["queue", "approve", problem, sha, "--note", note, "--workspace", workspace])
     }

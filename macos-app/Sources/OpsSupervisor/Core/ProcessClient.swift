@@ -55,11 +55,17 @@ struct ProcessClient: Sendable {
         let exe = executablePath
         return try await withCheckedThrowingContinuation { continuation in
             let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = ["python3", exe] + args
+            let venvPython = "/Users/winbeau/Competitions/ops-bench/.venv/bin/python"
+            if FileManager.default.isExecutableFile(atPath: venvPython) {
+                proc.executableURL = URL(fileURLWithPath: venvPython)
+                proc.arguments = [exe] + args
+            } else {
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+                proc.arguments = ["python3", exe] + args
+            }
 
             var env = ProcessInfo.processInfo.environment
-            let extra = "/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.local/share/pnpm/bin"
+            let extra = "/Users/winbeau/Competitions/ops-bench/.venv/bin:/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.local/share/pnpm/bin"
             env["PATH"] = "\(extra):\(env["PATH"] ?? "/usr/bin:/bin")"
             proc.environment = env
 

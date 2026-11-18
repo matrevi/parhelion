@@ -1,9 +1,44 @@
 import Foundation
 
+struct LivePipelineState: Codable {
+    let isBusy: Bool
+    let phase: String
+    let activeTitle: String?
+    let activeSha: String?
+    let activeShortSha: String?
+    let remoteSubmissionId: String?
+    let remoteJudgeId: Int?
+    let remoteStatus: String?
+    let judgeStartedEpoch: Double?
+    let judgeElapsedSec: Int
+    let cooldownEndsEpoch: Double
+    let cooldownRemainingSec: Int
+    let rateLimitGapSec: Int
+    let serverClockOffsetSec: Double
+
+    enum CodingKeys: String, CodingKey {
+        case phase
+        case isBusy = "is_busy"
+        case activeTitle = "active_title"
+        case activeSha = "active_sha"
+        case activeShortSha = "active_short_sha"
+        case remoteSubmissionId = "remote_submission_id"
+        case remoteJudgeId = "remote_judge_id"
+        case remoteStatus = "remote_status"
+        case judgeStartedEpoch = "judge_started_epoch"
+        case judgeElapsedSec = "judge_elapsed_sec"
+        case cooldownEndsEpoch = "cooldown_ends_epoch"
+        case cooldownRemainingSec = "cooldown_remaining_sec"
+        case rateLimitGapSec = "rate_limit_gap_sec"
+        case serverClockOffsetSec = "server_clock_offset_sec"
+    }
+}
+
 struct SchedulerState: Codable {
     let autoConsumerEnabled: Bool
     let rateLimitGapSec: Int
     let cooldownRemainingSec: Int
+    let cooldownEndsEpoch: Double?
     let rateReady: Bool
     let lastSubmittedAt: String?
     let dailyQuotaLimit: Int
@@ -14,11 +49,14 @@ struct SchedulerState: Codable {
     let circuitBreakerLimit: Int
     let queueLockHeld: Bool
     let actionableCount: Int
+    let pipeline: LivePipelineState?
 
     enum CodingKeys: String, CodingKey {
+        case pipeline
         case autoConsumerEnabled = "auto_consumer_enabled"
         case rateLimitGapSec = "rate_limit_gap_sec"
         case cooldownRemainingSec = "cooldown_remaining_sec"
+        case cooldownEndsEpoch = "cooldown_ends_epoch"
         case rateReady = "rate_ready"
         case lastSubmittedAt = "last_submitted_at"
         case dailyQuotaLimit = "daily_quota_limit"

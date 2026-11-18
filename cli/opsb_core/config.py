@@ -127,6 +127,18 @@ def invalidate_ttl_cache(name: str) -> None:
         pass
 
 
+def resolve_python_exe(workspace: Path | None = None) -> str:
+    candidates = []
+    if workspace is not None:
+        candidates.append(workspace / ".venv" / "bin" / "python")
+    candidates.append(DEFAULT_BENCH_ROOT / ".venv" / "bin" / "python")
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    import sys
+    return sys.executable
+
+
 class ConfigRepository:
     @staticmethod
     def load() -> dict[str, Any]:

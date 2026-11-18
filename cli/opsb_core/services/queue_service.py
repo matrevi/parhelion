@@ -8,6 +8,7 @@ from typing import Any
 
 from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl, utc_now
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
+from .judge_sync import compute_synchronized_pipeline
 
 
 def estimate_score_from_note(note: str, base_score: float, best_score: float) -> float | None:
@@ -62,11 +63,6 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     problems_out, contest_summary = build_problem_models(workspace, meta, hist_idx, noise_floor, cb_limit)
     prob_map = {p["title"]: p for p in problems_out}
 
-    last_sub_dt = hist_idx["last_submitted_dt"]
-    elapsed_sub = (now - last_sub_dt).total_seconds() if last_sub_dt else 999999.0
-    cooldown_sec = max(0, int(round(gap_sec - elapsed_sub)))
-    avail_shots = max(0, daily_limit - hist_idx["used_24h"] - closing_reserve)
-
     results_dir = workspace / "results"
     queue_lock_held = _probe_queue_lock(results_dir / ".submit-queue.lock")
     queue_rows = read_jsonl(results_dir / "submit-queue.jsonl")
@@ -75,6 +71,17 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     outcomes_exact = {(o.get("title", ""), o.get("sha", ""), o.get("queued_at", "")): o for o in outcome_rows}
     outcomes_pair = {(o.get("title", ""), o.get("sha", "")): o for o in outcome_rows}
+
+    first_pend: tuple[str, str] | None = None
+    for q in queue_rows:
+        qt, qs, qq = q.get("title", ""), q.get("sha", ""), q.get("queued_at", "")
+        if (qt, qs, qq) not in outcomes_exact and (q.get("force") or (qt, qs) not in outcomes_pair):
+            first_pend = (qt, qs)
+            break
+
+    pipeline = compute_synchronized_pipeline(workspace, outcome_rows, queue_lock_held, gap_sec=gap_sec, first_pending=first_pend)
+    cooldown_sec = int(pipeline["cooldown_remaining_sec"])
+    avail_shots = max(0, daily_limit - hist_idx["used_24h"] - closing_reserve)
 
     def eval_gates(title: str, est_sc: float | None, is_restore_zero: bool, safety_ok: bool = True) -> dict[str, Any]:
         p_obj = prob_map.get(title, {})
@@ -150,23 +157,27 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         cur_sc = float(p_obj.get("current_score", 0.0))
 
         priors = sha_pass_scores.get((t, sha), [])
-        est = estimate_score_from_note(note, prior_sc or cur_sc, float(p_obj.get("best_score", 0.0)))
-        if est is None:
-            est = round(sum(priors) / len(priors), 2) if priors else (round((prior_sc or cur_sc) + 3.0, 2) if (prior_sc or cur_sc) > 0 else 40.0)
+        saved_est = (out or {}).get("estimated_score") if out else q.get("estimated_score")
+        if saved_est is not None:
+            est = round(float(saved_est), 2)
+        else:
+            base_anchor = prior_sc if (out is not None and prior_sc > 0) else (cur_sc or prior_sc)
+            est = estimate_score_from_note(note, base_anchor, float(p_obj.get("best_score", 0.0)))
+            if est is None:
+                est = round(sum(priors) / len(priors), 2) if priors else (round(base_anchor + 2.5, 2) if base_anchor > 0 else 40.0)
 
         if out is None:
+            # Skip putting in waiting list if this exact (title, sha) is currently the active in-flight judge item
+            if pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").startswith(sha[:7]):
+                continue
             is_rest = forced and (cur_sc == 0.0 or "restore" in note.lower())
             gates = eval_gates(t, est, is_restore_zero=is_rest)
-            if queue_lock_held and idx == len(queue_rows) - 1:
-                badge = "JUDGING"
-            elif is_rest and cur_sc == 0.0:
+            if is_rest and cur_sc == 0.0:
                 badge = "CRITICAL RESTORE"
             elif not gates["circuit_ok"] and not forced:
                 badge = "CIRCUIT OPEN"
             elif not gates["noise_ok"] and not forced:
                 badge = "HOLD: NOISE"
-            elif cooldown_sec > 0:
-                badge = "RATE WAIT"
             else:
                 badge = "READY"
             chron_items.append(
@@ -248,8 +259,17 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 }
             )
 
-    active_q = [x for x in (advisory_items + chron_items) if x["kind"] != "completed"]
-    active_q.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)
+    raw_active = [x for x in (advisory_items + chron_items) if x["kind"] != "completed"]
+    raw_active.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)
+    # Deduplicate waiting items by (title, short_sha)
+    seen_active: set[tuple[str, str]] = set()
+    active_q: list[dict[str, Any]] = []
+    for item in raw_active:
+        k = (item["title"], item["short_sha"])
+        if k not in seen_active:
+            seen_active.add(k)
+            active_q.append(item)
+
     done_q = [x for x in chron_items if x["kind"] == "completed"]
     done_q.sort(key=lambda x: x.get("finished_at") or x.get("queued_at") or "", reverse=True)
 
@@ -260,8 +280,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "auto_consumer_enabled": bool(sched_cfg.get("auto_consumer_enabled", False)),
             "rate_limit_gap_sec": gap_sec,
             "cooldown_remaining_sec": cooldown_sec,
+            "cooldown_ends_epoch": pipeline["cooldown_ends_epoch"],
             "rate_ready": cooldown_sec == 0,
-            "last_submitted_at": last_sub_dt.isoformat() if last_sub_dt else None,
+            "last_submitted_at": hist_idx["last_submitted_dt"].isoformat() if hist_idx["last_submitted_dt"] else None,
             "daily_quota_limit": daily_limit,
             "used_today_24h": hist_idx["used_24h"],
             "closing_reserve": closing_reserve,
@@ -270,6 +291,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "circuit_breaker_limit": cb_limit,
             "queue_lock_held": queue_lock_held,
             "actionable_count": len(active_q),
+            "pipeline": pipeline,
         },
         "problems": problems_out,
         "submission_queue": active_q + done_q,

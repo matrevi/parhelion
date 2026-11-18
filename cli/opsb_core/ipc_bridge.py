@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import SUPERVISOR_ROOT, invalidate_ttl_cache, read_ttl_cache, write_ttl_cache
+from .config import SUPERVISOR_ROOT, invalidate_ttl_cache, read_ttl_cache, resolve_python_exe, write_ttl_cache
 
 
 def _queue_fingerprint(workspace: Path) -> str:
@@ -31,7 +31,8 @@ def invoke_bridge(workspace: Path, subcmd: str = "status", extra: list[str] | No
         if isinstance(cached, dict):
             return cached
 
-    cmd = [sys.executable, "-m", "scheduler.cli_bridge", subcmd, "--workspace", str(workspace)]
+    py_exe = resolve_python_exe(workspace)
+    cmd = [py_exe, "-m", "scheduler.cli_bridge", subcmd, "--workspace", str(workspace)]
     if extra:
         cmd.extend(extra)
     try:
@@ -62,9 +63,6 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         sched["closing_reserve"] = int(b_quota["reserved_for_closing"])
     if "discretionary_remaining" in b_quota:
         sched["available_normal_shots"] = int(b_quota["discretionary_remaining"])
-    if "rate_wait_sec" in b_quota:
-        sched["cooldown_remaining_sec"] = int(b_quota["rate_wait_sec"])
-        sched["rate_ready"] = sched["cooldown_remaining_sec"] == 0
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
 
@@ -82,9 +80,15 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         "CRITICAL_RESTORE": "CRITICAL RESTORE",
     }
 
+    pipeline = sched.get("pipeline") or {}
+    inflight_title = pipeline.get("active_title")
+    inflight_short = pipeline.get("active_short_sha") or ""
+
     extra_cands: list[dict[str, Any]] = []
     for uc in bridge.get("unsubmitted_candidates") or []:
         t, sha = uc.get("title", ""), uc.get("sha", "")
+        if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha.startswith(inflight_short):
+            continue
         est_obj = uc.get("estimate") or {}
         est_sc = round(float(est_obj["estimated_score"]), 2) if est_obj.get("estimated_score") is not None else None
         cur_sc = round(float(est_obj.get("current_score") or 0.0), 2)
@@ -145,9 +149,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             )
 
     for item in payload["submission_queue"]:
-        pair = (item["title"], item["sha"])
-        if pair in est_by_pair:
-            item["estimated_score"] = est_by_pair[pair]
+        if item["kind"] != "completed":
+            pair = (item["title"], item["sha"])
+            if pair in est_by_pair:
+                item["estimated_score"] = est_by_pair[pair]
 
     if extra_cands:
         active = [x for x in payload["submission_queue"] if x["kind"] != "completed"] + extra_cands

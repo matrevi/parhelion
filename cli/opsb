@@ -1,12 +1,46 @@
 #!/usr/bin/env python3
-"""Thin CLI entrypoint delegating to `opsb_core.cli_app`."""
+"""Thin CLI entrypoint delegating to `opsb_core.cli_app`.
+
+Automatically re-execs into `<workspace>/.venv/bin/python` when launched from macOS
+LaunchServices (`/usr/bin/python3`) so `requests` and contest SDK packages are present.
+"""
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from opsb_core.cli_app import main
+CLI_DIR = Path(__file__).resolve().parent
+BENCH_ROOT = CLI_DIR.parents[1]
+
+
+def _ensure_venv_python() -> None:
+    if os.environ.get("OPSB_VENV_BOOTSTRAPPED") == "1":
+        return
+    candidates = []
+    env_ws = os.environ.get("OPSB_WORKSPACE")
+    if env_ws:
+        candidates.append(Path(env_ws) / ".venv" / "bin" / "python")
+    for i, arg in enumerate(sys.argv):
+        if arg in ("--workspace", "-w") and i + 1 < len(sys.argv):
+            candidates.insert(0, Path(sys.argv[i + 1]).expanduser() / ".venv" / "bin" / "python")
+    candidates.append(BENCH_ROOT / ".venv" / "bin" / "python")
+
+    for venv_py in candidates:
+        if venv_py.is_file() and os.access(venv_py, os.X_OK):
+            try:
+                if Path(sys.executable).resolve() != venv_py.resolve():
+                    os.environ["OPSB_VENV_BOOTSTRAPPED"] = "1"
+                    os.environ["PATH"] = f"{venv_py.parent}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+                    os.execv(str(venv_py), [str(venv_py), *sys.argv])
+            except Exception:
+                pass
+            break
+
+
+_ensure_venv_python()
+sys.path.insert(0, str(CLI_DIR))
+from opsb_core.cli_app import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -7,12 +7,13 @@ import os
 import subprocess
 import sys
 
-from ..config import ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, utc_now
+from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
 from ..ipc_bridge import invoke_bridge
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.npu_service import SSH_CONTROL_OPTS
 from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
+from ..services.submit_runner import run_worker_submit_one, spawn_jump_submit
 
 
 def run_submit(args: argparse.Namespace) -> int:
@@ -127,6 +128,19 @@ def run_queue(args: argparse.Namespace) -> int:
             raise SystemExit(f"No historical passing SHA found to restore for {args.problem}")
         return run_submit(argparse.Namespace(problem=prob["title"], sha=prob["best_sha"], note=f"restore best validated SHA ({prob['best_score']:.2f})", force=True, workspace=str(ws), json=True))
 
+    if args.q_cmd == "submit-now":
+        snap = compute_workspace_snapshot(ws, cfg)
+        prob = next((p for p in snap["problems"] if p["title"].lower() == args.problem.lower()), None)
+        if not prob:
+            raise SystemExit(f"Unknown problem: {args.problem}")
+        sha = resolve_commit_sha(ws / prob["path"], args.sha) or args.sha
+        res = spawn_jump_submit(CLI_DIR / "opsb", ws, prob["title"], sha, args.note or "jump-queue submit via Parhelion")
+        print(json.dumps(res, ensure_ascii=False))
+        return 0 if res.get("ok") else 2
+
+    if args.q_cmd == "_worker-submit-one":
+        return run_worker_submit_one(ws, args.problem, args.sha, args.note or "")
+
     if args.q_cmd == "drain":
         bridge_res = invoke_bridge(ws, "drain")
         invalidate_ttl_cache("scheduler_bridge")
@@ -135,8 +149,7 @@ def run_queue(args: argparse.Namespace) -> int:
             return 0
         legacy_q = ws / "tools" / "submit-queue.py"
         if legacy_q.is_file():
-            venv_py = ws / ".venv" / "bin" / "python"
-            py_exe = str(venv_py) if venv_py.is_file() else sys.executable
+            py_exe = resolve_python_exe(ws)
             proc = subprocess.run([py_exe, str(legacy_q), "run"], cwd=str(ws), capture_output=True, text=True)
             out = {"ok": proc.returncode == 0, "output": (proc.stdout + proc.stderr).strip()}
             print(json.dumps(out, ensure_ascii=False) if getattr(args, "json", False) else out["output"])

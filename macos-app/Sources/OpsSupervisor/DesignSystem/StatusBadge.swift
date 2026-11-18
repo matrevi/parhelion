@@ -7,20 +7,20 @@ struct SemanticPill: View {
 
     private var palette: (fg: Color, bg: Color) {
         let u = text.uppercased()
-        if u.contains("CRITICAL RESTORE") {
+        if u.contains("CRITICAL") || u.contains("榜上0分") {
             return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
         }
-        if u.contains("PASS ↑") || u == "PASS" || u == "READY" || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" {
-            return (Color(red: 0.12, green: 0.72, blue: 0.44), Color(red: 0.12, green: 0.72, blue: 0.44).opacity(0.14))
+        if u.contains("PASS ↑") || u == "PASS" || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("空闲") || u.contains("冷却已就绪") {
+            return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }
-        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("RATE WAIT") || u.contains("COOLING") || u.contains("HELD") {
-            return (Color(red: 0.90, green: 0.58, blue: 0.12), Color(red: 0.90, green: 0.58, blue: 0.12).opacity(0.15))
+        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("RATE WAIT") || u.contains("COOLING") || u.contains("HELD") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") {
+            return (Color(red: 0.90, green: 0.56, blue: 0.10), Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15))
         }
-        if u.contains("PROFILER") || u.contains("HIGH ROI") {
-            return (Color(red: 0.62, green: 0.40, blue: 0.95), Color(red: 0.62, green: 0.40, blue: 0.95).opacity(0.14))
+        if u.contains("PROFILER") || u.contains("HIGH ROI") || u.contains("打包") || u.contains("编译") {
+            return (Color(red: 0.58, green: 0.38, blue: 0.95), Color(red: 0.58, green: 0.38, blue: 0.95).opacity(0.15))
         }
-        if u.contains("PRECISION") || u.contains("JUDGING") || u.contains("HEADROOM") {
-            return (Color(red: 0.22, green: 0.58, blue: 0.96), Color(red: 0.22, green: 0.58, blue: 0.96).opacity(0.14))
+        if u.contains("PRECISION") || u.contains("JUDGING") || u.contains("HEADROOM") || u.contains("远程") || u.contains("上传") || u.contains("同步") {
+            return (Color(red: 0.20, green: 0.56, blue: 0.96), Color(red: 0.20, green: 0.56, blue: 0.96).opacity(0.15))
         }
         if u.contains("BUILD") {
             return (.indigo, Color.indigo.opacity(0.15))
@@ -28,11 +28,11 @@ struct SemanticPill: View {
         if u.contains("FAST-LANE") {
             return (.teal, Color.teal.opacity(0.15))
         }
-        if u.contains("STRESS") || u.contains("CIRCUIT OPEN") {
+        if u.contains("STRESS") || u.contains("CIRCUIT") || u.contains("频控") {
             return (.orange, Color.orange.opacity(0.16))
         }
-        if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" {
-            return (Color(red: 0.90, green: 0.30, blue: 0.33), Color(red: 0.90, green: 0.30, blue: 0.33).opacity(0.15))
+        if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") {
+            return (Color(red: 0.90, green: 0.28, blue: 0.32), Color(red: 0.90, green: 0.28, blue: 0.32).opacity(0.15))
         }
         return (.secondary, Color.secondary.opacity(0.12))
     }

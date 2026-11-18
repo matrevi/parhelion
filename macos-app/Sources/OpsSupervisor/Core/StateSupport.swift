@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// CommandLineTools-compatible DynamicProperty state wrapper (avoids missing libSwiftUIMacros.dylib).
+/// CommandLineTools-compatible DynamicProperty state wrapper.
 @MainActor
 final class StateBox<Value>: ObservableObject {
     @Published var value: Value
@@ -26,30 +26,27 @@ struct UIState<Value>: DynamicProperty {
     }
 }
 
-/// Scoped 1-second countdown ticker isolated from root store to avoid global UI invalidation.
+/// Epoch-anchored 0.5s wall-clock ticker ensuring zero drift between server timestamps and UI timers.
 @MainActor
-final class CooldownTicker: ObservableObject {
-    @Published var remainingSec: Int = 0
+final class WallClockTicker: ObservableObject {
+    @Published var nowEpoch: Double = Date().timeIntervalSince1970
     private var timer: Timer?
-    var onZeroReached: (() -> Void)?
 
     init() {
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self else { return }
-                if self.remainingSec > 0 {
-                    self.remainingSec -= 1
-                    if self.remainingSec == 0 {
-                        self.onZeroReached?()
-                    }
-                }
+                self?.nowEpoch = Date().timeIntervalSince1970
             }
         }
     }
 
-    func sync(_ sec: Int) {
-        if abs(remainingSec - sec) > 2 || sec == 0 {
-            remainingSec = max(0, sec)
-        }
+    func cooldownRemaining(endsAt: Double?) -> Int {
+        guard let endsAt, endsAt > 0 else { return 0 }
+        return max(0, Int(ceil(endsAt - nowEpoch)))
+    }
+
+    func elapsedSince(startedAt: Double?) -> Int {
+        guard let startedAt, startedAt > 0 else { return 0 }
+        return max(0, Int(floor(nowEpoch - startedAt)))
     }
 }

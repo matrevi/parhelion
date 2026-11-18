@@ -15,6 +15,7 @@ final class ContestStore: ObservableObject {
 
     @Published var isRefreshingLocal: Bool = false
     @Published var isRefreshingNpu: Bool = false
+    @Published var isLaunchingSubmit: Bool = false
     @Published var pollIntervalSec: Int = 5
     @Published var bannerMessage: String?
     @Published var errorMessage: String?
@@ -136,6 +137,23 @@ final class ContestStore: ObservableObject {
     func updateScheduler(autoConsumer: Bool? = nil, closingReserve: Int? = nil, noiseFloor: Double? = nil) async {
         do {
             try await repository.updateQueueConfig(autoConsumer: autoConsumer, closingReserve: closingReserve, noiseFloor: noiseFloor)
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func jumpSubmitNow(problem: String, sha: String, note: String) async {
+        if isLaunchingSubmit { return }
+        isLaunchingSubmit = true
+        defer { isLaunchingSubmit = false }
+        do {
+            let (ok, msg) = try await repository.jumpSubmitNow(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
+            if ok {
+                bannerMessage = msg
+            } else {
+                errorMessage = msg
+            }
             await refreshLocal()
         } catch {
             errorMessage = error.localizedDescription
