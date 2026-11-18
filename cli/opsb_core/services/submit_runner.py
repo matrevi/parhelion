@@ -182,17 +182,30 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
         try:
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging")
 
-            # Ensure audit record exists in submit-queue.jsonl
-            record = {
-                "title": title,
-                "sha": sha,
-                "note": note,
-                "queued_at": started_iso,
-                "status": "queued",
-                "force": True,
-            }
-            with queue_path.open("a", encoding="utf-8") as qf:
-                qf.write(json.dumps(record, ensure_ascii=False) + "\n")
+            # Reuse existing pending queue entry if present, otherwise append audit record
+            existing_pending = None
+            existing_outcomes = {(o.get("title"), o.get("sha"), o.get("queued_at")) for o in read_jsonl(outcome_path)}
+            for q in reversed(read_jsonl(queue_path)):
+                if q.get("title") == title and str(q.get("sha", "")).startswith(sha[:7]):
+                    if (q.get("title"), q.get("sha"), q.get("queued_at")) not in existing_outcomes:
+                        existing_pending = q
+                        break
+
+            if existing_pending is not None:
+                record = dict(existing_pending)
+                if note and not record.get("note"):
+                    record["note"] = note
+            else:
+                record = {
+                    "title": title,
+                    "sha": sha,
+                    "note": note,
+                    "queued_at": started_iso,
+                    "status": "queued",
+                    "force": True,
+                }
+                with queue_path.open("a", encoding="utf-8") as qf:
+                    qf.write(json.dumps(record, ensure_ascii=False) + "\n")
 
             # Respect 190s platform rate-limit across ALL receipts AND outcomes
             last_epoch = 0.0
@@ -238,6 +251,21 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
             of.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
         invalidate_ttl_cache("scheduler_bridge")
         fcntl.flock(lf, fcntl.LOCK_UN)
+
+    # Auto-archive into `breakthrough/` if this Pass crossed the configured breakthrough threshold
+    if out_rec.get("status") == "Pass":
+        try:
+            from ..config import ConfigRepository
+            from .breakthrough_service import sync_breakthroughs_from_items
+            from .queue_service import compute_workspace_snapshot
+
+            cfg = ConfigRepository.load()
+            snap = compute_workspace_snapshot(workspace, cfg)
+            thresh = float(snap["scheduler"].get("breakthrough_threshold", 5.0))
+            probs_map = {p["title"]: p for p in snap["problems"]}
+            sync_breakthroughs_from_items(workspace, snap["submission_queue"], probs_map, thresh)
+        except Exception:
+            pass
     return 0
 
 
@@ -293,9 +321,12 @@ def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str) -> tu
         "snap_path = root / 'results' / 'score-snapshot.json'\n"
         "if snap_path.is_file() and rank_row is not None:\n"
         "    snap = json.loads(snap_path.read_text())\n"
+        f"    prev_entry = snap.get({title!r}) or {{}}\n"
         f"    snap[{title!r}] = {{\n"
+        "        **prev_entry,\n"
         "        'rank': rank_row.get('rank'),\n"
         "        'status': status,\n"
+        f"        'submission_id': {submission_id!r},\n"
         "        'score': score if status == 'Pass' else 0,\n"
         "        'public_times_us': [t for t in (rank_row.get('times') or [])[:5] if t is not None]\n"
         "    }\n"

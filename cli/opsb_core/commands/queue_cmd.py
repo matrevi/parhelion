@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
-from ..ipc_bridge import invoke_bridge
+from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.npu_service import SSH_CONTROL_OPTS
@@ -20,6 +20,10 @@ def run_submit(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(args.workspace, cfg)
     snap = compute_workspace_snapshot(ws, cfg)
+    bridge = invoke_bridge(ws, "status", ["--offline"], use_cache=False)
+    if isinstance(bridge, dict):
+        merge_bridge_enrichment(snap, bridge)
+
     prob = next((p for p in snap["problems"] if p["title"].lower() == args.problem.lower()), None)
     if prob is None:
         raise SystemExit(f"Unknown problem '{args.problem}' in workspace {ws}")
@@ -32,7 +36,11 @@ def run_submit(args: argparse.Namespace) -> int:
         raise SystemExit(f"Unknown commit '{raw_sha}' in {title}")
 
     safety_ok = check_commit_safety_gate(ws, title, sha) or (prob["best_sha"] == sha and prob["best_score"] > 0)
-    est = estimate_score_from_note(args.note or "", prob["current_score"], prob["best_score"])
+    matched_cand = next(
+        (it for it in snap["submission_queue"] if it["title"] == title and it["sha"].startswith(sha[:7]) and it["kind"] != "completed"),
+        None,
+    )
+    est = (matched_cand or {}).get("estimated_score") or estimate_score_from_note(args.note or "", prob["current_score"], prob["best_score"])
     if est is None:
         est = prob["best_score"] if (prob["best_sha"] == sha and prob["best_score"] > 0) else round(prob["current_score"] + 3.0, 2)
 
@@ -70,12 +78,26 @@ def run_submit(args: argparse.Namespace) -> int:
         print(json.dumps(verdict, ensure_ascii=False) if args.json else f"HELD BY GATE: {verdict['reason']} (pass --force to override)")
         return 3
 
-    record = {"title": title, "sha": sha, "note": args.note or "queued via opsb", "queued_at": utc_now().isoformat(), "status": "queued"}
+    record = {
+        "title": title,
+        "sha": sha,
+        "note": args.note or "queued via opsb",
+        "queued_at": utc_now().isoformat(),
+        "status": "queued",
+        "estimated_score": est,
+    }
     if args.force:
         record["force"] = True
     append_jsonl_locked(ws / "results" / ".submit-queue.lock", ws / "results" / "submit-queue.jsonl", record)
     invalidate_ttl_cache("scheduler_bridge")
     verdict.update(enqueued=True, queued_record=record)
+
+    # Auto-dispatch unified background worker if `--now` is requested or `auto_consumer_enabled` is ON
+    should_dispatch = getattr(args, "now", False) or bool(snap["scheduler"].get("auto_consumer_enabled", False))
+    if should_dispatch:
+        disp = spawn_jump_submit(CLI_DIR / "opsb", ws, title, sha, record["note"])
+        verdict["dispatched"] = disp
+
     print(json.dumps(verdict, ensure_ascii=False) if args.json else f"Enqueued {title} {sha[:7]} (est={est:.2f}, WSPT={verdict['wspt_priority']:.1f})")
     return 0
 

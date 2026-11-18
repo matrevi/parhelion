@@ -70,9 +70,25 @@ final class ContestStore: ObservableObject {
                 selectedProblemTitle = localSnap.problems.first?.title
             }
             errorMessage = nil
+            await maybeAutoConsumeTopCandidate(localSnap)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func maybeAutoConsumeTopCandidate(_ snap: SupervisorSnapshot) async {
+        guard snap.scheduler.autoConsumerEnabled,
+              !(snap.scheduler.pipeline?.isBusy ?? false),
+              !isLaunchingSubmit else { return }
+
+        guard let top = snap.submissionQueue.first(where: { item in
+            item.kind != "completed"
+                && !item.badge.contains("HOLD")
+                && !item.badge.contains("CIRCUIT")
+                && (item.gates.allPass || item.badge == "CRITICAL RESTORE")
+        }) else { return }
+
+        await jumpSubmitNow(problem: top.title, sha: top.sha, note: top.note)
     }
 
     func refreshNpu(silent: Bool = false) async {
