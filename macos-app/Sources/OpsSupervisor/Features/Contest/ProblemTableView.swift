@@ -64,12 +64,11 @@ struct ProblemTableView: View {
 
             HStack(spacing: 8) {
                 Text(lang.tr("级别", "Tier")).frame(width: 34, alignment: .leading)
-                Text(lang.tr("算子", "Operator")).frame(maxWidth: .infinity, alignment: .leading)
+                Text(lang.tr("算子", "Operator")).frame(minWidth: 132, maxWidth: .infinity, alignment: .leading)
                 Text(lang.tr("状态", "Status")).frame(width: 88, alignment: .center)
                 Text(lang.tr("当前分", "Current")).frame(width: 60, alignment: .trailing)
                 Text(lang.tr("同代最优", "Equiv Best")).frame(width: 68, alignment: .trailing)
                 Text(lang.tr("排名", "Rank")).frame(width: 52, alignment: .trailing)
-                Text(lang.tr("公开µs", "Pub µs")).frame(width: 58, alignment: .trailing)
                 Text(lang.tr("调度建议", "Priority")).frame(width: 120, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .semibold))
@@ -119,7 +118,7 @@ struct ProblemTableView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 132, maxWidth: .infinity, alignment: .leading)
 
             SemanticPill(text: lang.evalStatus(p.status), compact: true)
                 .frame(width: 88, alignment: .center)
@@ -150,11 +149,6 @@ struct ProblemTableView: View {
                 .font(.system(size: 11.5, design: .monospaced))
                 .foregroundStyle(.secondary)
                 .frame(width: 52, alignment: .trailing)
-
-            Text(p.publicMeanUs.map { String(format: "%.2f", $0) } ?? "—")
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .frame(width: 58, alignment: .trailing)
 
             SemanticPill(text: lang.wsptTag(p.wsptTag), compact: true)
                 .frame(width: 120, alignment: .trailing)
