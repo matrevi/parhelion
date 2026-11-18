@@ -28,7 +28,9 @@ func drawIcon(size: Int) -> Data? {
     ) else { return nil }
 
     NSGraphicsContext.saveGraphicsState()
-    guard let ctx = NSGraphicsContext(bitmapImageRep: rep)?.cgContext else { return nil }
+    guard let nsctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+    NSGraphicsContext.current = nsctx   // required so AppKit text drawing lands in this bitmap
+    let ctx = nsctx.cgContext
     let s = CGFloat(size)
 
     // macOS squircle inset
@@ -41,14 +43,15 @@ func drawIcon(size: Int) -> Data? {
     ctx.addPath(bgPath)
     ctx.clip()
 
-    // Deep NPU slate-indigo gradient background
+    // Light, brand-clean surface: the official SDK mark is black + red, it needs a
+    // neutral background to stay legible at every size.
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let gradColors = [
-        CGColor(red: 0.07, green: 0.10, blue: 0.18, alpha: 1.0),
-        CGColor(red: 0.11, green: 0.17, blue: 0.32, alpha: 1.0),
-        CGColor(red: 0.06, green: 0.24, blue: 0.34, alpha: 1.0)
+        CGColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1.0),
+        CGColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1.0),
+        CGColor(red: 0.92, green: 0.94, blue: 0.97, alpha: 1.0)
     ] as CFArray
-    if let grad = CGGradient(colorsSpace: colorSpace, colors: gradColors, locations: [0.0, 0.55, 1.0]) {
+    if let grad = CGGradient(colorsSpace: colorSpace, colors: gradColors, locations: [0.0, 0.62, 1.0]) {
         ctx.drawLinearGradient(
             grad,
             start: CGPoint(x: rect.minX, y: rect.maxY),
@@ -59,7 +62,7 @@ func drawIcon(size: Int) -> Data? {
 
     // Subtle radial cyan glow
     let glowColors = [
-        CGColor(red: 0.0, green: 0.82, blue: 0.95, alpha: 0.28),
+        CGColor(red: 0.42, green: 0.55, blue: 0.72, alpha: 0.12),
         CGColor(red: 0.0, green: 0.82, blue: 0.95, alpha: 0.0)
     ] as CFArray
     if let rGrad = CGGradient(colorsSpace: colorSpace, colors: glowColors, locations: [0.0, 1.0]) {
@@ -73,43 +76,62 @@ func drawIcon(size: Int) -> Data? {
         )
     }
 
-    // Draw 4x4 Accel AI Core Matrix Die in center
-    let dieMargin = s * 0.24
-    let dieSize = s - dieMargin * 2
-    let dieRect = CGRect(x: dieMargin, y: dieMargin, width: dieSize, height: dieSize)
-    let diePath = CGPath(roundedRect: dieRect, cornerWidth: dieSize * 0.14, cornerHeight: dieSize * 0.14, transform: nil)
-    ctx.setFillColor(CGColor(red: 0.05, green: 0.08, blue: 0.14, alpha: 0.78))
-    ctx.addPath(diePath)
-    ctx.fillPath()
+    // MARK: - Official SDK mark
+    // Drawn from `assets/logo.png` (example.invalid SDK wordmark: black letters, red A).
+    let scriptDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+    let logoCandidates = [
+        scriptDir.appendingPathComponent("assets/logo.png"),
+        URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("assets/logo.png")
+    ]
+    if size < 64 {
+        // Small sizes: the wordmark turns to mush below ~64 px, so fall back to the
+        // mark's signature element — the Vendor-red "A".
+        let glyph = "A" as NSString
+        let f = NSFont.systemFont(ofSize: s * 0.60, weight: .heavy)
+        let para = NSMutableParagraphStyle()
+        para.alignment = .center
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: f,
+            .foregroundColor: NSColor(srgbRed: 0.855, green: 0.102, blue: 0.118, alpha: 1.0),
+            .paragraphStyle: para
+        ]
+        let gs = glyph.size(withAttributes: attrs)
+        glyph.draw(at: NSPoint(x: rect.midX - gs.width / 2, y: rect.midY - gs.height / 2), withAttributes: attrs)
+    } else if let logoURL = logoCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+       let logoImage = NSImage(contentsOf: logoURL),
+       let logoCG = logoImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+        let aspect = CGFloat(logoCG.width) / CGFloat(logoCG.height)
+        let maxW = rect.width * 0.76
+        let maxH = rect.height * 0.40
+        var w = maxW
+        var h = w / aspect
+        if h > maxH { h = maxH; w = h * aspect }
+        let logoRect = CGRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
+        ctx.saveGState()
+        ctx.interpolationQuality = .high
+        ctx.draw(logoCG, in: logoRect)
+        ctx.restoreGState()
 
-    ctx.setStrokeColor(CGColor(red: 0.22, green: 0.78, blue: 0.96, alpha: 0.75))
-    ctx.setLineWidth(max(1.0, s * 0.016))
-    ctx.addPath(diePath)
-    ctx.strokePath()
-
-    let gridPad = dieSize * 0.14
-    let inner = dieSize - gridPad * 2
-    let gap = inner * 0.08
-    let cell = (inner - gap * 3) / 4.0
-
-    for row in 0..<4 {
-        for col in 0..<4 {
-            let cx = dieRect.minX + gridPad + CGFloat(col) * (cell + gap)
-            let cy = dieRect.minY + gridPad + CGFloat(row) * (cell + gap)
-            let cRect = CGRect(x: cx, y: cy, width: cell, height: cell)
-            let cPath = CGPath(roundedRect: cRect, cornerWidth: cell * 0.24, cornerHeight: cell * 0.24, transform: nil)
-
-            let isHot = (row == 2 && col == 1) || (row == 2 && col == 2) || (row == 1 && col == 2)
-            let isGold = (row == 3 && col == 3)
-            if isGold {
-                ctx.setFillColor(CGColor(red: 0.98, green: 0.74, blue: 0.20, alpha: 0.95))
-            } else if isHot {
-                ctx.setFillColor(CGColor(red: 0.12, green: 0.88, blue: 0.62, alpha: 0.92))
-            } else {
-                ctx.setFillColor(CGColor(red: 0.18, green: 0.56, blue: 0.88, alpha: 0.70))
+        // one thin operator rule under the mark: 3 cores, brand red accent in the middle
+        if size > 48 {
+            let ruleW = w * 0.56
+            let ruleY = logoRect.minY - rect.height * 0.10
+            let seg = ruleW / 3
+            let barH = max(1.0, rect.height * 0.012)
+            let colors: [CGColor] = [
+                CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55),
+                CGColor(red: 0.86, green: 0.12, blue: 0.16, alpha: 0.95),
+                CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55)
+            ]
+            for i in 0..<3 {
+                let r = CGRect(x: rect.midX - ruleW / 2 + CGFloat(i) * seg + seg * 0.12,
+                               y: ruleY,
+                               width: seg * 0.76,
+                               height: barH)
+                ctx.setFillColor(colors[i])
+                ctx.addPath(CGPath(roundedRect: r, cornerWidth: barH / 2, cornerHeight: barH / 2, transform: nil))
+                ctx.fillPath()
             }
-            ctx.addPath(cPath)
-            ctx.fillPath()
         }
     }
 
