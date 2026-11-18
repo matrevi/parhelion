@@ -311,8 +311,13 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
 
     Hierarchy of timing fidelity:
       1. `profiler_cases`: hardware `profiler` Task Duration (`MS_PROF`, `KPERF_JSON`, `KPERF`,
-         `KERNEL_JSON`, `KERNEL_PERF`, `PERF`, `PROF_SUMMARY` median & min). Always wins over
-         `aclrtRecordEvent` (`dev_us`), which hits a ~12.5 us host-enqueue floor on `soc-a`.
+         `KERNEL_JSON`, `KERNEL_PERF`, `PERF`).  **Only real case names enter this pool.**  The
+         aggregate `PROF_SUMMARY` rows (`kernels.<name>.median_us/min_us`, `custom_median_us`)
+         describe a *kernel*, not a case, so they are parked in `prof_kernel_stats` instead: a
+         `<kernel>:median` key used to collide with a literal `bench-specs` bucket id and turn a
+         parser artifact into a fake "paired" bucket (see `SCHEDULER_DESIGN.md` §6.5.1).
+         Hardware always wins over `aclrtRecordEvent` (`dev_us`), which hits a ~12.5 us
+         host-enqueue floor on `soc-a`.
       2. `same_soc_exec_cases`: `exec=` timings (`> 0 us`) safe ONLY when paired against a
          same-`RUNTIME_SOC` baseline above the `11.5 us` `soc-a` enqueue floor.
       3. `exec_cases`: compute-bound `exec >= 150.0 us` fallback when comparing across SoC epochs.
@@ -324,6 +329,11 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
     same_soc_exec_cases: dict[str, float] = {}
     exec_cases: dict[str, float] = {}
     dev_event_cases: dict[str, float] = {}
+    prof_kernel_stats: dict[str, dict[str, float]] = {}
+    prof_summary: dict[str, float] = {}
+    #: Hardware `profiler` ran at all — set even when only kernel-level aggregates came back, so a
+    #: caller can tell "profiling happened, nothing maps to a case" from "no hardware evidence".
+    hw_evidence = False
     vs_torch_pct: float | None = None
     runtime_soc: str | None = None
     source_kind: str = "none"
@@ -414,24 +424,32 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                                 profiler_cases[cname] = float(med)
                                 source_kind = tag
                 elif tag == "prof_summary" and isinstance(payload, dict):
-                    # Prioritize hardware profiler Task Duration (median_us & min_us) over dev_us!
+                    # Hardware profiler Task Duration, but *aggregated over kernels*: these are not
+                    # case ids.  Park them in `prof_kernel_stats` (additive) instead of
+                    # `profiler_cases`, otherwise `f"{kernel}:median"` matches a spec bucket id
+                    # literally and manufactures a paired bucket out of a parser key.
                     kernels = payload.get("kernels") or {}
                     if isinstance(kernels, dict) and kernels:
                         for kname, kstat in kernels.items():
-                            if isinstance(kstat, dict):
-                                if isinstance(kstat.get("median_us"), (int, float)) and kstat["median_us"] > 0:
-                                    profiler_cases[f"{kname}:median"] = float(kstat["median_us"])
-                                if isinstance(kstat.get("min_us"), (int, float)) and kstat["min_us"] > 0:
-                                    profiler_cases[f"{kname}:min"] = float(kstat["min_us"])
+                            if not isinstance(kstat, dict):
+                                continue
+                            stat: dict[str, float] = {}
+                            if isinstance(kstat.get("median_us"), (int, float)) and kstat["median_us"] > 0:
+                                stat["median_us"] = float(kstat["median_us"])
+                            if isinstance(kstat.get("min_us"), (int, float)) and kstat["min_us"] > 0:
+                                stat["min_us"] = float(kstat["min_us"])
+                            if isinstance(kstat.get("n"), (int, float)):
+                                stat["n"] = float(kstat["n"])
+                            if stat:
+                                prof_kernel_stats[str(kname)] = stat
                         source_kind = "prof_summary"
-                    else:
-                        cmed = payload.get("custom_median_us")
-                        if isinstance(cmed, (int, float)) and cmed > 0:
-                            profiler_cases["__prof_summary__"] = float(cmed)
-                            source_kind = "prof_summary"
-                    tmed = payload.get("torchref_median_us")
-                    if isinstance(tmed, (int, float)) and tmed > 0:
-                        torch_cases["__prof_summary__"] = float(tmed)
+                        hw_evidence = True
+                    if isinstance(payload.get("custom_median_us"), (int, float)) and payload["custom_median_us"] > 0:
+                        prof_summary["custom_median_us"] = float(payload["custom_median_us"])
+                        source_kind = "prof_summary"
+                        hw_evidence = True
+                    if isinstance(payload.get("torchref_median_us"), (int, float)) and payload["torchref_median_us"] > 0:
+                        prof_summary["torchref_median_us"] = float(payload["torchref_median_us"])
                 elif tag == "perf_json" and isinstance(payload, list):
                     for item in payload:
                         if not isinstance(item, dict):
@@ -483,6 +501,10 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
         "same_soc_exec_cases": same_soc_exec_cases,
         "dev_event_cases": dev_event_cases,
         "torch_cases": torch_cases,
+        # additive: `PROF_SUMMARY` aggregates are kernel-level evidence, never case ids
+        "prof_kernel_stats": prof_kernel_stats,
+        "prof_summary": prof_summary,
+        "has_hw_evidence": hw_evidence or bool(profiler_cases),
         "vs_torch_pct": vs_torch_pct,
         "runtime_soc": runtime_soc,
         "source": source_kind,
@@ -1154,6 +1176,12 @@ class ScoreEstimator:
             pair_cand_cases = cand_perf["profiler_cases"]
             pair_base_cases = base_perf["profiler_cases"]
             pair_kind = cand_perf["source"]
+        elif ((cand_perf.get("has_hw_evidence") and not cand_perf.get("profiler_cases"))
+              or (base_perf.get("has_hw_evidence") and not base_perf.get("profiler_cases"))):
+            # Hardware `profiler` ran but only kernel-level aggregates came back (`PROF_SUMMARY`):
+            # they name no case, so there is no A/B pairing.  Do not silently substitute the
+            # host-enqueue (`exec=`) or `aclrtRecordEvent` (`dev_us`) floors for them.
+            pair_kind = "prof_summary_aggregate"
         elif same_soc and cand_perf.get("runtime_soc") == "soc-a" and cand_perf.get("same_soc_exec_cases") and base_perf.get("same_soc_exec_cases"):
             # Same-SoC exec= pairing on soc-a (> 11.5 us above 11.1 us enqueue floor)
             floor_thresh = 11.5

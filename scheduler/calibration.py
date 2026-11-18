@@ -388,6 +388,12 @@ class BenchmarkCalibrator:
         if best_perf["profiler_cases"]:
             raw_pool.update(best_perf["profiler_cases"])
             modality = "profiler"
+        elif best_perf.get("has_hw_evidence"):
+            # Hardware `profiler` ran but only reported kernel-level aggregates (`PROF_SUMMARY`),
+            # which name no case: keep the modality (and therefore the homogeneity rule below)
+            # on `profiler` and leave the pool empty.  Falling through to `exec=`/`dev_us` would
+            # silently swap the measurement floor instead of reporting "no case-level evidence".
+            modality = "profiler"
         elif best_perf["same_soc_exec_cases"]:
             host_ovh = 7.2 if soc == "soc-a" else 3.2
             for k, v in best_perf["same_soc_exec_cases"].items():

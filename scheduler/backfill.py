@@ -300,7 +300,10 @@ class BackfillLedger:
 #:  1. `proxy_suffix`            — append-only spectrum padding, `t256_c1024_b16_proxy`;
 #:  2. `parser_artifact`         — a `PROF_SUMMARY` / kernel-table key leaked into a bucket
 #:                                 list: `PReluGradUpdate:median`, `<operator>:min`
-#:                                 (harness case ids are plain identifiers, never `a:b`);
+#:                                 (harness case ids are plain identifiers, never `a:b`).
+#:                                 `estimator.parse_validation_perf` stopped emitting these
+#:                                 (2026-11-19, §6.5.1), but the rule stays: legacy logs and
+#:                                 old ledger rows must remain classifiable;
 #:  3. `not_in_harness_case_list`— the operator's own measurement harness never names the id
 #:                                 (`sbn_w4_c64_small` against a `f32_c*` case table), i.e. the
 #:                                 spec and the harness disagree about what exists.
@@ -1461,6 +1464,11 @@ class BackfillScheduler:
         modality = "none"
         if parsed.get("profiler_cases"):
             pool = dict(parsed["profiler_cases"])
+            modality = "profiler"
+        elif parsed.get("has_hw_evidence"):
+            # `profiler` ran but only kernel-level aggregates came back (`PROF_SUMMARY`): they name
+            # no case, so nothing here can pair `job["buckets"]`.  Never substitute the
+            # host-enqueue / `dev_us` floors for hardware evidence (§6.5.1).
             modality = "profiler"
         elif parsed.get("same_soc_exec_cases"):
             ovh = 7.2 if soc == "soc-a" else 3.2

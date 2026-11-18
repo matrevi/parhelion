@@ -342,6 +342,32 @@ Effect on the §6.1 census (2026-11-19, `--offline`): `unpaired_total 45 → 9`
 `eta_sec 462 s → 154 s`. The 36 were never work: no amount of die time can pair them, only editing
 `bench-specs/<Title>/cases_perf.json` or the operator's case table can.
 
+**Root cause of rule 2 (`estimator.parse_validation_perf`), fixed 2026-11-19.** The `PROF_SUMMARY`
+branch used to publish `profiler_cases[f"{kernel}:median"]` / `f"{kernel}:min"`, and
+`bench-specs/PReluGradUpdate/cases_perf.json` carries bucket ids spelled exactly
+`PReluGradUpdate:min` / `PReluGradUpdate:median`. A parser key therefore *paired* a spec bucket:
+PRelu showed `observed = true` on both, with `3.32 + 2.31 = 5.63 pts` of headroom, and the S2 gate
+estimated a candidate as `57.34` (`"2 paired cases … raw_geo=0.990x"`) out of two kernel
+aggregates. The aggregates now live in the additive `prof_kernel_stats` / `prof_summary` return
+fields, and `profiler_cases` is case-names-only (`scheduler/tests/test_perf_log_parse.py` pins it,
+including a 333-log corpus scan). Two invariants protect the fix:
+
+* **`has_hw_evidence`.** A log that ran `profiler` but only returned kernel aggregates is *not* a
+  log without hardware evidence. The `profiler > exec > dev_us` ladder in
+  `BenchmarkCalibrator._extract_bucket_timings`, `ScoreEstimator.predict_candidate` and
+  `backfill.dispatch` therefore keeps the `profiler` modality with an **empty** pool instead of
+  silently substituting the host-enqueue (`exec=`) / `aclrtRecordEvent` (`dev_us`) floors — those
+  are a different physical quantity. Before the fix PRelu's fake profiler rows shadowed real
+  `dev_us` cases; after it, PRelu simply has *no attributable case-level profiler timing*.
+* **Headroom is a partition, not a subtraction.** `headroom_pts` is `Σ(max_pts − current_pts)`
+  and `Σmax` is fixed by the bucket weights, so un-observing a bucket does not remove its
+  headroom from the total — the colon buckets went from measured `(3.32, 2.31)` to prior
+  `(2.78, 2.78)`. What actually changes is the *evidence*: PRelu `observed 2 → 0`,
+  `unpaired 12 → 14`, and a bucket that used to count as *measured* is now prior-only. The gate
+  delta for the pending candidate moved `−0.47 → 0.00` (S2 HOLD either way, but now for the honest
+  reason `"no perf telemetry found"` instead of a manufactured one).
+
+
 
 ### 6.6 AUTO scheduling without a daemon
 No poller, no resident process (§ “no background loops”): the planner is pure, so scheduling is **event-driven** and the events already exist —
