@@ -89,3 +89,18 @@ echo "==> [4/4] Ad-hoc signing OpsSupervisor.app..."
 codesign --force --deep --sign - "$APP_BUNDLE"
 
 echo "==> Done! Bundle ready at: $APP_BUNDLE"
+
+if [[ "${1:-}" == "--install" || "${INSTALL_TO_APPLICATIONS:-0}" == "1" ]]; then
+    echo "==> [install] Copying bundle to /Applications and registering with LaunchServices..."
+    TARGET="/Applications/OpsSupervisor.app"
+    if pgrep -f "/Applications/OpsSupervisor.app/Contents/MacOS/OpsSupervisor" >/dev/null 2>&1; then
+        echo "    quit the installed app first (it is currently running) — skipping live copy" >&2
+    else
+        rm -rf "$TARGET"
+        ditto "$APP_BUNDLE" "$TARGET"
+        xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
+        codesign --force --deep -s - "$TARGET" >/dev/null 2>&1 || true
+        /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$TARGET" || true
+        echo "    installed: $TARGET (bundle id dev.winbeau.OpsSupervisor)"
+    fi
+fi
