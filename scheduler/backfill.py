@@ -42,9 +42,10 @@ Invariants (proved in `SCHEDULER_DESIGN.md` §6)
    ahead of an operator in the VFS waitqueue.
 2. **Read-only w.r.t. operator artifacts.** No `git checkout`, no `build.sh`, no
    `results/` write, no repo lock: the session is a *Phase-B-only* run against the
-   already-built package of the baseline commit, after verifying
-   `git rev-parse HEAD == baseline_sha`.  On mismatch the session aborts **before**
-   touching the die (`server_head_mismatch`) instead of rebuilding the operator tree.
+   already-built package of the baseline commit, after verifying that the server
+   working tree is that commit or a **C++-identical** one (empty `op_host/` +
+   `op_kernel/` diff).  Otherwise it aborts **before** touching the die
+   (`server_head_mismatch`) instead of checking out / rebuilding the operator tree.
 3. **Idempotent + resumable.** The ledger is append-only JSONL
    (`started` → terminal record) guarded by `flock`; a `started` record whose pid is
    dead is `ABANDONED` (retryable), one whose pid is alive is `running` and blocks a
@@ -395,8 +396,23 @@ def git_head():
 # ---------------- PRE-FLIGHT: zero lock, zero side effects ----------------
 head = git_head()
 if head != sha:
-    res.update(reason='server_head_mismatch', server_head=head)
-    emit(res); sys.exit(0)
+    # A C++-identical commit (docs / AGENTS.md / bench-spec only) measures the same
+    # kernel, exactly like the estimator fingerprint-identity rule; anything else aborts
+    # BEFORE the die is touched instead of checking out the operator's working tree.
+    same_cpp = False
+    if head:
+        try:
+            _p = subprocess.run(
+                ['git', '-C', str(repo), 'diff', '--name-only', head, sha, '--', 'op_host', 'op_kernel'],
+                capture_output=True, text=True, timeout=25)
+            same_cpp = (_p.returncode == 0 and not _p.stdout.strip())
+        except Exception:
+            same_cpp = False
+    if not same_cpp:
+        res.update(reason='server_head_mismatch', server_head=head)
+        emit(res); sys.exit(0)
+    res['cpp_identical_head'] = head
+res['head_used'] = head
 prebuilt = glob.glob(str(repo / 'build/packages/vendors/*_custom/op_api/lib/libcust_opapi.so'))
 if not prebuilt:
     res.update(reason='no_prebuilt_package')
@@ -784,9 +800,17 @@ class BackfillScheduler:
             ready.append(row)
 
         sessions = coalesce_sessions(ready, max_buckets=cfg.max_buckets_per_session)
+        last_fail: dict[str, dict[str, Any]] = {}
+        for rec in self.ledger.records():
+            if rec.get("event") in ("finished", "aborted") and rec.get("result") != "ok" and rec.get("session_key"):
+                last_fail[str(rec["session_key"])] = {
+                    "result": rec.get("result"),
+                    "at": _iso_from_epoch(rec.get("ended_epoch")),
+                }
         out: list[dict[str, Any]] = []
         for s in sessions:
             first_seen = min((att.get(k, [t_now])[0] for k in s["bucket_keys"]), default=t_now)
+            attempts = {k: len(att.get(k) or []) for k in s["bucket_keys"]}
             out.append(
                 {
                     **s,
@@ -794,7 +818,9 @@ class BackfillScheduler:
                     "lane": LANE_BACKFILL,
                     "tier": TICKET_TIER[LANE_BACKFILL],
                     "est_sec": round(self.est_session_sec(), 1),
-                    "attempts": {k: len(att.get(k) or []) for k in s["bucket_keys"]},
+                    "attempts": attempts,
+                    "attempts_total": max(attempts.values()) if attempts else 0,
+                    "last_failure": last_fail.get(s["session_key"]),
                     "first_seen_epoch": round(first_seen, 3),
                     "waiting_sec": round(max(0.0, t_now - first_seen), 1),
                 }
@@ -1026,6 +1052,8 @@ class BackfillScheduler:
             "log": res.get("log"),
             "die": res.get("die"),
             "lock_wait_sec": res.get("lock_wait_sec"),
+            "head_used": res.get("head_used"),
+            "cpp_identical_head": res.get("cpp_identical_head"),
             "accepted": bool(res.get("ok")),
         }
         self.ledger.append({**base, **terminal})
