@@ -453,4 +453,19 @@ def build_problem_models(
         "closing_potential_weighted": round(closing_pot, 2),
         "model_mae_pts": round(sum(valid_maes) / len(valid_maes), 2) if valid_maes else None,
     }
+    # Contest-wide team ranking (public board), cached on disk; failures degrade silently.
+    try:
+        from . import ranking_service
+
+        rk = ranking_service.team_ranking(
+            workspace,
+            contest_id=str(meta.get("contest_id") or ranking_service.DEFAULT_CONTEST_ID),
+            team_name=str(meta.get("team_name") or ranking_service.DEFAULT_TEAM_NAME),
+        )
+        contest_summary.update(ranking_service.summary_fields(rk))
+    except Exception:
+        import os
+        if os.environ.get("OPSB_RANKING_DEBUG"):
+            import traceback
+            traceback.print_exc()
     return problems_out, contest_summary

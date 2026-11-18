@@ -108,11 +108,11 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
 
     func stratumLabel(_ raw: String) -> String {
         switch raw {
-        case "PUBLIC": return tr("公开锚点 (P1–P5)", "Public (P1–P5)")
-        case "S_SMALL_CORE": return tr("小尺寸核开销 (Small)", "Small-Core")
-        case "M_MID_UB": return tr("中尺寸 UB 主力 (Mid)", "Mid-UB")
-        case "L_HBM_TILED": return tr("大尺寸 HBM 分块 (Large)", "Large-HBM")
-        case "X_EXTREME": return tr("异形与极端边界 (Extreme)", "Extreme")
+        case "PUBLIC": return tr("公开锚点", "Public")
+        case "S_SMALL_CORE": return tr("小尺寸核开销", "Small-Core")
+        case "M_MID_UB": return tr("中尺寸 UB", "Mid-UB")
+        case "L_HBM_TILED": return tr("大尺寸 HBM", "Large-HBM")
+        case "X_EXTREME": return tr("异形极端", "Extreme")
         default: return raw
         }
     }

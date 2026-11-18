@@ -62,19 +62,19 @@ struct ProblemTableView: View {
 
             Divider()
 
-            HStack(spacing: 8) {
-                Text(lang.tr("级别", "Tier")).frame(width: 34, alignment: .leading)
-                Text(lang.tr("算子", "Operator")).frame(minWidth: 132, maxWidth: .infinity, alignment: .leading)
-                Text(lang.tr("状态", "Status")).frame(width: 88, alignment: .center)
-                Text(lang.tr("当前分", "Current")).frame(width: 60, alignment: .trailing)
-                Text(lang.tr("同代最优", "Equiv Best")).frame(width: 68, alignment: .trailing)
-                Text(lang.tr("排名", "Rank")).frame(width: 52, alignment: .trailing)
-                Text(lang.tr("调度建议", "Priority")).frame(width: 120, alignment: .trailing)
+            HStack(spacing: 6) {
+                Text(lang.tr("级别", "Tier")).frame(width: 36, alignment: .leading)
+                Text(lang.tr("算子", "Operator")).frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
+                Text(lang.tr("状态", "Status")).frame(width: 92, alignment: .center)
+                Text(lang.tr("当前分", "Current")).frame(width: 66, alignment: .trailing)
+                Text(lang.tr("同代最优", "Equiv Best")).frame(width: 74, alignment: .trailing)
+                Text(lang.tr("排名", "Rank")).frame(width: 58, alignment: .trailing)
+                Text(lang.tr("调度建议", "Priority")).frame(width: 116, alignment: .trailing)
             }
-            .font(.system(size: 10.5, weight: .semibold))
+            .font(.system(size: 11.5, weight: .semibold))
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
             .background(Color.primary.opacity(0.025))
 
             Divider()
@@ -96,48 +96,48 @@ struct ProblemTableView: View {
         let selected = p.title == store.selectedProblemTitle
         let gap = p.bestScore - p.currentScore
 
-        return HStack(spacing: 8) {
+        return HStack(spacing: 6) {
             DifficultyBadge(difficulty: p.difficulty)
-                .frame(width: 34, alignment: .leading)
+                .frame(width: 36, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.title)
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .font(.system(size: 13.5, weight: .semibold))
                     .lineLimit(1)
                 HStack(spacing: 5) {
                     if !p.headSha.isEmpty {
                         Text(String(p.headSha.prefix(7)))
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                     if let age = p.headAgeMin {
                         let unit = age < 60 ? "\(age)m" : "\(age / 60)h"
                         Text(lang.tr("· \(unit)前", "· \(unit) ago"))
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                 }
             }
-            .frame(minWidth: 132, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
 
             SemanticPill(text: lang.evalStatus(p.status), compact: true)
-                .frame(width: 88, alignment: .center)
+                .frame(width: 92, alignment: .center)
 
             Text(String(format: "%.2f", p.currentScore))
-                .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                .font(.system(size: 13.5, weight: .bold, design: .monospaced))
                 .foregroundStyle(p.currentScore == 0 ? .red : .primary)
-                .frame(width: 60, alignment: .trailing)
+                .frame(width: 66, alignment: .trailing)
 
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "%.2f", p.bestScore))
-                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
                 if gap >= 2.5 {
                     Text(String(format: "-%.1f", gap))
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.orange)
                 }
             }
-            .frame(width: 68, alignment: .trailing)
+            .frame(width: 74, alignment: .trailing)
             .help(p.rawBestScore.map {
                 lang.tr(
                     String(format: "同代折算最优 %.2f（原始峰值 %.2f · tbest γ=%.3f）", p.bestScore, $0, p.tbestDecayGamma ?? 1.0),
@@ -146,15 +146,15 @@ struct ProblemTableView: View {
             } ?? "")
 
             Text(p.rank.map { "#\($0)" } ?? "—")
-                .font(.system(size: 11.5, design: .monospaced))
+                .font(.system(size: 12.5, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .frame(width: 52, alignment: .trailing)
+                .frame(width: 58, alignment: .trailing)
 
             SemanticPill(text: lang.wsptTag(p.wsptTag), compact: true)
-                .frame(width: 120, alignment: .trailing)
+                .frame(width: 116, alignment: .trailing)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 9)
         .background(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .fill(selected ? Color.accentColor.opacity(0.13) : Color.clear)

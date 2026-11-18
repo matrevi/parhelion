@@ -109,14 +109,31 @@ struct ContestOverviewView: View {
                     accent: snap.contest.passingCount == snap.contest.problemCount ? .green : .orange
                 )
                 let bestRank = snap.problems.compactMap { $0.rank }.min()
-                let teams = snap.problems.compactMap { $0.totalTeams }.max()
+                let bestTeams = snap.problems.compactMap { $0.totalTeams }.max()
+                let teamRank = snap.contest.teamRank
+                let teams = snap.contest.totalTeams ?? bestTeams
+                let rankValue: String = {
+                    if let r = teamRank, let n = teams { return "#\(r) / \(n)" }
+                    if let r = bestRank, let n = bestTeams { return "#\(r) / \(n)" }
+                    if let r = teamRank { return "#\(r)" }
+                    return "—"
+                }()
+                let rankDetail: String = {
+                    if let r = teamRank {
+                        let score = snap.contest.teamRankScore.map { String(format: "%.2f 分 · ", $0) } ?? ""
+                        return lang.tr("\(score)全队总榜", "\(score)team board")
+                    }
+                    if bestRank != nil {
+                        return lang.tr("暂无队伍总榜 · 显示最好单题名次", "No team board yet · best placement")
+                    }
+                    return lang.tr("等待拉取排行榜", "Awaiting ranking fetch")
+                }()
                 MetricTile(
-                    title: lang.tr("最好单题名次", "Best Placement"),
-                    value: bestRank.map { "#\($0)" } ?? "—",
-                    detail: teams.map { lang.tr("共 \($0) 队 · 平台仅开放单题榜", "\($0) teams · per-problem boards only") }
-                        ?? lang.tr("单题榜位次", "Per-problem placement"),
+                    title: lang.tr("队伍排名", "Team Rank"),
+                    value: rankValue,
+                    detail: rankDetail,
                     icon: "trophy.fill",
-                    accent: .orange
+                    accent: teamRank != nil ? .orange : .secondary
                 )
                 MetricTile(
                     title: lang.tr("同代可恢复总分", "Closing Potential"),

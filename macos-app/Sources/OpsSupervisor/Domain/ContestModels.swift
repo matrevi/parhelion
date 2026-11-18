@@ -45,6 +45,11 @@ struct ContestSummary: Codable {
     let maxWeightedScore: Int
     let closingPotentialWeighted: Double
     let modelMaePts: Double?
+    /// Contest-wide team ranking from the public board (absent until first fetch).
+    let teamRank: Int?
+    let totalTeams: Int?
+    let teamRankScore: Double?
+    let teamRankFetchedAt: String?
 
     enum CodingKeys: String, CodingKey {
         case workspace, layout, title
@@ -63,6 +68,10 @@ struct ContestSummary: Codable {
         case maxWeightedScore = "max_weighted_score"
         case closingPotentialWeighted = "closing_potential_weighted"
         case modelMaePts = "model_mae_pts"
+        case teamRank = "team_rank"
+        case totalTeams = "total_teams"
+        case teamRankScore = "team_rank_score"
+        case teamRankFetchedAt = "team_rank_fetched_at"
     }
 }
 

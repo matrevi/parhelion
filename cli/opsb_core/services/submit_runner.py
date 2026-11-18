@@ -284,6 +284,14 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
             sync_after_breakthrough_change(workspace)
         except Exception:
             pass
+
+    # Every judged submission shifts the contest board: refresh the team ranking off-path.
+    try:
+        from . import ranking_service
+
+        ranking_service.refresh_async(workspace)
+    except Exception:
+        pass
     return 0
 
 
