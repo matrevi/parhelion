@@ -374,7 +374,6 @@ max_runs = int(cfg.get('max_runs') or 6)
 repo = pathlib.Path(cfg.get('repo') or ('/srv/work/' + title))
 opsb_home = pathlib.Path.home() / '.opsb'
 outdir = opsb_home / 'backfill' / title / sha
-outdir.mkdir(parents=True, exist_ok=True)
 run_id = 'bf-%d-%s' % (int(time.time()), re.sub(r'[^A-Za-z0-9]+', '', title)[:12])
 log_path = outdir / (run_id + '.log')
 res = {'ok': False, 'acquired': False, 'title': title, 'sha': sha, 'run_id': run_id,
@@ -407,6 +406,7 @@ if not perf_py.is_file():
     res.update(reason='no_perf_script')
     emit(res); sys.exit(0)
 
+outdir.mkdir(parents=True, exist_ok=True)  # only after every pre-flight guard passed
 perf_src = perf_py.read_text(errors='replace')
 plan_flag = cfg.get('perf_flag')
 plan_mode = cfg.get('perf_mode') or 'full_spectrum'
