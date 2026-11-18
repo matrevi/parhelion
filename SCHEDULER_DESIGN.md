@@ -42,14 +42,28 @@ Across all 274 completed server runs in `results/*/*/result.json`:
 
 ---
 
-## 2. NPU Task Sequence Scheduler (`scheduler/npu_scheduler.py`)
+## 2. 3-Phase Disaggregated NPU Runner & `PersistentArenaRunner` (`npu_scheduler.py`, `tools/npu-test.py`, `~/.opsb/runtime/`)
 
-### 2.1 Split-Phase CPU/NPU Pipeline (Admission Pre-filtering)
-Following disaggregated execution principles, `schedule-test` splits every validation into two decoupled resource domains:
-1. **Phase A — `A_CPU_PREFILTER` (0s NPU Lock)**: Acquires only a repo-scoped mutex `/tmp/opsb-repo-<Title>.lock`, checks out the exact detached 40-char `<SHA>`, runs pure-host tile state-machine verification (`validation/walk_model.py` when present), and executes 32-core CMake + Compiler KernelC compilation (`build.sh`). Compile or state-walk failures abort in $\sim 15\text{--}35\text{s}$ with **zero NPU die contention**.
-2. **Phase B — `B_NPU_DIE_EXEC` (Cooperative Ticket Lock)**: Only after `.run` artifacts are built does the job enter `/tmp/opsb-npu-tickets/` to acquire `/srv/work-device{0,1}.lock` in priority order.
+### 2.1 Why Raw `device0.lock` Duty Cycle Was `0.0061%` (`61 ppm`)
+Auditing 5 representative full server runs (`4,084.1s` / `68.1m` exclusive lock hold on `soc-a`) showed true NPU hardware kernel execution totaled only **`248.04 ms` (`0.0061%` duty cycle)**:
+- **`70.3%` (`2,872.9s`)**: `acl_runner.Runner` spawning `680` isolated Python subprocesses (`4.15s/case` for `python3` + `aclInit`), originally used to avoid `libnnopbase.so` (`NnopbaseMatchArgs`) stale executor-cache hits when freed `aclTensor*` / device addresses were immediately recycled.
+- **`7.2%` (`292.2s`) + `14.2%` pure compile failures**: `build.sh` deleting `CMakeCache.txt` (line 120) and compiling C++/KernelC inside `device0.lock` while 30.6 of 32 host CPU cores sat idle.
 
-Active processes are classified into six semantic tags via read-only `/proc/locks` + `/proc/<pid>` + local `ps` correlation (never touching `.lock` files):
+### 2.2 Three-Phase Disaggregated Execution Pipeline
+Both `opsb test` (`scheduler.cli_bridge schedule-test`) and `tools/npu-test.py` share a single unified 3-Phase engine (`strict lock order: repo-<Title>.lock < validation.lock(SH) < device0.lock(EX)` — deadlock-free):
+
+1. **Phase A — `A_CPU_BUILD_AND_PREFILTER` (`0.0s` `device0.lock`, 10-way parallel across 32 CPU cores)**:
+   - Acquires per-problem `/srv/work-repo-<Title>.lock` only and writes live heartbeat `~/.opsb/cpu_builds/<Title>.json`.
+   - Performs detached `git checkout <SHA>`, runs pure-host `validation/walk_model.py` (when present), compiles `build.sh -j4` (**without `-e`**, zero `aclInit`), and pre-compiles `examples/build`.
+   - Any compile error exits immediately with **`lock_waste_sec = 0.0`**. Passing `--build-only` exits `0` right after Phase A for sub-25s compile checks.
+2. **Phase B — `B_NPU_ARENA_DIE_EXEC` (Cooperative WSPT Ticket $\to$ `13s–25s` Exclusive Die Slot)**:
+   - Enters `/tmp/opsb-npu-tickets/<pid>.json`, acquires `device{0,1}.lock`, and updates `~/.opsb/die_session.json` (`acl_setup` $\to$ `npu_exec` $\to$ `profiler`).
+   - Transforms `validation/run-npu.sh` in-memory to replace the redundant `build.sh -j4 -e` rebuild with `bash examples/run.sh` against Phase A's pre-built `libcust_opapi.so`.
+   - Injects `OPSB_ARENA_ACCEL=1` and `PYTHONPATH=/home/developer/.opsb/runtime:$PYTHONPATH`. `sitecustomize.py` / `arena_accel.py` installs a `sys.meta_path` post-import hook on `acl_runner`, routing `Runner.run` in-process (`~2 ms/case` vs. `4,150 ms/case`) through a **Pointer Keepalive Ring** (`>= 96` cases or `>= 2 GiB` HBM + `64B` tail guard pad before `aclrtSynchronizeStream` + flush), eliminating `NnopbaseMatchArgs` address-reuse collisions while falling back to `--case` subprocesses on any non-precision ACL error.
+3. **Phase C — `C_POST_LOCK_LEDGER` (`0.0s` `device0.lock`)**:
+   - Releases `device0.lock` immediately upon process exit, records `{phase_a_cpu_sec, phase_b_die_sec, npu_exec_sec, acl_host_sec, lock_waste_sec, arena_cases_inproc, rc}` in `~/.opsb/die_ledger.jsonl` (powering 10-minute duty-cycle bars and `slots_per_hr`), and writes `result.json`.
+
+Active processes are classified into six semantic tags via read-only `/proc/locks` + `/proc/<pid>` + `~/.opsb/*` heartbeats (never touching `.lock` files):
 `BUILD` · `FAST-LANE` · `PRECISION` · `PROFILER` · `STRESS` · `WAITING-DIE`.
 
 ### 2.2 Two-Queue MLFQ + WSPT Value-Density + Anti-Starvation Aging
@@ -105,7 +119,17 @@ Pre-Nov-18 logs ran on `RUNTIME_SOC=soc-b` (`aclrtRecordEvent` / `exec=` host-en
   2. Same-SoC `exec=` pairing (`> 11.5 us` above the `11.1 us` `soc-a` floor) accurately captures `PadV3Grad` pipeline speedups without cross-SoC floor distortion.
   3. Over common cases $\mathcal{C}$, $k_{\text{geo}} = \exp\!\left(\frac{1}{|\mathcal{C}|}\sum_{c \in \mathcal{C}} \ln \text{clamp}(k_c, 0.25, 3.5)\right)$ and $k_{\text{eff}} = 1 + \gamma_{\text{cov}}(k_{\text{geo}} - 1) - 0.03\,N_{\text{reg}}$ project onto $S_{p,\text{vis}} + S_{p,\text{hid}}$ via smooth concave saturation $r'(k) = \min\!\left(0.98, \frac{r \cdot k}{1 + 0.35\,r\max(0, k-1)}\right)$.
 
-### 3.3 The 4-Stage Submission Gate & Token-Bucket Reserve
+### 3.3 Closed-Loop Simplex MAP Benchmark Calibration & Escape Lock (`calibration.py`, `bench-specs/`)
+Declarative benchmark specifications in `ops-supervisor/bench-specs/<Problem>/{cases_correctness.json,cases_perf.json}` decouple adversarial correctness from stratified score-spectrum fitting across all 10 problems:
+- **Adversarial `6×5 + D5` Correctness Grid (`cases_correctness.json`)**: `G0_DEGEN`, `G1_ODD_ALIGN` (`1B..129B` primes), `G2_CORE_TILE` (`1,3,39,40,41` cores & `tile ± 1`), `G3_HIGH_RANK`, `G4_DTYPE_CROSS`, `G5_EDGE_ATTR` crossed with `D0_STD`, `D1_OVERFLOW`, `D2_SUBNORM`, `D3_CANCEL` ($1000 + 0.01z$), `D4_ULP_INF`, plus `D5_ESCAPE_REG` permanent online-escape reproducers (`0x5A`/`NaN` canary + `32B` guard bands).
+- **Stratified `K=13..18` Hidden Proxy Spectrum (`cases_perf.json`)**: `PUBLIC` (`10/100` pts, `P1..P5`) + `S_SMALL_CORE` (`0.30` hidden prior), `M_MID_UB` (`0.35` hidden prior covering `fp32/fp16/bf16/int8`), `L_HBM_TILED` (`0.20`), and `X_EXTREME` (`0.15`, **capped at $w_k \le 0.04$/bucket**).
+- **Simplex MAP Model (`<200 ms` across all 10 problems, pure stdlib)**:
+  $$\hat{S}_{\text{hid}}(\text{SHA}) = 90 \sum_{k=1}^{K} \hat{w}_k \cdot \min\!\left(1,\, \frac{\hat{\beta}_p \theta_k^{(0)}}{\tau_k(\text{SHA})}\right), \qquad \theta_k^{(0)} = \min\!\left(0.98\min_m \tau_{m,k},\; \max(\tau_{\text{floor}}, \eta_p \tau_k^{\text{torch}})\right)$$
+  1. **Tier-1 Tightness Scalar ($\hat{\beta}_p$)**: Exact 1D bisection guarantees zero anchor bias on the active board commit.
+  2. **Tier-2 Capped Simplex MAP ($\hat{w} \in \Delta^{K-1}, 0.005 \le w_k \le u_k$)**: 3-pass joint Block-Coordinate + Entropic Mirror Descent (Exponentiated Gradient with exact water-filling Bregman projection) minimizing Huber loss ($\delta = 2.70\text{ pts}$) + $\lambda_{\text{KL}} D_{\text{KL}}(w \parallel w^{(0)}) + \frac{\lambda_2}{2}\|w - w^{(0)}\|_2^2$, plus diagonal Laplace covariance $\Sigma_w \to \sigma_{\text{epistemic}}$. Across all 10 problems (`results/<Problem>/calibration.json`), **fitted mean MAE reaches `1.88 pts`** (`ConcatD X_EXTREME` automatically pruned `0.150 -> 0.020`, `mae = 0.94 pts`; `PadV3Grad` `0.06 pts`; `CTCLossV2` `0.13 pts`; `QuantUpdateScatter` `0.63 pts`; `StridedSliceGrad` `0.75 pts`).
+  3. **Three Closed-Loop Residual Triggers**: `UNPAIRED_BUCKETS` (flags missing `profiler`/`bf16` buckets), `PROLOGUE_TAX_ALERT` / `PRUNE_PHANTOM_WEIGHT` (small-core dispatch tax vs. synthetic tail), and **`ESCAPE_LOCK`** in Gate Stage 1 (`SAFETY`) whenever the latest online submission zeroed (`WA`/`TLE`/`RE`) after passing local S1 — blocking unproven new commits (while still permitting proven baseline restores) until cleared by `verify-escape --title <T> --bad-sha <S1> --good-sha <S2>`.
+
+### 3.4 The 4-Stage Submission Gate & Token-Bucket Reserve
 
 | Stage | Name | Pass Predicate | Failure Tag / Action |
 |---|---|---|---|
@@ -118,16 +142,16 @@ Pre-Nov-18 logs ran on `RUNTIME_SOC=soc-b` (`aclrtRecordEvent` / `exec=` host-en
 
 ## 4. Causal Retrospective Validation on Historical Submissions (`retrospect`)
 
-Replaying all **54 chronological records** (`43` live platform submissions, `7` skipped, `4` rejected) in `results/submit-queue-outcome.jsonl` strictly causally (zero lookahead — at index $i$, only records $1 \dots i-1$ are visible):
+Replaying all **65 chronological records** (`49` live platform submissions) in `results/submit-queue-outcome.jsonl` strictly causally (zero lookahead — at index $i$, only records $1 \dots i-1$ are visible):
 
 | Metric | Historical Un-Gated | With 4-Stage Gate | Improvement |
 |---|---:|---:|---|
-| Live submissions consumed | 43 | **22** | **21 slots saved (`48.8%`)** |
+| Live submissions consumed | 49 | **27** | **22 slots saved (`44.9%`)** |
 | Catastrophic zeroings (`WA`/`TLE`/`RE` $\to 0$) | 5 | **1*** | **4 / 5 zeroings prevented (`80%`)** |
-| Board score regressions (`Pass` $< S_{\text{prev}}$) | 11 | **2** | **9 / 11 regressions prevented (`81.8%`)** |
-| Genuine breakthroughs held ($\Delta_{\text{actual}} \ge +2.5$ pts) | — | **0** | **100% recall on real gains (`19` approved)** |
+| Board score regressions (`Pass` $< S_{\text{prev}}$) | 12 | **3** | **9 / 12 regressions prevented (`75.0%`)** |
+| Genuine breakthroughs held ($\Delta_{\text{actual}} \ge +2.5$ pts) | — | **0** | **100% recall on real gains (incl. `LayerNormV3 +16.53`, `CTCLossV2 +15.67`, `PadV3Grad +10.78`)** |
 | Hit 50/day `daily_limit` blocking `CTCLossV2 02c2048` (`+5.76` pts)? | **Yes** (rejected ×2, delayed 15h) | **No** (`~29/50` used) | **`+11.52` weighted pts landed same day** |
-| Score Estimator accuracy across 26 `Pass` transitions | — | **MAE `2.96` / RMSE `3.65` pts** | Near physical $\sigma_{\text{jitter}} = 2.70\text{ pts}$ floor |
+| Calibrated MAP MAE / Causal Replay MAE (`32` `Pass` pairs) | Naive RMSE `8.66` pts | **Calibrated MAE `1.88` pts · Causal MAE `3.01` / RMSE `4.25` pts** | Halves multi-regime RMSE down to $\sigma_{\text{jitter}} = 2.70\text{ pts}$ floor |
 
 *\*The single unprevented zeroing (#18 `PReluGradUpdate 0761133`) was a transient platform-side TLE flake on an already-validated baseline while restoring a missing board row (`prev_board = 0`), immediately recovered on #19 (`56.56`).*
 
@@ -168,8 +192,14 @@ python3 -m scheduler.cli_bridge drain [--once | --watch] [--dry-run]
 python3 -m scheduler.cli_bridge override --title ConcatD --sha 2dd9acd --action <approve|skip|rollback>
 python3 -m scheduler.cli_bridge config --noise-floor 2.5 --reserve 5 --q0-quantum 180 --aging-tau 600
 
-# Split-phase NPU validation entry point for `opsb test` (Q0 --fast <=180s vs Q1 full)
-python3 -m scheduler.cli_bridge schedule-test --title PadV3Grad [--fast] [--dry-run]
+# 3-Phase NPU validation (`--build-only` 0s-lock CPU compile | `--fast` Q0 | full Q1 PersistentArenaRunner)
+python3 -m scheduler.cli_bridge schedule-test --title PadV3Grad [--build-only] [--fast] [--dry-run]
+
+# Closed-loop Simplex MAP calibration, 6x5 bench coverage, residual diagnostics & escape verification
+python3 -m scheduler.cli_bridge calibrate [--title ConcatD]
+python3 -m scheduler.cli_bridge bench-status [--title ConcatD]
+python3 -m scheduler.cli_bridge diagnose --title ConcatD
+python3 -m scheduler.cli_bridge verify-escape --title MultilabelMarginLoss --bad-sha af84e85 --good-sha 59f8065
 
 # Causal historical replay & accuracy verification
 python3 -m scheduler.cli_bridge retrospect --workspace /Users/winbeau/Competitions/ops-bench
