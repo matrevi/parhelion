@@ -35,8 +35,7 @@ struct ProblemInspectorView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(problem.title).font(.system(size: 16, weight: .bold))
-                    DifficultyBadge(difficulty: problem.difficulty)
-                    SemanticPill(text: lang.wsptTag(problem.wsptTag), compact: true)
+                    TierTagBadge(difficulty: problem.difficulty, text: lang.wsptTag(problem.wsptTag))
                 }
                 let rk = problem.rank.map { "#\($0)" } ?? "—"
                 Text("\(gitOwner)/\(problem.repoSlug) · \(lang.tr("排名", "Rank")) \(rk) / \(problem.totalTeams ?? 0)")

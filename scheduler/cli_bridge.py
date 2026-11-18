@@ -23,6 +23,7 @@ import sys
 import time
 from typing import Any
 
+from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
@@ -72,10 +73,17 @@ class SchedulerEngine:
         self.config = GateConfig.from_dict(self._raw_state.get("config", {}))
         self.overrides: dict[str, dict[str, Any]] = dict(self._raw_state.get("overrides", {}))
         self.held_items: dict[str, dict[str, Any]] = dict(self._raw_state.get("held_items", {}))
+        self.verified_escapes: dict[str, dict[str, Any]] = dict(self._raw_state.get("verified_escapes", {}))
         self.refresh_models()
 
     def refresh_models(self) -> None:
-        self.estimator = ScoreEstimator(self.workspace)
+        self.estimator = ScoreEstimator(self.workspace, verified_escapes=self.verified_escapes)
+        self.calibrator = BenchmarkCalibrator(
+            self.workspace,
+            estimator=self.estimator,
+            verified_escapes=self.verified_escapes,
+        )
+        self.estimator._calibrator = self.calibrator
         self.gate = SubmissionGate(
             self.workspace,
             estimator=self.estimator,
@@ -92,11 +100,11 @@ class SchedulerEngine:
 
     def _load_state(self) -> dict[str, Any]:
         if not self.state_file.is_file():
-            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}}
+            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}, "verified_escapes": {}}
         try:
             return json.loads(self.state_file.read_text())
         except Exception:
-            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}}
+            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}, "verified_escapes": {}}
 
     def _save_state(self) -> None:
         self.state_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +113,7 @@ class SchedulerEngine:
             "config": self.config.to_dict(),
             "overrides": self.overrides,
             "held_items": self.held_items,
+            "verified_escapes": self.verified_escapes,
         }
         tmp = self.state_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
@@ -262,6 +271,10 @@ class SchedulerEngine:
                 "submitted_at": None,
                 "current_score": est.current_score,
                 "estimated_score": est.estimated_score,
+                "raw_historical_best_score": est.raw_historical_best_score,
+                "contemporary_best_score": est.contemporary_best_score,
+                "decay_factor_gamma": est.decay_factor_gamma,
+                "true_restore_gain": est.true_restore_gain,
                 "online_score": None,
                 "delta_expected": est.delta_expected,
                 "weighted_delta": est.weighted_delta,
@@ -295,6 +308,10 @@ class SchedulerEngine:
                 "submitted_at": None,
                 "current_score": est.current_score,
                 "estimated_score": est.estimated_score,
+                "raw_historical_best_score": est.raw_historical_best_score,
+                "contemporary_best_score": est.contemporary_best_score,
+                "decay_factor_gamma": est.decay_factor_gamma,
+                "true_restore_gain": est.true_restore_gain,
                 "online_score": None,
                 "delta_expected": est.delta_expected,
                 "weighted_delta": est.weighted_delta,
@@ -308,12 +325,20 @@ class SchedulerEngine:
         # 3. Historical outcomes (chronologically tracked to label PASS_UP vs PASS_DOWN vs ZEROED_ERR)
         board_tracker: dict[str, float] = {}
         hist_items: list[dict[str, Any]] = []
-        for rec in outcomes:
+        total_out = len(outcomes)
+        start_hist_idx = max(0, total_out - limit_history) if limit_history > 0 else 0
+        for idx_o, rec in enumerate(outcomes):
             t = rec.get("title", "")
             csha = rec.get("canonical_sha") or resolve_sha(self.workspace, t, rec.get("sha"))
             st = str(rec.get("status", ""))
             prev_b = board_tracker.get(t, 0.0)
             sc = float(rec["score"]) if isinstance(rec.get("score"), (int, float)) else None
+
+            if idx_o < start_hist_idx:
+                if st not in ("rejected", "skipped", "duplicate"):
+                    board_tracker[t] = sc if (st == "Pass" and sc is not None and sc > 0.0) else 0.0
+                continue
+
             ts = _parse_iso(rec.get("submitted_at") or rec.get("finished_at") or rec.get("queued_at"))
             est = self.estimator.estimate(
                 title=t,
@@ -322,6 +347,7 @@ class SchedulerEngine:
                 as_of=ts,
                 override_board_score=prev_b,
                 override_board_status="Pass" if prev_b > 0 else "no-submission",
+                fast_cached_cal=True,
             )
 
             if st in ("rejected", "skipped", "duplicate"):
@@ -355,6 +381,10 @@ class SchedulerEngine:
                 "submitted_at": rec.get("submitted_at") or rec.get("finished_at"),
                 "current_score": prev_b,
                 "estimated_score": est.estimated_score,
+                "raw_historical_best_score": est.raw_historical_best_score,
+                "contemporary_best_score": est.contemporary_best_score,
+                "decay_factor_gamma": est.decay_factor_gamma,
+                "true_restore_gain": est.true_restore_gain,
                 "online_score": sc,
                 "delta_expected": est.delta_expected,
                 "weighted_delta": est.weighted_delta,
@@ -388,6 +418,34 @@ class SchedulerEngine:
         weighted_total = round(sum(x["weighted_current_score"] for x in ledgers), 2)
         unweighted_total = round(sum(x["current_score"] for x in ledgers), 2)
 
+        cal_summaries: dict[str, dict[str, Any]] = {}
+        for title in sorted(self.estimator.problems_meta):
+            cdoc = self.calibrator.load_or_calibrate(title)
+            cal_summaries[title] = {
+                "mae_pts": cdoc.get("mae_pts"),
+                "rmse_pts": cdoc.get("rmse_pts"),
+                "beta_tightness": cdoc.get("beta_tightness"),
+                "observations_m": cdoc.get("observations_m"),
+                "paired_observations_m": cdoc.get("paired_observations_m"),
+                "last_predicted_score": cdoc.get("last_predicted_score"),
+                "last_actual_score": cdoc.get("last_actual_score"),
+                "last_residual_pts": cdoc.get("last_residual_pts"),
+                "escape_lock": bool(cdoc.get("escape_lock", False)),
+                "escape_sha": cdoc.get("escape_sha"),
+                "unpaired_bucket_count": int(cdoc.get("unpaired_bucket_count") or 0),
+                "diagnostics": cdoc.get("diagnostics") or [],
+                "strata": cdoc.get("strata") or [],
+                "coverage_grid": cdoc.get("coverage_grid") or {},
+            }
+
+        for p_row in priorities:
+            p_row.calibration = cal_summaries.get(p_row.title)
+            if p_row.calibration and p_row.calibration.get("escape_lock") and p_row.current_score <= 0.0:
+                p_row.recommended_lane = "ESCAPE_LOCK (VERIFY_ESCAPE)"
+
+        maes = [float(v["mae_pts"]) for v in cal_summaries.values() if isinstance(v.get("mae_pts"), (int, float))]
+        mean_mae = round(sum(maes) / len(maes), 2) if maes else None
+
         return {
             "generated_at": _utc_now(),
             "workspace": str(self.workspace),
@@ -396,6 +454,7 @@ class SchedulerEngine:
                 "weighted_max": 2300.0,
                 "unweighted_score": unweighted_total,
                 "unweighted_max": 1000.0,
+                "model_mae_pts": mean_mae,
                 "zeroed_problems": [x["title"] for x in ledgers if x["current_score"] <= 0.0],
             },
             "daemon": self.inspect_daemon(),
@@ -409,6 +468,7 @@ class SchedulerEngine:
                 "load_5m": npu_live.get("load_5m"),
                 "devices": npu_live.get("devices", []),
                 "die_locks": npu_live.get("die_locks", []),
+                "die_duty_10m": npu_live.get("die_duty_10m"),
                 "starvation_warnings": npu_live.get("starvation_warnings", []),
             },
             "npu_queue": npu_live.get("tasks", []),
@@ -421,6 +481,7 @@ class SchedulerEngine:
                 "reserved": quota.reserved_for_closing,
             },
             "circuit_breakers": cbs,
+            "calibrations": cal_summaries,
             "problem_priorities": [p.to_dict() for p in priorities],
             "config": self.config.to_dict(),
         }
@@ -833,6 +894,12 @@ class SchedulerEngine:
                     }
                     _append_jsonl(out_path, out_rec)
                     submitted_results.append(out_rec)
+                    # Closed-loop auto-recalibration upon receiving new online score or WA/TLE/RE!
+                    try:
+                        self.refresh_models()
+                        self.calibrator.calibrate_problem(t, persist=True)
+                    except Exception:
+                        pass
 
             if once:
                 return {
@@ -843,6 +910,59 @@ class SchedulerEngine:
                     "held_or_rejected": held_plan,
                 }
             time.sleep(max(30, interval_sec))
+
+    def calibrate(self, title: str | None = None) -> dict[str, Any]:
+        """Fit Simplex MAP calibration across one or all 10 problems and persist `calibration.json`."""
+        self.refresh_models()
+        targets = [title] if title else sorted(self.estimator.problems_meta)
+        results: dict[str, Any] = {}
+        maes: list[float] = []
+        for t in targets:
+            if t not in self.estimator.problems_meta:
+                raise ValueError(f"Unknown problem title: {t}")
+            doc = self.calibrator.calibrate_problem(t, persist=True)
+            results[t] = doc
+            if isinstance(doc.get("mae_pts"), (int, float)):
+                maes.append(float(doc["mae_pts"]))
+        return {
+            "action": "calibrate",
+            "updated_at": _utc_now(),
+            "calibrated_count": len(results),
+            "mean_mae_pts": round(sum(maes) / len(maes), 2) if maes else None,
+            "problems": results,
+        }
+
+    def bench_status(self, title: str | None = None) -> dict[str, Any]:
+        """Return stratified benchmark calibration & 6x5 coverage grid for one or all problems."""
+        self.refresh_models()
+        targets = [title] if title else sorted(self.estimator.problems_meta)
+        out: dict[str, Any] = {}
+        for t in targets:
+            if t not in self.estimator.problems_meta:
+                raise ValueError(f"Unknown problem title: {t}")
+            out[t] = self.calibrator.load_or_calibrate(t)
+        return {
+            "action": "bench-status",
+            "generated_at": _utc_now(),
+            "problems": out[title] if title else out,
+        }
+
+    def diagnose(self, title: str) -> dict[str, Any]:
+        """Return residual diagnostics, phantom-weight adjustments, unpaired buckets, and ROI ranking."""
+        self.refresh_models()
+        if title not in self.estimator.problems_meta:
+            raise ValueError(f"Unknown problem title: {title}")
+        return self.calibrator.diagnose_problem(title)
+
+    def verify_escape(self, title: str, bad_sha: str, good_sha: str) -> dict[str, Any]:
+        """Verify regression test between escaped `bad_sha` and passing `good_sha`, clearing `ESCAPE_LOCK`."""
+        self.refresh_models()
+        if title not in self.estimator.problems_meta:
+            raise ValueError(f"Unknown problem title: {title}")
+        res = self.calibrator.verify_escape(title=title, bad_sha=bad_sha, good_sha=good_sha)
+        if res.get("ok"):
+            self._save_state()
+        return res
 
     def retrospect(self) -> dict[str, Any]:
         """Strictly causal chronological replay over `results/submit-queue-outcome.jsonl`."""
@@ -1049,11 +1169,26 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cfg.add_argument("--aging-tau", type=float, default=None, help="Aging time constant tau in seconds (default 600)")
     p_cfg.add_argument("--dry-run", action="store_true", help="Preview config without saving")
 
-    p_tst = sub.add_parser("schedule-test", parents=[common], help="Split-phase MLFQ (Q0/Q1) NPU test runner")
+    p_tst = sub.add_parser("schedule-test", parents=[common], help="3-Phase MLFQ (Q0/Q1) NPU test runner")
     p_tst.add_argument("--title", required=True, help="Operator problem title")
     p_tst.add_argument("--sha", default=None, help="Commit SHA (defaults to repo HEAD)")
-    p_tst.add_argument("--fast", action="store_true", help="Route through Q0 fast-lane (<=180s)")
-    p_tst.add_argument("--dry-run", action="store_true", help="Output split-phase execution plan without running")
+    p_tst.add_argument("--fast", action="store_true", help="Route through Q0 fast-lane")
+    p_tst.add_argument("--build-only", action="store_true", help="Run Phase A 32-core CPU compile only (0.0s NPU lock)")
+    p_tst.add_argument("--dry-run", action="store_true", help="Output 3-phase execution plan without running")
+
+    p_cal = sub.add_parser("calibrate", parents=[common], help="Fit Simplex MAP calibration & write calibration.json")
+    p_cal.add_argument("--title", default=None, help="Optional single problem title (defaults to all 10)")
+
+    p_bst = sub.add_parser("bench-status", parents=[common], help="Inspect stratified calibration & 6x5 coverage grid")
+    p_bst.add_argument("--title", default=None, help="Optional single problem title")
+
+    p_dia = sub.add_parser("diagnose", parents=[common], help="Inspect residual diagnostics, phantom weights, and bucket ROI")
+    p_dia.add_argument("--title", required=True, help="Operator problem title")
+
+    p_ves = sub.add_parser("verify-escape", parents=[common], help="Verify escape regression test & clear ESCAPE_LOCK")
+    p_ves.add_argument("--title", required=True, help="Operator problem title")
+    p_ves.add_argument("--bad-sha", required=True, help="Commit SHA that escaped local validation and failed online")
+    p_ves.add_argument("--good-sha", required=True, help="Fixed commit SHA with regression reproducer passing Q1")
 
     sub.add_parser("retrospect", parents=[common], help="Replay historical outcomes against 4-stage gate")
     return parser
@@ -1113,12 +1248,29 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         elif args.command == "schedule-test":
-            payload = engine.schedule_test_cmd(args) if hasattr(engine, "schedule_test_cmd") else engine.npu_scheduler.schedule_test(
+            payload = engine.npu_scheduler.schedule_test(
                 title=args.title,
                 sha=args.sha,
                 fast=args.fast,
+                build_only=args.build_only,
                 dry_run=args.dry_run,
+                stream_stdout=not args.dry_run,
             )
+            if not args.dry_run:
+                res = payload.get("result") or {}
+                print(json.dumps(res, ensure_ascii=False))
+                return int(res.get("exit_code", 0))
+        elif args.command == "calibrate":
+            payload = engine.calibrate(title=args.title)
+        elif args.command == "bench-status":
+            payload = engine.bench_status(title=args.title)
+        elif args.command == "diagnose":
+            payload = engine.diagnose(title=args.title)
+        elif args.command == "verify-escape":
+            payload = engine.verify_escape(title=args.title, bad_sha=args.bad_sha, good_sha=args.good_sha)
+            if not payload.get("ok", True):
+                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                return 1
         elif args.command == "retrospect":
             payload = engine.retrospect()
         else:

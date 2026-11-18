@@ -1,25 +1,26 @@
-"""4-Stage Statistical & Safety Submission Gate + Token-Bucket Quota Manager.
+"""4-Stage Statistical & Safety Submission Gate + Decay-Aware Quota & Circuit Breaker.
 
 Stages:
   1. SAFETY:
      - Verified `result.json` (`exit_code == 0`) & byte-consistent git tree (`op_host`/`op_kernel`)
      - Full suite (`FAST_LANE=1` barred), `EXTENDED_PASSED` present
      - Zero `EXTENDED_FAILED` / `EXTENDED_CASES_FAILED` / `VALIDATION_FAILED` / `STRESS_CASE_FAIL`
-     - All `mismatched=0/...`, `GATE_BAD bad=0/...`, `GATE_DET identical=True`
+     - All `mismatched=0/...`, `GATE_BAD ... bad=0/...`, `GATE_DET ... identical=True`
      - Cross-core / barrier static+dynamic safety check (`SetAtomicAdd`/`SyncAll` requires
        `STRESS_DONE` / `DETERMINISTIC` / `GATE_DET` unless already proven online)
   2. NOISE_FLOOR:
      - Holds candidates with `delta_expected < noise_floor_pts` (default `+2.5` pts ~ `0.93 sigma`
-       for `sigma = 2.70` pts) as `HOLD_LOW_GAIN`
+       for `sigma = 2.70` pts) as `HOLD_LOW_GAIN` (and yields `delta_expected = 0.0` when
+       `candidate_sha == active_board_sha` under `tbest(t)` non-stationarity)
      - Bypassed automatically when board is `0` / `no-submission` (`CRITICAL_RESTORE`) or `force=True`
   3. CIRCUIT_BREAKER:
      - Nygard 3-state machine (`CLOSED` / `OPEN` / `HALF_OPEN`) over rolling 12h window
-     - Trips `CIRCUIT_OPEN (Switch Baseline)` on `>= 6` non-improving shots since last new high
-       (counter resets automatically on any strictly higher Pass) or `>= 2` consecutive zeroing errors
-     - Allows `CRITICAL_RESTORE` through `HALF_OPEN` so a zeroed board is never stranded at 0
+     - Compares decay-adjusted contemporary scores (`gamma_p` + residual `-0.015 pts/hr`) rather
+       than raw 8-day-old peaks so multi-day `tbest(t)` tightening never manufactures false streaks
   4. QUOTA_RESERVE:
      - Dual Token Bucket: 190s inter-submission rate limit (`RATE_WAIT`) + 50/day Beijing-day
-       (`UTC+8` 00:00 reset) hard cap reserving `N_restore` slots for closing-time restores
+       (`UTC+8` 00:00 reset) hard cap reserving `N_restore` slots strictly for genuine
+       decay-discounted closing restores (`true_restore_gain >= noise_floor_pts` or `S_live == 0`)
      - Orders approved submissions by `(CRITICAL_RESTORE desc, difficulty * delta_expected desc)`
 """
 from __future__ import annotations
@@ -61,7 +62,7 @@ MIN_SUBMIT_GAP_SEC = 190
 @dataclasses.dataclass
 class GateConfig:
     noise_floor_pts: float = 2.5
-    min_closing_reserve: int = 5
+    min_closing_reserve: int = 2
     circuit_limit_shots: int = 6
     circuit_window_hours: float = 12.0
     rate_limit_gap_sec: int = MIN_SUBMIT_GAP_SEC
@@ -98,7 +99,9 @@ class CircuitBreakerStatus:
     shots_in_window: int
     consecutive_non_improving: int
     consecutive_zero_errors: int
-    window_best_score: float
+    window_best_score: float       # Decay-adjusted contemporary peak
+    raw_window_best_score: float   # Unadjusted historical score
+    decay_factor_gamma: float
     window_hours: float
     limit_shots: int
     reason: str
@@ -112,6 +115,7 @@ class QuotaStatus:
     daily_limit: int
     used_today: int
     remaining_today: int
+    needed_closing_restores: int
     reserved_for_closing: int
     discretionary_remaining: int
     closing_restore_targets: list[dict[str, Any]]
@@ -136,6 +140,10 @@ class GateVerdict:
     priority_score: float
     is_critical_restore: bool
     forced: bool
+    decay_factor_gamma: float
+    raw_historical_best_score: float
+    contemporary_best_score: float
+    true_restore_gain: float
     estimate: ScoreEstimate
     stages: list[StageResult]
     circuit_breaker: CircuitBreakerStatus
@@ -152,18 +160,26 @@ class GateVerdict:
             "priority_score": self.priority_score,
             "is_critical_restore": self.is_critical_restore,
             "forced": self.forced,
+            "decay_factor_gamma": self.decay_factor_gamma,
+            "raw_historical_best_score": self.raw_historical_best_score,
+            "contemporary_best_score": self.contemporary_best_score,
+            "true_restore_gain": self.true_restore_gain,
             "estimate": self.estimate.to_dict(),
-            "stages": [s.to_dict() for s in self.stages],
+            "stages": [s.to_dict() for s in verdict_stages_list(self.stages)],
             "circuit_breaker": self.circuit_breaker.to_dict(),
             "quota": self.quota.to_dict(),
         }
 
 
+def verdict_stages_list(stages: list[StageResult]) -> list[StageResult]:
+    return stages
+
+
 _MISMATCH_RE = re.compile(r"mismatched=(\d+)/(\d+)")
 _EXTENDED_PASS_RE = re.compile(r"EXTENDED_PASSED(?:\s+(\d+))?")
 _STRESS_DONE_RE = re.compile(r"STRESS_DONE\s+runs=(\d+)\s+failures=(\d+)")
-_GATE_BAD_RE = re.compile(r"GATE_BAD\s+bad=(\d+)/(\d+)")
-_GATE_DET_RE = re.compile(r"GATE_DET\s+identical=(\w+)")
+_GATE_BAD_RE = re.compile(r"GATE_BAD\b.*?\bbad=(\d+)/(\d+)")
+_GATE_DET_RE = re.compile(r"GATE_DET\b.*?\bidentical=(\w+)")
 
 
 class SubmissionGate:
@@ -183,7 +199,6 @@ class SubmissionGate:
         self._prior_online_pass_shas = self._scan_prior_online_pass_shas()
 
     def _scan_prior_online_pass_shas(self) -> dict[tuple[str, str], datetime.datetime | None]:
-        """Collect (title, sha) pairs with confirmed online Pass in outcome or submissions.json."""
         passed: dict[tuple[str, str], datetime.datetime | None] = {}
         for r in self.estimator.outcomes:
             if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
@@ -192,7 +207,6 @@ class SubmissionGate:
                 if key not in passed or (ts and (passed[key] is None or ts < passed[key])):
                     passed[key] = ts
 
-        # Also check results/scoring-evidence/my-score-table.json if available
         mstab = self.workspace / "results" / "scoring-evidence" / "my-score-table.json"
         if mstab.is_file():
             try:
@@ -239,7 +253,6 @@ class SubmissionGate:
     def _verify_git_commit_exists(self, title: str, sha: str) -> tuple[bool, str]:
         repo = self.workspace / "bench" / title
         if not (repo / ".git").exists():
-            # Allow offline fixture workspaces without full git clones if result.json matches
             return True, "no_git_repo_fixture"
         cat = subprocess.run(
             ["git", "-C", str(repo), "cat-file", "-t", sha],
@@ -249,7 +262,6 @@ class SubmissionGate:
         if cat.returncode != 0 or cat.stdout.strip() != "commit":
             return False, f"commit {sha[:7]} not found in {title} git repository"
 
-        # Ensure editable directories op_host & op_kernel exist in that commit tree
         tree = subprocess.run(
             ["git", "-C", str(repo), "ls-tree", "--name-only", sha],
             capture_output=True,
@@ -340,7 +352,6 @@ class SubmissionGate:
 
         log_text = log_file.read_text(errors="replace")
 
-        # Bar fast-lane partial probes from online judging
         if "FAST_LANE=1" in log_text:
             return StageResult(
                 stage="SAFETY",
@@ -349,7 +360,6 @@ class SubmissionGate:
                 reason="Validated with FAST_LANE=1 subset only; run full Q1 validation before submitting",
             )
 
-        # Check explicit failure markers
         for bad_marker in (
             "EXTENDED_FAILED",
             "EXTENDED_CASES_FAILED",
@@ -367,7 +377,6 @@ class SubmissionGate:
                     reason=f"validation.log contains failure token '{bad_marker}'",
                 )
 
-        # Require EXTENDED_PASSED
         ext_matches = _EXTENDED_PASS_RE.findall(log_text)
         if not ext_matches:
             return StageResult(
@@ -378,7 +387,6 @@ class SubmissionGate:
             )
         ext_cases = max((int(x) for x in ext_matches if x and x.isdigit()), default=0)
 
-        # Verify all sample/output mismatched=0/N
         mismatches = [(int(a), int(b)) for a, b in _MISMATCH_RE.findall(log_text)]
         bad_mm = [(a, b) for a, b in mismatches if a > 0]
         if bad_mm:
@@ -389,7 +397,6 @@ class SubmissionGate:
                 reason=f"Sample/output mismatch detected: mismatched={bad_mm[0][0]}/{bad_mm[0][1]}",
             )
 
-        # Check GATE_BAD and GATE_DET if present
         for bad_n, tot_n in _GATE_BAD_RE.findall(log_text):
             if int(bad_n) > 0:
                 return StageResult(
@@ -398,7 +405,9 @@ class SubmissionGate:
                     code="GATE_BAD_LANES",
                     reason=f"GATE_BAD reported {bad_n}/{tot_n} bad lanes",
                 )
-        for ident in _GATE_DET_RE.findall(log_text):
+
+        det_matches = _GATE_DET_RE.findall(log_text)
+        for ident in det_matches:
             if ident.lower() != "true":
                 return StageResult(
                     stage="SAFETY",
@@ -418,15 +427,9 @@ class SubmissionGate:
                     reason=f"STRESS_DONE reported {s_fail}/{s_runs} failures",
                 )
 
-        has_det_or_stress = (
-            stress_runs > 0
-            or "DETERMINISTIC" in log_text
-            or "GATE_DET identical=True" in log_text
-            or "stress ok" in log_text
-        )
+        has_det_tag = "DETERMINISTIC" in log_text or any(ident.lower() == "true" for ident in det_matches)
+        has_det_or_stress = stress_runs > 0 or has_det_tag or "stress ok" in log_text
 
-        # Cross-core / barrier race check: if commit uses SetAtomicAdd / SyncAll and has never
-        # passed online before as_of, require explicit multi-run determinism/stress gate
         cc_tokens = self._check_kernel_cross_core_tokens(title, sha)
         first_pass_ts = self._prior_online_pass_shas.get((title, sha))
         proven_prior = first_pass_ts is not None and (as_of is None or first_pass_ts < as_of)
@@ -443,6 +446,24 @@ class SubmissionGate:
                 metrics={"cross_core_tokens": cc_tokens, "extended_cases": ext_cases},
             )
 
+        # Closed-Loop Escape Lock: if the latest online submission escaped local S1 (`WA`/`TLE`/`RE`),
+        # block unproven new commits until `verify-escape` confirms a separating regression test!
+        esc_state = self.estimator.get_calibrator().inspect_escape_state(title, as_of=as_of)
+        if esc_state.get("escape_lock") and not proven_prior:
+            esc_s7 = esc_state.get("escape_short_sha") or "unknown"
+            esc_st = esc_state.get("escape_status") or "Online Failure"
+            return StageResult(
+                stage="SAFETY",
+                passed=False,
+                code="ESCAPE_LOCK_ACTIVE",
+                reason=(
+                    f"ESCAPE_LOCK active after {esc_s7} failed online ({esc_st}) despite passing local S1; "
+                    f"add regression case & run `verify-escape --title {title} --bad-sha {esc_s7} --good-sha {sha[:7]}` "
+                    f"(or restore a previously proven Pass SHA)"
+                ),
+                metrics={"escape_sha": esc_state.get("escape_sha"), "escape_status": esc_st},
+            )
+
         return StageResult(
             stage="SAFETY",
             passed=True,
@@ -450,7 +471,7 @@ class SubmissionGate:
             reason=(
                 f"exit=0, EXTENDED_PASSED ({ext_cases or 'ok'} cases), mismatched=0"
                 + (f", stress={stress_runs}" if stress_runs else "")
-                + (", DET=True" if "DETERMINISTIC" in log_text or "GATE_DET identical=True" in log_text else "")
+                + (", DET=True" if has_det_tag else "")
             ),
             metrics={
                 "exit_code": 0,
@@ -467,12 +488,19 @@ class SubmissionGate:
         title: str,
         as_of: datetime.datetime | None = None,
     ) -> CircuitBreakerStatus:
-        """Stage 3 helper: evaluate 12h / 6-non-improving-shots Nygard circuit breaker."""
+        """Stage 3 helper: evaluate 12h / 6-shot breaker using decay-adjusted contemporary peaks."""
         ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
         cutoff = ref_now - datetime.timedelta(hours=self.config.circuit_window_hours)
+        ledger = self.estimator.get_problem_ledger(title, as_of=as_of)
+        gamma_p = ledger.decay_factor_gamma
+        anchor_ts = _parse_iso(ledger.active_judged_at) if ledger.current_score > 0 else ref_now
+        if anchor_ts is None:
+            anchor_ts = ref_now
 
-        window_rows: list[tuple[datetime.datetime, str, float]] = []
-        prior_best = -1.0
+        window_rows: list[tuple[datetime.datetime, str, float, float]] = []
+        prior_contemp_best = -1.0
+        raw_best_seen = 0.0
+
         for r in self.estimator.outcomes:
             if r.get("title") != title:
                 continue
@@ -482,35 +510,46 @@ class SubmissionGate:
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
             if ts is None or ts >= ref_now:
                 continue
-            sc = float(r["score"]) if isinstance(r.get("score"), (int, float)) and st == "Pass" else 0.0
+            raw_sc = float(r["score"]) if isinstance(r.get("score"), (int, float)) and st == "Pass" else 0.0
+            if raw_sc > raw_best_seen:
+                raw_best_seen = raw_sc
+
+            # Project historical score to contemporary ref_now epoch so 8-day-old Nov 10 peaks
+            # do not falsely penalize Nov 18 passes that beat the decayed baseline.
+            contemp_sc = (
+                self.estimator.discount_draw_to_contemporary(raw_sc, ts, gamma_p, anchor_ts)
+                if st == "Pass" and raw_sc > 0
+                else 0.0
+            )
             if ts < cutoff:
-                if st == "Pass" and sc > prior_best:
-                    prior_best = sc
+                if st == "Pass" and contemp_sc > prior_contemp_best:
+                    prior_contemp_best = contemp_sc
                 continue
-            window_rows.append((ts, st, sc))
+            window_rows.append((ts, st, raw_sc, contemp_sc))
 
         window_rows.sort(key=lambda x: x[0])
-        best_in_win = prior_best
+        best_contemp_in_win = prior_contemp_best
         non_improving = 0
         consec_zeros = 0
-        for _ts, st, sc in window_rows:
-            if st == "Pass" and sc > best_in_win:
-                best_in_win = sc
+        for _ts, st, _raw_sc, contemp_sc in window_rows:
+            if st == "Pass" and contemp_sc > best_contemp_in_win + 1e-4:
+                best_contemp_in_win = contemp_sc
                 non_improving = 0
                 consec_zeros = 0
             else:
                 non_improving += 1
-                if st != "Pass" or sc <= 0.0:
+                if st != "Pass" or contemp_sc <= 0.0:
                     consec_zeros += 1
                 else:
                     consec_zeros = 0
 
+        disp_best = round(max(0.0, best_contemp_in_win), 2)
         limit = self.config.circuit_limit_shots
         if non_improving >= limit:
             state = "OPEN"
             reason = (
                 f"{non_improving}/{limit} consecutive non-improving shots in last "
-                f"{self.config.circuit_window_hours:.0f}h (window peak {max(0.0, best_in_win):.2f}) — SWITCH BASELINE"
+                f"{self.config.circuit_window_hours:.0f}h (contemp peak {disp_best:.2f}, gamma={gamma_p:.4f}) — SWITCH BASELINE"
             )
         elif consec_zeros >= 2:
             state = "HALF_OPEN"
@@ -518,8 +557,8 @@ class SubmissionGate:
         else:
             state = "CLOSED"
             reason = (
-                f"{non_improving}/{limit} non-improving shots since peak {max(0.0, best_in_win):.2f} "
-                f"({len(window_rows)} total in {self.config.circuit_window_hours:.0f}h)"
+                f"{non_improving}/{limit} non-improving shots since contemp peak {disp_best:.2f} "
+                f"({len(window_rows)} total in {self.config.circuit_window_hours:.0f}h, gamma={gamma_p:.4f})"
             )
 
         return CircuitBreakerStatus(
@@ -528,14 +567,16 @@ class SubmissionGate:
             shots_in_window=len(window_rows),
             consecutive_non_improving=non_improving,
             consecutive_zero_errors=consec_zeros,
-            window_best_score=round(max(0.0, best_in_win), 2),
+            window_best_score=disp_best,
+            raw_window_best_score=round(raw_best_seen, 2),
+            decay_factor_gamma=gamma_p,
             window_hours=self.config.circuit_window_hours,
             limit_shots=limit,
             reason=reason,
         )
 
     def get_quota_status(self, as_of: datetime.datetime | None = None) -> QuotaStatus:
-        """Stage 4 helper: compute Beijing-day 50-cap Token Bucket & closing restore reserve."""
+        """Stage 4 helper: Beijing-day 50-cap Token Bucket & decay-discounted closing reserve."""
         ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
         bj_now = ref_now.astimezone(BEIJING_TZ)
         bj_midnight = bj_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -548,7 +589,6 @@ class SubmissionGate:
             st = str(r.get("status", ""))
             if st in ("skipped", "duplicate"):
                 continue
-            # Platform counts real submissions (not local pre-submit rejections unless daily_limit hit)
             if st == "rejected":
                 if "daily submission limit" in str(r.get("detail", "")) or "daily_limit" in str(r.get("detail", "")):
                     ts_r = _parse_iso(r.get("finished_at") or r.get("queued_at"))
@@ -564,7 +604,6 @@ class SubmissionGate:
                 sid = str(r.get("submission_id") or f"{r.get('title')}:{r.get('sha')}:{ts.isoformat()}")
                 used_ids.add(sid)
 
-        # Also check submission-receipt.json files for direct submissions outside queue
         if as_of is None:
             for rec_file in (self.workspace / "results").glob("*/*/submission-receipt.json"):
                 try:
@@ -581,26 +620,38 @@ class SubmissionGate:
         used_today = min(self.config.daily_limit, len(used_ids))
         remaining_today = max(0, self.config.daily_limit - used_today)
 
-        # Identify problems currently needing closing-time best-SHA restore or zero-recovery
+        # Identify genuine closing restore targets using decay-discounted `true_restore_gain`!
         restore_targets: list[dict[str, Any]] = []
         for title in sorted(self.estimator.problems_meta):
             ledger = self.estimator.get_problem_ledger(title, as_of=as_of)
-            needs_zero_fix = ledger.current_score <= 0.0 and ledger.historical_best_sha is not None
-            needs_gap_fix = ledger.restore_gap >= self.config.noise_floor_pts and ledger.historical_best_sha is not None
+            if ledger.historical_best_sha is None:
+                continue
+            # Never mark as restore target if historical_best_sha IS ALREADY active on board!
+            if ledger.current_score > 0.0 and ledger.historical_best_sha == ledger.active_board_sha:
+                continue
+
+            needs_zero_fix = ledger.current_score <= 0.0
+            needs_gap_fix = ledger.true_restore_gain >= self.config.noise_floor_pts
             if needs_zero_fix or needs_gap_fix:
-                gap = ledger.historical_best_mean if needs_zero_fix else ledger.restore_gap
+                gain = ledger.contemporary_best_score if needs_zero_fix else ledger.true_restore_gain
                 restore_targets.append({
                     "title": title,
                     "best_sha": ledger.historical_best_sha,
+                    "active_board_sha": ledger.active_board_sha,
                     "current_score": ledger.current_score,
-                    "expected_restore_score": ledger.historical_best_mean,
-                    "expected_gain": round(gap, 2),
-                    "weighted_gain": round(ledger.difficulty * gap, 2),
+                    "raw_historical_best_score": ledger.raw_historical_best_score,
+                    "contemporary_best_score": ledger.contemporary_best_score,
+                    "decay_factor_gamma": ledger.decay_factor_gamma,
+                    "true_restore_gain": round(gain, 2),
+                    "expected_restore_score": ledger.contemporary_best_score,
+                    "expected_gain": round(gain, 2),
+                    "weighted_gain": round(ledger.difficulty * gain, 2),
                     "critical": needs_zero_fix,
                 })
         restore_targets.sort(key=lambda x: (x["critical"], x["weighted_gain"]), reverse=True)
 
-        reserved = min(12, max(self.config.min_closing_reserve, len(restore_targets)))
+        # Dynamic closing reserve: exact needed restores + 1 safety buffer (floored by min_closing_reserve)
+        reserved = min(12, max(self.config.min_closing_reserve, len(restore_targets) + (1 if restore_targets else 0)))
         discretionary = max(0, remaining_today - reserved)
 
         if last_submit_ts is not None:
@@ -614,6 +665,7 @@ class SubmissionGate:
             daily_limit=self.config.daily_limit,
             used_today=used_today,
             remaining_today=remaining_today,
+            needed_closing_restores=len(restore_targets),
             reserved_for_closing=reserved,
             discretionary_remaining=discretionary,
             closing_restore_targets=restore_targets,
@@ -657,6 +709,13 @@ class SubmissionGate:
         is_critical_restore = (
             estimate.current_score <= 0.0 or estimate.board_status != "Pass"
         )
+        is_already_active_on_board = (
+            as_of is None
+            and override_board_score is None
+            and not is_critical_restore
+            and speedup is None
+            and estimate.estimation_method == "active_board_identity"
+        )
 
         # Stage 1: SAFETY
         s1 = self.evaluate_safety(title, canonical_sha, as_of=as_of)
@@ -670,20 +729,31 @@ class SubmissionGate:
                 reason=(
                     f"Board is '{estimate.board_status}' (score={estimate.current_score:.2f}); "
                     f"CRITICAL_RESTORE bypasses +{self.config.noise_floor_pts:.1f}pt floor "
-                    f"(est +{estimate.delta_expected:.2f} pts)"
+                    f"(contemp est +{estimate.delta_expected:.2f} pts)"
                 ),
                 metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+            )
+        elif is_already_active_on_board and ov_action != "approve":
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=False,
+                code="ALREADY_ACTIVE_ON_BOARD",
+                reason=(
+                    f"SHA {estimate.short_sha} is already the active board submission "
+                    f"(S_live={estimate.current_score:.2f}, gamma={estimate.decay_factor_gamma:.4f}); "
+                    f"restore_gain=0.00 pts"
+                ),
+                metrics={"delta_expected": 0.0, "threshold": self.config.noise_floor_pts},
             )
         elif effective_force and estimate.delta_expected >= 0.0:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
                 passed=True,
                 code="FORCED_APPROVAL",
-                reason=f"Explicit force/override approved (delta={estimate.delta_expected:+.2f} pts)",
+                reason=f"Explicit force/override approved (contemp delta={estimate.delta_expected:+.2f} pts)",
                 metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
             )
         elif effective_force and estimate.delta_expected < 0.0:
-            # Even with force=True, warn/block if historical mean is strictly worse than current board unless manual approve
             if ov_action == "approve":
                 s2 = StageResult(
                     stage="NOISE_FLOOR",
@@ -698,9 +768,9 @@ class SubmissionGate:
                     passed=False,
                     code="NEGATIVE_EXPECTED_RESTORE",
                     reason=(
-                        f"Expected delta {estimate.delta_expected:+.2f} pts is negative "
-                        f"(est {estimate.estimated_score:.2f} < board {estimate.current_score:.2f}); "
-                        f"re-submitting trades score downward under tbest drift/jitter"
+                        f"Decay-adjusted delta {estimate.delta_expected:+.2f} pts is negative "
+                        f"(contemp {estimate.estimated_score:.2f} < board {estimate.current_score:.2f}, "
+                        f"gamma={estimate.decay_factor_gamma:.4f})"
                     ),
                     metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
                 )
@@ -722,7 +792,7 @@ class SubmissionGate:
                 code="BELOW_NOISE_FLOOR",
                 reason=(
                     f"Expected gain {estimate.delta_expected:+.2f} pts < +{self.config.noise_floor_pts:.2f} pts "
-                    f"noise floor (sigma=2.70 pts); holding to preserve daily quota"
+                    f"noise floor (sigma=2.70 pts, gamma={estimate.decay_factor_gamma:.4f}); holding to preserve daily quota"
                 ),
                 metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
             )
@@ -817,7 +887,6 @@ class SubmissionGate:
 
         stages = [s1, s2, s3, s4]
 
-        # Resolve final verdict & canonical status_tag
         if ov_action == "skip":
             approved = False
             status_tag = "REJECTED_GATE"
@@ -850,7 +919,6 @@ class SubmissionGate:
                 status_tag = "READY"
                 gate_reason = f"All 4 stages passed (weighted E[delta]={estimate.weighted_delta:+.2f} pts)"
 
-        # WSPT Submission Priority: CRITICAL_RESTORE gets +1000 tier, then difficulty * delta_expected
         priority_score = round(
             (1000.0 if (approved and is_critical_restore) else 0.0) + estimate.weighted_delta,
             2,
@@ -866,6 +934,10 @@ class SubmissionGate:
             priority_score=priority_score,
             is_critical_restore=is_critical_restore,
             forced=effective_force,
+            decay_factor_gamma=estimate.decay_factor_gamma,
+            raw_historical_best_score=estimate.raw_historical_best_score,
+            contemporary_best_score=estimate.contemporary_best_score,
+            true_restore_gain=estimate.true_restore_gain,
             estimate=estimate,
             stages=stages,
             circuit_breaker=cb,

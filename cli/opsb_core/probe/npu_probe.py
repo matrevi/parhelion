@@ -557,14 +557,44 @@ def build_snapshot() -> dict[str, Any]:
                 }
             )
 
-    # Add waiting tasks sorted by longest wait first (FIFO/aging visibility)
+    # Read cooperative WSPT tickets `/tmp/opsb-npu-tickets/*.json` for priority & boost state
+    tickets_by_pid: dict[int, dict[str, Any]] = {}
+    ticket_dir = pathlib.Path("/tmp/opsb-npu-tickets")
+    if ticket_dir.is_dir():
+        for tf in ticket_dir.glob("*.json"):
+            try:
+                td = json.loads(tf.read_text())
+                tpid = int(td.get("pid") or 0)
+                if tpid in procs:
+                    tickets_by_pid[tpid] = td
+                    if tpid not in all_holder_pids:
+                        waiting_roots.add(tpid)
+            except Exception:
+                continue
+
+    # Add waiting tasks sorted by WSPT ticket priority (tier, prio, elapsed_sec)
     waiting_tasks_list: list[dict[str, Any]] = []
-    for w_pid in sorted(waiting_roots, key=lambda x: procs.get(x, {}).get("elapsed_sec", 0), reverse=True):
+    sorted_waiters = sorted(
+        waiting_roots,
+        key=lambda x: (
+            int(tickets_by_pid.get(x, {}).get("tier") or 1),
+            float(tickets_by_pid.get(x, {}).get("prio") or 0.0),
+            procs.get(x, {}).get("elapsed_sec", 0),
+        ),
+        reverse=True,
+    )
+    for w_pid in sorted_waiters:
         if w_pid not in procs:
             continue
         tree = get_descendants(w_pid, procs)
+        tk = tickets_by_pid.get(w_pid, {})
         prob, sha = infer_problem_and_sha(tree, procs)
+        prob = prob or tk.get("title")
+        sha = sha or tk.get("sha")
         stage, detail = classify_stage(tree, procs, holds_die=False)
+        is_boosted = int(tk.get("tier") or 0) >= 50
+        if is_boosted:
+            detail = "Priority boosted by OpsSupervisor"
         wt_item = {
             "pid": w_pid,
             "die": None,
@@ -574,6 +604,7 @@ def build_snapshot() -> dict[str, Any]:
             "sha": sha,
             "elapsed_sec": procs[w_pid]["elapsed_sec"],
             "detail": detail,
+            "boosted": is_boosted,
             "subprocesses": len(tree),
         }
         waiting_tasks_list.append(wt_item)

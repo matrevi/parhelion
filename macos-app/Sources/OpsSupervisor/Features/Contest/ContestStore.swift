@@ -162,6 +162,26 @@ final class ContestStore: ObservableObject {
         await refreshNpu(silent: false)
     }
 
+    func boostNpuTicket(pid: Int, problem: String, sha: String) async {
+        do {
+            try await repository.boostNpuTicket(host: activeSSHHost, pid: pid, problem: problem, sha: sha)
+            bannerMessage = tr("已将 \(problem) 置顶为下一顺位获卡", "Boosted \(problem) to #1 NPU ticket")
+            await refreshNpu(silent: true)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func cancelNpuTicket(pid: Int, problem: String) async {
+        do {
+            try await repository.cancelNpuTask(host: activeSSHHost, pid: pid)
+            bannerMessage = tr("已取消远程任务 \(problem) (PID \(pid))", "Cancelled remote task \(problem) (PID \(pid))")
+            await refreshNpu(silent: true)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     // MARK: - Queue & Gate Mutations
 
     func updateScheduler(

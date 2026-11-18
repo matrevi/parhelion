@@ -43,6 +43,9 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
         if raw.contains("Phase A lock-free") {
             return "Phase A 32核无锁并行编译 (0s 占卡)"
         }
+        if raw.contains("Priority boosted") {
+            return "已由调度器置顶优先 (下一顺位获卡)"
+        }
         if raw == "Waiting for exclusive NPU die lock" {
             return "正在等待独占 NPU Die 设备锁"
         }
@@ -91,15 +94,16 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
     }
 
     func wsptTag(_ raw: String) -> String {
-        guard self == .zh else { return raw }
-        if raw == "ESCAPE LOCK" { return "逃逸锁定" }
-        if raw == "CRITICAL RESTORE" { return "清零待恢复" }
-        if raw.hasPrefix("FIRST PASS") { return raw.replacingOccurrences(of: "FIRST PASS", with: "待首通") }
-        if raw.hasPrefix("RESTORE ") { return raw.replacingOccurrences(of: "RESTORE ", with: "可恢复 ") }
-        if raw.hasPrefix("HIGH ROI") { return raw.replacingOccurrences(of: "HIGH ROI", with: "高收益") }
-        if raw.hasPrefix("HEADROOM") { return raw.replacingOccurrences(of: "HEADROOM", with: "提分空间") }
-        if raw.hasPrefix("STEADY") { return raw.replacingOccurrences(of: "STEADY", with: "稳定在榜") }
-        return raw
+        let cleaned = raw.replacingOccurrences(of: "^", with: "").trimmingCharacters(in: .whitespaces)
+        guard self == .zh else { return cleaned }
+        if cleaned == "ESCAPE LOCK" { return "逃逸锁定" }
+        if cleaned == "CRITICAL RESTORE" { return "清零待恢复" }
+        if cleaned == "FIRST PASS" { return "待首通" }
+        if cleaned.hasPrefix("RESTORE ") { return cleaned.replacingOccurrences(of: "RESTORE ", with: "可恢复 ") }
+        if cleaned == "HIGH ROI" { return "高收益" }
+        if cleaned == "HEADROOM" { return "提分空间" }
+        if cleaned == "STEADY" { return "稳定在榜" }
+        return cleaned
     }
 
     func stratumLabel(_ raw: String) -> String {

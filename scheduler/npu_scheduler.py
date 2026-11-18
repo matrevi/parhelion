@@ -104,6 +104,11 @@ class ProblemPriority:
     difficulty: int
     board_status: str
     current_score: float
+    active_board_sha: str | None
+    decay_factor_gamma: float
+    raw_historical_best_score: float
+    contemporary_best_score: float
+    true_restore_gain: float
     historical_best_score: float
     historical_best_sha: str | None
     frontier_top1: float
@@ -117,6 +122,7 @@ class ProblemPriority:
     in_flight_tag: str | None
     recommended_lane: str
     recommended_action: str
+    calibration: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -360,24 +366,86 @@ for w_pid in sorted(waiting_roots, key=lambda x: procs[x]["elapsed_sec"], revers
         "detail": f"Waiting for NPU die ({mode})",
     })
 
-# 5. Detect decoupled CPU-only builds outside NPU lock (compiler / cmake / ccec)
+# 5. Detect decoupled CPU-only builds outside NPU lock (`~/.opsb/cpu_builds/*.json` + compiler/cmake/ccec)
+opsb_home = pathlib.Path.home() / ".opsb"
+seen_cpu_builds = set()
+cpu_builds_dir = opsb_home / "cpu_builds"
+if cpu_builds_dir.is_dir():
+    for bf in sorted(cpu_builds_dir.glob("*.json")):
+        try:
+            bd = json.loads(bf.read_text())
+            bpid = int(bd.get("pid") or 0)
+            if bd.get("finished_at") or (bpid and bpid not in procs):
+                continue
+            bprob = bd.get("title") or bd.get("problem")
+            bsha = bd.get("sha")
+            el_b = int(max(0.0, time.time() - float(bd.get("started_epoch") or time.time())))
+            covered_pids.add(bpid)
+            seen_cpu_builds.add(f"{bprob}:{(bsha or '')[:7]}")
+            raw_tasks.append({
+                "pid": bpid, "die": None, "state": "CPU_BUILD", "tag": "BUILD",
+                "problem": bprob, "sha": bsha, "elapsed_sec": el_b,
+                "fast": True, "detail": "Phase A 32-core CPU build (0.0s NPU lock)",
+            })
+        except Exception:
+            pass
+
 for pid, p in procs.items():
     if pid in covered_pids:
         continue
     low = p["cmd"].lower()
     if any(k in low for k in ("compiler", "/ccec", "cmake")) and ("sdk" in low or "bench" in low or "tikcfw" in low):
-        # Group by parent bash/python if applicable
         rpid = p["ppid"] if p["ppid"] in procs and p["ppid"] > 100 else pid
         if rpid in covered_pids:
             continue
         tree = descendants(rpid)
         covered_pids.update(tree)
         prob, sha = infer_meta(tree)
-        raw_tasks.append({
-            "pid": rpid, "die": None, "state": "CPU_BUILD", "tag": "BUILD",
-            "problem": prob, "sha": sha, "elapsed_sec": procs.get(rpid, p)["elapsed_sec"],
-            "fast": True, "detail": "Decoupled 32-core CPU compile (no NPU die lock held)",
-        })
+        bkey = f"{prob}:{(sha or '')[:7]}"
+        if bkey not in seen_cpu_builds:
+            seen_cpu_builds.add(bkey)
+            raw_tasks.append({
+                "pid": rpid, "die": None, "state": "CPU_BUILD", "tag": "BUILD",
+                "problem": prob, "sha": sha, "elapsed_sec": procs.get(rpid, p)["elapsed_sec"],
+                "fast": True, "detail": "Decoupled 32-core CPU compile (no NPU die lock held)",
+            })
+
+# Enrich active die lock with `~/.opsb/die_session.json` and 10m `~/.opsb/die_ledger.jsonl`
+sess_file = opsb_home / "die_session.json"
+if sess_file.is_file() and die_locks and die_locks[0]["state"] == "HELD":
+    try:
+        ds = json.loads(sess_file.read_text())
+        if ds.get("title") and not die_locks[0].get("problem"):
+            die_locks[0]["problem"] = ds["title"]
+        if ds.get("phase"):
+            die_locks[0]["phase"] = ds["phase"]
+    except Exception:
+        pass
+
+die_duty_10m = None
+ledger_f = opsb_home / "die_ledger.jsonl"
+if ledger_f.is_file():
+    try:
+        now_ep = time.time()
+        lrows = [json.loads(ln) for ln in ledger_f.read_text().splitlines()[-120:] if ln.strip()]
+        lrows = [r for r in lrows if now_ep - float(r.get("ended_epoch") or r.get("ts") or 0) <= 600.0]
+        if lrows:
+            npu_s = sum(float(r.get("npu_exec_sec") or 0.0) for r in lrows)
+            acl_s = sum(float(r.get("acl_host_sec") or 0.0) for r in lrows)
+            wst_s = sum(float(r.get("lock_waste_sec") or 0.0) for r in lrows)
+            hold_s = sum(float(r.get("hold_sec") or r.get("phase_b_die_sec") or 0.0) for r in lrows)
+            denom = max(600.0, hold_s, 1.0)
+            die_duty_10m = {
+                "runs_10m": len(lrows),
+                "avg_hold_sec": round(hold_s / len(lrows), 1),
+                "slots_per_hr": round(min(240.0, 3600.0 / max(8.0, hold_s / len(lrows))), 1),
+                "npu_exec_pct": round(100.0 * npu_s / denom, 2),
+                "acl_host_pct": round(100.0 * acl_s / denom, 2),
+                "lock_waste_pct": round(100.0 * wst_s / denom, 2),
+                "free_pct": round(100.0 * max(0.0, denom - npu_s - acl_s - wst_s) / denom, 2),
+            }
+    except Exception:
+        pass
 
 print(json.dumps({
     "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -387,6 +455,7 @@ print(json.dumps({
     "load_5m": round(load_5, 2),
     "devices": devices,
     "die_locks": die_locks,
+    "die_duty_10m": die_duty_10m,
     "raw_tasks": raw_tasks,
 }))
 """
@@ -444,13 +513,22 @@ class NpuTaskScheduler:
                     txt = vlog.read_text(errors="replace")
                 except OSError:
                     continue
-                if "EXTENDED_PASSED" not in txt or "Waiting for a free NPU die" in txt or "FAST_LANE=1" in txt:
+                if "EXTENDED_PASSED" not in txt or "FAST_LANE=1" in txt:
+                    continue
+                try:
+                    rj_data = json.loads(rj.read_text())
+                except Exception:
+                    rj_data = {}
+                if isinstance(rj_data.get("phase_b_die_sec"), (int, float)) and rj_data["phase_b_die_sec"] > 0:
+                    samples.append(float(rj_data["phase_b_die_sec"]))
+                    continue
+                if "Waiting for a free NPU die" in txt:
                     continue
                 st_v = vlog.stat()
                 st_r = rj.stat()
                 birth = getattr(st_v, "st_birthtime", st_v.st_ctime)
                 dt = st_r.st_mtime - birth
-                if 15.0 <= dt <= 1800.0:
+                if 10.0 <= dt <= 1800.0:
                     samples.append(dt)
             if len(samples) >= 2:
                 durations[title] = round(float(statistics.median(samples)), 1)
@@ -557,13 +635,19 @@ class NpuTaskScheduler:
                         "-o",
                         "BatchMode=yes",
                         "-o",
-                        "ConnectTimeout=3",
+                        "ConnectTimeout=2",
+                        "-o",
+                        "ControlMaster=auto",
+                        "-o",
+                        "ControlPath=/tmp/opsb-ssh-%r@%h:%p",
+                        "-o",
+                        "ControlPersist=180",
                         self.npu_host,
                         "python3 -c " + shlex.quote(_REMOTE_READONLY_PROBE),
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=6.0,
+                    timeout=3.2,
                 )
                 if proc.returncode == 0 and proc.stdout.strip():
                     remote_data = json.loads(proc.stdout.strip().splitlines()[-1])
@@ -708,6 +792,7 @@ class NpuTaskScheduler:
             "load_5m": remote_data.get("load_5m"),
             "devices": remote_data.get("devices", []),
             "die_locks": remote_data.get("die_locks", []),
+            "die_duty_10m": remote_data.get("die_duty_10m"),
             "starvation_warnings": starvation_warnings,
             "tasks": [t.to_dict() for t in enriched],
         }
@@ -756,7 +841,12 @@ class NpuTaskScheduler:
                     difficulty=ledger.difficulty,
                     board_status=ledger.board_status,
                     current_score=ledger.current_score,
-                    historical_best_score=ledger.historical_best_score,
+                    active_board_sha=ledger.active_board_sha,
+                    decay_factor_gamma=ledger.decay_factor_gamma,
+                    raw_historical_best_score=ledger.raw_historical_best_score,
+                    contemporary_best_score=ledger.contemporary_best_score,
+                    true_restore_gain=ledger.true_restore_gain,
+                    historical_best_score=ledger.raw_historical_best_score,
                     historical_best_sha=ledger.historical_best_sha,
                     frontier_top1=ledger.frontier_top1,
                     recoverable_headroom=ledger.recoverable_headroom,
@@ -783,17 +873,23 @@ class NpuTaskScheduler:
         title: str,
         sha: str | None = None,
         fast: bool = False,
+        build_only: bool = False,
         dry_run: bool = False,
+        stream_stdout: bool = True,
     ) -> dict[str, Any]:
-        """Split-Phase + Cooperative MLFQ/WSPT NPU test entry point (`opsb test`).
+        """3-Phase Disaggregated + Cooperative MLFQ/WSPT NPU test entry point (`opsb test`).
 
-        Phase A (CPU_PREFILTER): Verifies git clean/pushed, syncs server repo under
-          repo-scoped lock, runs pure-host `validation/walk_model.py` (if present) and
-          32-core CPU `build.sh` WITHOUT holding `bench-device{0,1}.lock`.
-        Phase B (NPU_DIE_EXEC): Registers priority ticket `(mlfq_level, wspt_base, tau)`
-          in `/tmp/opsb-npu-tickets/`, acquires `bench-device{0,1}.lock` in WSPT
-          priority order, runs `FAST_LANE=1` (`Q0`) or full validation (`Q1`), and writes
-          `results/<Title>/<SHA>/{validation.log,result.json}`.
+        Phase A (`0.0s` NPU die lock):
+          Per-repo lock `/srv/work-repo-<Title>.lock`, heartbeat
+          `~/.opsb/cpu_builds/<Title>.json`, detached git checkout, `walk_model.py` (if present),
+          and 32-core CPU `build.sh -j4` (without `-e`) + `examples/build` pre-compilation.
+          Exits immediately on compile error (`lock_waste_sec = 0.0`) or `--build-only`.
+        Phase B (Cooperative WSPT Ticket -> Exclusive NPU Die Execution):
+          Ticket `/tmp/opsb-npu-tickets/<pid>.json`, `device{0,1}.lock`, live `~/.opsb/die_session.json`,
+          in-process `PersistentArenaRunner` (`OPSB_ARENA_ACCEL=1`, ~2ms/case vs 4.15s subprocess),
+          and zero redundant C++ rebuild inside `device0.lock`.
+        Phase C (`0.0s` NPU die lock):
+          Immediate lock release + `~/.opsb/die_ledger.jsonl` duty-cycle telemetry.
         """
         if title not in self.estimator.problems_meta:
             raise ValueError(f"Unknown problem title: {title}")
@@ -802,226 +898,97 @@ class NpuTaskScheduler:
         repo = self.workspace / pmeta.get("path", f"bench/{title}")
         canonical_sha = resolve_sha(self.workspace, title, sha)
         wspt_base, _, wspt_prio, mlfq = self.compute_wspt(title, fast=fast, wait_sec=0)
-        est_sec = self.est_service_sec(title, fast=fast)
+        est_sec = 25.0 if build_only else self.est_service_sec(title, fast=fast)
         walk_script_exists = (repo / "validation" / "walk_model.py").is_file()
+
+        phases: list[dict[str, Any]] = [
+            {
+                "phase": "A_CPU_BUILD_AND_PREFILTER",
+                "holds_npu_die_lock": False,
+                "repo_lock": f"/srv/work-repo-{title}.lock",
+                "heartbeat": f"~/.opsb/cpu_builds/{title}.json",
+                "steps": (
+                    ["git fetch & detached checkout", "python3 validation/walk_model.py"]
+                    if walk_script_exists
+                    else ["git fetch & detached checkout"]
+                )
+                + [
+                    "32-core CPU CMake + Compiler KernelC build (build.sh -j4 without -e)",
+                    "Pre-compile examples/build (0.0s NPU lock)",
+                ],
+            }
+        ]
+        if not build_only:
+            phases.extend(
+                [
+                    {
+                        "phase": "B_NPU_ARENA_DIE_EXEC",
+                        "holds_npu_die_lock": True,
+                        "lock_files": [
+                            "/srv/work-device0.lock",
+                            "/srv/work-device1.lock",
+                        ],
+                        "ticket_dir": "/tmp/opsb-npu-tickets",
+                        "heartbeat": "~/.opsb/die_session.json",
+                        "env": {
+                            "FAST_LANE": "1" if fast else "0",
+                            "OPSB_ARENA_ACCEL": "1",
+                            "PYTHONPATH": "/home/developer/.opsb/runtime",
+                        },
+                        "steps": [
+                            "Cooperative MLFQ + WSPT + Aging ticket admission",
+                            "Prebuilt examples/run.sh (skips redundant C++ rebuild inside device0.lock)",
+                            "PersistentArenaRunner single-aclInit suite (<5s)" if not fast else "Q0 fast-lane subset (<12s)",
+                            "Hardware profiler Task Duration capture",
+                        ],
+                    },
+                    {
+                        "phase": "C_POST_LOCK_LEDGER",
+                        "holds_npu_die_lock": False,
+                        "ledger": "~/.opsb/die_ledger.jsonl",
+                        "steps": [
+                            "Immediate device0.lock release",
+                            "Append 10m duty-cycle telemetry to ~/.opsb/die_ledger.jsonl",
+                            "Write results/<Title>/<SHA>/{validation.log,result.json}",
+                        ],
+                    },
+                ]
+            )
 
         plan = {
             "title": title,
             "sha": canonical_sha,
             "short_sha": canonical_sha[:7] if canonical_sha else None,
             "fast_lane": fast,
-            "mlfq_level": mlfq,
-            "quantum_sec": self.config.q0_quantum_sec if fast else 1200,
+            "build_only": build_only,
+            "mlfq_level": "CPU" if build_only else mlfq,
+            "quantum_sec": 300 if build_only else (self.config.q0_quantum_sec if fast else 1200),
             "est_service_sec": est_sec,
-            "wspt_priority": wspt_prio,
-            "phases": [
-                {
-                    "phase": "A_CPU_PREFILTER",
-                    "holds_npu_die_lock": False,
-                    "steps": (
-                        ["git fetch & detached checkout", "python3 validation/walk_model.py"]
-                        if walk_script_exists
-                        else ["git fetch & detached checkout"]
-                    )
-                    + ["32-core CPU CMake + Compiler KernelC build (build.sh)"],
-                },
-                {
-                    "phase": "B_NPU_DIE_EXEC",
-                    "holds_npu_die_lock": True,
-                    "lock_files": [
-                        "/srv/work-device0.lock",
-                        "/srv/work-device1.lock",
-                    ],
-                    "ticket_dir": "/tmp/opsb-npu-tickets",
-                    "env": {"FAST_LANE": "1" if fast else "0"},
-                    "steps": [
-                        "Cooperative MLFQ + WSPT + Aging ticket admission",
-                        "Exclusive per-die flock + VISIBLE_DEVICES pin",
-                        "Sample + targeted smoke (<180s)" if fast else "Full extended + stress/DET + profiler spectrum",
-                    ],
-                },
-            ],
+            "wspt_priority": 0.0 if build_only else wspt_prio,
+            "phases": phases,
             "dry_run": dry_run,
         }
 
         if dry_run:
             return plan
 
-        # Live execution checks (identical safety contract to tools/npu-test.py + Split-Phase)
-        dirty = subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip()
-        if dirty:
-            raise RuntimeError(f"Commit local changes in {title} before NPU validation")
-        slug = pmeta.get("slug") or title.lower()
-        url = f"https://git.invalid/bench-{slug}.git"
-        cred_raw = subprocess.check_output(
-            ["git", "credential", "fill"],
-            input=f"url={url}\n\n",
-            text=True,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        import importlib.util
+
+        npu_test_path = self.workspace / "tools" / "npu-test.py"
+        spec = importlib.util.spec_from_file_location("opsb_npu_test", str(npu_test_path))
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Missing 3-Phase runner at {npu_test_path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        res_obj = mod.run_3phase_validation(
+            title=title,
+            sha_override=sha,
+            sync_only=False,
+            fast=fast,
+            build_only=build_only,
+            npu_host=self.npu_host,
+            workspace=self.workspace,
+            stream_stdout=stream_stdout,
         )
-        cred = dict(line.split("=", 1) for line in cred_raw.splitlines() if "=" in line)
-
-        remote_runner = r"""
-import datetime, fcntl, glob, json, os, pathlib, subprocess, sys, tempfile, time
-
-cfg = json.load(sys.stdin)
-root = pathlib.Path('/srv/work')
-root.mkdir(parents=True, exist_ok=True)
-repo = root / cfg['title']
-logdir = root.parent / 'bench-results' / cfg['title'] / cfg['sha']
-logdir.mkdir(parents=True, exist_ok=True)
-
-# Phase A: Per-problem repo lock ONLY (zero NPU die lock held during git sync + walk_model + CPU build!)
-repo_lock = pathlib.Path(f"/tmp/opsb-repo-{cfg['title']}.lock").open('a')
-fcntl.flock(repo_lock, fcntl.LOCK_EX)
-
-env = os.environ.copy()
-env['GIT_TERMINAL_PROMPT'] = '0'
-with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
-    askpass = pathlib.Path(auth) / 'askpass.py'
-    askpass.write_text('#!/usr/bin/env python3\nimport os,sys\nprint(os.environ["TASK_GIT_USERNAME" if "username" in sys.argv[1].lower() else "TASK_GIT_PASSWORD"])\n')
-    askpass.chmod(0o700)
-    env.update(GIT_ASKPASS=str(askpass), TASK_GIT_USERNAME=cfg.pop('username'), TASK_GIT_PASSWORD=cfg.pop('password'))
-    if not repo.exists():
-        subprocess.run(['git', '-c', 'credential.helper=', 'clone', cfg['url'], str(repo)], env=env, check=True)
-    subprocess.run(['git', '-C', str(repo), '-c', 'credential.helper=', 'fetch', 'origin', '--prune'], env=env, check=True)
-    subprocess.run(['git', '-C', str(repo), '-c', 'credential.helper=', 'checkout', '--detach', '--force', cfg['sha']], env=env, check=True)
-    del env['TASK_GIT_USERNAME'], env['TASK_GIT_PASSWORD'], env['GIT_ASKPASS']
-
-env['FAST_LANE'] = '1' if cfg['fast'] else '0'
-log_f = (logdir / 'validation.log').open('w')
-def emit(msg):
-    log_f.write(msg + '\n')
-    log_f.flush()
-    print(msg, flush=True)
-
-emit(f"Verified commit: {cfg['sha']}")
-emit(f"FAST_LANE={env['FAST_LANE']} MLFQ={cfg['mlfq']}")
-
-# Optional Phase A1: Pure-host state-machine walk check
-walk_py = repo / 'validation' / 'walk_model.py'
-if walk_py.is_file():
-    emit("[PHASE-A] Running pure-host walk_model.py (no NPU lock)...")
-    wproc = subprocess.run(['python3', str(walk_py)], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    log_f.write(wproc.stdout)
-    log_f.flush()
-    print(wproc.stdout, end='', flush=True)
-    if wproc.returncode != 0:
-        emit("VALIDATION_FAILED rc=2 (walk_model failed in Phase A)")
-        (logdir / 'result.json').write_text(json.dumps({'title': cfg['title'], 'sha': cfg['sha'], 'exit_code': 2, 'phase': 'WALK_MODEL', 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + '\n')
-        sys.exit(2)
-
-# Phase B: Cooperative MLFQ + WSPT Priority Ticket Queue -> Exclusive NPU Die Lock
-ticket_dir = pathlib.Path('/tmp/opsb-npu-tickets')
-ticket_dir.mkdir(parents=True, exist_ok=True)
-my_pid = os.getpid()
-t0 = time.time()
-ticket_path = ticket_dir / f"{my_pid}.json"
-
-def update_ticket():
-    wait_s = max(0.0, time.time() - t0)
-    age = wait_s / max(60.0, cfg['aging_tau'])
-    mlfq_now = 'Q0*' if (not cfg['fast'] and wait_s >= 1800) else cfg['mlfq']
-    ticket_path.write_text(json.dumps({
-        'pid': my_pid, 'title': cfg['title'], 'sha': cfg['sha'],
-        'tier': 2 if mlfq_now in ('Q0', 'Q0*') else 1,
-        'prio': cfg['wspt_base'] + age, 'created': t0,
-    }))
-
-def am_top_ticket():
-    update_ticket()
-    mine = json.loads(ticket_path.read_text())
-    for tf in ticket_dir.glob('*.json'):
-        try:
-            other = json.loads(tf.read_text())
-            opid = int(other['pid'])
-            if opid == my_pid:
-                continue
-            if not pathlib.Path(f"/proc/{opid}").exists():
-                tf.unlink(missing_ok=True)
-                continue
-            if (other['tier'], other['prio'], -other['created']) > (mine['tier'], mine['prio'], -mine['created']):
-                return False
-        except Exception:
-            continue
-    return True
-
-legacy_lock = (root.parent / 'bench-validation.lock').open('a')
-fcntl.flock(legacy_lock, fcntl.LOCK_SH)
-devices = int(os.environ.get('TASK_DEVICES', '1'))
-slot = None
-announced = False
-try:
-    while slot is None:
-        if am_top_ticket():
-            for idx in range(devices):
-                h = (root.parent / f'bench-device{idx}.lock').open('a')
-                try:
-                    fcntl.flock(h, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    slot = (idx, h)
-                    break
-                except BlockingIOError:
-                    h.close()
-        if slot is None:
-            if not announced:
-                emit('Waiting for a free NPU die')
-                announced = True
-            time.sleep(3)
-finally:
-    ticket_path.unlink(missing_ok=True)
-
-env['VISIBLE_DEVICES'] = str(slot[0])
-emit(f"Using NPU die {slot[0]} (VISIBLE_DEVICES={slot[0]})")
-p = subprocess.Popen(['bash', 'validation/run-npu.sh'], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-for line in p.stdout:
-    log_f.write(line)
-    log_f.flush()
-    print(line, end='', flush=True)
-code = p.wait()
-log_f.close()
-(logdir / 'result.json').write_text(json.dumps({'title': cfg['title'], 'sha': cfg['sha'], 'exit_code': code, 'fast_lane': cfg['fast'], 'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}, indent=2) + '\n')
-sys.exit(code)
-"""
-        dest = self.workspace / "results" / title / canonical_sha
-        dest.mkdir(parents=True, exist_ok=True)
-        basename = "validation-fast" if fast else "validation"
-        cfg_payload = {
-            "title": title,
-            "url": url,
-            "sha": canonical_sha,
-            "username": cred["username"],
-            "password": cred["password"],
-            "fast": fast,
-            "mlfq": mlfq,
-            "wspt_base": wspt_base,
-            "aging_tau": self.config.aging_tau_sec,
-        }
-        with (dest / f"{basename}.log").open("w") as local_log:
-            proc = subprocess.Popen(
-                ["ssh", "-o", "BatchMode=yes", self.npu_host, "python3 -c " + shlex.quote(remote_runner)],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            assert proc.stdin is not None
-            assert proc.stdout is not None
-            proc.stdin.write(json.dumps(cfg_payload))
-            proc.stdin.close()
-            cfg_payload.clear()
-            for line in proc.stdout:
-                local_log.write(line)
-                local_log.flush()
-            rc = proc.wait()
-
-        res_obj = {
-            "title": title,
-            "sha": canonical_sha,
-            "exit_code": rc,
-            "fast_lane": fast,
-            "mlfq_level": mlfq,
-            "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        }
-        res_name = "result-fast.json" if fast else "result.json"
-        (dest / res_name).write_text(json.dumps(res_obj, indent=2) + "\n")
         return {**plan, "result": res_obj}

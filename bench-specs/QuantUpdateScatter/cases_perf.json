@@ -1,0 +1,206 @@
+{
+  "problem": "QuantUpdateScatter",
+  "version": "1.0",
+  "protocol": {
+    "profiler": "profiler_single_session",
+    "warmup": 2,
+    "repeat": 5,
+    "sync_per_iter": true,
+    "metric": "task_duration_median_us"
+  },
+  "hardware_roofline": {
+    "soc": "soc-a",
+    "hbm_bw_gbps": 724.0,
+    "aiv_cores": 40,
+    "launch_floor_us": 3.35
+  },
+  "public_anchors": [
+    {
+      "id": "P1",
+      "weight_pts": 2.0,
+      "tbest_us": 3.74
+    },
+    {
+      "id": "P2",
+      "weight_pts": 2.0,
+      "tbest_us": 3.97
+    },
+    {
+      "id": "P3",
+      "weight_pts": 2.0,
+      "tbest_us": 4.2
+    },
+    {
+      "id": "P4",
+      "weight_pts": 2.0,
+      "tbest_us": 3.836667
+    },
+    {
+      "id": "P5",
+      "weight_pts": 2.0,
+      "tbest_us": 4.26
+    }
+  ],
+  "strata_priors": {
+    "S_SMALL_CORE": 0.3,
+    "M_MID_UB": 0.35,
+    "L_HBM_TILED": 0.2,
+    "X_EXTREME": 0.15
+  },
+  "hidden_buckets": [
+    {
+      "id": "sample",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "int8",
+      "io_bytes": 4096,
+      "roofline_us": 3.8,
+      "torch_ref_us": 6.9,
+      "prior_w": 0.099999,
+      "max_w": 0.25,
+      "description": "Sample KV-cache scatter"
+    },
+    {
+      "id": "rows_big_c8",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "int8",
+      "io_bytes": 32768,
+      "roofline_us": 3.9,
+      "torch_ref_us": 6.15,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "Narrow C=8 unaligned int8 rows"
+    },
+    {
+      "id": "c128_r256",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "int8",
+      "io_bytes": 65536,
+      "roofline_us": 4.0,
+      "torch_ref_us": 6.83,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "Small B*S=256, C=128"
+    },
+    {
+      "id": "c1024_r1024",
+      "stratum": "M_MID_UB",
+      "dtype": "int8",
+      "io_bytes": 2097152,
+      "roofline_us": 6.247,
+      "torch_ref_us": 7.13,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid 1024x1024 fp16->int8 quant"
+    },
+    {
+      "id": "r4096_c256",
+      "stratum": "M_MID_UB",
+      "dtype": "int8",
+      "io_bytes": 2097152,
+      "roofline_us": 6.247,
+      "torch_ref_us": 6.91,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid 4096x256 row scatter"
+    },
+    {
+      "id": "kv_decode_512",
+      "stratum": "M_MID_UB",
+      "dtype": "int8",
+      "io_bytes": 524288,
+      "roofline_us": 5.2,
+      "torch_ref_us": 7.44,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "LLM decode batch=512 step=1 KV update"
+    },
+    {
+      "id": "bf16_kv_decode_proxy",
+      "stratum": "M_MID_UB",
+      "dtype": "bfloat16",
+      "io_bytes": 524288,
+      "roofline_us": 5.4,
+      "torch_ref_us": 7.8,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "bf16updates -> int8 quant scatter"
+    },
+    {
+      "id": "full_rows",
+      "stratum": "L_HBM_TILED",
+      "dtype": "int8",
+      "io_bytes": 4194304,
+      "roofline_us": 9.143,
+      "torch_ref_us": 8.45,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Full-table multi-MB row overwrite"
+    },
+    {
+      "id": "few_rows_1mb",
+      "stratum": "L_HBM_TILED",
+      "dtype": "int8",
+      "io_bytes": 2097152,
+      "roofline_us": 6.8,
+      "torch_ref_us": 7.81,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Few rows 1MB wide hidden"
+    },
+    {
+      "id": "large_ele_c128",
+      "stratum": "L_HBM_TILED",
+      "dtype": "int8",
+      "io_bytes": 8388608,
+      "roofline_us": 14.936,
+      "torch_ref_us": 9.5,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Large batch C=128 HBM bound"
+    },
+    {
+      "id": "many_idx_dup",
+      "stratum": "X_EXTREME",
+      "dtype": "int8",
+      "io_bytes": 524288,
+      "roofline_us": 6.5,
+      "torch_ref_us": 7.23,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Duplicate indices sequential order"
+    },
+    {
+      "id": "few_rows_c65536",
+      "stratum": "X_EXTREME",
+      "dtype": "int8",
+      "io_bytes": 1048576,
+      "roofline_us": 7.5,
+      "torch_ref_us": 9.3,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Ultra-wide C=65536 UB multi-tile"
+    },
+    {
+      "id": "odd_c129_i8_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "int8",
+      "io_bytes": 262144,
+      "roofline_us": 5.2,
+      "torch_ref_us": 8.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Odd 129B int8 DataCopyPad tail"
+    },
+    {
+      "id": "single_row_decode_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "int8",
+      "io_bytes": 16384,
+      "roofline_us": 3.95,
+      "torch_ref_us": 6.8,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "B=1 single-token decode latency"
+    }
+  ]
+}

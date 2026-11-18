@@ -169,6 +169,14 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(["npu", "agent-install", "--host", alias, "--json"], timeout: 15.0)
     }
 
+    func boostNpuTicket(host: String, pid: Int, problem: String, sha: String) async throws {
+        _ = try await client.execute(["npu", "boost", "\(pid)", "--problem", problem, "--sha", sha, "--host", host, "--json"], timeout: 8.0)
+    }
+
+    func cancelNpuTask(host: String, pid: Int) async throws {
+        _ = try await client.execute(["npu", "cancel", "\(pid)", "--host", host, "--json"], timeout: 8.0)
+    }
+
     func fetchCaptcha() async throws -> (String, String)? {
         let data = try await client.execute(["auth", "judge-captcha", "--json"], timeout: 20.0, allowNonZeroExit: true)
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],

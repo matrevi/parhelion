@@ -198,11 +198,12 @@ struct NpuTaskItem: Codable, Identifiable {
     let wsptTag: String?
     let elapsedSec: Int
     let estimatedWaitSec: Int?
+    let boosted: Bool?
     let detail: String
     let subprocesses: Int
 
     enum CodingKeys: String, CodingKey {
-        case pid, die, state, stage, problem, sha, difficulty, detail, subprocesses
+        case pid, die, state, stage, problem, sha, difficulty, boosted, detail, subprocesses
         case shortSha = "short_sha"
         case wsptPriority = "wspt_priority"
         case wsptTag = "wspt_tag"

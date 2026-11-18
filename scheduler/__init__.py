@@ -8,6 +8,7 @@ and the `opsb` CLI to manage:
   4. Active CLI & JSON IPC Bridge (`cli_bridge.py`)
 """
 
+from .calibration import BenchmarkCalibrator, project_capped_simplex
 from .estimator import (
     CROSS_CORE_OPS,
     PROBLEM_DIFFICULTY,
@@ -41,6 +42,7 @@ def __getattr__(name: str):
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
+    "BenchmarkCalibrator",
     "CROSS_CORE_OPS",
     "NPU_TASK_TAGS",
     "PROBLEM_DIFFICULTY",
@@ -59,5 +61,6 @@ __all__ = [
     "StageResult",
     "SubmissionGate",
     "parse_validation_perf",
+    "project_capped_simplex",
     "resolve_sha",
 ]

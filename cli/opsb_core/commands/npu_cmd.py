@@ -6,7 +6,7 @@ import json
 import sys
 
 from ..config import ConfigRepository
-from ..services.npu_service import deploy_probe, poll_npu_telemetry, test_ssh_connectivity
+from ..services.npu_service import boost_npu_ticket, cancel_npu_task, deploy_probe, poll_npu_telemetry, test_ssh_connectivity
 from ..services.queue_service import compute_workspace_snapshot
 
 
@@ -15,6 +15,16 @@ def run_npu(args: argparse.Namespace) -> int:
     ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
     host = getattr(args, "host", None) or cfg.get("npu_ssh_host", "npu")
     as_json = getattr(args, "json", False)
+
+    if args.npu_cmd == "boost":
+        res = boost_npu_ticket(host, int(args.pid), getattr(args, "problem", "") or "", getattr(args, "sha", "") or "")
+        print(json.dumps(res, ensure_ascii=False))
+        return 0 if res.get("ok") else 1
+
+    if args.npu_cmd == "cancel":
+        res = cancel_npu_task(host, int(args.pid))
+        print(json.dumps(res, ensure_ascii=False))
+        return 0 if res.get("ok") else 1
 
     if args.npu_cmd == "agent-install":
         res = deploy_probe(host)

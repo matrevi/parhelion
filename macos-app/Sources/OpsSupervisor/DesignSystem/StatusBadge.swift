@@ -60,6 +60,35 @@ struct SemanticPill: View {
     }
 }
 
+struct ChevronStackGlyph: View {
+    let level: Int
+    let color: Color
+
+    var body: some View {
+        Canvas { ctx, size in
+            let cx = size.width / 2.0
+            let halfW: CGFloat = 4.6
+            let chevH: CGFloat = 3.1
+            let stepY: CGFloat = 4.1
+            let totalH = chevH + CGFloat(level - 1) * stepY
+            let startY = (size.height - totalH) / 2.0
+
+            for i in 0..<level {
+                let topY = startY + CGFloat(i) * stepY
+                var path = Path()
+                path.move(to: CGPoint(x: cx - halfW, y: topY + chevH))
+                path.addLine(to: CGPoint(x: cx, y: topY))
+                path.addLine(to: CGPoint(x: cx + halfW, y: topY + chevH))
+                ctx.stroke(
+                    path,
+                    with: .color(color),
+                    style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+    }
+}
+
 /// Stacked upward chevron tier badge: draws EXACTLY `level` (1, 2, or 3) solid chevrons, vertically centered.
 struct DifficultyBadge: View {
     let difficulty: Int
@@ -75,34 +104,54 @@ struct DifficultyBadge: View {
     }
 
     var body: some View {
-        Canvas { ctx, size in
-            let cx = size.width / 2.0
-            let halfW: CGFloat = 4.8
-            let chevH: CGFloat = 3.2
-            let stepY: CGFloat = 4.2
-            let totalH = chevH + CGFloat(level - 1) * stepY
-            let startY = (size.height - totalH) / 2.0
+        ChevronStackGlyph(level: level, color: tint)
+            .frame(width: 24, height: 20)
+            .background(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .fill(tint.opacity(0.12))
+            )
+            .help("难度级别 \(level) 级（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
+    }
+}
 
-            for i in 0..<level {
-                let topY = startY + CGFloat(i) * stepY
-                var path = Path()
-                path.move(to: CGPoint(x: cx - halfW, y: topY + chevH))
-                path.addLine(to: CGPoint(x: cx, y: topY))
-                path.addLine(to: CGPoint(x: cx + halfW, y: topY + chevH))
+/// Unified single badge merging the solid 1/2/3 chevron tier icon + clean priority label (no duplicate ASCII `^`).
+struct TierTagBadge: View {
+    let difficulty: Int
+    let text: String
 
-                ctx.stroke(
-                    path,
-                    with: .color(tint),
-                    style: StrokeStyle(lineWidth: 1.95, lineCap: .round, lineJoin: .round)
-                )
-            }
+    private var level: Int { min(3, max(1, difficulty)) }
+
+    private var palette: (fg: Color, bg: Color) {
+        let u = text.uppercased()
+        if u.contains("CRITICAL") || u.contains("ESCAPE") || u.contains("逃逸") || u.contains("清零") {
+            return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
         }
-        .frame(width: 24, height: 20)
-        .background(
-            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                .fill(tint.opacity(0.12))
-        )
-        .help("难度级别 \(level) 级（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
+        if u.contains("RESTORE") || u.contains("可恢复") {
+            let c = Color(red: 0.90, green: 0.56, blue: 0.10)
+            return (c, c.opacity(0.15))
+        }
+        let tierTint: Color = {
+            switch level {
+            case 3: return Color(red: 0.62, green: 0.36, blue: 0.95)
+            case 2: return Color(red: 0.20, green: 0.56, blue: 0.95)
+            default: return .teal
+            }
+        }()
+        return (tierTint, tierTint.opacity(0.14))
+    }
+
+    var body: some View {
+        HStack(spacing: 5.5) {
+            ChevronStackGlyph(level: level, color: palette.fg)
+                .frame(width: 13, height: 14)
+            Text(text)
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .lineLimit(1)
+        }
+        .foregroundStyle(palette.fg)
+        .padding(.horizontal, 8.5)
+        .padding(.vertical, 3.5)
+        .background(Capsule(style: .continuous).fill(palette.bg))
     }
 }
 

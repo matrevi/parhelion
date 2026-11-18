@@ -1,0 +1,206 @@
+{
+  "problem": "LayerNormV3",
+  "version": "1.0",
+  "protocol": {
+    "profiler": "profiler_single_session",
+    "warmup": 2,
+    "repeat": 5,
+    "sync_per_iter": true,
+    "metric": "task_duration_median_us"
+  },
+  "hardware_roofline": {
+    "soc": "soc-a",
+    "hbm_bw_gbps": 724.0,
+    "aiv_cores": 40,
+    "launch_floor_us": 3.35
+  },
+  "public_anchors": [
+    {
+      "id": "P1",
+      "weight_pts": 2.0,
+      "tbest_us": 4.04
+    },
+    {
+      "id": "P2",
+      "weight_pts": 2.0,
+      "tbest_us": 3.956667
+    },
+    {
+      "id": "P3",
+      "weight_pts": 2.0,
+      "tbest_us": 5.993333
+    },
+    {
+      "id": "P4",
+      "weight_pts": 2.0,
+      "tbest_us": 3.99
+    },
+    {
+      "id": "P5",
+      "weight_pts": 2.0,
+      "tbest_us": 6.05
+    }
+  ],
+  "strata_priors": {
+    "S_SMALL_CORE": 0.3,
+    "M_MID_UB": 0.35,
+    "L_HBM_TILED": 0.2,
+    "X_EXTREME": 0.15
+  },
+  "hidden_buckets": [
+    {
+      "id": "f32_4x6x8",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 2304,
+      "roofline_us": 3.95,
+      "torch_ref_us": 4.2,
+      "prior_w": 0.099999,
+      "max_w": 0.25,
+      "description": "Sample 3D fp32 (4,6,8) tiny norm"
+    },
+    {
+      "id": "f32_64x128_proxy",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 65536,
+      "roofline_us": 4.1,
+      "torch_ref_us": 5.2,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "Small 2D fp32 (64,128) sub-40 rows"
+    },
+    {
+      "id": "f16_128x256_proxy",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float16",
+      "io_bytes": 131072,
+      "roofline_us": 4.2,
+      "torch_ref_us": 5.4,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "Small 2D fp16 (128,256)"
+    },
+    {
+      "id": "f32_256x512",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 1048576,
+      "roofline_us": 5.5,
+      "torch_ref_us": 6.94,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid 2D fp32 (256,512) 1MB"
+    },
+    {
+      "id": "f16_512x512",
+      "stratum": "M_MID_UB",
+      "dtype": "float16",
+      "io_bytes": 1048576,
+      "roofline_us": 5.5,
+      "torch_ref_us": 7.36,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid 2D fp16 (512,512) 1MB"
+    },
+    {
+      "id": "f32_1024x1024",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 8388608,
+      "roofline_us": 15.0,
+      "torch_ref_us": 16.58,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid-Large fp32 (1024,1024)"
+    },
+    {
+      "id": "bf16_1024x1024",
+      "stratum": "M_MID_UB",
+      "dtype": "bfloat16",
+      "io_bytes": 4194304,
+      "roofline_us": 9.8,
+      "torch_ref_us": 14.2,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "Mid-Large bf16 (1024,1024) cast+norm"
+    },
+    {
+      "id": "f32_64x8192",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 4194304,
+      "roofline_us": 10.2,
+      "torch_ref_us": 11.5,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Wide hidden D=8192 fp32"
+    },
+    {
+      "id": "f16_4096x1024",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float16",
+      "io_bytes": 16777216,
+      "roofline_us": 26.523,
+      "torch_ref_us": 52.56,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Transformer batch 4096x1024 fp16"
+    },
+    {
+      "id": "bf16_4096x1024_proxy",
+      "stratum": "L_HBM_TILED",
+      "dtype": "bfloat16",
+      "io_bytes": 16777216,
+      "roofline_us": 27.5,
+      "torch_ref_us": 54.0,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "Transformer batch 4096x1024 bf16"
+    },
+    {
+      "id": "f32_2x20000",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 320000,
+      "roofline_us": 8.5,
+      "torch_ref_us": 14.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "2-row multi-tile D=20000 two-pass"
+    },
+    {
+      "id": "bf16_1x65536_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "bfloat16",
+      "io_bytes": 262144,
+      "roofline_us": 12.0,
+      "torch_ref_us": 24.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Single-row D=65536 UB spill"
+    },
+    {
+      "id": "f32_odd_1023x513_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 4198400,
+      "roofline_us": 11.5,
+      "torch_ref_us": 19.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Unaligned odd D=513 tail norm"
+    },
+    {
+      "id": "f32_params_axis0_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 2097152,
+      "roofline_us": 8.0,
+      "torch_ref_us": 15.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "begin_norm_axis != begin_params_axis"
+    }
+  ]
+}

@@ -155,10 +155,45 @@ struct NpuServerQueueView: View {
                         .foregroundStyle(active ? Color.accentColor : .secondary)
                 }
 
-                Text(lang.npuDetail(task.detail))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(lang.npuDetail(task.detail))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(task.boosted == true ? .orange : .secondary)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    if task.state == "WAITING" && task.boosted != true && task.pid > 0 {
+                        Button {
+                            Task {
+                                await store.boostNpuTicket(
+                                    pid: task.pid,
+                                    problem: task.problem ?? "Operator",
+                                    sha: task.sha ?? ""
+                                )
+                            }
+                        } label: {
+                            Label(lang.tr("置顶优先", "Boost"), systemImage: "bolt.fill")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                        .controlSize(.mini)
+                    }
+
+                    if (task.state == "WAITING" || task.state == "CPU_BUILD") && task.pid > 0 {
+                        Button {
+                            Task {
+                                await store.cancelNpuTicket(pid: task.pid, problem: task.problem ?? "Task")
+                            }
+                        } label: {
+                            Text(lang.tr("取消", "Cancel"))
+                                .font(.system(size: 10))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                    }
+                }
             }
         }
     }

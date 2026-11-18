@@ -1,18 +1,27 @@
-"""Expected Score Estimator & Empirical Frontier Ledger.
+"""Expected Score Estimator & Non-Stationary `tbest(t)` Decay Ledger.
 
-Models the contest's harmonic efficiency objective:
-    score_p = 100 * (1/50) * sum_{i=1..50} (tbest_i / time_i)
-            = S_{p,vis} (<= 10) + S_{p,hid} (<= 90)
-    contest_total = sum_p (difficulty_p * score_p)   [max 2300]
+Models the contest's time-varying harmonic efficiency objective:
+    S_p(SHA, t) = 2 * sum_{i=1..50} (tbest_i(t) / tau_i(SHA))
+                = S_{p,vis}(t) (<= 10) + S_{p,hid}(t) (<= 90)
+    contest_total(t) = sum_p (difficulty_p * S_p(SHA_p, t))   [max 2300]
 
-Incorporates:
-  - Exact public-vs-hidden decomposition from `score-snapshot.json` and `tbest`
-  - Site-wide top-1 / top-5 frontier headroom from `scoring-evidence/board-summary.json`
-  - Universal multi-format `profiler` / `kperf` device-duration log parser (ignoring
-    <8.5 us host-enqueue artifacts on `exec` wall-clock)
-  - Trimmed geometric spectrum speedup with saturation and regression penalty
-  - Empirical Bayes shrinkage for historical same-SHA restores under hidden
-    re-timing jitter (sigma = 2.70 pts) and tbest drift (-0.08 pts/hr)
+Key Non-Stationarity Invariant (`tbest(t)` Monotonic Tightening):
+  Site-wide `tbest_i(t)` tightens monotonically over wall-clock time `t`
+  (observed `gamma_p(11-10 -> 11-18) ~ 0.947..0.987`, `-0.5 to -2.5 pts` over 8 days
+  on untouched board submissions). Comparing `S_live(t_now)` directly against raw
+  historical `S(SHA*, t_0)` manufactures phantom restore gaps.
+
+  Therefore, for each problem `p`:
+    1. Match the active board submission (`score-snapshot.json` `submission_id` /
+       `submission_time` or latest `Pass` outcome) to identify `(active_sha, S_judged, t_active)`.
+    2. Compute observed post-active decay factor:
+           gamma_p = clamp(S_live(t_now) / S_judged(active_sha, t_active), 0.5, 1.0)
+    3. Identity Rule: if `candidate_sha == active_sha` (and `S_live > 0`), its
+       `contemporary_equiv_score` is identically `S_live(t_now)` (`true_restore_gain = 0.0`).
+    4. Superseded SHA Rule: for any historical draw `(s_k, t_k)` of `candidate_sha != active_sha`,
+       discount to `t_now` via `gamma_p` plus residual pre-active drift `-0.015 pts/hr`
+       strictly over `max(0, t_active - t_k)`:
+           s_contemp = max(0.0, s_k * gamma_p - 0.015 * max(0.0, (t_anchor - t_k)_hrs))
 """
 from __future__ import annotations
 
@@ -22,12 +31,13 @@ import json
 import math
 import pathlib
 import re
+import statistics
 import subprocess
 from typing import Any
 
-# Measured platform constants (from results/scoring-rules.md)
-SIGMA_HIDDEN_JITTER: float = 2.70      # pts per re-run on identical source
-TBEST_DRIFT_PTS_PER_HR: float = -0.08  # average site-wide hidden tbest decay
+# Measured platform constants (from results/scoring-rules.md & 8-day snapshot telemetry)
+SIGMA_HIDDEN_JITTER: float = 2.70           # pts per re-run on identical source
+RESIDUAL_PRE_ACTIVE_DRIFT_HR: float = 0.015  # pts/hr residual tbest tightening over (t_active - t_cand)
 
 # Difficulty weights (sum = 23, max contest total = 2300)
 PROBLEM_DIFFICULTY: dict[str, int] = {
@@ -79,16 +89,16 @@ FRONTIER_FALLBACK: dict[str, tuple[float, float]] = {
     "SyncBatchNormGatherStats": (92.19, 76.73),
 }
 
-# Verified closing-checklist fallback SHAs (from results/agent-supervision.md & STATUS)
+# Verified closing-checklist fallback SHAs (used only if outcome history is absent)
 VERIFIED_BEST_FALLBACK: dict[str, tuple[str, float]] = {
     "ConcatD": ("899a2dc6a824a519c73b0686c69ee9b9f916fb12", 52.87),
     "ConfusionTransposeD": ("fa81ef9b64c2e6abf66f0115f7c1be37b45dd3ce", 43.55),
-    "CTCLossV2": ("02c2048c37efc124a0ae221ae0bb03af874ec93e", 37.18),
-    "LayerNormV3": ("bf2beb9a968a5b1e94374394903594ee916b1021", 27.13),
+    "CTCLossV2": ("0d5125cd90baa4e421abfa72a042a021a1eaba50", 52.85),
+    "LayerNormV3": ("af0807c2c6001fdcfd870ebb05b8262864556033", 43.66),
     "MultilabelMarginLoss": ("59f80657c0fc0dcf1fbd1e735cf36b2c34651bb3", 56.64),
     "PadV3Grad": ("0fc367de124f4cd43c729b34437daa67a0bc2069", 30.38),
     "PReluGradUpdate": ("33363f0417074ae62c0a5705a6f48539958e5eae", 56.84),
-    "QuantUpdateScatter": ("956ecc93c03d7ae8c5e5a9520c4d57f858303b31", 47.15),
+    "QuantUpdateScatter": ("d5244737fa3a3232b4ca899faa1a121a1fba0f82", 49.04),
     "StridedSliceGrad": ("45eb08f088780645c7309a923029119ada0454e5", 48.96),
     "SyncBatchNormGatherStats": ("544439ed46c30a2252aa5769a4818352005dd4bb", 57.45),
 }
@@ -110,11 +120,17 @@ class ProblemLedger:
     target_score: float
     recoverable_headroom: float
     theoretical_headroom: float
+    active_board_sha: str | None
+    active_judged_score: float | None
+    active_judged_at: str | None
+    decay_factor_gamma: float
+    raw_historical_best_score: float
+    contemporary_best_score: float
     historical_best_score: float
     historical_best_mean: float
     historical_best_sha: str | None
+    true_restore_gain: float
     restore_gap: float
-    active_board_sha: str | None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -137,6 +153,10 @@ class ScoreEstimate:
     effective_speedup: float
     estimation_method: str
     baseline_sha: str | None
+    decay_factor_gamma: float
+    raw_historical_best_score: float
+    contemporary_best_score: float
+    true_restore_gain: float
     matched_cases: int
     improved_cases: int
     regressed_cases: list[str]
@@ -229,19 +249,83 @@ _KPERF_TXT_RE = re.compile(
 _EXEC_ROW_RE = re.compile(
     r"^(?P<case>[A-Za-z0-9_./-]+)\s+ws=\d+\s+call=\s*[\d.]+/\s*[\d.]+/\s*[\d.]+\s+exec=\s*(?P<exec>[\d.]+)"
 )
+_RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
+
+
+_FP_CACHE: dict[str, str | None] = {}
+_FP_CACHE_LOADED: bool = False
+_FP_CACHE_FILE = pathlib.Path(__file__).resolve().parent / ".state" / "code_fp_cache.json"
+
+
+def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
+    """Compute comment-stripped SHA-256 fingerprint of `op_host/` + `op_kernel/` at `sha`."""
+    global _FP_CACHE_LOADED
+    if not (repo / ".git").exists() or not sha:
+        return None
+    if not _FP_CACHE_LOADED:
+        _FP_CACHE_LOADED = True
+        if _FP_CACHE_FILE.is_file():
+            try:
+                _FP_CACHE.update(json.loads(_FP_CACHE_FILE.read_text()))
+            except Exception:
+                pass
+    cache_key = f"{repo.name}:{sha}"
+    if cache_key in _FP_CACHE:
+        return _FP_CACHE[cache_key]
+    ls = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-r", "--name-only", sha, "op_host", "op_kernel"],
+        capture_output=True,
+        text=True,
+    )
+    if ls.returncode != 0 or not ls.stdout.strip():
+        _FP_CACHE[cache_key] = None
+        return None
+    import hashlib
+
+    h = hashlib.sha256()
+    for rel in sorted(ls.stdout.splitlines()):
+        rel = rel.strip()
+        if not rel.endswith((".h", ".cpp", ".cc", ".cxx", ".c")):
+            continue
+        show = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{rel}"], capture_output=True, text=True)
+        if show.returncode != 0:
+            continue
+        txt = re.sub(r"/\*.*?\*/", "", show.stdout, flags=re.S)
+        txt = re.sub(r"//.*?$", "", txt, flags=re.M)
+        txt = re.sub(r"\s+", " ", txt).strip()
+        h.update(f"{rel}:{txt}\n".encode("utf-8"))
+    digest = h.hexdigest()
+    _FP_CACHE[cache_key] = digest
+    try:
+        _FP_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _FP_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_FP_CACHE, separators=(",", ":")))
+        tmp.replace(_FP_CACHE_FILE)
+    except Exception:
+        pass
+    return digest
 
 
 def parse_validation_perf(log_text: str) -> dict[str, Any]:
-    """Extract normalized device-side kernel timings (us) across all 10 repo formats.
+    """Extract normalized device-side kernel timings (us) and `RUNTIME_SOC` across all 10 repos.
 
-    Strictly prefers `profiler` Task Duration telemetry (`MS_PROF`, `KPERF_JSON`,
-    `KPERF`, `KERNEL_JSON`, `KERNEL_PERF`, `PERF`, `PROF_SUMMARY`, `dev_us`) over
-    host `exec` wall-clock, and filters out `exec < 9.0 us` host-enqueue floors.
+    Hierarchy of timing fidelity:
+      1. `profiler_cases`: hardware `profiler` Task Duration (`MS_PROF`, `KPERF_JSON`, `KPERF`,
+         `KERNEL_JSON`, `KERNEL_PERF`, `PERF`, `PROF_SUMMARY` median & min). Always wins over
+         `aclrtRecordEvent` (`dev_us`), which hits a ~12.5 us host-enqueue floor on `soc-a`.
+      2. `same_soc_exec_cases`: `exec=` timings (`> 0 us`) safe ONLY when paired against a
+         same-`RUNTIME_SOC` baseline above the `11.5 us` `soc-a` enqueue floor.
+      3. `exec_cases`: compute-bound `exec >= 150.0 us` fallback when comparing across SoC epochs.
+      4. `dev_event_cases`: `dev_us` (`aclrtRecordEvent`), used only when `profiler_cases` is empty
+         AND `runtime_soc` matches between candidate and baseline.
     """
     profiler_cases: dict[str, float] = {}
     torch_cases: dict[str, float] = {}
+    same_soc_exec_cases: dict[str, float] = {}
     exec_cases: dict[str, float] = {}
+    dev_event_cases: dict[str, float] = {}
     vs_torch_pct: float | None = None
+    runtime_soc: str | None = None
     source_kind: str = "none"
 
     for raw_line in log_text.splitlines():
@@ -249,7 +333,11 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
         if not line:
             continue
 
-        # 1. MS_PROF key-value lines (e.g. ConcatD 32-case spectrum)
+        m_soc = _RUNTIME_SOC_RE.match(line)
+        if m_soc:
+            runtime_soc = m_soc.group(1).strip().lower()
+            continue
+
         m_ms = _MS_PROF_RE.match(line)
         if m_ms:
             profiler_cases[m_ms.group("case")] = float(m_ms.group("med"))
@@ -261,7 +349,6 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
             vs_torch_pct = float(m_sp.group("vmed"))
             continue
 
-        # 2. KPERF tabular lines (e.g. MultilabelMarginLoss)
         m_kp = _KPERF_TXT_RE.match(line)
         if m_kp:
             profiler_cases[m_kp.group("case")] = float(m_kp.group("med"))
@@ -269,7 +356,6 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                 source_kind = "kperf_table"
             continue
 
-        # 3. JSON-prefixed telemetry lines
         for prefix, tag in (
             ("KPERF_JSON ", "kperf_json"),
             ("KERNEL_JSON ", "kernel_json"),
@@ -328,14 +414,24 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                                 profiler_cases[cname] = float(med)
                                 source_kind = tag
                 elif tag == "prof_summary" and isinstance(payload, dict):
-                    cmed = payload.get("custom_median_us")
+                    # Prioritize hardware profiler Task Duration (median_us & min_us) over dev_us!
+                    kernels = payload.get("kernels") or {}
+                    if isinstance(kernels, dict) and kernels:
+                        for kname, kstat in kernels.items():
+                            if isinstance(kstat, dict):
+                                if isinstance(kstat.get("median_us"), (int, float)) and kstat["median_us"] > 0:
+                                    profiler_cases[f"{kname}:median"] = float(kstat["median_us"])
+                                if isinstance(kstat.get("min_us"), (int, float)) and kstat["min_us"] > 0:
+                                    profiler_cases[f"{kname}:min"] = float(kstat["min_us"])
+                        source_kind = "prof_summary"
+                    else:
+                        cmed = payload.get("custom_median_us")
+                        if isinstance(cmed, (int, float)) and cmed > 0:
+                            profiler_cases["__prof_summary__"] = float(cmed)
+                            source_kind = "prof_summary"
                     tmed = payload.get("torchref_median_us")
-                    if isinstance(cmed, (int, float)) and cmed > 0:
-                        profiler_cases.setdefault("__prof_summary__", float(cmed))
-                        if source_kind == "none":
-                            source_kind = tag
                     if isinstance(tmed, (int, float)) and tmed > 0:
-                        torch_cases.setdefault("__prof_summary__", float(tmed))
+                        torch_cases["__prof_summary__"] = float(tmed)
                 elif tag == "perf_json" and isinstance(payload, list):
                     for item in payload:
                         if not isinstance(item, dict):
@@ -344,14 +440,13 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                         dev_us = item.get("dev_us")
                         ex_us = item.get("exec_us")
                         if cname and isinstance(dev_us, (int, float)) and dev_us > 0:
-                            profiler_cases.setdefault(cname, float(dev_us))
-                            if source_kind == "none":
-                                source_kind = "dev_us"
-                        elif cname and isinstance(ex_us, (int, float)) and ex_us >= 150.0:
-                            exec_cases[cname] = float(ex_us)
+                            dev_event_cases[cname] = float(dev_us)
+                        elif cname and isinstance(ex_us, (int, float)) and ex_us > 0:
+                            same_soc_exec_cases[cname] = float(ex_us)
+                            if ex_us >= 150.0:
+                                exec_cases[cname] = float(ex_us)
                 break
         else:
-            # 4. Standalone JSON lines inside KPERF_BEGIN..KPERF_END or PERF dumps
             if line.startswith("{") and line.endswith("}") and ("median_us" in line or "dev_us" in line):
                 try:
                     item = json.loads(line)
@@ -365,18 +460,16 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                                 if source_kind == "none":
                                     source_kind = "inline_json"
                         elif isinstance(item.get("dev_us"), (int, float)) and item["dev_us"] > 0:
-                            profiler_cases.setdefault(cname, float(item["dev_us"]))
-                            if source_kind == "none":
-                                source_kind = "dev_us"
+                            dev_event_cases.setdefault(cname, float(item["dev_us"]))
                 except ValueError:
                     pass
                 continue
 
-            # 5. Tabular exec= lines: host Python enqueue jitter reaches 25-105 us under CPU load,
-            # so only >= 150 us compute-bound cases carry reliable non-profiler kernel signal.
             m_ex = _EXEC_ROW_RE.match(line)
             if m_ex:
                 val = float(m_ex.group("exec"))
+                if val > 0.0:
+                    same_soc_exec_cases[m_ex.group("case")] = val
                 if val >= 150.0:
                     exec_cases[m_ex.group("case")] = val
 
@@ -386,41 +479,33 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
 
     return {
         "cases": chosen,
+        "profiler_cases": profiler_cases,
+        "same_soc_exec_cases": same_soc_exec_cases,
+        "dev_event_cases": dev_event_cases,
         "torch_cases": torch_cases,
         "vs_torch_pct": vs_torch_pct,
+        "runtime_soc": runtime_soc,
         "source": source_kind,
         "is_profiler": bool(profiler_cases),
     }
 
 
 def _extract_note_speedup(note: str) -> tuple[float | None, int, str]:
-    """Conservative parser for commit/queue notes when logs use incompatible schemas.
-
-    Parses explicit `A->B us`, `N.NNx`, and `+/-P%` tokens, including flat/regressing
-    mentions (`anchors 1.0x`, `big flat`, `+15%`), and applies coverage shrinkage
-    so single-band micro-optimizations sdkot masquerade as whole-spectrum gains.
-    """
+    """Conservative parser for commit/queue notes when logs use incompatible schemas."""
     if not note:
         return None, 0, ""
 
     ratios: list[float] = []
-
-    # 1. Explicit arrow timings e.g. `222->9.1us`, `6.80->3.46us`, `3805->892`
-    used_spans: list[tuple[int, int]] = []
     for m in re.finditer(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*->\s*(\d+(?:\.\d+)?)\s*(?:us)?", note):
-        # Ignore block/tile/run count changes like `40->16 blocks`, `4096->6144`, `160->45 runs`
         tail = note[m.end(): m.end() + 14].lower()
         if re.match(r"^\s*(?:blocks?|cores?|runs?|tiles?|lanes?|elems?|b|kb)\b", tail):
             continue
         before, after = float(m.group(1)), float(m.group(2))
         if before >= 200 and after >= 200 and "us" not in m.group(0).lower() and before < after:
-            # Tile size increase e.g. 4096->6144
             continue
         if before > 0 and after > 0:
             ratios.append(max(0.25, min(3.5, before / after)))
-            used_spans.append((m.start(), m.end()))
 
-    # 2. Explicit multipliers e.g. `1.61x`, `0.98x`, `1.0x` (skipping `~27x/48x vs scalar` if incremental `vs prev` exists)
     has_vs_prev = "vs prev" in note.lower()
     for m in re.finditer(r"(?<![A-Za-z0-9~])(\d+\.\d+)x\b", note):
         after_ctx = note[m.end(): m.end() + 18].lower()
@@ -432,7 +517,6 @@ def _extract_note_speedup(note: str) -> tuple[float | None, int, str]:
         if 0.1 <= val <= 50.0:
             ratios.append(max(0.25, min(3.5, val)))
 
-    # 3. Percentage deltas e.g. `-5.5%`, `-34%`, `+15%`, `-2~4%`
     for m in re.finditer(r"([+-])\s*(\d+(?:\.\d+)?)\s*(?:~\s*(\d+(?:\.\d+)?))?\s*%", note):
         sign = m.group(1)
         v1 = float(m.group(2))
@@ -440,16 +524,12 @@ def _extract_note_speedup(note: str) -> tuple[float | None, int, str]:
         pct = 0.5 * (v1 + v2)
         if 0.0 < pct < 95.0:
             if sign == "-":
-                # Latency reduction of pct% => 1 / (1 - pct/100)
                 ratios.append(max(0.25, min(3.5, 1.0 / (1.0 - pct / 100.0))))
             else:
-                # Latency increase (+15%) => regression 1 / (1 + pct/100)
                 ratios.append(max(0.25, min(3.5, 1.0 / (1.0 + pct / 100.0))))
 
-    # 4. Anchor / flat qualifiers ("anchors 1.0x", "big shapes flat", "big flat")
     low = note.lower()
     if "flat" in low or "anchors 1.0x" in low:
-        # Weight the un-touched anchor bands (typically >=50% of the 50-case distribution)
         ratios.extend([1.0, 1.0, 1.0])
 
     if "0 gain" in low or "<=3%" in low:
@@ -459,7 +539,6 @@ def _extract_note_speedup(note: str) -> tuple[float | None, int, str]:
         return None, 0, ""
 
     geo = math.exp(sum(math.log(r) for r in ratios) / len(ratios))
-    # Coverage shrinkage: a 1-2 band note only touches a slice of the 45 hidden cases
     coverage = min(0.75, 0.28 + 0.10 * len(ratios))
     k_eff = 1.0 + coverage * (geo - 1.0)
     return round(k_eff, 4), len(ratios), f"note_parsed({len(ratios)} signals, raw_geo={geo:.2f}x, shrunk={k_eff:.3f}x)"
@@ -472,12 +551,7 @@ def _project_score_from_speedup(
     k_eff: float,
     frontier_top1: float,
 ) -> float:
-    """Map effective whole-spectrum speedup k_eff to expected 50-case score.
-
-    Uses smooth concave per-case saturation r'(k) = (r * k) / (1 + 0.35 * r * max(0, k - 1))
-    derived from scoring-rules.md §3.1 so low-r problems (r ~ 0.25) gain proportionally
-    while high-r problems (r ~ 0.55+) respect hardware/tbest diminishing returns.
-    """
+    """Map effective whole-spectrum speedup k_eff to expected 50-case score."""
     if current_score <= 0.0:
         return 0.0
     if abs(k_eff - 1.0) < 1e-6:
@@ -493,27 +567,42 @@ def _project_score_from_speedup(
             val = r * k
         return max(0.0, min(0.98, val))
 
-    # Public cases (3.4-6.0 us) sit closer to the 1-block dispatch floor, so they move ~40% as much as hidden cases
     k_vis = 1.0 + 0.40 * (k_eff - 1.0)
     new_vis = 10.0 * _sat(r_vis, k_vis)
     new_hid = 90.0 * _sat(r_hid, k_eff)
     projected = new_vis + new_hid
 
-    # Soft cap near empirical frontier + 3 pts
     hard_cap = min(98.0, max(frontier_top1 + 3.0, current_score + 35.0))
     return round(max(0.0, min(hard_cap, projected)), 2)
 
 
 class ScoreEstimator:
-    """Computes problem ledgers, recoverable headroom, and candidate score estimates."""
+    """Computes decay-aware problem ledgers, contemporary scores, and candidate estimates."""
 
-    def __init__(self, workspace: pathlib.Path) -> None:
+    def __init__(
+        self,
+        workspace: pathlib.Path,
+        verified_escapes: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
         self.workspace = workspace.resolve()
+        self.verified_escapes = verified_escapes if verified_escapes is not None else {}
+        self._calibrator: Any = None
         self.problems_meta = self._load_problems()
         self.public_tbest = self._load_public_tbest()
         self.frontier = self._load_frontier()
         self.outcomes = self._load_outcomes()
         self.snapshot = self._load_snapshot()
+
+    def get_calibrator(self) -> Any:
+        if self._calibrator is None:
+            from .calibration import BenchmarkCalibrator
+
+            self._calibrator = BenchmarkCalibrator(
+                self.workspace,
+                estimator=self,
+                verified_escapes=self.verified_escapes,
+            )
+        return self._calibrator
 
     def _load_problems(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
@@ -526,7 +615,6 @@ class ScoreEstimator:
                     out[title].setdefault("difficulty", PROBLEM_DIFFICULTY.get(title, 2))
             except Exception:
                 pass
-        # Enrich difficulty from scoring-evidence/problems-all.json if available
         ev_file = self.workspace / "results" / "scoring-evidence" / "problems-all.json"
         if ev_file.is_file():
             try:
@@ -609,6 +697,127 @@ class ScoreEstimator:
             rows.append(r)
         return rows
 
+    def _match_active_submission(
+        self,
+        title: str,
+        rows: list[dict[str, Any]],
+        as_of: datetime.datetime | None,
+        current_score: float,
+    ) -> tuple[str | None, float | None, datetime.datetime | None]:
+        """Match live board row (`submission_id` / `submission_time`) to `(active_sha, S_judged, t_active)`."""
+        live_rows = [
+            r for r in rows
+            if str(r.get("status", "")) not in ("rejected", "skipped", "duplicate")
+        ]
+        if as_of is not None:
+            if not live_rows:
+                return None, None, None
+            last = live_rows[-1]
+            csha = last.get("canonical_sha") or last.get("sha")
+            sc = float(last["score"]) if isinstance(last.get("score"), (int, float)) and last.get("status") == "Pass" else None
+            ts = _parse_iso(last.get("submitted_at") or last.get("finished_at") or last.get("queued_at"))
+            return csha, sc, ts
+
+        snap_row = self.snapshot.get(title) or {}
+        snap_id = snap_row.get("submission_id")
+        snap_ts = _parse_iso(snap_row.get("submission_time"))
+
+        # 1. Exact ID or timestamp match (<60s) against submit-queue-outcome.jsonl
+        best_match: dict[str, Any] | None = None
+        best_dt = 60.0
+        for r in live_rows:
+            if snap_id is not None and str(r.get("submission_id", "")) == str(snap_id):
+                best_match = r
+                break
+            if snap_ts is not None and r.get("status") == "Pass":
+                rts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
+                if rts is not None:
+                    dt = abs((rts - snap_ts).total_seconds())
+                    if dt <= best_dt:
+                        best_dt = dt
+                        best_match = r
+
+        if best_match is not None:
+            csha = best_match.get("canonical_sha") or best_match.get("sha")
+            sc = float(best_match["score"]) if isinstance(best_match.get("score"), (int, float)) else None
+            ts = _parse_iso(best_match.get("submitted_at") or best_match.get("finished_at")) or snap_ts
+            return csha, sc, ts
+
+        # 2. Check results/<Title>/submissions.json if numeric ID matches
+        sub_json = self.workspace / "results" / title / "submissions.json"
+        if snap_id is not None and sub_json.is_file():
+            try:
+                for srec in json.loads(sub_json.read_text()):
+                    if (srec.get("ID") == snap_id or srec.get("_id") == snap_id) and srec.get("validated_commit"):
+                        csha = str(srec["validated_commit"]).lower()
+                        ts = _parse_iso(srec.get("create_time")) or snap_ts
+                        # Check if outcome has a matching SHA score
+                        sha_sc = next(
+                            (
+                                float(r["score"])
+                                for r in reversed(live_rows)
+                                if (r.get("canonical_sha") or r.get("sha")) == csha
+                                and r.get("status") == "Pass"
+                                and isinstance(r.get("score"), (int, float))
+                            ),
+                            current_score if current_score > 0 else None,
+                        )
+                        return csha, sha_sc, ts
+            except Exception:
+                pass
+
+        # 3. Fallback to latest Pass record in outcomes
+        pass_rows = [
+            r for r in live_rows
+            if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0
+        ]
+        if pass_rows:
+            last_p = pass_rows[-1]
+            csha = last_p.get("canonical_sha") or last_p.get("sha")
+            sc = float(last_p["score"])
+            ts = _parse_iso(last_p.get("submitted_at") or last_p.get("finished_at")) or snap_ts
+            return csha, sc, ts
+
+        return None, None, snap_ts
+
+    @staticmethod
+    def discount_draw_to_contemporary(
+        raw_score: float,
+        cand_ts: datetime.datetime | None,
+        gamma_p: float,
+        anchor_ts: datetime.datetime | None,
+    ) -> float:
+        """Convert historical score `S(SHA, t_cand)` to contemporary equivalent at `t_now`.
+
+        Applies observed post-active decay `gamma_p = clamp(S_live / S_judged_active, 0.5, 1.0)`
+        plus residual drift `-0.015 pts/hr` strictly over any pre-active gap `max(0, t_anchor - t_cand)`.
+        """
+        if raw_score <= 0.0:
+            return 0.0
+        gap_hrs = 0.0
+        if anchor_ts is not None and cand_ts is not None:
+            gap_hrs = max(0.0, (anchor_ts - cand_ts).total_seconds() / 3600.0)
+        contemp = raw_score * gamma_p - RESIDUAL_PRE_ACTIVE_DRIFT_HR * gap_hrs
+        return round(max(0.0, contemp), 4)
+
+    def discount_historical_score(
+        self,
+        title: str,
+        raw_score: float,
+        cand_ts: datetime.datetime | None,
+        as_of: datetime.datetime | None = None,
+    ) -> float:
+        """Public helper (used by CircuitBreaker) to discount any historical score to `as_of`/now."""
+        ledger = self.get_problem_ledger(title, as_of=as_of)
+        ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
+        anchor_ts = _parse_iso(ledger.active_judged_at) if ledger.current_score > 0 else ref_now
+        if anchor_ts is None:
+            anchor_ts = ref_now
+        return round(
+            self.discount_draw_to_contemporary(raw_score, cand_ts, ledger.decay_factor_gamma, anchor_ts),
+            2,
+        )
+
     def get_problem_ledger(
         self,
         title: str,
@@ -619,10 +828,10 @@ class ScoreEstimator:
         diff = int(self.problems_meta.get(title, {}).get("difficulty", PROBLEM_DIFFICULTY.get(title, 2)))
         top1, top5 = self.frontier.get(title, (80.0, 65.0))
         rows = self._filtered_outcomes(title, as_of=as_of)
+        ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
 
-        # Historical passing draws grouped by canonical SHA
-        by_sha: dict[str, list[float]] = {}
-        active_board_sha: str | None = None
+        # Collect historical passing (ts, score) draws grouped by canonical SHA
+        draws_by_sha: dict[str, list[tuple[datetime.datetime | None, float]]] = {}
         replayed_score: float = 0.0
         replayed_status: str = "no-submission"
 
@@ -632,13 +841,13 @@ class ScoreEstimator:
                 continue
             csha = r.get("canonical_sha") or r.get("sha")
             sc = float(r["score"]) if isinstance(r.get("score"), (int, float)) else 0.0
-            active_board_sha = csha
+            ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
             replayed_status = st
             replayed_score = sc if st == "Pass" else 0.0
-            if st == "Pass" and sc > 0:
-                by_sha.setdefault(csha, []).append(sc)
+            if st == "Pass" and sc > 0 and csha:
+                draws_by_sha.setdefault(csha, []).append((ts, sc))
 
-        # Determine live vs historical board state
+        # Determine live vs replayed board score
         if override_board_score is not None:
             current_score = float(override_board_score)
             board_status = override_board_status or ("Pass" if current_score > 0 else "no-submission")
@@ -651,36 +860,75 @@ class ScoreEstimator:
             raw_sc = snap_row.get("score")
             current_score = float(raw_sc) if isinstance(raw_sc, (int, float)) and board_status == "Pass" else 0.0
 
-            # Also map snapshot submission_id via results/<Title>/submissions.json if present
-            sub_json = self.workspace / "results" / title / "submissions.json"
-            snap_id = snap_row.get("submission_id")
-            if snap_id and sub_json.is_file():
-                try:
-                    for srec in json.loads(sub_json.read_text()):
-                        if srec.get("ID") == snap_id and srec.get("validated_commit"):
-                            active_board_sha = str(srec["validated_commit"]).lower()
-                            break
-                except Exception:
-                    pass
+        # Match active board submission and compute observed decay factor gamma_p
+        active_sha, active_judged_sc, active_ts = self._match_active_submission(
+            title, rows, as_of=as_of, current_score=current_score
+        )
+        if current_score > 0.0 and active_judged_sc is not None and active_judged_sc > 0.0:
+            gamma_p = round(max(0.5, min(1.0, current_score / active_judged_sc)), 4)
+            anchor_ts = active_ts or ref_now
+        else:
+            gamma_p = 1.0
+            anchor_ts = ref_now
 
-        # Historical best SHA & multi-draw mean
+        # Evaluate raw & contemporary-equivalent scores across all candidate SHAs
         best_sha: str | None = None
-        best_peak: float = 0.0
-        best_mean: float = 0.0
-        for sha_k, draws in by_sha.items():
-            mx = max(draws)
-            mn = sum(draws) / len(draws)
-            if mx > best_peak:
-                best_peak = mx
-                best_mean = mn
-                best_sha = sha_k
+        raw_best_peak: float = 0.0
+        best_contemp_peak: float = -1.0
+        contemp_draws_map: dict[str, list[float]] = {}
+
+        if draws_by_sha:
+            for sha_k, sha_draws in draws_by_sha.items():
+                raw_mx = max(s for _, s in sha_draws)
+                if raw_mx > raw_best_peak:
+                    raw_best_peak = raw_mx
+
+                discounted = [
+                    self.discount_draw_to_contemporary(s, t_k, gamma_p, anchor_ts)
+                    for t_k, s in sha_draws
+                ]
+                contemp_draws_map[sha_k] = discounted
+                sha_peak_c = max(discounted)
+                if best_sha is None or sha_peak_c > best_contemp_peak + 1e-6 or (
+                    abs(sha_peak_c - best_contemp_peak) <= 1e-6 and sha_k == active_sha
+                ):
+                    best_contemp_peak = sha_peak_c
+                    best_sha = sha_k
+
+        if best_sha is not None and best_sha in contemp_draws_map:
+            # Identity Rule: if best_sha IS the active board SHA (in live mode), its contemporary
+            # equivalent score is identically S_live(t_now) (true_restore_gain = 0.0).
+            if as_of is None and override_board_score is None and best_sha == active_sha and current_score > 0.0:
+                contemp_best_score = current_score
+            else:
+                contemp_best_score = float(statistics.median(contemp_draws_map[best_sha]))
+        else:
+            contemp_best_score = current_score if current_score > 0.0 else 0.0
 
         if best_sha is None and as_of is None and title in VERIFIED_BEST_FALLBACK:
             fb_sha, fb_sc = VERIFIED_BEST_FALLBACK[title]
             if (self.workspace / "results" / title / fb_sha / "result.json").is_file():
                 best_sha = fb_sha
-                best_peak = fb_sc
-                best_mean = fb_sc
+                raw_best_peak = max(raw_best_peak, fb_sc)
+                if fb_sha == active_sha and current_score > 0.0:
+                    contemp_best_score = current_score
+                else:
+                    contemp_best_score = round(fb_sc * gamma_p, 2)
+
+        if current_score > raw_best_peak:
+            raw_best_peak = current_score
+        if current_score > contemp_best_score:
+            contemp_best_score = current_score
+            if active_sha:
+                best_sha = active_sha
+
+        contemp_best_score = round(contemp_best_score, 2)
+        raw_best_peak = round(raw_best_peak, 2)
+        true_restore_gain = (
+            0.0
+            if (best_sha is None or (best_sha == active_sha and current_score > 0.0))
+            else round(max(0.0, contemp_best_score - current_score), 2)
+        )
 
         # Decompose public vs hidden score
         pub_tbest = self.public_tbest.get(title, [4.0] * 5)
@@ -693,7 +941,6 @@ class ScoreEstimator:
             public_score = round(2.0 * sum(public_r_list), 2)
             hidden_score = round(max(0.0, current_score - public_score), 2)
         elif current_score > 0:
-            # Proportional fallback split (public ~12% of score on average across 10 problems)
             public_score = round(min(9.0, current_score * 0.13), 2)
             hidden_score = round(max(0.0, current_score - public_score), 2)
             public_r_list = [round(public_score / 10.0, 4)] * 5
@@ -705,11 +952,9 @@ class ScoreEstimator:
         implied_hidden_r = round(hidden_score / 90.0, 4) if hidden_score > 0 else 0.0
         target_score = round(current_score + 20.0 if current_score >= 40.0 else 60.0, 1)
 
-        # Frontier-grounded recoverable headroom
-        effective_ceiling = max(top1, best_peak, current_score)
+        effective_ceiling = max(top1, contemp_best_score, current_score)
         recoverable_headroom = round(max(0.0, effective_ceiling - current_score), 2)
         theoretical_headroom = round(max(0.0, 100.0 - current_score), 2)
-        restore_gap = round(max(0.0, best_mean - current_score), 2)
 
         return ProblemLedger(
             title=title,
@@ -726,20 +971,135 @@ class ScoreEstimator:
             target_score=target_score,
             recoverable_headroom=recoverable_headroom,
             theoretical_headroom=theoretical_headroom,
-            historical_best_score=round(best_peak, 2),
-            historical_best_mean=round(best_mean, 2),
+            active_board_sha=active_sha,
+            active_judged_score=round(active_judged_sc, 2) if active_judged_sc is not None else None,
+            active_judged_at=active_ts.isoformat() if active_ts is not None else None,
+            decay_factor_gamma=gamma_p,
+            raw_historical_best_score=raw_best_peak,
+            contemporary_best_score=contemp_best_score,
+            historical_best_score=raw_best_peak,
+            historical_best_mean=contemp_best_score,
             historical_best_sha=best_sha,
-            restore_gap=restore_gap,
-            active_board_sha=active_board_sha,
+            true_restore_gain=true_restore_gain,
+            restore_gap=true_restore_gain,
         )
 
     def _load_perf_for_sha(self, title: str, sha: str | None) -> dict[str, Any]:
+        empty = {
+            "cases": {},
+            "profiler_cases": {},
+            "same_soc_exec_cases": {},
+            "dev_event_cases": {},
+            "torch_cases": {},
+            "vs_torch_pct": None,
+            "runtime_soc": None,
+            "source": "none",
+            "is_profiler": False,
+        }
         if not sha:
-            return {"cases": {}, "torch_cases": {}, "vs_torch_pct": None, "source": "none", "is_profiler": False}
+            return empty
         vlog = self.workspace / "results" / title / sha / "validation.log"
         if not vlog.is_file():
-            return {"cases": {}, "torch_cases": {}, "vs_torch_pct": None, "source": "none", "is_profiler": False}
+            return empty
         return parse_validation_perf(vlog.read_text(errors="replace"))
+
+    def _select_same_soc_baseline(
+        self,
+        title: str,
+        cand_sha: str,
+        cand_perf: dict[str, Any],
+        default_base_sha: str | None,
+        as_of: datetime.datetime | None = None,
+    ) -> tuple[str | None, dict[str, Any]]:
+        """Prefer a baseline validation on the same `RUNTIME_SOC` as `cand_sha`.
+
+        Avoids cross-SoC (`soc-b` vs `soc-a`) host-enqueue floor mismatches
+        (~7.0 us vs ~11.1-12.5 us) by matching:
+          1. `default_base_sha` itself if validated on `cand_soc`
+          2. Any passing `cand_soc` validation whose comment-stripped `op_host`/`op_kernel`
+             fingerprint matches `default_base_sha` (e.g. `7926c36`, `b08510f`, `9c743dc`)
+          3. Earliest passing `cand_soc` baseline validation finished prior to `cand_sha`
+             (e.g. `af5b55a` for `PReluGradUpdate`, `cca8ba3` for `Multilabel`, `4eee530` for `ConcatD`)
+        """
+        base_perf = self._load_perf_for_sha(title, default_base_sha) if default_base_sha and default_base_sha != cand_sha else {
+            "cases": {},
+            "profiler_cases": {},
+            "same_soc_exec_cases": {},
+            "dev_event_cases": {},
+            "torch_cases": {},
+            "vs_torch_pct": None,
+            "runtime_soc": None,
+            "source": "none",
+            "is_profiler": False,
+        }
+        cand_soc = cand_perf.get("runtime_soc")
+        if not cand_soc or not default_base_sha or default_base_sha == cand_sha:
+            return default_base_sha, base_perf
+
+        if base_perf.get("runtime_soc") == cand_soc:
+            return default_base_sha, base_perf
+
+        res_dir = self.workspace / "results" / title
+        if not res_dir.is_dir():
+            return default_base_sha, base_perf
+
+        # Find cand finished_at timestamp if available so we only pick prior baselines
+        cand_rj = res_dir / cand_sha / "result.json"
+        cand_ts = None
+        if cand_rj.is_file():
+            try:
+                cand_ts = _parse_iso(json.loads(cand_rj.read_text()).get("finished_at"))
+            except Exception:
+                pass
+        cutoff_ts = as_of or cand_ts
+
+        same_soc_runs: list[tuple[datetime.datetime, str, dict[str, Any]]] = []
+        for rj in res_dir.glob("*/result.json"):
+            sha_d = rj.parent.name.lower()
+            if sha_d == cand_sha or not re.fullmatch(r"[0-9a-f]{40}", sha_d):
+                continue
+            try:
+                rdata = json.loads(rj.read_text())
+            except Exception:
+                continue
+            if rdata.get("exit_code") != 0:
+                continue
+            fts = _parse_iso(rdata.get("finished_at"))
+            if cutoff_ts is not None and fts is not None and fts > cutoff_ts:
+                continue
+            vlog = rj.parent / "validation.log"
+            if not vlog.is_file():
+                continue
+            txt = vlog.read_text(errors="replace")
+            if "EXTENDED_PASSED" not in txt or "FAST_LANE=1" in txt:
+                continue
+            p_info = parse_validation_perf(txt)
+            if p_info.get("runtime_soc") != cand_soc:
+                continue
+            if not (p_info["profiler_cases"] or p_info["same_soc_exec_cases"] or p_info["dev_event_cases"]):
+                continue
+            same_soc_runs.append((fts or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc), sha_d, p_info))
+
+        if not same_soc_runs:
+            return default_base_sha, base_perf
+
+        same_soc_runs.sort(key=lambda x: x[0])
+        repo = self.workspace / "bench" / title
+        target_fp = _code_fingerprint(repo, default_base_sha)
+        if target_fp:
+            for _fts, sha_d, p_info in reversed(same_soc_runs):
+                if _code_fingerprint(repo, sha_d) == target_fp:
+                    return sha_d, p_info
+
+        # If default_base_sha already shares hardware profiler_cases with cand_perf, keep
+        # default_base_sha rather than substituting a different C++ implementation!
+        if cand_perf.get("profiler_cases") and base_perf.get("profiler_cases"):
+            if set(cand_perf["profiler_cases"]).intersection(base_perf["profiler_cases"]):
+                return default_base_sha, base_perf
+
+        # Fallback (when default_base_sha lacks profiler or uses cross-SoC dev_us/exec=):
+        # pick earliest passing baseline run on cand_soc (e.g. af5b55a for PReluGradUpdate)
+        return same_soc_runs[0][1], same_soc_runs[0][2]
 
     def estimate(
         self,
@@ -750,8 +1110,9 @@ class ScoreEstimator:
         as_of: datetime.datetime | None = None,
         override_board_score: float | None = None,
         override_board_status: str | None = None,
+        fast_cached_cal: bool = False,
     ) -> ScoreEstimate:
-        """Estimate online score, expected delta, and uncertainty sigma for (title, sha)."""
+        """Estimate contemporary online score, expected delta, and uncertainty sigma."""
         canonical_sha = resolve_sha(self.workspace, title, sha)
         short_sha = canonical_sha[:7] if canonical_sha else "unknown"
         ledger = self.get_problem_ledger(
@@ -760,24 +1121,62 @@ class ScoreEstimator:
             override_board_score=override_board_score,
             override_board_status=override_board_status,
         )
+        ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
+        anchor_ts = _parse_iso(ledger.active_judged_at) if ledger.current_score > 0 else ref_now
+        if anchor_ts is None:
+            anchor_ts = ref_now
 
         rows = self._filtered_outcomes(title, as_of=as_of)
         prior_same_sha_scores: list[tuple[datetime.datetime | None, float]] = []
         for r in rows:
-            if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)):
+            if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
                 if (r.get("canonical_sha") or r.get("sha")) == canonical_sha:
                     ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
                     prior_same_sha_scores.append((ts, float(r["score"])))
 
         cand_perf = self._load_perf_for_sha(title, canonical_sha)
-        base_sha = ledger.active_board_sha or ledger.historical_best_sha
-        base_perf = self._load_perf_for_sha(title, base_sha) if base_sha and base_sha != canonical_sha else {
-            "cases": {},
-            "torch_cases": {},
-            "vs_torch_pct": None,
-            "source": "none",
-            "is_profiler": False,
-        }
+        raw_base_sha = ledger.active_board_sha or ledger.historical_best_sha
+        base_sha, base_perf = self._select_same_soc_baseline(
+            title, canonical_sha, cand_perf, raw_base_sha, as_of=as_of
+        )
+        same_soc = bool(
+            cand_perf.get("runtime_soc")
+            and cand_perf.get("runtime_soc") == base_perf.get("runtime_soc")
+        )
+
+        # Select highest-fidelity compatible case dictionary between cand_perf and base_perf
+        pair_cand_cases: dict[str, float] = {}
+        pair_base_cases: dict[str, float] = {}
+        pair_kind = cand_perf.get("source", "none")
+        exec_floor_us = 0.0
+
+        if cand_perf.get("profiler_cases") and base_perf.get("profiler_cases"):
+            pair_cand_cases = cand_perf["profiler_cases"]
+            pair_base_cases = base_perf["profiler_cases"]
+            pair_kind = cand_perf["source"]
+        elif same_soc and cand_perf.get("runtime_soc") == "soc-a" and cand_perf.get("same_soc_exec_cases") and base_perf.get("same_soc_exec_cases"):
+            # Same-SoC exec= pairing on soc-a (> 11.5 us above 11.1 us enqueue floor)
+            floor_thresh = 11.5
+            exec_floor_us = 11.1
+            for k_c in set(cand_perf["same_soc_exec_cases"]).intersection(base_perf["same_soc_exec_cases"]):
+                tb = base_perf["same_soc_exec_cases"][k_c]
+                tc = cand_perf["same_soc_exec_cases"][k_c]
+                if max(tb, tc) > floor_thresh:
+                    pair_base_cases[k_c] = max(exec_floor_us, tb)
+                    pair_cand_cases[k_c] = max(exec_floor_us, tc)
+            pair_kind = f"same_soc_exec({cand_perf['runtime_soc']})"
+        elif same_soc and cand_perf.get("dev_event_cases") and base_perf.get("dev_event_cases"):
+            floor_thresh = 13.0 if cand_perf.get("runtime_soc") == "soc-a" else 7.8
+            for k_c in set(cand_perf["dev_event_cases"]).intersection(base_perf["dev_event_cases"]):
+                tb = base_perf["dev_event_cases"][k_c]
+                tc = cand_perf["dev_event_cases"][k_c]
+                if max(tb, tc) > floor_thresh:
+                    pair_base_cases[k_c] = tb
+                    pair_cand_cases[k_c] = tc
+            pair_kind = f"same_soc_dev_us({cand_perf['runtime_soc']})"
+        elif same_soc and cand_perf.get("cases") and base_perf.get("cases"):
+            pair_cand_cases = cand_perf["cases"]
+            pair_base_cases = base_perf["cases"]
 
         matched_cases = 0
         improved_cases = 0
@@ -791,17 +1190,14 @@ class ScoreEstimator:
         anchor_pub = ledger.public_score
         anchor_hid = ledger.hidden_score
         if anchor_score <= 0.0:
-            if ledger.historical_best_mean > 0:
-                anchor_score = ledger.historical_best_mean
+            if ledger.contemporary_best_score > 0:
+                anchor_score = ledger.contemporary_best_score
             elif title in VERIFIED_BEST_FALLBACK and as_of is None:
-                anchor_score = VERIFIED_BEST_FALLBACK[title][1]
+                anchor_score = round(VERIFIED_BEST_FALLBACK[title][1] * ledger.decay_factor_gamma, 2)
             else:
-                # First-time submission prior (~52% of frontier top-5)
                 anchor_score = round(0.55 * ledger.frontier_top5, 2)
             anchor_pub = round(min(9.0, anchor_score * 0.13), 2)
             anchor_hid = round(max(0.0, anchor_score - anchor_pub), 2)
-
-        ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
 
         # 1. Explicit caller speedup override (--speedup k)
         if speedup is not None and speedup > 0:
@@ -813,30 +1209,83 @@ class ScoreEstimator:
             method = "explicit_speedup"
             detail = f"explicit speedup={effective_speedup:.3f}x over anchor={anchor_score:.2f}"
 
-        # 2. Historical same-SHA restore (Empirical Bayes over prior online passes)
+        # 2a. Active-Board Identity Invariant (live mode: candidate_sha == active_board_sha
+        #     OR comment-stripped op_host/op_kernel C++ code is identical to active_board_sha!)
+        elif (
+            as_of is None
+            and override_board_score is None
+            and canonical_sha
+            and ledger.active_board_sha
+            and ledger.current_score > 0.0
+            and (
+                canonical_sha == ledger.active_board_sha
+                or (
+                    _code_fingerprint(self.workspace / "bench" / title, canonical_sha) is not None
+                    and _code_fingerprint(self.workspace / "bench" / title, canonical_sha)
+                    == _code_fingerprint(self.workspace / "bench" / title, ledger.active_board_sha)
+                )
+            )
+        ):
+            estimated_score = ledger.current_score
+            effective_speedup = 1.0
+            m = max(1, len(prior_same_sha_scores))
+            sigma = round(SIGMA_HIDDEN_JITTER * math.sqrt(1.0 + 1.0 / m), 2)
+            method = "active_board_identity"
+            same_lbl = (
+                f"SHA {short_sha} is already active on board"
+                if canonical_sha == ledger.active_board_sha
+                else f"SHA {short_sha} is C++-source-identical to active {ledger.active_board_sha[:7]}"
+            )
+            detail = (
+                f"{same_lbl} (S_live={ledger.current_score:.2f}, "
+                f"S_judged={ledger.active_judged_score}, gamma={ledger.decay_factor_gamma:.4f}); restore_gain=0.00"
+            )
+
+        # 2b. Historical same-SHA restore (Decay-discounted contemporary equivalent)
         elif prior_same_sha_scores:
             m = len(prior_same_sha_scores)
-            mean_prior = sum(s for _, s in prior_same_sha_scores) / m
-            last_ts = max((t for t, _ in prior_same_sha_scores if t is not None), default=None)
-            hrs = max(0.0, (ref_now - last_ts).total_seconds() / 3600.0) if last_ts else 0.0
-            # Active contest tbest drift capped at 12 active hours (-0.96 pts max)
-            drift = max(-1.20, TBEST_DRIFT_PTS_PER_HR * min(hrs, 12.0))
-            estimated_score = round(max(0.0, mean_prior + drift), 2)
+            contemp_draws = [
+                self.discount_draw_to_contemporary(s, t_k, ledger.decay_factor_gamma, anchor_ts)
+                for t_k, s in prior_same_sha_scores
+            ]
+            # In live mode use median (robust to single -2sigma outlier); in 2-draw replay median == mean
+            estimated_score = round(float(statistics.median(contemp_draws)), 2)
             effective_speedup = round(estimated_score / anchor_score, 4) if anchor_score > 0 else 1.0
             sigma = round(SIGMA_HIDDEN_JITTER * math.sqrt(1.0 + 1.0 / m), 2)
-            method = "historical_sha_empirical_bayes"
-            draws_str = "/".join(f"{s:.2f}" for _, s in prior_same_sha_scores)
-            detail = f"same-SHA {m} prior draw(s) [{draws_str}], mean={mean_prior:.2f}, drift={drift:+.2f}"
+            method = "historical_sha_decay_adjusted"
+            raw_str = "/".join(f"{s:.2f}" for _, s in prior_same_sha_scores)
+            cnt_str = "/".join(f"{c:.2f}" for c in contemp_draws)
+            detail = (
+                f"same-SHA {m} draw(s) raw=[{raw_str}] -> contemp=[{cnt_str}] "
+                f"(gamma={ledger.decay_factor_gamma:.4f}) => est={estimated_score:.2f}"
+            )
 
-        # 3. Paired validation log benchmark A/B (profiler / kperf overlapping cases)
-        elif cand_perf["cases"] and base_perf["cases"]:
-            common = sorted(set(cand_perf["cases"]).intersection(base_perf["cases"]))
-            if common:
+        # 3. Calibrated Simplex-MAP Bucket Model -> Paired A/B Fallback
+        elif pair_cand_cases and pair_base_cases:
+            cal_pred = self.get_calibrator().predict_candidate(
+                title=title,
+                cand_sha=canonical_sha,
+                base_sha=base_sha,
+                ledger=ledger,
+                as_of=as_of,
+                fast_cached_cal=fast_cached_cal,
+            )
+            common = sorted(set(pair_cand_cases).intersection(pair_base_cases))
+            if cal_pred is not None:
+                estimated_score = cal_pred["estimated_score"]
+                sigma = cal_pred["sigma"]
+                effective_speedup = cal_pred["effective_speedup"]
+                matched_cases = cal_pred["matched_cases"]
+                improved_cases = cal_pred["improved_cases"]
+                regressed_cases = cal_pred["regressed_cases"]
+                method = cal_pred["method"]
+                detail = cal_pred["detail"]
+            elif common:
                 matched_cases = len(common)
                 log_ratios: list[float] = []
                 for cname in common:
-                    t_b = base_perf["cases"][cname]
-                    t_c = cand_perf["cases"][cname]
+                    t_b = pair_base_cases[cname]
+                    t_c = pair_cand_cases[cname]
                     if t_b <= 0 or t_c <= 0:
                         continue
                     ratio = t_b / t_c
@@ -847,18 +1296,19 @@ class ScoreEstimator:
                     log_ratios.append(math.log(max(0.25, min(3.5, ratio))))
 
                 raw_geo = math.exp(sum(log_ratios) / len(log_ratios)) if log_ratios else 1.0
-                # Coverage shrinkage if fewer than 8 cases, plus penalty for small/mid band regressions
-                coverage = min(1.0, matched_cases / 8.0)
+                # PROF_SUMMARY aggregates multi-iteration hardware profiler Task Duration directly
+                coverage = 0.85 if pair_kind == "prof_summary" else min(1.0, matched_cases / 8.0)
                 reg_penalty = 0.03 * len(regressed_cases)
                 effective_speedup = max(0.30, 1.0 + coverage * (raw_geo - 1.0) - reg_penalty)
                 estimated_score = _project_score_from_speedup(
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
-                model_err = 1.5 if (cand_perf["is_profiler"] and matched_cases >= 10) else 2.5
+                model_err = 1.5 if (cand_perf["is_profiler"] and (matched_cases >= 10 or pair_kind == "prof_summary")) else 2.5
                 sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + model_err ** 2), 2)
-                method = f"paired_{cand_perf['source']}"
+                method = f"paired_{pair_kind}"
+                soc_tag = f" [{cand_perf.get('runtime_soc')}]" if cand_perf.get("runtime_soc") else ""
                 detail = (
-                    f"{matched_cases} paired cases vs {base_sha[:7]}: raw_geo={raw_geo:.3f}x, "
+                    f"{matched_cases} paired cases vs {(base_sha or '')[:7]}{soc_tag}: raw_geo={raw_geo:.3f}x, "
                     f"eff={effective_speedup:.3f}x, improved={improved_cases}, regressed={len(regressed_cases)}"
                 )
             else:
@@ -893,7 +1343,6 @@ class ScoreEstimator:
                         if cand_perf["cases"][c] > 0
                     ]
                     geo_t = math.exp(sum(math.log(r) for r in ratios_t) / len(ratios_t))
-                    # Torch built-in typically scores ~55-68% of site-wide specialist tbest
                     implied_sc = min(ledger.frontier_top1, 58.0 * geo_t)
                     if ledger.current_score <= 0:
                         estimated_score = round(implied_sc, 2)
@@ -935,6 +1384,10 @@ class ScoreEstimator:
             effective_speedup=round(effective_speedup, 4),
             estimation_method=method,
             baseline_sha=base_sha,
+            decay_factor_gamma=ledger.decay_factor_gamma,
+            raw_historical_best_score=ledger.raw_historical_best_score,
+            contemporary_best_score=ledger.contemporary_best_score,
+            true_restore_gain=ledger.true_restore_gain,
             matched_cases=matched_cases,
             improved_cases=improved_cases,
             regressed_cases=regressed_cases,

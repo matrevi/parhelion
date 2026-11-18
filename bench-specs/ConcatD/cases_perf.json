@@ -1,0 +1,250 @@
+{
+  "problem": "ConcatD",
+  "version": "1.0",
+  "protocol": {
+    "profiler": "profiler_single_session",
+    "warmup": 2,
+    "repeat": 5,
+    "sync_per_iter": true,
+    "metric": "task_duration_median_us"
+  },
+  "hardware_roofline": {
+    "soc": "soc-a",
+    "hbm_bw_gbps": 724.0,
+    "aiv_cores": 40,
+    "launch_floor_us": 3.35
+  },
+  "public_anchors": [
+    {
+      "id": "P1",
+      "weight_pts": 2.0,
+      "tbest_us": 3.523333
+    },
+    {
+      "id": "P2",
+      "weight_pts": 2.0,
+      "tbest_us": 3.49
+    },
+    {
+      "id": "P3",
+      "weight_pts": 2.0,
+      "tbest_us": 3.693333
+    },
+    {
+      "id": "P4",
+      "weight_pts": 2.0,
+      "tbest_us": 3.593333
+    },
+    {
+      "id": "P5",
+      "weight_pts": 2.0,
+      "tbest_us": 3.496667
+    }
+  ],
+  "strata_priors": {
+    "S_SMALL_CORE": 0.3,
+    "M_MID_UB": 0.35,
+    "L_HBM_TILED": 0.2,
+    "X_EXTREME": 0.15
+  },
+  "hidden_buckets": [
+    {
+      "id": "tiny32",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 64,
+      "roofline_us": 3.45,
+      "torch_ref_us": 4.8,
+      "prior_w": 0.075002,
+      "max_w": 0.25,
+      "description": "1D (3,)+(5,) axis=0 32B launch floor"
+    },
+    {
+      "id": "small_128b_rows",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 256,
+      "roofline_us": 3.45,
+      "torch_ref_us": 5.1,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "2D (8,2)+(8,2) axis=1 128B"
+    },
+    {
+      "id": "small_1k_align",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float16",
+      "io_bytes": 2048,
+      "roofline_us": 3.45,
+      "torch_ref_us": 4.9,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "2D fp16 (16,16)x2 axis=1"
+    },
+    {
+      "id": "small_2d",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 51200,
+      "roofline_us": 3.55,
+      "torch_ref_us": 5.4,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "2D fp32 (33,128)+(17,128) axis=0"
+    },
+    {
+      "id": "small_8k_unalign",
+      "stratum": "M_MID_UB",
+      "dtype": "bfloat16",
+      "io_bytes": 16384,
+      "roofline_us": 3.6,
+      "torch_ref_us": 6.2,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D bf16 (128,15)+(128,17) axis=1"
+    },
+    {
+      "id": "int32_mid",
+      "stratum": "M_MID_UB",
+      "dtype": "int32",
+      "io_bytes": 1048576,
+      "roofline_us": 4.95,
+      "torch_ref_us": 7.1,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D int32 (128,512)x2 axis=0"
+    },
+    {
+      "id": "odd_tails",
+      "stratum": "M_MID_UB",
+      "dtype": "int64",
+      "io_bytes": 18432,
+      "roofline_us": 3.55,
+      "torch_ref_us": 6.5,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "3D int64 (2,3,129)+(2,3,63) axis=-1"
+    },
+    {
+      "id": "axismid",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 2097152,
+      "roofline_us": 6.4,
+      "torch_ref_us": 9.2,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "3D fp32 (64,32/24/8,128) axis=1"
+    },
+    {
+      "id": "unalign_mid_mix",
+      "stratum": "M_MID_UB",
+      "dtype": "float16",
+      "io_bytes": 933888,
+      "roofline_us": 4.8,
+      "torch_ref_us": 9.8,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D fp16 (2048,64)+(2048,50) axis=1"
+    },
+    {
+      "id": "many16_rows_align",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 1048576,
+      "roofline_us": 4.95,
+      "torch_ref_us": 8.9,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "16-way fp32 (512,16)x16 axis=1"
+    },
+    {
+      "id": "axislast",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 8388608,
+      "roofline_us": 14.936,
+      "torch_ref_us": 11.9,
+      "prior_w": 0.05,
+      "max_w": 0.25,
+      "description": "2D fp32 (512,1024)x2 axis=-1 8MB"
+    },
+    {
+      "id": "big_axislast",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float16",
+      "io_bytes": 8388608,
+      "roofline_us": 14.936,
+      "torch_ref_us": 11.8,
+      "prior_w": 0.05,
+      "max_w": 0.25,
+      "description": "2D fp16 (512,2048)x2 axis=-1 8MB"
+    },
+    {
+      "id": "big_axis0",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 16777216,
+      "roofline_us": 26.523,
+      "torch_ref_us": 23.8,
+      "prior_w": 0.05,
+      "max_w": 0.25,
+      "description": "2D fp32 (1024,1024)x2 axis=0 16MB"
+    },
+    {
+      "id": "huge_32m_axislast",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 33554432,
+      "roofline_us": 49.696,
+      "torch_ref_us": 48.0,
+      "prior_w": 0.05,
+      "max_w": 0.25,
+      "description": "2D fp32 32MB HBM streaming ceiling"
+    },
+    {
+      "id": "many64",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 262144,
+      "roofline_us": 4.2,
+      "torch_ref_us": 14.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "64-way TensorList descriptor stress"
+    },
+    {
+      "id": "many32_rows_unalign",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 524288,
+      "roofline_us": 4.5,
+      "torch_ref_us": 16.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "32-way unaligned 16B inner rows"
+    },
+    {
+      "id": "unalign_f32_w4",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 524288,
+      "roofline_us": 6.5,
+      "torch_ref_us": 28.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Tall-narrow 4B inner (32768,1)x2"
+    },
+    {
+      "id": "unalign_u8_w3_5",
+      "stratum": "X_EXTREME",
+      "dtype": "uint8",
+      "io_bytes": 262144,
+      "roofline_us": 6.5,
+      "torch_ref_us": 29.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Tall-narrow 3B+5B uint8 (16384,3/5)"
+    }
+  ]
+}

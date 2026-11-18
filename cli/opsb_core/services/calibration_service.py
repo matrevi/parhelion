@@ -80,19 +80,30 @@ def build_problem_calibration(
     cal_file = workspace / "results" / title / "calibration.json"
     disk_cal = read_json(cal_file, None)
 
+    obs_by_sha7: dict[str, dict[str, Any]] = {}
+    if isinstance(disk_cal, dict):
+        for obs in disk_cal.get("observation_ledger") or []:
+            if isinstance(obs, dict) and obs.get("short_sha"):
+                obs_by_sha7[str(obs["short_sha"])[:7]] = obs
+
     # Annotate history entries with estimated_score & residual_gap (`actual - est`)
     residuals: list[float] = []
     last_pred: float | None = None
     last_res: float | None = None
     for h in history:
         s7 = str(h.get("sha") or "")[:7]
-        est = h.get("estimated_score")
+        obs_entry = obs_by_sha7.get(s7)
+        est = obs_entry.get("predicted_score") if obs_entry and obs_entry.get("predicted_score") is not None else h.get("estimated_score")
         if est is None and s7 in est_by_sha7:
             est = est_by_sha7[s7]
         if est is not None:
             h["estimated_score"] = round(float(est), 2)
             if h.get("status") == "Pass" and h.get("score") is not None:
-                res = round(float(h["score"]) - float(est), 2)
+                res = (
+                    round(float(obs_entry["residual_pts"]), 2)
+                    if (obs_entry and obs_entry.get("residual_pts") is not None)
+                    else round(float(h["score"]) - float(est), 2)
+                )
                 h["residual_gap"] = res
                 residuals.append(abs(res))
                 if last_pred is None:

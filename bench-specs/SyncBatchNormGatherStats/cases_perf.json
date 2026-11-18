@@ -1,0 +1,195 @@
+{
+  "problem": "SyncBatchNormGatherStats",
+  "version": "1.0",
+  "protocol": {
+    "profiler": "profiler_single_session",
+    "warmup": 2,
+    "repeat": 5,
+    "sync_per_iter": true,
+    "metric": "task_duration_median_us"
+  },
+  "hardware_roofline": {
+    "soc": "soc-a",
+    "hbm_bw_gbps": 724.0,
+    "aiv_cores": 40,
+    "launch_floor_us": 3.35
+  },
+  "public_anchors": [
+    {
+      "id": "P1",
+      "weight_pts": 2.0,
+      "tbest_us": 3.936667
+    },
+    {
+      "id": "P2",
+      "weight_pts": 2.0,
+      "tbest_us": 3.89
+    },
+    {
+      "id": "P3",
+      "weight_pts": 2.0,
+      "tbest_us": 3.916667
+    },
+    {
+      "id": "P4",
+      "weight_pts": 2.0,
+      "tbest_us": 3.933333
+    },
+    {
+      "id": "P5",
+      "weight_pts": 2.0,
+      "tbest_us": 3.98
+    }
+  ],
+  "strata_priors": {
+    "S_SMALL_CORE": 0.3,
+    "M_MID_UB": 0.35,
+    "L_HBM_TILED": 0.2,
+    "X_EXTREME": 0.15
+  },
+  "hidden_buckets": [
+    {
+      "id": "sbn_w4_c64_small",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 4096,
+      "roofline_us": 3.9,
+      "torch_ref_us": 8.0,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "world=4, C=64 small gather"
+    },
+    {
+      "id": "sbn_w8_c128_fp16",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float16",
+      "io_bytes": 8192,
+      "roofline_us": 3.92,
+      "torch_ref_us": 8.2,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "world=8, C=128 fp16 stats"
+    },
+    {
+      "id": "sbn_w8_c256_bf16",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "bfloat16",
+      "io_bytes": 16384,
+      "roofline_us": 3.95,
+      "torch_ref_us": 8.5,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "world=8, C=256 bf16 stats"
+    },
+    {
+      "id": "sbn_w8_c512_fp32",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 65536,
+      "roofline_us": 4.1,
+      "torch_ref_us": 9.5,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "world=8, C=512 ResNet stage"
+    },
+    {
+      "id": "sbn_w16_c1024_fp32",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 196608,
+      "roofline_us": 4.4,
+      "torch_ref_us": 10.8,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "world=16, C=1024"
+    },
+    {
+      "id": "sbn_w16_c1024_fp16",
+      "stratum": "M_MID_UB",
+      "dtype": "float16",
+      "io_bytes": 131072,
+      "roofline_us": 4.3,
+      "torch_ref_us": 10.5,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "world=16, C=1024 fp16"
+    },
+    {
+      "id": "sbn_w16_c2048_bf16",
+      "stratum": "M_MID_UB",
+      "dtype": "bfloat16",
+      "io_bytes": 262144,
+      "roofline_us": 4.6,
+      "torch_ref_us": 11.2,
+      "prior_w": 0.0875,
+      "max_w": 0.25,
+      "description": "world=16, C=2048 bf16 Bottleneck"
+    },
+    {
+      "id": "sbn_w32_c2048_fp32",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 786432,
+      "roofline_us": 5.4,
+      "torch_ref_us": 13.5,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "world=32, C=2048 multi-core"
+    },
+    {
+      "id": "sbn_w64_c4096_fp32",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 3145728,
+      "roofline_us": 8.2,
+      "torch_ref_us": 19.0,
+      "prior_w": 0.1,
+      "max_w": 0.25,
+      "description": "world=64, C=4096 large cluster"
+    },
+    {
+      "id": "sbn_w1_c33_odd",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 2048,
+      "roofline_us": 3.9,
+      "torch_ref_us": 7.8,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "world=1, odd C=33 tail"
+    },
+    {
+      "id": "sbn_w64_empty_ranks",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 524288,
+      "roofline_us": 5.0,
+      "torch_ref_us": 12.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "world=64 with zero-count ranks"
+    },
+    {
+      "id": "sbn_w8_c16384_wide",
+      "stratum": "X_EXTREME",
+      "dtype": "float16",
+      "io_bytes": 1048576,
+      "roofline_us": 6.2,
+      "torch_ref_us": 15.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Ultra-wide C=16384"
+    },
+    {
+      "id": "sbn_w128_c512_deep",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 786432,
+      "roofline_us": 6.0,
+      "torch_ref_us": 14.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Deep world=128 reduction loop"
+    }
+  ]
+}

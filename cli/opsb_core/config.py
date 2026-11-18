@@ -11,7 +11,8 @@ from typing import Any
 
 CLI_DIR = Path(__file__).resolve().parents[1]
 SUPERVISOR_ROOT = CLI_DIR.parent
-DEFAULT_BENCH_ROOT = SUPERVISOR_ROOT.parent
+_DEV_BENCH = Path("/Users/winbeau/Competitions/ops-bench")
+DEFAULT_BENCH_ROOT = _DEV_BENCH if (SUPERVISOR_ROOT.name == "Resources" and _DEV_BENCH.is_dir()) else SUPERVISOR_ROOT.parent
 CONFIG_DIR = Path.home() / ".config" / "opsb"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 

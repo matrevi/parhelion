@@ -10,7 +10,7 @@ enum ProblemFilter: String, CaseIterable, Identifiable {
     func label(_ lang: AppLanguage) -> String {
         switch self {
         case .all: return lang.tr("全部", "All")
-        case .highWeight: return lang.tr("^^^ 高难题", "^^^ Tier-3")
+        case .highWeight: return lang.tr("3级高难", "Tier-3")
         case .restoreGap: return lang.tr("可恢复差值", "Recoverable")
         }
     }

@@ -160,3 +160,52 @@ def test_ssh_connectivity(host: str) -> dict[str, Any]:
     ok = proc.returncode == 0
     info = proc.stdout.strip().replace("\n", " · ") if ok else (proc.stderr or proc.stdout).strip()[:200]
     return {"ok": ok, "host": host, "latency_ms": ms, "info": info}
+
+
+def boost_npu_ticket(host: str, pid: int, problem: str = "", sha: str = "") -> dict[str, Any]:
+    remote_py = (
+        "import json, os, pathlib, stat\n"
+        "tdir = pathlib.Path('/tmp/opsb-npu-tickets')\n"
+        "tdir.mkdir(parents=True, exist_ok=True)\n"
+        f"tp = tdir / '{pid}.json'\n"
+        "cur = {}\n"
+        "if tp.is_file():\n"
+        "    try:\n"
+        "        os.chmod(tp, 0o644)\n"
+        "        cur = json.loads(tp.read_text())\n"
+        "    except Exception: pass\n"
+        f"cur.update({{'pid': {pid}, 'title': cur.get('title') or {problem!r}, 'sha': cur.get('sha') or {sha!r}, 'tier': 99, 'prio': 9999.0, 'fast': True, 'created': 1.0}})\n"
+        "tp.write_text(json.dumps(cur))\n"
+        "os.chmod(tp, 0o444)\n"
+        "print(json.dumps({'ok': True, 'pid': cur['pid'], 'boosted': True}))\n"
+    )
+    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-c", remote_py], capture_output=True, text=True, timeout=6.0)
+    if proc.returncode != 0:
+        return {"ok": False, "error": (proc.stderr or proc.stdout).strip()[:200]}
+    return {"ok": True, "pid": pid, "boosted": True}
+
+
+def cancel_npu_task(host: str, pid: int) -> dict[str, Any]:
+    remote_py = (
+        "import json, os, pathlib, signal\n"
+        f"pid = {pid}\n"
+        "tp = pathlib.Path(f'/tmp/opsb-npu-tickets/{pid}.json')\n"
+        "try:\n"
+        "    if tp.exists(): os.chmod(tp, 0o644); tp.unlink(missing_ok=True)\n"
+        "except Exception: pass\n"
+        "killed = False\n"
+        "for sig in (signal.SIGTERM,):\n"
+        "    try:\n"
+        "        pgid = os.getpgid(pid)\n"
+        "        if pgid > 1: os.killpg(pgid, sig)\n"
+        "        else: os.kill(pid, sig)\n"
+        "        killed = True\n"
+        "    except Exception:\n"
+        "        try: os.kill(pid, sig); killed = True\n"
+        "        except Exception: pass\n"
+        "print(json.dumps({'ok': True, 'pid': pid, 'killed': killed}))\n"
+    )
+    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-c", remote_py], capture_output=True, text=True, timeout=6.0)
+    if proc.returncode != 0:
+        return {"ok": False, "error": (proc.stderr or proc.stdout).strip()[:200]}
+    return {"ok": True, "pid": pid}

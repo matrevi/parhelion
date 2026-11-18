@@ -32,11 +32,17 @@ echo "==> [3/4] Assembling OpsSupervisor.app bundle..."
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/OpsSupervisor"
 chmod +x "$APP_BUNDLE/Contents/MacOS/OpsSupervisor"
 
-# Bundle embedded CLI & opsb_core package for standalone reliability
-rm -rf "$APP_BUNDLE/Contents/Resources/cli"
-mkdir -p "$APP_BUNDLE/Contents/Resources/cli"
-rsync -a --exclude='__pycache__' --exclude='*.pyc' "$SUPERVISOR_ROOT/cli/" "$APP_BUNDLE/Contents/Resources/cli/"
+# Bundle embedded CLI, Scheduler, Bench-Specs, and Breakthrough Playbook inside Contents/Resources/
+for subdir in cli scheduler bench-specs breakthrough; do
+    rm -rf "$APP_BUNDLE/Contents/Resources/$subdir"
+    if [[ -d "$SUPERVISOR_ROOT/$subdir" ]]; then
+        mkdir -p "$APP_BUNDLE/Contents/Resources/$subdir"
+        rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.state' "$SUPERVISOR_ROOT/$subdir/" "$APP_BUNDLE/Contents/Resources/$subdir/"
+    fi
+done
 chmod +x "$APP_BUNDLE/Contents/Resources/cli/opsb" "$APP_BUNDLE/Contents/Resources/cli/opsb_core/probe/npu_probe.py"
+mkdir -p "$HOME/.local/bin"
+ln -sf "$SUPERVISOR_ROOT/cli/opsb" "$HOME/.local/bin/opsb"
 
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

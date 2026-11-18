@@ -1,0 +1,239 @@
+{
+  "problem": "ConfusionTransposeD",
+  "version": "1.0",
+  "protocol": {
+    "profiler": "profiler_single_session",
+    "warmup": 2,
+    "repeat": 5,
+    "sync_per_iter": true,
+    "metric": "task_duration_median_us"
+  },
+  "hardware_roofline": {
+    "soc": "soc-a",
+    "hbm_bw_gbps": 724.0,
+    "aiv_cores": 40,
+    "launch_floor_us": 3.35
+  },
+  "public_anchors": [
+    {
+      "id": "P1",
+      "weight_pts": 2.0,
+      "tbest_us": 3.663333
+    },
+    {
+      "id": "P2",
+      "weight_pts": 2.0,
+      "tbest_us": 3.45
+    },
+    {
+      "id": "P3",
+      "weight_pts": 2.0,
+      "tbest_us": 3.453333
+    },
+    {
+      "id": "P4",
+      "weight_pts": 2.0,
+      "tbest_us": 3.496667
+    },
+    {
+      "id": "P5",
+      "weight_pts": 2.0,
+      "tbest_us": 3.43
+    }
+  ],
+  "strata_priors": {
+    "S_SMALL_CORE": 0.3,
+    "M_MID_UB": 0.35,
+    "L_HBM_TILED": 0.2,
+    "X_EXTREME": 0.15
+  },
+  "hidden_buckets": [
+    {
+      "id": "floor",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 256,
+      "roofline_us": 3.45,
+      "torch_ref_us": 4.5,
+      "prior_w": 0.075001,
+      "max_w": 0.25,
+      "description": "Tiny floor kernel launch"
+    },
+    {
+      "id": "ref_2x2x2",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 64,
+      "roofline_us": 3.45,
+      "torch_ref_us": 4.6,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "3D (2,2,2) tiny transpose"
+    },
+    {
+      "id": "ref_16x16",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 2048,
+      "roofline_us": 3.45,
+      "torch_ref_us": 4.8,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "2D (16,16) single-tile transpose"
+    },
+    {
+      "id": "ref_4d_t",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 16384,
+      "roofline_us": 3.5,
+      "torch_ref_us": 13.24,
+      "prior_w": 0.075,
+      "max_w": 0.25,
+      "description": "4D attention head permute"
+    },
+    {
+      "id": "ref_2d_t",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 65536,
+      "roofline_us": 3.6,
+      "torch_ref_us": 5.8,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D medium transpose"
+    },
+    {
+      "id": "ref_3d_t",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 131072,
+      "roofline_us": 3.7,
+      "torch_ref_us": 6.2,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "3D medium permute"
+    },
+    {
+      "id": "f16_2d_tail",
+      "stratum": "M_MID_UB",
+      "dtype": "float16",
+      "io_bytes": 135000,
+      "roofline_us": 3.75,
+      "torch_ref_us": 6.1,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D fp16 odd-tail transpose"
+    },
+    {
+      "id": "f32_2d_tail",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 270000,
+      "roofline_us": 3.9,
+      "torch_ref_us": 6.9,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D fp32 odd-tail transpose"
+    },
+    {
+      "id": "f32_128x128",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 131072,
+      "roofline_us": 3.7,
+      "torch_ref_us": 6.5,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D fp32 (128,128) UB tile"
+    },
+    {
+      "id": "bf16_256x256_proxy",
+      "stratum": "M_MID_UB",
+      "dtype": "bfloat16",
+      "io_bytes": 262144,
+      "roofline_us": 3.9,
+      "torch_ref_us": 6.8,
+      "prior_w": 0.058333,
+      "max_w": 0.25,
+      "description": "2D bf16 (256,256) permute coverage"
+    },
+    {
+      "id": "f32_256x256",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 524288,
+      "roofline_us": 4.4,
+      "torch_ref_us": 8.8,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "2D fp32 (256,256) multi-core"
+    },
+    {
+      "id": "f32_bs_last",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 2097152,
+      "roofline_us": 6.5,
+      "torch_ref_us": 11.5,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "4D batch-stride last-axis permute"
+    },
+    {
+      "id": "f32_1024x1024",
+      "stratum": "L_HBM_TILED",
+      "dtype": "float32",
+      "io_bytes": 8388608,
+      "roofline_us": 15.0,
+      "torch_ref_us": 26.0,
+      "prior_w": 0.066667,
+      "max_w": 0.25,
+      "description": "2D fp32 (1024,1024) 8MB HBM tiled"
+    },
+    {
+      "id": "ref_ident",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 65536,
+      "roofline_us": 3.55,
+      "torch_ref_us": 5.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Identity permute reshape-only degenerate"
+    },
+    {
+      "id": "i8_512x512",
+      "stratum": "X_EXTREME",
+      "dtype": "int8",
+      "io_bytes": 524288,
+      "roofline_us": 5.2,
+      "torch_ref_us": 18.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "2D int8 (512,512) sub-word B8 transpose"
+    },
+    {
+      "id": "odd_prime_3d_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "float16",
+      "io_bytes": 393216,
+      "roofline_us": 4.8,
+      "torch_ref_us": 14.0,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "Prime-dim 3D non-aligned stride"
+    },
+    {
+      "id": "rank6_perm_proxy",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 1048576,
+      "roofline_us": 5.8,
+      "torch_ref_us": 16.5,
+      "prior_w": 0.0375,
+      "max_w": 0.04,
+      "description": "High-rank 6D arbitrary permutation"
+    }
+  ]
+}
