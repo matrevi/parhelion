@@ -83,6 +83,7 @@ struct ContestOverviewView: View {
                 let pct = (snap.contest.weightedScore / Double(max(1, snap.contest.maxWeightedScore))) * 100
                 let meanRaw = snap.contest.rawScore / Double(max(1, snap.contest.problemCount))
                 let recov = max(0, snap.contest.closingPotentialWeighted - snap.contest.weightedScore)
+                let maeText = snap.contest.modelMaePts.map { String(format: " · MAE ±%.1f", $0) } ?? ""
 
                 MetricTile(
                     title: lang.tr("大赛加权总分", "Weighted Total"),
@@ -110,7 +111,10 @@ struct ContestOverviewView: View {
                 MetricTile(
                     title: lang.tr("同代可恢复总分", "Closing Potential"),
                     value: String(format: "%.2f", snap.contest.closingPotentialWeighted),
-                    detail: lang.tr(String(format: "可追回 +%.2f 加权分", recov), String(format: "+%.2f weighted recoverable", recov)),
+                    detail: lang.tr(
+                        String(format: "可追回 +%.2f%@", recov, maeText),
+                        String(format: "+%.2f recov%@", recov, maeText)
+                    ),
                     icon: "sparkles",
                     accent: .purple
                 )

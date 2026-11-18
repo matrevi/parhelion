@@ -6,17 +6,29 @@ struct NpuServerQueueView: View {
 
     private var lang: AppLanguage { store.lang }
 
-    var body: some View {
-        let activeCnt = npu.tasks.filter { $0.state == "ACTIVE" }.count
-        let waitCnt = npu.tasks.count - activeCnt
+    private var dieExecTasks: [NpuTaskItem] {
+        npu.tasks.filter { $0.state == "ACTIVE" }
+    }
 
+    private var cpuBuildTasks: [NpuTaskItem] {
+        npu.tasks.filter { $0.state == "CPU_BUILD" }
+    }
+
+    private var waitingTickets: [NpuTaskItem] {
+        npu.tasks.filter { $0.state == "WAITING" }
+    }
+
+    var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Label(lang.tr("NPU 服务端验证队列", "NPU Server Task Queue"), systemImage: "server.rack")
+                Label(lang.tr("NPU 三车道验证队列", "NPU 3-Lane Pipeline Queue"), systemImage: "server.rack")
                     .font(.system(size: 12.5, weight: .bold))
                 Spacer()
                 SemanticPill(
-                    text: lang.tr("\(activeCnt) 运行 · \(waitCnt) 等待", "\(activeCnt) Active · \(waitCnt) Waiting"),
+                    text: lang.tr(
+                        "\(dieExecTasks.count) 占卡 · \(cpuBuildTasks.count) 编译 · \(waitingTickets.count) 候票",
+                        "\(dieExecTasks.count) Die · \(cpuBuildTasks.count) Build · \(waitingTickets.count) Wait"
+                    ),
                     compact: true
                 )
             }
@@ -25,24 +37,34 @@ struct NpuServerQueueView: View {
 
             Divider()
 
-            if npu.tasks.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 26))
-                        .foregroundStyle(.secondary)
-                    Text(npu.online
-                         ? lang.tr("NPU 服务端空闲", "NPU Server Idle")
-                         : lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
-                        .font(.system(size: 12.5))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !npu.online {
+                emptyState(lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 7) {
-                        ForEach(npu.tasks) { task in
-                            taskCard(task)
-                        }
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        laneSection(
+                            title: lang.tr("① DIE 0 硬件独占执行区", "① DIE 0 EXECUTING"),
+                            badge: "\(dieExecTasks.count)",
+                            tint: .blue,
+                            items: dieExecTasks,
+                            emptyText: lang.tr("Die 0 空闲 · 可立即进入 Phase B", "Die 0 Free · Ready for Phase B")
+                        )
+
+                        laneSection(
+                            title: lang.tr("② 32核无锁并行编译区 (0s 占卡)", "② 32-CORE CPU BUILD (0s Lock)"),
+                            badge: "\(cpuBuildTasks.count)",
+                            tint: .teal,
+                            items: cpuBuildTasks,
+                            emptyText: lang.tr("当前无后台编译任务", "No active Phase A builds")
+                        )
+
+                        laneSection(
+                            title: lang.tr("③ WSPT 待锁票据队列", "③ WSPT DIE TICKET QUEUE"),
+                            badge: "\(waitingTickets.count)",
+                            tint: .orange,
+                            items: waitingTickets,
+                            emptyText: lang.tr("无排队等待任务", "Zero queue wait")
+                        )
                     }
                     .padding(10)
                 }
@@ -50,13 +72,52 @@ struct NpuServerQueueView: View {
         }
     }
 
+    private func laneSection(title: String, badge: String, tint: Color, items: [NpuTaskItem], emptyText: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle().fill(tint).frame(width: 6, height: 6)
+                Text(title)
+                    .font(.system(size: 10.5, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text(badge)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(tint.opacity(0.14)))
+            }
+            .padding(.horizontal, 2)
+
+            if items.isEmpty {
+                Text(emptyText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.025)))
+            } else {
+                ForEach(items) { task in
+                    taskCard(task)
+                }
+            }
+        }
+    }
+
     private func taskCard(_ task: NpuTaskItem) -> some View {
         let active = task.state == "ACTIVE"
-        return SurfaceCard(highlighted: active, highlightColor: .accentColor, padding: 10) {
+        let isBuild = task.state == "CPU_BUILD"
+        let highlightCol: Color = active ? .accentColor : (isBuild ? .teal : .clear)
+
+        return SurfaceCard(highlighted: active || isBuild, highlightColor: highlightCol, padding: 10) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
-                    SemanticPill(text: task.stage, icon: active ? "play.fill" : "clock")
-                    Text(task.problem ?? lang.tr("排队任务", "Queued Worker"))
+                    SemanticPill(
+                        text: lang.npuStage(task.stage),
+                        icon: active ? "play.fill" : (isBuild ? "hammer.fill" : "clock")
+                    )
+                    Text(task.problem ?? lang.tr("排队验证任务", "Queued Worker"))
                         .font(.system(size: 13, weight: .bold))
                         .lineLimit(1)
                     if let d = task.difficulty {
@@ -64,7 +125,7 @@ struct NpuServerQueueView: View {
                     }
                     Spacer()
                     if let w = task.wsptPriority, w > 0 {
-                        Text(String(format: "WSPT %.1f", w))
+                        Text(String(format: lang.tr("优先级 %.1f", "WSPT %.1f"), w))
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
@@ -74,13 +135,19 @@ struct NpuServerQueueView: View {
                     Label(task.shortSha ?? "—", systemImage: "number")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
-                    Text("PID \(task.pid)")
-                        .font(.system(size: 10.5, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    if task.pid > 0 {
+                        Text(String("PID \(task.pid)"))
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                     if let die = task.die {
-                        Text("Die \(die)")
+                        Text(lang.tr("\(die)号卡 (Die \(die))", "Die \(die)"))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.green)
+                    } else if let estWait = task.estimatedWaitSec, task.state == "WAITING" {
+                        Text(lang.tr("预计等 ~\(Formatters.duration(estWait))", "Est. ~\(Formatters.duration(estWait))"))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.orange)
                     }
                     Spacer()
                     Text(Formatters.duration(task.elapsedSec))
@@ -88,11 +155,23 @@ struct NpuServerQueueView: View {
                         .foregroundStyle(active ? Color.accentColor : .secondary)
                 }
 
-                Text(task.detail)
+                Text(lang.npuDetail(task.detail))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
         }
+    }
+
+    private func emptyState(_ text: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: "checkmark.circle")
+                .font(.system(size: 26))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

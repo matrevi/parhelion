@@ -121,7 +121,7 @@ struct ProblemTableView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            SemanticPill(text: p.status, compact: true)
+            SemanticPill(text: lang.evalStatus(p.status), compact: true)
                 .frame(width: 88, alignment: .center)
 
             Text(String(format: "%.2f", p.currentScore))
@@ -156,7 +156,7 @@ struct ProblemTableView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 58, alignment: .trailing)
 
-            SemanticPill(text: p.wsptTag, compact: true)
+            SemanticPill(text: lang.wsptTag(p.wsptTag), compact: true)
                 .frame(width: 120, alignment: .trailing)
         }
         .padding(.horizontal, 14)

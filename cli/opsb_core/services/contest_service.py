@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
+from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
 
 
@@ -179,6 +180,7 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
                     "hidden_pts": None,
                     "note": out.get("note", ""),
                     "submission_id": out.get("submission_id"),
+                    "estimated_score": float(out["estimated_score"]) if out.get("estimated_score") is not None else None,
                 }
             )
         else:
@@ -240,6 +242,10 @@ def build_problem_models(
     results_dir = workspace / "results"
     snapshot = read_json(results_dir / "score-snapshot.json", {})
     boards = load_slim_boards(results_dir / "scoring-evidence" / "board-summary.json")
+    est_lookup: dict[tuple[str, str], float] = {}
+    for q_row in read_jsonl(results_dir / "submit-queue.jsonl"):
+        if q_row.get("title") and q_row.get("sha") and q_row.get("estimated_score") is not None:
+            est_lookup[(q_row["title"], str(q_row["sha"])[:7])] = float(q_row["estimated_score"])
 
     problems_out: list[dict[str, Any]] = []
     raw_total = 0.0
@@ -376,6 +382,19 @@ def build_problem_models(
         head_sha, head_age_min, head_subject = read_head_fast(workspace / p["path"])
         cb_trips = hist_idx["pressure_12h"].get(title, 0)
         cb_open = cb_trips >= cb_limit or hist_idx["consec_fail_12h"].get(title, 0) >= 2
+        rev_history = [dict(h) for h in reversed(hist_idx["history_by_prob"].get(title, []))]
+        prob_est_map = {s7: v for (pt, s7), v in est_lookup.items() if pt == title}
+        calibration = build_problem_calibration(
+            workspace=workspace,
+            repo_dir=workspace / p["path"],
+            title=title,
+            cur_score=cur_score,
+            public_pts=public_pts,
+            hidden_pts=hidden_pts,
+            implied_hidden_r=implied_r,
+            history=rev_history,
+            est_by_sha7=prob_est_map,
+        )
 
         problems_out.append(
             {
@@ -416,12 +435,14 @@ def build_problem_models(
                 "head_sha": head_sha,
                 "head_subject": head_subject,
                 "head_age_min": head_age_min,
+                "calibration": calibration,
                 "testcases": all_cases,
-                "history": list(reversed(hist_idx["history_by_prob"].get(title, []))),
+                "history": rev_history,
             }
         )
 
     closing_pot = sum(p["difficulty"] * p["best_score"] for p in problems_out)
+    valid_maes = [float(p["calibration"]["mae_pts"]) for p in problems_out if p["calibration"].get("mae_pts") is not None]
     contest_summary = {
         **meta,
         "problem_count": len(problems_out),
@@ -431,5 +452,6 @@ def build_problem_models(
         "weighted_score": round(weighted_total, 2),
         "max_weighted_score": max_weighted,
         "closing_potential_weighted": round(closing_pot, 2),
+        "model_mae_pts": round(sum(valid_maes) / len(valid_maes), 2) if valid_maes else None,
     }
     return problems_out, contest_summary

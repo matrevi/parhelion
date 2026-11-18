@@ -7,34 +7,37 @@ struct SemanticPill: View {
 
     private var palette: (fg: Color, bg: Color) {
         let u = text.uppercased()
-        if u.contains("CRITICAL") || u.contains("榜上0分") {
+        if u.contains("CRITICAL") || u.contains("ESCAPE") || u.contains("逃逸锁定") || u.contains("榜上0分") || u.contains("清零待恢复") {
             return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
+        }
+        if u.contains("CPU-BUILD") || u.contains("无锁编译") {
+            return (Color(red: 0.12, green: 0.68, blue: 0.62), Color(red: 0.12, green: 0.68, blue: 0.62).opacity(0.15))
         }
         if u.contains("突破") || u.contains("BREAKTHROUGH") {
             return (.white, Color(red: 0.88, green: 0.46, blue: 0.08))
         }
-        if u.contains("PASS ↑") || u == "PASS" || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
+        if u.contains("PASS ↑") || u == "PASS" || u == "通过" || u.contains("稳定在榜") || u.contains("STEADY") || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
             return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }
-        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") {
+        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("可恢复") || u.contains("排队等卡") || u.contains("WAITING-DIE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") {
             return (Color(red: 0.90, green: 0.56, blue: 0.10), Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15))
         }
-        if u.contains("PROFILER") || u.contains("HIGH ROI") || u.contains("PACKAGING") || u.contains("COMPILING") || u.contains("打包") || u.contains("编译") {
+        if u.contains("PROFILER") || u.contains("性能采集") || u.contains("HIGH ROI") || u.contains("高收益") || u.contains("PACKAGING") || u.contains("COMPILING") || u.contains("打包") || u.contains("编译") {
             return (Color(red: 0.58, green: 0.38, blue: 0.95), Color(red: 0.58, green: 0.38, blue: 0.95).opacity(0.15))
         }
-        if u.contains("PRECISION") || u.contains("JUDGING") || u.contains("HEADROOM") || u.contains("REMOTE") || u.contains("UPLOADING") || u.contains("SYNCING") || u == "PUBLIC" || u == "公开" || u.contains("远程") || u.contains("上传") || u.contains("同步") {
+        if u.contains("PRECISION") || u.contains("精度验证") || u.contains("JUDGING") || u.contains("评测中") || u.contains("HEADROOM") || u.contains("提分空间") || u.contains("REMOTE") || u.contains("UPLOADING") || u.contains("SYNCING") || u == "PUBLIC" || u == "公开" || u.contains("远程") || u.contains("上传") || u.contains("同步") {
             return (Color(red: 0.20, green: 0.56, blue: 0.96), Color(red: 0.20, green: 0.56, blue: 0.96).opacity(0.15))
         }
         if u.contains("BUILD") {
             return (.indigo, Color.indigo.opacity(0.15))
         }
-        if u.contains("FAST-LANE") {
+        if u.contains("FAST-LANE") || u.contains("快速冒烟") {
             return (.teal, Color.teal.opacity(0.15))
         }
-        if u.contains("STRESS") || u.contains("CIRCUIT") || u.contains("频控") {
+        if u.contains("STRESS") || u.contains("并发压测") || u.contains("CIRCUIT") || u.contains("频控") {
             return (.orange, Color.orange.opacity(0.16))
         }
-        if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") {
+        if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") || u.contains("精度未过") || u.contains("运行超时") || u.contains("运行报错") || u.contains("编译失败") || u.contains("本地拦截") {
             return (Color(red: 0.90, green: 0.28, blue: 0.32), Color(red: 0.90, green: 0.28, blue: 0.32).opacity(0.15))
         }
         return (.secondary, Color.secondary.opacity(0.12))

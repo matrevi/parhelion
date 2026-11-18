@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 
 from .commands.admin_cmd import run_auth, run_collab, run_skills, run_ssh, run_workspace
+from .commands.bench_cmd import run_bench
 from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
@@ -140,12 +141,61 @@ def build_parser() -> argparse.ArgumentParser:
     q_dr.add_argument("--json", action="store_true")
     q_dr.set_defaults(func=run_queue)
 
-    s_ts = sub.add_parser("test", help="Trigger NPU validation")
+    s_ts = sub.add_parser("test", help="3-Phase NPU pipeline (--build-only / --fast Q0 / full Q1)")
     s_ts.add_argument("problem")
-    s_ts.add_argument("--fast", action="store_true")
+    s_ts.add_argument("--sha", default=None)
+    s_ts.add_argument("--fast", action="store_true", help="Q0 fast-lane (~10s die lock)")
+    s_ts.add_argument("--build-only", action="store_true", help="Phase A lock-free 32-core CPU build (0s die lock)")
+    s_ts.add_argument("--dry-run", action="store_true")
     s_ts.add_argument("--sync-only", action="store_true")
     s_ts.add_argument("--workspace", "-w")
     s_ts.set_defaults(func=run_test)
+
+    s_bn = sub.add_parser("bench", help="Stratified benchmark suite & closed-loop score-gap calibration")
+    bn_sub = s_bn.add_subparsers(dest="bench_cmd")
+    s_bn.add_argument("--workspace", "-w")
+    s_bn.add_argument("--json", action="store_true")
+    s_bn.set_defaults(func=run_bench, bench_cmd="status", problem=None)
+
+    bn_st = bn_sub.add_parser("status", help="Show 5-stratum learned weights, efficiency & headroom")
+    bn_st.add_argument("problem", nargs="?")
+    bn_st.add_argument("--workspace", "-w")
+    bn_st.add_argument("--json", action="store_true")
+    bn_st.set_defaults(func=run_bench)
+
+    bn_in = bn_sub.add_parser("init", help="Scaffold stratified bench/ & lock SHA-256 oracle")
+    bn_in.add_argument("problem")
+    bn_in.add_argument("--workspace", "-w")
+    bn_in.add_argument("--json", action="store_true")
+    bn_in.set_defaults(func=run_bench)
+
+    bn_ca = bn_sub.add_parser("calibrate", help="Run Simplex MAP weight calibration against online scores")
+    bn_ca.add_argument("problem", nargs="?")
+    bn_ca.add_argument("--workspace", "-w")
+    bn_ca.add_argument("--json", action="store_true")
+    bn_ca.set_defaults(func=run_bench)
+
+    bn_dg = bn_sub.add_parser("diagnose", help="Diagnose score-gap residuals & uncovered slow branches")
+    bn_dg.add_argument("problem")
+    bn_dg.add_argument("--sha", default=None)
+    bn_dg.add_argument("--workspace", "-w")
+    bn_dg.add_argument("--json", action="store_true")
+    bn_dg.set_defaults(func=run_bench)
+
+    bn_bf = bn_sub.add_parser("backfill", help="Backfill missing perf buckets on NPU (~20s)")
+    bn_bf.add_argument("problem")
+    bn_bf.add_argument("--sha", default=None)
+    bn_bf.add_argument("--workspace", "-w")
+    bn_bf.add_argument("--json", action="store_true")
+    bn_bf.set_defaults(func=run_bench)
+
+    bn_ve = bn_sub.add_parser("verify-escape", help="Verify escape reproducer fails on --bad and passes on --good")
+    bn_ve.add_argument("problem")
+    bn_ve.add_argument("--bad", required=True)
+    bn_ve.add_argument("--good", required=True)
+    bn_ve.add_argument("--workspace", "-w")
+    bn_ve.add_argument("--json", action="store_true")
+    bn_ve.set_defaults(func=run_bench)
 
     s_au = sub.add_parser("auth", help="Shared Judge & GitCode authentication")
     au_sub = s_au.add_subparsers(dest="auth_cmd", required=True)

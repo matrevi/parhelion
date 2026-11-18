@@ -71,7 +71,7 @@ struct BreakthroughDetailView: View {
                             .foregroundStyle(.tertiary)
                     }
                     Spacer()
-                    SemanticPill(text: entry.category.uppercased(), icon: "tag.fill", compact: true)
+                    SemanticPill(text: lang.categoryName(entry.category), icon: "tag.fill", compact: true)
                     SemanticPill(text: String(format: "%@ %+.2f", lang.tr("突破", "BREAKTHROUGH"), entry.deltaRaw), icon: "flame.fill")
                 }
 

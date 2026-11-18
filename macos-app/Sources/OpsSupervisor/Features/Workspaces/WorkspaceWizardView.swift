@@ -143,7 +143,7 @@ struct WorkspaceWizardView: View {
                     blueprintRow("<Operator>/", lang.tr("纯算子目录", "Problem Scope"), 0, "folder.fill")
                     blueprintRow("PROBLEM.md", lang.tr("精度与规格", "Math & Tol"), 1, "function")
                     blueprintRow("op_host/ & op_kernel/", lang.tr("源码范围", "Editable C++"), 1, "cpu")
-                    blueprintRow("tests/", lang.tr("扩展测例", "Extended Cases"), 1, "checkmark.shield")
+                    blueprintRow("bench/", lang.tr("分层 S/M/L/X + 锁定 Oracle", "Stratified + Frozen Oracle"), 1, "checkmark.shield")
                     blueprintRow("DESIGN.md", lang.tr("Tiling 设计", "Tiling & UB"), 1, "ruler")
                     blueprintRow("AGENTS.md", lang.tr("零 Skill 闭环", "Zero-Skill Loop"), 1, "terminal")
                 }

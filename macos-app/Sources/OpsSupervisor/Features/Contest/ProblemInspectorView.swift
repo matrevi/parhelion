@@ -4,14 +4,14 @@ struct ProblemInspectorView: View {
     @EnvironmentObject var store: ContestStore
     let problem: ProblemItem
     let gitOwner: String
-    @UIState private var expandedGroups: Set<Int> = []
 
     private var lang: AppLanguage { store.lang }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 13) {
+            VStack(alignment: .leading, spacing: 12) {
                 headerRow
+                EscapeAndBackfillBannerView(problem: problem)
 
                 if problem.bestScore - problem.currentScore >= 2.5
                     && !problem.bestSha.isEmpty
@@ -20,8 +20,9 @@ struct ProblemInspectorView: View {
                 }
 
                 accountingCard
+                StrataAndSlotsCardView(problem: problem)
                 publicRatioCard
-                all50CasesCard
+                BenchCoverageCardView(problem: problem)
                 timelineCard
             }
             .padding(14)
@@ -35,7 +36,7 @@ struct ProblemInspectorView: View {
                 HStack(spacing: 8) {
                     Text(problem.title).font(.system(size: 16, weight: .bold))
                     DifficultyBadge(difficulty: problem.difficulty)
-                    SemanticPill(text: problem.wsptTag, compact: true)
+                    SemanticPill(text: lang.wsptTag(problem.wsptTag), compact: true)
                 }
                 let rk = problem.rank.map { "#\($0)" } ?? "—"
                 Text("\(gitOwner)/\(problem.repoSlug) · \(lang.tr("排名", "Rank")) \(rk) / \(problem.totalTeams ?? 0)")
@@ -135,87 +136,26 @@ struct ProblemInspectorView: View {
         }
     }
 
-    private var all50CasesCard: some View {
-        SurfaceCard(padding: 11) {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Text(lang.tr("全部 50 组测例折叠明细", "ALL 50 TESTCASES · FOLDABLE"))
-                        .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
-                    Spacer()
-                    Button(expandedGroups.isEmpty ? lang.tr("全部展开", "Expand All") : lang.tr("全部收起", "Fold All")) {
-                        expandedGroups = expandedGroups.isEmpty ? Set(0..<5) : []
-                    }
-                    .buttonStyle(.link)
-                    .font(.system(size: 10.5))
-                }
-                ForEach(0..<5, id: \.self) { g in
-                    let s = g * 10
-                    let e = min(problem.testcases.count, s + 10)
-                    if s < e {
-                        let slice = Array(problem.testcases[s..<e])
-                        let pubCnt = slice.filter { !$0.isHidden }.count
-                        DisclosureGroup(
-                            isExpanded: Binding(
-                                get: { expandedGroups.contains(g) },
-                                set: { v in if v { expandedGroups.insert(g) } else { expandedGroups.remove(g) } }
-                            )
-                        ) {
-                            VStack(spacing: 3) {
-                                ForEach(slice) { tc in
-                                    HStack(spacing: 8) {
-                                        Text(String(format: "#%02d", tc.index))
-                                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                                            .frame(width: 28, alignment: .leading)
-                                        SemanticPill(text: tc.isHidden ? lang.tr("隐藏", "Hidden") : lang.tr("公开", "Public"), compact: true)
-                                        Spacer()
-                                        Text(tc.tbestUs.map { String(format: "tbest %.2f µs", $0) }
-                                             ?? String(format: "%@ · r̄_h %.2f", lang.tr("未公开", "Masked"), problem.impliedHiddenRatio))
-                                            .font(.system(size: 10, design: .monospaced))
-                                            .foregroundStyle(tc.tbestUs != nil ? .primary : .secondary)
-                                        if let o = tc.oursUs {
-                                            Text(String(format: "ours %.2f µs", o))
-                                                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
-                                                .foregroundStyle(Color.accentColor)
-                                                .frame(width: 82, alignment: .trailing)
-                                        }
-                                    }
-                                    .padding(.vertical, 2)
-                                }
-                            }
-                            .padding(.top, 4)
-                        } label: {
-                            HStack {
-                                Text(lang.tr(String(format: "测例 #%02d – #%02d", s + 1, e), String(format: "Cases #%02d – #%02d", s + 1, e)))
-                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                                Spacer()
-                                Text(pubCnt > 0
-                                     ? lang.tr("\(pubCnt) 公开 · \(slice.count - pubCnt) 隐藏", "\(pubCnt) Public · \(slice.count - pubCnt) Hidden")
-                                     : lang.tr("10 隐藏测例", "10 Hidden Cases"))
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.03)))
-                    }
-                }
-            }
-        }
-    }
-
     private var timelineCard: some View {
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(lang.tr("历史提交时间线 (\(problem.history.count))", "SUBMISSION TIMELINE (\(problem.history.count))"))
+                Text(lang.tr("历史提交与预估残差 (\(problem.history.count))", "SUBMISSION TIMELINE & RESIDUALS (\(problem.history.count))"))
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 ForEach(problem.history.prefix(15)) { h in
                     HStack(alignment: .top, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
+                        VStack(alignment: .leading, spacing: 2.5) {
                             HStack(spacing: 6) {
                                 Text(String(h.sha.prefix(7))).font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                SemanticPill(text: h.status, compact: true)
+                                SemanticPill(text: lang.evalStatus(h.status), compact: true)
+                                if let est = h.estimatedScore, let gap = h.residualGap {
+                                    Text(String(format: "%@ %.1f · %@ %+.1f", lang.tr("预估", "est"), est, lang.tr("残差", "gap"), gap))
+                                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                        .foregroundStyle(abs(gap) <= 3.0 ? .teal : .orange)
+                                        .padding(.horizontal, 5.5)
+                                        .padding(.vertical, 1.5)
+                                        .background(Capsule().fill((abs(gap) <= 3.0 ? Color.teal : Color.orange).opacity(0.13)))
+                                }
                                 Text(Formatters.shortTimestamp(h.at)).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                             }
                             if !h.note.isEmpty {

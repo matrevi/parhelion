@@ -185,17 +185,22 @@ def read_npu_smi() -> dict[str, Any]:
         "npu_processes": [],
         "error": None,
     }
+    id_cache = pathlib.Path.home() / ".opsb" / "npu_id_hint"
+    hint_id = id_cache.read_text().strip() if id_cache.is_file() else "5"
     try:
-        proc = subprocess.run(
-            ["npu-smi", "info"],
+        p_info = subprocess.Popen(["npu-smi", "info"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        p_usage = subprocess.Popen(
+            ["npu-smi", "info", "-t", "usages", "-i", hint_id],
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=2.5,
         )
-        out = proc.stdout
-        if proc.returncode != 0:
-            result["error"] = (proc.stderr or out).strip()[:240]
+        out, err = p_info.communicate(timeout=2.5)
+        u_out, _ = p_usage.communicate(timeout=1.8)
+        u_rc = p_usage.returncode
+        if p_info.returncode != 0:
+            result["error"] = (err or out).strip()[:240]
             return result
     except Exception as exc:
         result["error"] = str(exc)[:240]
@@ -247,6 +252,9 @@ def read_npu_smi() -> dict[str, Any]:
                             "power_w": power_w,
                             "temp_c": temp_c,
                             "aicore_pct": aicore_pct,
+                            "aivector_pct": 0,
+                            "hbm_bw_pct": 0,
+                            "ctrlcpu_pct": 0,
                             "hbm_used_mib": hbm_used,
                             "hbm_total_mib": hbm_total,
                         }
@@ -254,6 +262,45 @@ def read_npu_smi() -> dict[str, Any]:
                     i += 2
                     continue
         i += 1
+
+    # Enrich each NPU device with `npu-smi info -t usages -i <npu_id>` (overlapped when hint_id matches)
+    for dev in result["devices"]:
+        try:
+            dev_id_str = str(dev["npu_id"])
+            if dev_id_str != hint_id:
+                id_cache.parent.mkdir(parents=True, exist_ok=True)
+                id_cache.write_text(dev_id_str)
+                u_proc = subprocess.run(
+                    ["npu-smi", "info", "-t", "usages", "-i", dev_id_str],
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                )
+                cur_u_out = u_proc.stdout if u_proc.returncode == 0 else ""
+            else:
+                if not id_cache.is_file():
+                    id_cache.parent.mkdir(parents=True, exist_ok=True)
+                    id_cache.write_text(dev_id_str)
+                cur_u_out = u_out if u_rc == 0 else ""
+            for uline in cur_u_out.splitlines():
+                if ":" not in uline:
+                    continue
+                k, v = [s.strip() for s in uline.split(":", 1)]
+                if not v.isdigit():
+                    continue
+                ival = int(v)
+                kl = k.lower()
+                if "aivector usage rate" in kl:
+                    dev["aivector_pct"] = ival
+                elif "aicore usage rate" in kl:
+                    dev["aicore_pct"] = max(dev["aicore_pct"], ival)
+                elif "hbm bandwidth usage rate" in kl:
+                    dev["hbm_bw_pct"] = ival
+                elif "ctrlcpu usage rate" in kl:
+                    dev["ctrlcpu_pct"] = ival
+        except Exception:
+            pass
 
     # Parse active NPU chip processes table at bottom
     in_proc_table = False
@@ -511,25 +558,95 @@ def build_snapshot() -> dict[str, Any]:
             )
 
     # Add waiting tasks sorted by longest wait first (FIFO/aging visibility)
+    waiting_tasks_list: list[dict[str, Any]] = []
     for w_pid in sorted(waiting_roots, key=lambda x: procs.get(x, {}).get("elapsed_sec", 0), reverse=True):
         if w_pid not in procs:
             continue
         tree = get_descendants(w_pid, procs)
         prob, sha = infer_problem_and_sha(tree, procs)
         stage, detail = classify_stage(tree, procs, holds_die=False)
+        wt_item = {
+            "pid": w_pid,
+            "die": None,
+            "state": "WAITING",
+            "stage": stage,
+            "problem": prob,
+            "sha": sha,
+            "elapsed_sec": procs[w_pid]["elapsed_sec"],
+            "detail": detail,
+            "subprocesses": len(tree),
+        }
+        waiting_tasks_list.append(wt_item)
+        tasks.append(wt_item)
+
+    # Detect lock-free 32-core CPU builds (`~/.opsb/cpu_builds/*.json` + compiler procs outside die lock)
+    opsb_home = pathlib.Path.home() / ".opsb"
+    parallel_cpu_builds: list[dict[str, Any]] = []
+    seen_build_keys: set[str] = set()
+    cpu_builds_dir = opsb_home / "cpu_builds"
+    now_epoch = time.time()
+    if cpu_builds_dir.is_dir():
+        for bf in sorted(cpu_builds_dir.glob("*.json")):
+            try:
+                bd = json.loads(bf.read_text())
+                b_pid = int(bd.get("pid") or 0)
+                if bd.get("finished_at") or (b_pid and b_pid not in procs):
+                    continue
+                b_title = bd.get("title") or bd.get("problem") or "Operator"
+                b_sha = str(bd.get("sha") or "")
+                st_ep = float(bd.get("started_epoch") or 0)
+                el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
+                b_key = f"{b_title}:{b_sha[:7]}"
+                if b_key not in seen_build_keys:
+                    seen_build_keys.add(b_key)
+                    parallel_cpu_builds.append(
+                        {"pid": b_pid, "title": b_title, "sha": b_sha, "short_sha": b_sha[:7] or "—", "elapsed_sec": max(0, el_s)}
+                    )
+            except Exception:
+                continue
+
+    for pid, p in procs.items():
+        if pid in all_holder_pids or pid in waiting_roots:
+            continue
+        cmd_l = p["cmd"].lower()
+        if any(k in cmd_l for k in ("build.sh", "/ccec", "compiler")) and "grep" not in cmd_l:
+            prob, sha = infer_problem_and_sha([pid], procs)
+            if prob:
+                b_key = f"{prob}:{(sha or '')[:7]}"
+                if b_key not in seen_build_keys:
+                    seen_build_keys.add(b_key)
+                    parallel_cpu_builds.append(
+                        {"pid": pid, "title": prob, "sha": sha or "", "short_sha": (sha or "")[:7] or "—", "elapsed_sec": p["elapsed_sec"]}
+                    )
+
+    for cb in parallel_cpu_builds:
         tasks.append(
             {
-                "pid": w_pid,
+                "pid": cb["pid"],
                 "die": None,
-                "state": "WAITING",
-                "stage": stage,
-                "problem": prob,
-                "sha": sha,
-                "elapsed_sec": procs[w_pid]["elapsed_sec"],
-                "detail": detail,
-                "subprocesses": len(tree),
+                "state": "CPU_BUILD",
+                "stage": "CPU-BUILD",
+                "problem": cb["title"],
+                "sha": cb["sha"] or None,
+                "elapsed_sec": cb["elapsed_sec"],
+                "detail": "Phase A lock-free 32-core CPU build (0s NPU lock)",
+                "subprocesses": 4,
             }
         )
+
+    # Enrich active die lock with `~/.opsb/die_session.json` if present
+    die_session = {}
+    sess_file = opsb_home / "die_session.json"
+    if sess_file.is_file():
+        try:
+            die_session = json.loads(sess_file.read_text()) or {}
+        except Exception:
+            die_session = {}
+    if die_session and die_locks_info and die_locks_info[0]["state"] == "HELD":
+        if die_session.get("title") and die_locks_info[0].get("problem") in (None, "Unknown"):
+            die_locks_info[0]["problem"] = die_session["title"]
+        if die_session.get("substage"):
+            die_locks_info[0]["substage"] = die_session["substage"]
 
     primary_dev = npu["devices"][0] if npu["devices"] else {
         "npu_id": 0,
@@ -540,6 +657,9 @@ def build_snapshot() -> dict[str, Any]:
         "power_w": None,
         "temp_c": None,
         "aicore_pct": 0,
+        "aivector_pct": 0,
+        "hbm_bw_pct": 0,
+        "ctrlcpu_pct": 0,
         "hbm_used_mib": 0,
         "hbm_total_mib": 65536,
     }
@@ -550,14 +670,18 @@ def build_snapshot() -> dict[str, Any]:
     sample_pt = {
         "ts": now_ts,
         "aicore_pct": float(primary_dev.get("aicore_pct") or 0.0),
+        "aivector_pct": float(primary_dev.get("aivector_pct") or 0.0),
+        "hbm_bw_pct": float(primary_dev.get("hbm_bw_pct") or 0.0),
         "power_w": float(primary_dev.get("power_w") or 0.0),
         "temp_c": int(primary_dev.get("temp_c") or 0),
         "hbm_pct": hbm_pct,
         "cpu_pct": float(cpu.get("usage_pct") or 0.0),
         "ram_pct": ram_pct,
+        "die_held": 1 if (die_locks_info and die_locks_info[0]["state"] == "HELD") else 0,
+        "die_stage": die_locks_info[0].get("stage") if die_locks_info else None,
     }
 
-    ring_file = pathlib.Path.home() / ".opsb" / "telemetry_ring.json"
+    ring_file = opsb_home / "telemetry_ring.json"
     history: list[dict[str, Any]] = []
     try:
         if ring_file.is_file():
@@ -571,6 +695,61 @@ def build_snapshot() -> dict[str, Any]:
         ring_file.write_text(json.dumps(history, separators=(",", ":")))
     except Exception:
         history = [sample_pt]
+
+    # Compute 10m Die Duty (`~/.opsb/die_ledger.jsonl` primary, live ring fallback)
+    window_sec = 600.0
+    ledger_file = opsb_home / "die_ledger.jsonl"
+    ledger_rows: list[dict[str, Any]] = []
+    if ledger_file.is_file():
+        try:
+            for line in ledger_file.read_text().splitlines()[-120:]:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                end_ep = float(row.get("ended_epoch") or row.get("ts") or 0)
+                if end_ep > 0 and (now_ts - end_ep) <= window_sec:
+                    ledger_rows.append(row)
+        except Exception:
+            ledger_rows = []
+
+    if ledger_rows:
+        npu_s = sum(float(r.get("npu_exec_sec") or 0.0) for r in ledger_rows)
+        acl_s = sum(float(r.get("acl_host_sec") or 0.0) for r in ledger_rows)
+        waste_s = sum(float(r.get("lock_waste_sec") or 0.0) for r in ledger_rows)
+        tot_hold = sum(float(r.get("hold_sec") or (npu_s + acl_s + waste_s)) for r in ledger_rows)
+        denom = max(window_sec, tot_hold, 1.0)
+        free_s = max(0.0, denom - (npu_s + acl_s + waste_s))
+        die_duty_10m = {
+            "npu_exec_pct": round(100.0 * npu_s / denom, 2),
+            "acl_host_pct": round(100.0 * acl_s / denom, 2),
+            "lock_waste_pct": round(100.0 * waste_s / denom, 2),
+            "free_pct": round(100.0 * free_s / denom, 2),
+        }
+        avg_hold_sec = round(tot_hold / len(ledger_rows), 1)
+        slots_per_hr = round(min(240.0, 3600.0 / max(8.0, avg_hold_sec)), 1)
+    else:
+        win_pts = [p for p in history if (now_ts - float(p.get("ts", 0))) <= window_sec] or [sample_pt]
+        n_pts = max(1, len(win_pts))
+        held_pts = [p for p in win_pts if p.get("die_held", (1 if die_locks_info and die_locks_info[0]["state"] == "HELD" else 0))]
+        held_frac = len(held_pts) / n_pts
+        build_in_lock = sum(1 for p in held_pts if p.get("die_stage") == "BUILD") / n_pts
+        mean_vec = sum(max(float(p.get("aivector_pct") or 0.0), float(p.get("aicore_pct") or 0.0)) for p in win_pts) / n_pts
+        npu_exec_p = round(min(held_frac * 100.0, max(mean_vec, 0.4 if held_frac > 0 else 0.0)), 2)
+        waste_p = round(build_in_lock * 100.0, 2)
+        acl_p = round(max(0.0, held_frac * 100.0 - npu_exec_p - waste_p), 2)
+        free_p = round(max(0.0, 100.0 - npu_exec_p - acl_p - waste_p), 2)
+        die_duty_10m = {
+            "npu_exec_pct": npu_exec_p,
+            "acl_host_pct": acl_p,
+            "lock_waste_pct": waste_p,
+            "free_pct": free_p,
+        }
+        cur_hold = float(die_locks_info[0].get("elapsed_sec") or 0) if (die_locks_info and die_locks_info[0]["state"] == "HELD") else 20.0
+        avg_hold_sec = round(max(18.0, cur_hold), 1)
+        slots_per_hr = round(3600.0 / max(12.0, avg_hold_sec), 1)
+
+    for idx_w, wt in enumerate(waiting_tasks_list):
+        wt["estimated_wait_sec"] = int(round((idx_w + 1) * min(avg_hold_sec, 180.0)))
 
     probe_ms = round((time.monotonic() - t0) * 1000, 1)
 
@@ -587,6 +766,10 @@ def build_snapshot() -> dict[str, Any]:
         "cpu": cpu,
         "memory": mem,
         "history": history,
+        "die_duty_10m": die_duty_10m,
+        "slots_per_hr": slots_per_hr,
+        "avg_die_hold_sec": avg_hold_sec,
+        "parallel_cpu_builds": parallel_cpu_builds,
         "die_locks": die_locks_info,
         "tasks": tasks,
     }

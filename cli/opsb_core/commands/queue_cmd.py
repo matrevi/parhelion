@@ -188,18 +188,58 @@ def run_queue(args: argparse.Namespace) -> int:
 def run_test(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(args.workspace, cfg)
+    host = cfg.get("npu_ssh_host") or "npu"
+    py_exe = resolve_python_exe(ws)
+    bridge_py = CLI_DIR.parent / "scheduler" / "cli_bridge.py"
+
+    # Sync-only mode stays compatible with legacy `npu-test.py --sync-only`
+    if getattr(args, "sync_only", False):
+        legacy_npu_test = ws / "tools" / "npu-test.py"
+        if legacy_npu_test.is_file():
+            return subprocess.call([py_exe, str(legacy_npu_test), args.problem, "--sync-only"], cwd=str(ws))
+
+    # Route 3-Phase Pipeline (`--build-only` Phase A / `--fast` Q0 / full Q1) through `scheduler.cli_bridge schedule-test`
+    if bridge_py.is_file():
+        help_out = subprocess.run(
+            [py_exe, "-m", "scheduler.cli_bridge", "schedule-test", "--help"],
+            cwd=str(CLI_DIR.parent),
+            capture_output=True,
+            text=True,
+        ).stdout
+        b_cmd = [
+            py_exe, "-m", "scheduler.cli_bridge", "schedule-test",
+            "--workspace", str(ws),
+            "--npu-host", host,
+            "--title", args.problem,
+        ]
+        if getattr(args, "sha", None):
+            b_cmd += ["--sha", args.sha]
+        if getattr(args, "fast", False):
+            b_cmd.append("--fast")
+        if getattr(args, "dry_run", False):
+            b_cmd.append("--dry-run")
+        if getattr(args, "build_only", False):
+            if "--build-only" in help_out:
+                b_cmd.append("--build-only")
+            else:
+                # Direct lock-free Phase A 32-core CPU build fallback (0s NPU lock)
+                meta = resolve_workspace_meta(ws)
+                prob = next((p for p in meta["problems"] if p["title"].lower() == args.problem.lower()), None)
+                if not prob:
+                    raise SystemExit(f"Unknown problem: {args.problem}")
+                sha = resolve_commit_sha(ws / prob["path"], getattr(args, "sha", None) or "HEAD") or ""
+                remote_sh = (
+                    f"set -e; source /opt/toolchain/latest/set_env.sh; "
+                    f"cd /srv/work/{prob['title']}; "
+                    f"git fetch origin --prune && git checkout --detach --force {sha}; "
+                    f"sed 's/COMPUTE_UNIT=.*/COMPUTE_UNIT=\"soc-a\"/' build.sh | bash -s -- -j4"
+                )
+                return subprocess.call(["ssh", *SSH_CONTROL_OPTS, host, remote_sh])
+        return subprocess.call(b_cmd, cwd=str(CLI_DIR.parent))
+
     legacy_npu_test = ws / "tools" / "npu-test.py"
     if legacy_npu_test.is_file():
-        venv_py = ws / ".venv" / "bin" / "python"
-        py_exe = str(venv_py) if venv_py.is_file() else sys.executable
-        cmd = [py_exe, str(legacy_npu_test), args.problem] + (["--sync-only"] if args.sync_only else [])
+        cmd = [py_exe, str(legacy_npu_test), args.problem]
         env = {**os.environ, **({"OPSB_FAST_LANE": "1"} if args.fast else {})}
         return subprocess.call(cmd, cwd=str(ws), env=env)
-
-    meta = resolve_workspace_meta(ws)
-    prob = next((p for p in meta["problems"] if p["title"].lower() == args.problem.lower()), None)
-    if not prob:
-        raise SystemExit(f"Unknown problem: {args.problem}")
-    host = cfg.get("npu_ssh_host") or meta.get("npu_ssh_host") or "npu"
-    remote = "flock -w 3600 /srv/work-device0.lock bash -c 'source /opt/toolchain/latest/set_env.sh && echo NPU_DIE_READY'"
-    return subprocess.call(["ssh", *SSH_CONTROL_OPTS, host, remote])
+    return 1

@@ -271,6 +271,27 @@ final class ContestStore: ObservableObject {
         }
     }
 
+    func recalibrateProblem(_ problem: String) async {
+        do {
+            try await repository.calibrateProblemBench(workspace: selectedWorkspace, problem: problem)
+            bannerMessage = tr("已完成 \(problem) 5层权重闭环校准", "Recalibrated 5-stratum weights for \(problem)")
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func backfillProblem(_ problem: String) async {
+        bannerMessage = tr("正在补测 \(problem) 缺失性能桶…", "Backfilling missing perf buckets for \(problem)…")
+        do {
+            try await repository.backfillProblemBench(workspace: selectedWorkspace, problem: problem)
+            bannerMessage = tr("已完成 \(problem) 性能桶补测与校准", "Completed perf bucket backfill for \(problem)")
+            await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func drainQueueOnce() async {
         bannerMessage = "Running rate-limited queue consumer…"
         do {

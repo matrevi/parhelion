@@ -1,49 +1,61 @@
-"""Markdown protocol & spec templates for clean AGENTS.md-first workspaces."""
+"""Markdown protocol & spec templates v2 (3-Phase NPU pipeline + Stratified Bench + Closed-Loop Calibration)."""
 
-WORKSPACE_AGENTS_MD = """# {contest_title} · Agent Protocol (`AGENTS.md`-First)
+WORKSPACE_AGENTS_MD = """# {contest_title} · Agent Protocol (`AGENTS.md`-First · 3-Phase NPU Pipeline)
 
-This workspace uses a **zero-noise directory layout**. All NPU server locking, remote builds,
-`profiler` kernel timing, 4-stage submission gating, and rate-limited judging run through the
-global **`opsb`** CLI and **`Parhelion` (`OpsSupervisor.app`)**. Do **not** write custom SSH or
-submission scripts inside operator directories.
+This workspace uses a **zero-noise directory layout** powered by **`opsb`** and **`Parhelion` (`OpsSupervisor.app`)**:
+- **Phase A (32-Core Lock-Free CPU Build, `0s` NPU lock)**: Up to `8–10` operators compile concurrently without touching `device0.lock`.
+- **Phase B (`PersistentArenaRunner` + Single-Session `profiler`, `~13–24s` NPU lock)**: Sub-minute WSPT `Q0`/`Q1` ticket execution on Die 0.
+- **Phase C (Lock-Free Golden Diff & Simplex MAP Calibration, `0s` NPU lock)**: Out-of-tree `results/<Op>/calibration.json` updates automatically on every online evaluation.
 
 ## Quick CLI Reference (`opsb`)
 
 ```bash
-opsb status                          # Contest leaderboard, NPU die status & queues
-opsb test <Problem> --fast           # Fast-lane smoke build + public cases on NPU
-opsb test <Problem>                  # Full extended boundary + determinism + profiler gate
-opsb history <Problem>               # 50-case ratios (tbest / ours) & submission timeline
-opsb submit <Problem> <SHA> --note ""# Evaluate 4-Stage Gate & enqueue commit
-opsb queue list --breakthrough       # Filter high-jump breakthrough submissions (Δ >= threshold)
-opsb breakthrough list               # Inspect structured KernelC optimization playbook (`breakthrough/`)
-opsb breakthrough show <ID|Problem>  # Read full structured breakthrough mechanism & reusable rule
+opsb status                                   # Contest scores (with tbest γ & Model MAE), NPU duty & 3-lane queues
+opsb test <Op> --build-only                   # Phase A only: 0s NPU lock, fast -j4 compile check
+opsb test <Op> --fast                         # Q0 fast-lane (~10s lock): sample + smoke + quick timing
+opsb test <Op>                                # Q1 full gate (~18s lock): adversarial arena + full-spectrum profiler
+opsb bench status <Op>                        # 5-stratum learned weights w_hat, efficiency r_hat & headroom pts
+opsb bench diagnose <Op>                      # Diagnose predicted-vs-actual score residuals & uncovered branches
+opsb submit <Op> <SHA> --note "<summary>"     # 4-Stage Gate check & enqueue (NEVER run custom submit scripts)
+opsb breakthrough list                        # Inspect verified cross-operator KernelC breakthroughs
 ```
 
-## Scoring & 4-Stage Gate Summary
+## 3 Benchmark Integrity Rules
 
-- **Single-problem score**: `100 * mean_{{i=1..50}}(tbest_i / time_i)` (`5` public + `45` hidden).
-- **Zero partial credit**: Any `WA` / `RE` / `TLE` / `CE` zeroes the entire problem (`0` pts); leaderboard mode is `latest`.
-- **4-Stage Gate**: `G1 Safety` (`EXTENDED_PASSED` + determinism) -> `G2 Noise Floor` (`Δexpected >= 2.7` pts) -> `G3 Circuit Breaker` (`12h / 6-shot`) -> `G4 Daily Quota Reserve`.
+1. **Frozen SHA-256 Oracle**: `bench/reference.py` is SHA-256 locked in `opsb.workspace.json`; never weaken tolerances or alter golden logic.
+2. **Append-Only Perf Buckets**: `bench/cases_perf.json` (`PUBLIC`, `S_SMALL_CORE`, `M_MID_UB`, `L_HBM_TILED`, `X_EXTREME`) is append-only so cross-commit ratios stay paired.
+3. **Escape-Repro Lock**: Any online `WA / TLE / RE` after passing local checks activates `ESCAPE_LOCK` until a reproducer is added to `bench/cases_correctness.json` and verified via `opsb bench verify-escape <Op> --bad <badSHA> --good <newSHA>`.
 """
 
 PROBLEM_AGENTS_MD = """# {problem} · Operator Agent Guide
 
-- **Operator**: `{problem}` (Difficulty weight: `×{difficulty}`)
+- **Operator**: `{problem}` (Tier weight: `{difficulty}`)
 - **Remote Repo**: `https://gitcode.com/{git_owner}/{repo_slug}.git` (private)
-- **Editable Scope**: `op_host/`, `op_kernel/`, `tests/`, `DESIGN.md`, `SCORE_HISTORY.md`
+- **Editable Scope**: `op_host/`, `op_kernel/`, `bench/cases_correctness.json`, `bench/cases_perf.json`, `DESIGN.md`, `SCORE_HISTORY.md` (`bench/reference.py` is SHA-256 locked)
 
-## Standard Loop (Zero Skills Required)
+## 3-Step Iteration Loop (Zero Custom Scripts)
 
-1. Read `PROBLEM.md` for tensor signatures, attributes, and tolerances (`fp32: 1e-4`, `fp16/bf16: 1e-3`, `int: 0`).
-2. Commit and push to `origin/main` before testing on NPU (`{npu_host}`).
-3. Run `opsb test {problem} --fast` for quick verification, then `opsb test {problem}` for full extended + `profiler` validation.
-4. Run `opsb history {problem}` and `opsb submit {problem} $(git rev-parse HEAD) --note "<before->after us>"`.
+1. Check `opsb breakthrough list` and `opsb bench status {problem}` to target the highest-headroom stratum (`w_hat * (1 - r_hat)`).
+2. Commit and push to `origin/main`, then validate in 3 fast steps on `{npu_host}`:
+   - `opsb test {problem} --build-only` (`0s` NPU lock — verify `-j4` compile)
+   - `opsb test {problem} --fast` (`~10s` `Q0` lock — quick verification)
+   - `opsb test {problem}` (`~18s` `Q1` lock — full `6x6` adversarial correctness + single-session `profiler`)
+3. Enqueue passing commits exclusively via `opsb submit {problem} $(git rev-parse HEAD) --note "<stratum speedup>"`.
+
+## Calibrated Stratum Score Ledger
+
+| Stratum | Prior `w0` | Learned `w_hat` | Efficiency `r_hat` | Headroom |
+|---|---:|---:|---:|---:|
+| `PUBLIC (P1..P5)` | `0.100` | `0.100` | `—` |Run `opsb bench status {problem}`|
+| `S_SMALL_CORE` | `0.270` | `0.270` | `—` |Prologue / SetBlockDim floor|
+| `M_MID_UB` | `0.315` | `0.315` | `—` |All dtypes (fp32/fp16/bf16/i8)|
+| `L_HBM_TILED` | `0.180` | `0.180` | `—` |Ping-pong & 724 GB/s HBM roof|
+| `X_EXTREME` | `0.135` | `0.135` | `—` |Odd/prime alignment & edge attrs|
 """
 
 PROBLEM_SPEC_MD = """# {problem} · Problem Specification
 
-- **Problem ID**: `{problem_id}` · **Difficulty**: `×{difficulty}` · **Target**: `soc-a` (`SDK {sdk_version}`)
+- **Problem ID**: `{problem_id}` · **Tier**: `{difficulty}` · **Target**: `soc-a` (`SDK {sdk_version}`)
 
 ## Mathematical Semantics & Tolerance Contract
 - `float32`: `atol = 1e-4, rtol = 1e-4`
@@ -56,13 +68,13 @@ DESIGN_MD = """# {problem} · Architecture & Tiling Design
 ## 1. Roofline & Bottleneck Notes (Accel soc-a)
 - Vector cores: up to `40` AIV (`192 KB` UB per AIV, `32 B` DMA alignment).
 
-## 2. Experiment Ledger (`profiler` Device `Task Duration(us)`)
-| Commit | Hypothesis | Small (`µs`) | Mid (`µs`) | Large (`µs`) | Gate |
-|---|---|---|---|---|---|
+## 2. Stratified Experiment Ledger (`profiler` Single-Session `Task Duration(us)`)
+| Commit | Hypothesis | `S_SMALL` (`µs`) | `M_MID` (`µs`) | `L_HBM` (`µs`) | `X_EXT` (`µs`) | Gate |
+|---|---|---|---|---|---|---|
 """
 
-SCORE_HISTORY_MD = """# {problem} · Online Score History
+SCORE_HISTORY_MD = """# {problem} · Online Score & Residual History
 
-| UTC Time | Commit | Public Pts (`/10`) | Hidden Pts (`/90`) | Score (`/100`) | Note |
-|---|---|---|---|---|---|
+| UTC Time | Commit | Predicted | Actual (`/100`) | Residual Gap | Note |
+|---|---|---:|---:|---:|---|
 """

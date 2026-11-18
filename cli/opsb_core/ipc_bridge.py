@@ -66,6 +66,28 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
 
+    # Overlay per-problem `calibration` from `scheduler.cli_bridge` when present
+    b_probs = bridge.get("problems") or bridge.get("calibrations") or {}
+    if isinstance(b_probs, list):
+        b_probs = {bp.get("title"): bp for bp in b_probs if isinstance(bp, dict) and bp.get("title")}
+    if isinstance(b_probs, dict) and b_probs:
+        maes: list[float] = []
+        for p_item in payload["problems"]:
+            bp = b_probs.get(p_item["title"])
+            if isinstance(bp, dict):
+                b_cal = bp.get("calibration") if "calibration" in bp else (bp if "strata" in bp else None)
+                if isinstance(b_cal, dict):
+                    cur_cal = dict(p_item.get("calibration") or {})
+                    cur_cal.update({k: v for k, v in b_cal.items() if v is not None})
+                    p_item["calibration"] = cur_cal
+                    if cur_cal.get("escape_lock"):
+                        p_item["wspt_tag"] = "ESCAPE LOCK"
+            c_mae = (p_item.get("calibration") or {}).get("mae_pts")
+            if c_mae is not None:
+                maes.append(float(c_mae))
+        if maes:
+            payload["contest"]["model_mae_pts"] = round(sum(maes) / len(maes), 2)
+
     est_by_pair: dict[tuple[str, str], float] = {}
     for sq in bridge.get("submit_queue") or []:
         if sq.get("title") and sq.get("sha") and sq.get("estimated_score") is not None:

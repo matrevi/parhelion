@@ -44,6 +44,7 @@ struct ContestSummary: Codable {
     let weightedScore: Double
     let maxWeightedScore: Int
     let closingPotentialWeighted: Double
+    let modelMaePts: Double?
 
     enum CodingKeys: String, CodingKey {
         case workspace, layout, title
@@ -61,6 +62,7 @@ struct ContestSummary: Codable {
         case weightedScore = "weighted_score"
         case maxWeightedScore = "max_weighted_score"
         case closingPotentialWeighted = "closing_potential_weighted"
+        case modelMaePts = "model_mae_pts"
     }
 }
 
@@ -103,11 +105,12 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let headSha: String
     let headSubject: String
     let headAgeMin: Int?
+    let calibration: ProblemCalibration?
     let testcases: [TestcaseItem]
     let history: [ProblemHistoryItem]
 
     enum CodingKeys: String, CodingKey {
-        case title, slug, path, status, rank, difficulty, testcases, history
+        case title, slug, path, status, rank, difficulty, calibration, testcases, history
         case repoSlug = "repo_slug"
         case problemId = "problem_id"
         case numericId = "numeric_id"
@@ -184,11 +187,15 @@ struct ProblemHistoryItem: Codable, Identifiable, Hashable {
     let hiddenPts: Double?
     let note: String
     let submissionId: String?
+    let estimatedScore: Double?
+    let residualGap: Double?
 
     enum CodingKeys: String, CodingKey {
         case at, sha, status, score, delta, note
         case publicPts = "public_pts"
         case hiddenPts = "hidden_pts"
         case submissionId = "submission_id"
+        case estimatedScore = "estimated_score"
+        case residualGap = "residual_gap"
     }
 }

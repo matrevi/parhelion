@@ -4,6 +4,8 @@ struct TelemetrySample: Codable, Identifiable, Hashable {
     var id: Double { ts }
     let ts: Double
     let aicorePct: Double
+    let aivectorPct: Double?
+    let hbmBwPct: Double?
     let powerW: Double
     let tempC: Int
     let hbmPct: Double
@@ -13,11 +15,42 @@ struct TelemetrySample: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case ts
         case aicorePct = "aicore_pct"
+        case aivectorPct = "aivector_pct"
+        case hbmBwPct = "hbm_bw_pct"
         case powerW = "power_w"
         case tempC = "temp_c"
         case hbmPct = "hbm_pct"
         case cpuPct = "cpu_pct"
         case ramPct = "ram_pct"
+    }
+}
+
+struct DieDuty10m: Codable, Hashable {
+    let npuExecPct: Double
+    let aclHostPct: Double
+    let lockWastePct: Double
+    let freePct: Double
+
+    enum CodingKeys: String, CodingKey {
+        case npuExecPct = "npu_exec_pct"
+        case aclHostPct = "acl_host_pct"
+        case lockWastePct = "lock_waste_pct"
+        case freePct = "free_pct"
+    }
+}
+
+struct ParallelCpuBuildItem: Codable, Identifiable, Hashable {
+    var id: String { "\(pid)-\(title)-\(shortSha)" }
+    let pid: Int
+    let title: String
+    let sha: String
+    let shortSha: String
+    let elapsedSec: Int
+
+    enum CodingKeys: String, CodingKey {
+        case pid, title, sha
+        case shortSha = "short_sha"
+        case elapsedSec = "elapsed_sec"
     }
 }
 
@@ -35,6 +68,10 @@ struct NpuTelemetry: Codable {
     let cpu: CpuMetrics?
     let memory: MemoryMetrics?
     let history: [TelemetrySample]?
+    let dieDuty10m: DieDuty10m?
+    let slotsPerHr: Double?
+    let avgDieHoldSec: Double?
+    let parallelCpuBuilds: [ParallelCpuBuildItem]?
     let dieLocks: [DieLockInfo]
     let tasks: [NpuTaskItem]
 
@@ -46,6 +83,10 @@ struct NpuTelemetry: Codable {
         case sdkVersion = "sdk_version"
         case smiVersion = "smi_version"
         case primaryNpu = "primary_npu"
+        case dieDuty10m = "die_duty_10m"
+        case slotsPerHr = "slots_per_hr"
+        case avgDieHoldSec = "avg_die_hold_sec"
+        case parallelCpuBuilds = "parallel_cpu_builds"
         case dieLocks = "die_locks"
     }
 }
@@ -59,6 +100,9 @@ struct NpuDevice: Codable {
     let powerW: Double?
     let tempC: Int?
     let aicorePct: Int
+    let aivectorPct: Int?
+    let hbmBwPct: Int?
+    let ctrlcpuPct: Int?
     let hbmUsedMib: Int
     let hbmTotalMib: Int
 
@@ -71,6 +115,9 @@ struct NpuDevice: Codable {
         case powerW = "power_w"
         case tempC = "temp_c"
         case aicorePct = "aicore_pct"
+        case aivectorPct = "aivector_pct"
+        case hbmBwPct = "hbm_bw_pct"
+        case ctrlcpuPct = "ctrlcpu_pct"
         case hbmUsedMib = "hbm_used_mib"
         case hbmTotalMib = "hbm_total_mib"
     }
@@ -138,7 +185,7 @@ struct DieLockInfo: Codable, Identifiable {
 }
 
 struct NpuTaskItem: Codable, Identifiable {
-    var id: Int { pid }
+    var id: String { "\(pid)-\(state)-\(problem ?? "")" }
     let pid: Int
     let die: Int?
     let state: String
@@ -150,6 +197,7 @@ struct NpuTaskItem: Codable, Identifiable {
     let wsptPriority: Double?
     let wsptTag: String?
     let elapsedSec: Int
+    let estimatedWaitSec: Int?
     let detail: String
     let subprocesses: Int
 
@@ -159,5 +207,6 @@ struct NpuTaskItem: Codable, Identifiable {
         case wsptPriority = "wspt_priority"
         case wsptTag = "wspt_tag"
         case elapsedSec = "elapsed_sec"
+        case estimatedWaitSec = "estimated_wait_sec"
     }
 }

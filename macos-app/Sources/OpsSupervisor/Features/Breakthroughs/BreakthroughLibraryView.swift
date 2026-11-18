@@ -83,7 +83,7 @@ struct BreakthroughLibraryView: View {
             Picker(lang.tr("类别", "Category"), selection: $selectedCategory) {
                 Text(lang.tr("全部类别", "All Categories")).tag("ALL")
                 ForEach(categories.filter { $0 != "ALL" }, id: \.self) { cat in
-                    Text(cat).tag(cat)
+                    Text(lang.categoryName(cat)).tag(cat)
                 }
             }
             .pickerStyle(.menu)
@@ -172,7 +172,7 @@ struct BreakthroughLibraryView: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                 HStack(spacing: 6) {
-                    SemanticPill(text: entry.category, compact: true)
+                    SemanticPill(text: lang.categoryName(entry.category), compact: true)
                     Text(lang.tr(
                         String(format: "%.2f → %.2f (加权 %+.1f)", entry.scoreBefore, entry.scoreAfter, entry.deltaWeighted),
                         String(format: "%.2f → %.2f (w %+.1f)", entry.scoreBefore, entry.scoreAfter, entry.deltaWeighted)

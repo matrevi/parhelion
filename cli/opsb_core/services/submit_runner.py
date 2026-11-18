@@ -252,7 +252,22 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
         invalidate_ttl_cache("scheduler_bridge")
         fcntl.flock(lf, fcntl.LOCK_UN)
 
-    # Auto-archive into `breakthrough/` if this Pass crossed the configured breakthrough threshold
+    # Closed-loop calibration + auto-archive into `breakthrough/` on terminal evaluation
+    if out_rec.get("status") not in ("rejected", "skipped", "duplicate"):
+        try:
+            from ..config import SUPERVISOR_ROOT
+
+            py_exe = resolve_python_exe(workspace)
+            subprocess.run(
+                [py_exe, "-m", "scheduler.cli_bridge", "calibrate", "--workspace", str(workspace), "--title", title],
+                cwd=str(SUPERVISOR_ROOT),
+                capture_output=True,
+                timeout=15.0,
+            )
+            invalidate_ttl_cache("scheduler_bridge")
+        except Exception:
+            pass
+
     if out_rec.get("status") == "Pass":
         try:
             from ..config import ConfigRepository

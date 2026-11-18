@@ -94,6 +94,14 @@ struct OpsRepository: Sendable {
         return (0, 0)
     }
 
+    func calibrateProblemBench(workspace: String, problem: String) async throws {
+        _ = try await client.execute(["bench", "calibrate", problem, "--workspace", workspace, "--json"], timeout: 25.0)
+    }
+
+    func backfillProblemBench(workspace: String, problem: String) async throws {
+        _ = try await client.execute(["bench", "backfill", problem, "--workspace", workspace, "--json"], timeout: 120.0)
+    }
+
     func jumpSubmitNow(workspace: String, problem: String, sha: String, note: String) async throws -> (Bool, String) {
         let data = try await client.execute(
             ["queue", "submit-now", problem, sha, "--note", note, "--workspace", workspace],
