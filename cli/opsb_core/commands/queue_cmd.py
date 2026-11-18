@@ -78,6 +78,31 @@ def run_submit(args: argparse.Namespace) -> int:
         print(json.dumps(verdict, ensure_ascii=False) if args.json else f"HELD BY GATE: {verdict['reason']} (pass --force to override)")
         return 3
 
+    # Duplicate-dispatch guard: one (title, sha) must never hold two live shots.
+    # Two dispatchers exist (this CLI and the app's auto-consumer); without this check a
+    # second enqueue of the same source burns a daily shot and re-judges the same bytes.
+    try:
+        from ..services.queue_service import read_jsonl as _read_jsonl
+
+        _q = _read_jsonl(ws / "results" / "submit-queue.jsonl")
+        _o = _read_jsonl(ws / "results" / "submit-queue-outcome.jsonl")
+        _done = {(o.get("title"), (o.get("sha") or "")[:7], o.get("queued_at")) for o in _o}
+        _pending = [
+            q for q in _q
+            if q.get("title") == title
+            and (q.get("sha") or "").startswith(sha[:7])
+            and (q.get("title"), (q.get("sha") or "")[:7], q.get("queued_at")) not in _done
+        ]
+        if _pending and not args.force:
+            verdict.update(
+                enqueued=False,
+                reason=f"duplicate in flight: {title} {sha[:7]} already queued at {_pending[-1].get('queued_at')}",
+            )
+            print(json.dumps(verdict, ensure_ascii=False) if args.json else f"DUPLICATE: {verdict['reason']} (pass --force to override)")
+            return 4
+    except Exception:
+        pass
+
     record = {
         "title": title,
         "sha": sha,

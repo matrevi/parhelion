@@ -288,6 +288,10 @@ def compact_backfill(rich: dict[str, Any]) -> dict[str, Any]:
         "tier": rich.get("tier") if rich.get("tier") is not None else 0,
         "auto_enabled": bool(cfg.get("enabled") and cfg.get("auto_dispatch")),
         "unpaired_total": int(total),
+        # `*_proxy` / parser-artifact ids can never be measured: keep them out of the queue math
+        # but visible, so the banner explains why the census did not move.
+        "spec_placeholder_total": int(rich.get("spec_placeholder_total") or 0),
+        "spec_placeholder_by_operator": dict(rich.get("spec_placeholder_by_operator") or {}),
         "unpaired_by_operator": per,
         "running": bool(running),
         "running_title": (running or {}).get("title"),
