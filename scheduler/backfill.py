@@ -293,6 +293,80 @@ class BackfillLedger:
 # --------------------------------------------------------------------------------------
 # Session planning helpers (pure functions — unit tested without any NPU access)
 # --------------------------------------------------------------------------------------
+#: Spec-side identifiers that name **no measurable case**, so the scheduler must never queue
+#: them: retrying sdkot help, only a `bench-specs` (or harness) fix can.  Three rules, in
+#: precedence order:
+#:
+#:  1. `proxy_suffix`            — append-only spectrum padding, `t256_c1024_b16_proxy`;
+#:  2. `parser_artifact`         — a `PROF_SUMMARY` / kernel-table key leaked into a bucket
+#:                                 list: `PReluGradUpdate:median`, `<operator>:min`
+#:                                 (harness case ids are plain identifiers, never `a:b`);
+#:  3. `not_in_harness_case_list`— the operator's own measurement harness never names the id
+#:                                 (`sbn_w4_c64_small` against a `f32_c*` case table), i.e. the
+#:                                 spec and the harness disagree about what exists.
+#:
+#: Rule 3 is only a *pre-flight* verdict: once a bucket has been attempted, the ledger owns
+#: its status (`unmeasurable[case_not_in_harness]` carries the `reason`) and it is never
+#: reclassified as a placeholder — we do not call something a non-case after running it.
+SPEC_PLACEHOLDER_PROXY = "proxy_suffix"
+SPEC_PLACEHOLDER_ARTIFACT = "parser_artifact"
+SPEC_PLACEHOLDER_NOT_IN_HARNESS = "not_in_harness_case_list"
+SPEC_PLACEHOLDER_SUFFIX = "_proxy"
+SPEC_PLACEHOLDER_SEP = ":"
+
+
+def harness_names_case(harness_source: str | None, bucket_id: str | None) -> bool | None:
+    """Does the harness source name `bucket_id`?  `None` when there is no source to ask.
+
+    A quoted literal is the strong signal (every harness declares its case table as strings);
+    a bare token match is accepted too so a synthesised/derived name is never demoted.  `None`
+    ("unknown") is deliberately distinguishable from `False` so a repo whose `validation/` tree
+    is missing sdkot have its whole bucket list reclassified as placeholders.
+    """
+    if not harness_source or not bucket_id:
+        return None
+    bid = str(bucket_id).strip()
+    if not bid:
+        return None
+    if f"'{bid}'" in harness_source or f'"{bid}"' in harness_source:
+        return True
+    # `floor` must not be matched by `np.floor`, so dots/word chars break the token.
+    return re.search(r"(?<![\w.])" + re.escape(bid) + r"(?![\w])", harness_source) is not None
+
+
+def spec_placeholder_reason(
+    bucket_id: str | None,
+    harness_source: str | None = None,
+    *,
+    attempted: bool = False,
+) -> str | None:
+    """Why `bucket_id` names no measurable case, or `None` when it names a real one."""
+    if not bucket_id:
+        return None
+    bid = str(bucket_id).strip()
+    if not bid:
+        return None
+    if bid.endswith(SPEC_PLACEHOLDER_SUFFIX):
+        return SPEC_PLACEHOLDER_PROXY
+    if SPEC_PLACEHOLDER_SEP in bid:
+        return SPEC_PLACEHOLDER_ARTIFACT
+    if attempted:  # the scheduler already ran it: the ledger, not a guess, decides its status
+        return None
+    if harness_names_case(harness_source, bid) is False:
+        return SPEC_PLACEHOLDER_NOT_IN_HARNESS
+    return None
+
+
+def is_spec_placeholder(
+    bucket_id: str | None,
+    harness_source: str | None = None,
+    *,
+    attempted: bool = False,
+) -> bool:
+    """True for `*_proxy` / `<kernel>:median` ids and ids the harness never names."""
+    return spec_placeholder_reason(bucket_id, harness_source, attempted=attempted) is not None
+
+
 def bucket_key(title: str, bucket: str, baseline_sha: str | None) -> str:
     """Dedup key: `(operator, bucket, baseline_sha)`.  A new baseline re-opens pairing."""
     return f"{title}|{bucket}|{(baseline_sha or '')[:12]}"
@@ -873,6 +947,7 @@ class BackfillScheduler:
         self.config_path = self.state_dir / "backfill_config.json"
         self._timings_doc: dict[str, Any] | None = None
         self._timings_stamp: tuple[int, int] | None = None
+        self._harness_cache: dict[str, str] = {}
         self.runner = runner or self._run_remote_dispatch
 
     # -- lazy collaborators (avoid heavy imports when only planning) --------------
@@ -993,9 +1068,40 @@ class BackfillScheduler:
         }
 
     # -- detection ---------------------------------------------------------------
-    def scan_unpaired(self) -> list[dict[str, Any]]:
-        """Authoritative unpaired-bucket census across all operators (calibration code path)."""
+    def _harness_source(self, title: str) -> str:
+        """The operator's measurement-harness sources (`validation/*.py`), read-only + cached.
+
+        Empty string means "unknown" (repo not cloned here), which the classifier treats as
+        *no opinion*: a missing tree must never reclassify a real bucket list.
+        """
+        if title in self._harness_cache:
+            return self._harness_cache[title]
+        text = ""
+        vdir = self.workspace / "bench" / title / "validation"
+        if vdir.is_dir():
+            chunks: list[str] = []
+            for path in sorted(vdir.glob("*.py")):
+                try:
+                    chunks.append(path.read_text(errors="replace"))
+                except OSError:
+                    continue
+            text = "\n".join(chunks)
+        self._harness_cache[title] = text
+        return text
+
+    def _attempted_pairs(self) -> set[tuple[str, str]]:
+        """`(operator, bucket)` pairs the ledger has already attempted (any verdict)."""
+        pairs: set[tuple[str, str]] = set()
+        for key in self.ledger.attempts_by_bucket_key():
+            parts = str(key).split("|")
+            if len(parts) >= 2:
+                pairs.add((parts[0], parts[1]))
+        return pairs
+
+    def _census_rows(self) -> list[dict[str, Any]]:
+        """Every unpaired bucket row, tagged `placeholder` when it is a spec-side non-case."""
         rows: list[dict[str, Any]] = []
+        attempted = self._attempted_pairs()
         for title in sorted(self.estimator.problems_meta):
             try:
                 census = self.calibrator.unpaired_buckets(title)
@@ -1008,8 +1114,12 @@ class BackfillScheduler:
                     headroom_by_bucket[str(b.get("id"))] = float(b.get("headroom_pts") or 0.0)
             except Exception:
                 pass
+            harness = self._harness_source(title)
             for b in census.get("unpaired_details") or []:
                 bid = str(b["id"])
+                reason = spec_placeholder_reason(
+                    bid, harness, attempted=(title, bid) in attempted
+                )
                 rows.append(
                     {
                         "title": title,
@@ -1022,11 +1132,21 @@ class BackfillScheduler:
                         "runtime_soc": census.get("runtime_soc"),
                         "description": b.get("description") or "",
                         "headroom_pts": round(headroom_by_bucket.get(bid, 0.0), 2),
+                        "placeholder": reason is not None,
+                        "placeholder_reason": reason,
                         "key": bucket_key(title, bid, census.get("baseline_sha")),
                     }
                 )
         rows.sort(key=lambda r: (r["title"], -float(r["headroom_pts"]), r["bucket"]))
         return rows
+
+    def scan_unpaired(self) -> list[dict[str, Any]]:
+        """Unpaired buckets that name a **real** case (placeholders are reported separately)."""
+        return [r for r in self._census_rows() if not r.get("placeholder")]
+
+    def spec_placeholders(self) -> list[dict[str, Any]]:
+        """Unpaired spec-side non-cases: `*_proxy`, `<kernel>:median`, ids no harness names."""
+        return [r for r in self._census_rows() if r.get("placeholder")]
 
     # -- planning ----------------------------------------------------------------
     def _blocked_reason_for(
@@ -1099,6 +1219,8 @@ class BackfillScheduler:
         blocked: dict[str, list[str]] = {}
         for row in unpaired:
             key = str(row["key"])
+            if row.get("placeholder") or is_spec_placeholder(row.get("bucket")):
+                continue  # spec-side non-case: never queued, never measured
             if key in done:
                 continue  # already paired once — never re-run
             reason = self._blocked_reason_for(key, att, cfg, t_now, force=force)
@@ -1419,6 +1541,7 @@ class BackfillScheduler:
         t_now = self.clock()
         jobs = self.plan(now=t_now) if hydrate else []
         unpaired = self.scan_unpaired() if hydrate else []
+        placeholders = self.spec_placeholders() if hydrate else []
         inflight = self.inflight_running()
         stale = self.stale_inflight()
 
@@ -1464,7 +1587,12 @@ class BackfillScheduler:
             "derived_tiers": dict(TICKET_TIER),
             "unpaired": unpaired,
             "unpaired_count": len(unpaired),
+            "unpaired_total": len(unpaired),
             "unpaired_operators": sorted({r["title"] for r in unpaired}),
+            "spec_placeholder": placeholders,
+            "spec_placeholder_total": len(placeholders),
+            "spec_placeholder_by_operator": _placeholder_by_operator(placeholders),
+            "spec_placeholder_keys": sorted({f"{r['title']}|{r['bucket']}" for r in placeholders}),
             "queued": jobs,
             "queued_count": len(jobs),
             "unmeasurable": self.unmeasurable(),
@@ -1489,12 +1617,33 @@ class BackfillScheduler:
 
     # -- cheap summary for `cli_bridge.status` (no extra scanning) ---------------
     def summary(self, cal_docs: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
-        """Zero-cost banner payload derived from already-loaded calibration docs."""
+        """Zero-cost banner payload derived from already-loaded calibration docs.
+
+        Placeholders are split out here too, so the client's `unpaired_total` badge can never
+        be held up by ids that no run can ever pair (the `SyncBatchNormGatherStats` 13, …).
+        """
         per: dict[str, int] = {}
+        ph_per: dict[str, int] = {}
+        ph_keys: list[str] = []
+        attempted = self._attempted_pairs()
         for title, doc in (cal_docs or {}).items():
-            n = int(doc.get("unpaired_bucket_count") or 0)
-            if n > 0:
-                per[title] = n
+            ids = [str(x) for x in (doc.get("unpaired_buckets") or [])]
+            if not ids:  # doc without the id list: fall back to the raw count (no split possible)
+                n = int(doc.get("unpaired_bucket_count") or 0)
+                if n > 0:
+                    per[title] = n
+                continue
+            harness = self._harness_source(title)
+            n_ph = 0
+            for bid in ids:
+                if spec_placeholder_reason(bid, harness, attempted=(title, bid) in attempted):
+                    n_ph += 1
+                    ph_keys.append(f"{title}|{bid}")
+            real = len(ids) - n_ph
+            if real > 0:
+                per[title] = real
+            if n_ph:
+                ph_per[title] = n_ph
         inflight = self.inflight_running()
         last = None
         for rec in reversed(self.ledger.records()):
@@ -1513,6 +1662,9 @@ class BackfillScheduler:
             "auto_enabled": bool(cfg.enabled and cfg.auto_dispatch),
             "unpaired_by_operator": per,
             "unpaired_total": sum(per.values()),
+            "spec_placeholder_by_operator": ph_per,
+            "spec_placeholder_total": sum(ph_per.values()),
+            "spec_placeholder_keys": sorted(ph_keys),
             "running": bool(inflight),
             "running_title": (inflight or {}).get("title"),
             "last_run": last,
@@ -1612,6 +1764,14 @@ class BackfillScheduler:
 # --------------------------------------------------------------------------------------
 # Small helpers
 # --------------------------------------------------------------------------------------
+def _placeholder_by_operator(rows: list[dict[str, Any]]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for row in rows:
+        title = str(row.get("title"))
+        out[title] = out.get(title, 0) + 1
+    return out
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         import os

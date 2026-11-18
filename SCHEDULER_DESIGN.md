@@ -242,6 +242,8 @@ Live census on 2026-11-18 (`python3 -m scheduler.backfill_status --json`, 41 off
 
 **47 unpaired buckets across 8 of 10 operators → coalesced into 8 sessions → `eta_sec = 176s` of die time** (throttle-bound `eta_wall_sec = 6476s` if left strictly to AUTO pacing). The banner's “4” was a per-operator number; the real deficit is an order of magnitude larger and structural — it grows with the spectrum, not with operator effort.
 
+> **Update (2026-11-19, §6.5.1).** Of those 47 ids, **36 are spec placeholders** that no session can ever pair (23 `*_proxy` rows + 13 `SyncBatchNormGatherStats` ids the harness never names). After the 2026-11-18 `MultilabelMarginLoss` pairing the live census is `unpaired_total = 9`, `spec_placeholder_total = 36`, `queued = 2`, `eta_sec = 154 s`. The table above is the *pre*-classification view, kept as the historical measurement.
+
 ### 6.2 Three lanes, one lexicographic admission order
 The NPU die now has **three** lanes and the ordering is a strict total order, not a heuristic:
 
@@ -295,11 +297,51 @@ Independent module entry (no new `opsb` subcommand, `cli/` untouched); pure `std
  "eta_sec":  176.0,
  "ledger_sha": "e3b0c442…b855"}
 ```
-plus additive `eta_wall_sec`, `eta_lock_sec`, `eta_build_sec`, `unmeasurable[]`, `stale_inflight[]`, `admission` (the full proof: `allowed`, `reasons[]`, `details.die_locks/operator_tickets_waiting/operator_ticket_owners`), `config`, `paired_via_backfill`, `derived_tiers`.
+plus additive `eta_wall_sec`, `eta_lock_sec`, `eta_build_sec`, `unmeasurable[]`, `stale_inflight[]`, `spec_placeholder[]` / `spec_placeholder_total` / `spec_placeholder_by_operator{}` / `spec_placeholder_keys[]`, `admission` (the full proof: `allowed`, `reasons[]`, `details.die_locks/operator_tickets_waiting/operator_ticket_owners`), `config`, `paired_via_backfill`, `derived_tiers`.
 
-`unmeasurable[]` is the honest counterpart of `queued[]`: a bucket whose id the operator's harness does not implement (`case_not_in_harness`, or a session that completed without emitting a row for it) can never be paired by waiting, so it is parked, never retried, and surfaced for a spec fix instead of burning rebuilds. `--dispatch` is the only mutating mode; `--dry-run` prints the session plan *and* the admission proof without touching the die; `--offline` is fail-closed (plan only). Runtime: **86 ms offline / 1.1 s live** for all 10 operators.
+`unmeasurable[]` is the honest counterpart of `queued[]`: a bucket whose id the operator's harness does not implement (`case_not_in_harness`, or a session that completed without emitting a row for it) can never be paired by waiting, so it is parked, never retried, and surfaced for a spec fix instead of burning rebuilds. `--dispatch` is the only mutating mode; `--dry-run` prints the session plan *and* the admission proof without touching the die; `--offline` is fail-closed (plan only). Runtime: **124 ms offline / 1.1 s live** for all 10 operators.
 
-`cli_bridge status` gains one additive field `backfill = {lane, tier, auto_enabled, unpaired_by_operator{}, unpaired_total, running, running_title, last_run, est_session_sec, ledger_sha}` computed from the already-loaded calibration docs (zero extra scans, `status` stays inside the app's `3.5 s` IPC budget), and a new `backfill` subcommand makes the existing `opsb bench backfill <Title>` button path (`cli/opsb_core/commands/bench_cmd.py → scheduler.cli_bridge backfill`) finally resolve to real work instead of a `127` fallback. The remote probe additionally publishes `npu_tickets[]` (read-only `/tmp/opsb-npu-tickets/*.json`) and a `BACKFILL` task tag for a B0 die holder.
+`cli_bridge status` gains one additive field `backfill = {lane, tier, auto_enabled, unpaired_by_operator{}, unpaired_total, spec_placeholder_by_operator{}, spec_placeholder_total, spec_placeholder_keys[], running, running_title, last_run, est_session_sec, ledger_sha}` computed from the already-loaded calibration docs (zero extra scans — the harness sources are read once and cached, `status` stays inside the app's `3.5 s` IPC budget), and a new `backfill` subcommand makes the existing `opsb bench backfill <Title>` button path (`cli/opsb_core/commands/bench_cmd.py → scheduler.cli_bridge backfill`) finally resolve to real work instead of a `127` fallback. The remote probe additionally publishes `npu_tickets[]` (read-only `/tmp/opsb-npu-tickets/*.json`) and a `BACKFILL` task tag for a B0 die holder.
+
+### 6.5.1 Spec placeholders — the three rules for「永远不可测」
+
+A bucket id is a **spec placeholder** when no run can ever pair it. `BackfillScheduler` classifies
+every unpaired id with `spec_placeholder_reason()` *before* any admission decision, in this order:
+
+| # | `placeholder_reason` | Test | Example | Fix belongs to |
+|---|---|---|---|---|
+| 1 | `proxy_suffix` | `id.endswith("_proxy")` | `t256_c1024_b16_proxy`, `bf16_128x256_proxy` | `bench-specs` |
+| 2 | `parser_artifact` | the id contains `:` (a harness case id is a plain identifier) | `PReluGradUpdate:median`, `PReluGradUpdate:min` | `bench-specs` |
+| 3 | `not_in_harness_case_list` | the operator's own `validation/*.py` never names the id (`harness_names_case()`) | `sbn_w4_c64_small` vs SBN's `f32_c*` case table | `bench-specs` **or** the harness |
+
+Rule 3 is a *pre-flight* verdict only: `_census_rows()` passes `attempted=True` for any
+`(operator, bucket)` pair already in the ledger, so a case the lane has actually run is never
+reclassified behind its back — the **ledger** owns that status and it keeps landing in
+`unmeasurable[reason = case_not_in_harness]`, never in `spec_placeholder[]`. `harness_names_case()`
+answers `None` ("no opinion") when `validation/` is missing, so an operator repo that is not cloned
+locally can never lose its whole census; a quoted literal *or* a bare token in the harness counts
+as "named" (the token guard `(?<![\w.])…(?![\w])` stops `np.floor` from vouching for a case called
+`floor`). The read is `validation/*.py` from the **working tree** (read-only, cached per operator,
+`< 600 kB` for all ten), not the baseline commit: a harness that names the id today can still be
+measured against the old build via the `--root` worktree of §6.7.
+
+Consequences (all additive to the §6.5 contract):
+
+* `unpaired[]`, `unpaired_total`, `unpaired_count` count **real cases only**;
+* `spec_placeholder[]` (each with `placeholder_reason`), `spec_placeholder_total`,
+  `spec_placeholder_by_operator{}` and `spec_placeholder_keys[]` report the rest;
+* `plan()` never emits a placeholder into `queued[]`, so neither `eta_sec` / `eta_wall_sec` nor the
+  append-only ledger ever pays die time for one; an operator whose **whole** deficit is placeholder
+  (`SyncBatchNormGatherStats`, 13/13) is absent from `queued[]` and its banner number is `0`;
+* `cli_bridge status`'s `backfill` badge runs the same classifier over the already-loaded
+  calibration docs (`summary()`), so the client number can never hang on an unmeasurable id.
+
+Effect on the §6.1 census (2026-11-19, `--offline`): `unpaired_total 45 → 9`
+(`ConfusionTransposeD 1` + `PReluGradUpdate 6` + `StridedSliceGrad 2`),
+`spec_placeholder_total = 36` (23 `proxy_suffix` + 13 `not_in_harness_case_list`), `queued 6 → 2`,
+`eta_sec 462 s → 154 s`. The 36 were never work: no amount of die time can pair them, only editing
+`bench-specs/<Title>/cases_perf.json` or the operator's case table can.
+
 
 ### 6.6 AUTO scheduling without a daemon
 No poller, no resident process (§ “no background loops”): the planner is pure, so scheduling is **event-driven** and the events already exist —
@@ -386,7 +428,7 @@ make the operator priority structural (§6.2). A manual “立即补测” addit
 | build+measure exceed budgets | `build_timeout_sec`/`perf_timeout_sec` kill + release the die | `reason: build_failed / measurement_rc_nonzero` |
 
 ### 6.9 Verification
-Per the hard constraint (“offline replay or `--dry-run`, never grab the die”), the lane ships with `scheduler/tests/test_backfill.py` + `scheduler/tests/test_gate_log_verdicts.py` (61 stdlib `unittest` cases, `<1s`, no SSH in tests): ticket-ordering proof, coalescing/dedup, `build_perf_plan` per repo flag dialect, ledger torn-tail/join semantics, all admission predicates (including *“a waiting Q1 ticket blocks even `force=True`”*), dry-run-never-executes, one-session-per-operator, never-rerun-after-success, backoff + `max_attempts`, dead-pid resume vs live-pid single-flight, `exec=` host-floor normalisation, the status contract, the calibration merge (holes filled, values never overridden, cross-SoC rejected), and three read-only real-workspace invariants (census `==` `calibration.json::unpaired_bucket_count` for all 10 operators; `status` additive + `< 5s`; dry-run writes nothing).
+Per the hard constraint (“offline replay or `--dry-run`, never grab the die”), the lane ships with `scheduler/tests/test_backfill.py` + `scheduler/tests/test_gate_log_verdicts.py` (73 stdlib `unittest` cases, `<2s`, no SSH in tests): ticket-ordering proof, coalescing/dedup, `build_perf_plan` per repo flag dialect, ledger torn-tail/join semantics, all admission predicates (including *“a waiting Q1 ticket blocks even `force=True`”*), dry-run-never-executes, one-session-per-operator, never-rerun-after-success, backoff + `max_attempts`, dead-pid resume vs live-pid single-flight, `exec=` host-floor normalisation, the status contract, the calibration merge (holes filled, values never overridden, cross-SoC rejected), the §6.5.1 placeholder classifier on a fixture workspace (all three rules, an operator whose deficit is 100 % placeholder, an attempted case that must stay in `unmeasurable[case_not_in_harness]` instead of being reclassified, and the banner/summary split), and four read-only real-workspace invariants (census `==` `calibration.json::unpaired_bucket_count` for all 10 operators; `unpaired_total + spec_placeholder_total ==` the calibration census total; `status` additive + `< 5s`; dry-run writes nothing).
 
 
 ---

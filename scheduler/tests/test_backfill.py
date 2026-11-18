@@ -22,6 +22,9 @@ from scheduler.backfill import (  # noqa: E402
     LANE_BACKFILL,
     TICKET_TIER,
     build_measurement_plan,
+    harness_names_case,
+    is_spec_placeholder,
+    spec_placeholder_reason,
     BackfillConfig,
     BackfillLedger,
     BackfillScheduler,
@@ -34,8 +37,18 @@ from scheduler.backfill import (  # noqa: E402
     ticket_rank,
 )
 
-SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]  # ops-supervisor/
-REAL_WORKSPACE = SUP_ROOT.parent
+SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]  # ops-supervisor/ (or a git worktree of it)
+
+
+def _find_workspace(start: pathlib.Path) -> pathlib.Path:
+    """Walk up to the contest workspace (robust to running from a `git worktree`)."""
+    for cand in (start, *start.parents):
+        if (cand / "bench" / "problems.json").is_file():
+            return cand
+    return start.parent
+
+
+REAL_WORKSPACE = _find_workspace(pathlib.Path(__file__).resolve())
 BENCH_SPECS = SUP_ROOT / "bench-specs"
 SHA = "a" * 40
 
@@ -57,15 +70,18 @@ def _row(title: str, bucket: str, headroom: float, sha: str = SHA) -> dict:
 
 
 class _FakeScheduler(BackfillScheduler):
-    """BackfillScheduler with the unpaired census injected (no repo/log scanning)."""
+    """BackfillScheduler with the raw census injected (no repo/log scanning)."""
 
     def __init__(self, state_dir: pathlib.Path, rows: list[dict], **kw) -> None:
         super().__init__(REAL_WORKSPACE, state_dir=state_dir, **kw)
         self.rows = list(rows)
         self.executed: list[dict] = []
 
-    def scan_unpaired(self) -> list[dict]:
-        return list(self.rows)
+    def _census_rows(self) -> list[dict]:
+        out = []
+        for row in self.rows:
+            out.append({**row, "placeholder": is_spec_placeholder(row.get("bucket"))})
+        return out
 
     def _recording_runner(self, lines: list[str]):
         def run(cfg: dict) -> dict:
@@ -671,6 +687,249 @@ class CalibrationMergeTest(unittest.TestCase):
         self.assertEqual(timings, {b0: 11.0})
 
 
+class _StubEstimator:
+    def __init__(self, titles: list[str]) -> None:
+        self.problems_meta = {t: {"title": t} for t in titles}
+
+
+class _StubCalibrator:
+    """`unpaired_buckets()` / `load_or_calibrate()` over an in-memory census."""
+
+    def __init__(self, census: dict[str, list[str]], sha: str = SHA) -> None:
+        self._census = census
+        self.sha = sha
+
+    def unpaired_buckets(self, title: str) -> dict:
+        ids = [str(x) for x in self._census.get(title) or []]
+        return {
+            "unpaired_details": [
+                {"id": i, "stratum": "M_MID_UB", "dtype": "float32", "description": ""} for i in ids
+            ],
+            "unpaired_buckets": list(ids),
+            "unpaired_count": len(ids),
+            "baseline_sha": self.sha,
+            "baseline_short": self.sha[:7],
+            "modality": "profiler",
+            "runtime_soc": "soc-a",
+        }
+
+    def load_or_calibrate(self, title: str) -> dict:
+        return {"buckets": []}
+
+
+def _fixture_workspace(root: pathlib.Path, harness: dict[str, list[str]]) -> pathlib.Path:
+    """`<root>/bench/<Title>/validation/perf.py` with a declared case table."""
+    (root / "bench").mkdir(parents=True, exist_ok=True)
+    for title, ids in harness.items():
+        vdir = root / "bench" / title / "validation"
+        vdir.mkdir(parents=True, exist_ok=True)
+        body = "".join(f"    ('{bid}', 'float32'),\n" for bid in ids)
+        (vdir / "perf.py").write_text("CASES = [\n" + body + "]\n", encoding="utf-8")
+    (root / "bench" / "problems.json").write_text("{}\n", encoding="utf-8")
+    return root
+
+
+class _CensusScheduler(BackfillScheduler):
+    """The **real** `_census_rows()` detection path over a fixture workspace."""
+
+    def __init__(
+        self,
+        workspace: pathlib.Path,
+        state_dir: pathlib.Path,
+        census: dict[str, list[str]],
+        **kw,
+    ) -> None:
+        super().__init__(
+            workspace,
+            state_dir=state_dir,
+            estimator=_StubEstimator(list(census)),
+            calibrator=_StubCalibrator(census),
+            **kw,
+        )
+        self.executed: list[dict] = []
+
+    def _recording_runner(self, lines: list[str]):
+        def run(cfg: dict) -> dict:
+            self.executed.append(cfg)
+            return {"ok": bool(lines), "timing_lines": lines, "log": "/tmp/fake.log", "die": 0,
+                    "lock_wait_sec": 0.0}
+
+        return run
+
+
+class SpecPlaceholderTest(unittest.TestCase):
+    """`*_proxy`, `<op>:median`, and unharnessed ids are documentation, not cases.
+
+    All three [§6.5.1] rules must keep such an id out of `unpaired`/`queued`/`eta`, while a
+    *real* case the harness failed to emit keeps flowing to `unmeasurable[case_not_in_harness]`.
+    """
+
+    CENSUS = {
+        "Alpha": ["real_a1", "real_a2", "bf16_128x256_proxy", "Alpha:median", "ghost_bucket"],
+        "Beta": ["only_placeholder_proxy", "beta_missing_case"],  # 100 % placeholder
+        "Gamma": ["g_real"],                                     # healthy, a real deficit
+    }
+    HARNESS = {
+        "Alpha": ["real_a1", "real_a2"],
+        "Beta": ["b_other_case"],
+        "Gamma": ["g_real"],
+    }
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.tmp.name)
+        self.ws = _fixture_workspace(self.root / "ws", self.HARNESS)
+        self.state = self.root / "state"
+        self.state.mkdir()
+        self.sched = self._scheduler()
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def _scheduler(self) -> _CensusScheduler:
+        return _CensusScheduler(self.ws, self.state, self.CENSUS)
+
+    # -- rule 1..3 ---------------------------------------------------------------
+    def test_three_rules_and_their_precedence(self) -> None:
+        harness = "CASES = [\n    ('k_8x4096_mean', 'float32'),\n]\n"
+        # rule 1: spectrum padding
+        self.assertEqual(spec_placeholder_reason("t256_c1024_b16_proxy", harness), "proxy_suffix")
+        self.assertEqual(spec_placeholder_reason("a_b_proxy", ""), "proxy_suffix")
+        # rule 2: parser artifacts (`PROF_SUMMARY` leaks `<kernel>:metric` keys)
+        self.assertEqual(spec_placeholder_reason("PReluGradUpdate:median", harness), "parser_artifact")
+        self.assertEqual(spec_placeholder_reason("PReluGradUpdate:min", harness), "parser_artifact")
+        # rule 3: the harness never names the id
+        self.assertEqual(
+            spec_placeholder_reason("sbn_w4_c64_small", harness), "not_in_harness_case_list"
+        )
+        self.assertIsNone(spec_placeholder_reason("k_8x4096_mean", harness))  # named
+        # `None` ("no harness to ask") is not `False`: a missing repo suppresses nothing
+        self.assertIsNone(spec_placeholder_reason("sbn_w4_c64_small", ""))
+        self.assertIsNone(spec_placeholder_reason("sbn_w4_c64_small", None))
+        # an id the lane already attempted is the ledger's business, never a placeholder
+        self.assertIsNone(spec_placeholder_reason("sbn_w4_c64_small", harness, attempted=True))
+        self.assertIsNone(spec_placeholder_reason("", harness))
+        self.assertIsNone(spec_placeholder_reason(None, harness))
+        # the token guard must not let `np.floor` vouch for a case named `floor`
+        self.assertFalse(harness_names_case("x = np.floor(1.0)", "floor"))
+        self.assertTrue(harness_names_case("CASES = [('floor', 'float32')]", "floor"))
+
+    def test_census_splits_placeholders_from_real_cases(self) -> None:
+        real = self.sched.scan_unpaired()
+        ph = self.sched.spec_placeholders()
+        self.assertEqual(
+            [(r["title"], r["bucket"]) for r in real],
+            [("Alpha", "real_a1"), ("Alpha", "real_a2"), ("Gamma", "g_real")],
+        )
+        self.assertEqual(
+            sorted((r["title"], r["bucket"], r["placeholder_reason"]) for r in ph),
+            [
+                ("Alpha", "Alpha:median", "parser_artifact"),
+                ("Alpha", "bf16_128x256_proxy", "proxy_suffix"),
+                ("Alpha", "ghost_bucket", "not_in_harness_case_list"),
+                ("Beta", "beta_missing_case", "not_in_harness_case_list"),
+                ("Beta", "only_placeholder_proxy", "proxy_suffix"),
+            ],
+        )
+        # every census row is classified exactly once
+        self.assertEqual(len(real) + len(ph), sum(len(v) for v in self.CENSUS.values()))
+
+    # -- contract fields ---------------------------------------------------------
+    def test_status_fields_and_queue_hygiene(self) -> None:
+        payload = self.sched.status(npu=_free_npu())
+        self.assertEqual(payload["unpaired_total"], 3)
+        self.assertEqual(payload["unpaired_count"], 3)
+        self.assertEqual(payload["spec_placeholder_total"], 5)
+        self.assertEqual(payload["spec_placeholder_by_operator"], {"Alpha": 3, "Beta": 2})
+        self.assertEqual(len(payload["spec_placeholder"]), 5)
+        self.assertIn("Beta|only_placeholder_proxy", payload["spec_placeholder_keys"])
+        self.assertTrue(all(r["placeholder_reason"] for r in payload["spec_placeholder"]))
+        self.assertTrue(all(not r["placeholder"] for r in payload["unpaired"]))
+
+        self.assertEqual([q["title"] for q in payload["queued"]], ["Alpha", "Gamma"])
+        self.assertEqual(payload["queued_count"], 2)
+        self.assertNotIn("Beta", [q["title"] for q in payload["queued"]])
+        for job in payload["queued"]:
+            for bid in job["buckets"]:
+                self.assertIsNone(spec_placeholder_reason(bid, self.sched._harness_source(job["title"])))
+        # eta only pays for real sessions
+        self.assertEqual(
+            payload["eta_sec"], round(sum(j["budget_sec"] for j in payload["queued"]), 1)
+        )
+
+    def test_placeholder_only_operator_is_zero_and_not_queued(self) -> None:
+        payload = self.sched.status(npu=_free_npu())
+        self.assertNotIn("Beta", payload["unpaired_operators"])
+        self.assertEqual(self.sched.summary({"Beta": {
+            "unpaired_bucket_count": 2,
+            "unpaired_buckets": ["only_placeholder_proxy", "beta_missing_case"],
+        }})["unpaired_by_operator"], {})  # banner number is 0
+        self.sched.save_config(min_interval_sec=0.0)
+        out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="Beta")
+        self.assertFalse(out.get("dispatched"))
+        self.assertEqual(out["reason"], "queue_empty")
+        self.assertEqual(self.sched.executed, [])
+
+    def test_placeholder_never_reaches_the_ledger(self) -> None:
+        self.sched.save_config(min_interval_sec=0.0)
+        self.sched.runner = self.sched._recording_runner(["MS_PROF case=real_a1 median=9.0 min=8.0"])
+        self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="Alpha")
+        req = self.sched.executed[-1]["buckets"]
+        self.assertEqual(req, ["real_a1", "real_a2"])
+        self.assertFalse(any(spec_placeholder_reason(b) for b in req))
+
+    # -- requirement 4: a real case the harness lacked is *not* a placeholder -----
+    def test_attempted_case_missing_from_the_run_stays_unmeasurable(self) -> None:
+        harness = self.sched._harness_source("Alpha")
+        self.assertTrue(harness_names_case(harness, "real_a1"))
+        rec = {
+            "event": "finished", "lane": "B0", "title": "Alpha", "result": "case_not_in_harness",
+            "ended_epoch": self.sched.clock(), "buckets": ["real_a1"],
+            "bucket_keys": [bucket_key("Alpha", "real_a1", SHA)],
+        }
+        self.sched.ledger.append(rec)
+        payload = self.sched.status(npu=_free_npu())
+        unmeasurable = {r["title"]: r for r in payload["unmeasurable"]}
+        self.assertIn("Alpha", unmeasurable)
+        self.assertEqual(unmeasurable["Alpha"]["reason"], "case_not_in_harness")
+        self.assertEqual(unmeasurable["Alpha"]["buckets"], ["real_a1"])
+        self.assertTrue(payload["unmeasurable"][0].get("reason"))
+        self.assertNotIn(
+            "Alpha|real_a1", payload["spec_placeholder_keys"]
+        )  # a real case, never a spec placeholder
+        self.assertIn(("Alpha", "real_a1"), {(r["title"], r["bucket"]) for r in payload["unpaired"]})
+        # the failed bucket is blocked (not retried) while the operator's other case still runs
+        queued = {q["title"]: q["buckets"] for q in payload["queued"]}
+        self.assertEqual(queued, {"Alpha": ["real_a2"], "Gamma": ["g_real"]})
+
+    def test_unknown_harness_never_demotes_a_bucket_list(self) -> None:
+        # a workspace whose `bench/<Title>/validation` is absent: "no opinion"
+        bare = _fixture_workspace(self.root / "bare", {})
+        sched = _CensusScheduler(bare, self.root / "state2", self.CENSUS)
+        self.assertEqual(
+            {r["bucket"] for r in sched.spec_placeholders()},
+            {"bf16_128x256_proxy", "Alpha:median", "only_placeholder_proxy"},
+        )
+        self.assertEqual(
+            sorted(r["bucket"] for r in sched.scan_unpaired()),
+            ["beta_missing_case", "g_real", "ghost_bucket", "real_a1", "real_a2"],
+        )
+
+    def test_summary_subtracts_placeholders_from_cached_docs(self) -> None:
+        docs = {
+            "Alpha": {"unpaired_bucket_count": 5, "unpaired_buckets": list(self.CENSUS["Alpha"])},
+            "Beta": {"unpaired_bucket_count": 2, "unpaired_buckets": list(self.CENSUS["Beta"])},
+            "Gamma": {"unpaired_bucket_count": 1},
+        }
+        summary = self.sched.summary(docs)
+        self.assertEqual(summary["unpaired_total"], 3)      # Alpha 2 + Gamma 1 (count fallback)
+        self.assertEqual(summary["unpaired_by_operator"], {"Alpha": 2, "Gamma": 1})
+        self.assertEqual(summary["spec_placeholder_total"], 5)
+        self.assertEqual(summary["spec_placeholder_by_operator"], {"Alpha": 3, "Beta": 2})
+        self.assertIn("Beta|beta_missing_case", summary["spec_placeholder_keys"])
+
+
+
 @unittest.skipUnless((REAL_WORKSPACE / "bench" / "problems.json").is_file(), "real workspace unavailable")
 class RealWorkspaceReadOnlyTest(unittest.TestCase):
     """Read-only invariants against the live 10-operator workspace (never writes state/)."""
@@ -693,6 +952,32 @@ class RealWorkspaceReadOnlyTest(unittest.TestCase):
             )
             checked += 1
         self.assertGreaterEqual(checked, 8)
+
+    def test_placeholder_split_is_a_partition_of_the_live_census(self) -> None:
+        """`unpaired_total + spec_placeholder_total ==` the calibration census, on the real specs."""
+        from scheduler.calibration import BenchmarkCalibrator
+        from scheduler.estimator import ScoreEstimator
+
+        est = ScoreEstimator(REAL_WORKSPACE)
+        cal = BenchmarkCalibrator(REAL_WORKSPACE, estimator=est)
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = BackfillScheduler(
+                REAL_WORKSPACE, state_dir=pathlib.Path(tmp), estimator=est, calibrator=cal
+            )
+            real = sched.scan_unpaired()
+            placeholders = sched.spec_placeholders()
+            self.assertFalse((pathlib.Path(tmp) / "backfill_ledger.jsonl").is_file())
+        total = 0
+        for title in sorted(est.problems_meta):
+            if not (BENCH_SPECS / title / "cases_perf.json").is_file():
+                continue
+            total += int(cal.calibrate_problem(title, persist=False)["unpaired_bucket_count"])
+        self.assertEqual(len(real) + len(placeholders), total)
+        self.assertTrue(placeholders, "the live specs still carry *_proxy rows")
+        self.assertTrue(all(r["placeholder_reason"] for r in placeholders))
+        self.assertTrue(all(not r["placeholder"] for r in real))
+        # a `*_proxy` id must never be counted as a real case
+        self.assertFalse([r for r in real if str(r["bucket"]).endswith("_proxy")])
 
     def test_bridge_status_is_additive_and_fast(self) -> None:
         import time as _time

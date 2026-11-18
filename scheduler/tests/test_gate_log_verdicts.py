@@ -22,7 +22,16 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from scheduler.gate import SubmissionGate, parse_log_verdicts  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
-WORKSPACE = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _find_workspace(start: pathlib.Path) -> pathlib.Path:
+    for cand in (start, *start.parents):
+        if (cand / "bench" / "problems.json").is_file():
+            return cand
+    return start.parent
+
+
+WORKSPACE = _find_workspace(pathlib.Path(__file__).resolve())
 
 
 def _fixture(name: str) -> str:

@@ -9,15 +9,25 @@ Contract (client / `OpsSupervisor.app` reads this; additive fields may appear):
 
     {
       "unpaired[]":  {title, bucket, stratum, dtype, baseline_sha, baseline_short,
-                      modality, runtime_soc, headroom_pts, key},
+                      modality, runtime_soc, headroom_pts, key, placeholder, placeholder_reason},
+      "unpaired_total": int,    # real, measurable cases only (never a `*_proxy` id)
+      "spec_placeholder[]": {title, bucket, ..., placeholder_reason},
+                                # `spec_placeholder_total` / `_by_operator` / `_keys` summarise it
       "queued[]":    {job_id, title, baseline_sha, buckets[], bucket_count, headroom_pts,
                       est_sec, attempts{}, waiting_sec, lane:"B0", tier:0},
       "running":     null | {job_id, title, buckets[], started_at, elapsed_sec, pid, lane, tier},
       "last_run":    null | {title, baseline_short, finished_at, result, duration_sec,
                              measured_count, log},
+      "unmeasurable[]": {title, reason:"case_not_in_harness", baseline_short, buckets[]},
       "eta_sec":     float,     # sum of learned session estimates over `queued[]`
       "ledger_sha":  "<sha256 of the append-only ledger>"   # client cache key
     }
+
+`unpaired_total` counts real cases only.  Ids that can never be measured — `*_proxy` spectrum
+padding, `<operator>:min` / `:median` parser keys, and ids the operator's own harness never
+names — are reported once under `spec_placeholder` and never enter `queued[]`, `eta_sec` or the
+`unpaired` census.  A *real* case the harness fails to emit stays in `unmeasurable[]` with its
+`reason` instead (see `SCHEDULER_DESIGN.md`).
 
 `--dispatch` is the *only* mutating path; it still refuses to take the die while any
 operator ticket (`tier >= 1`) waits or any die lock is held, even with `--force`
@@ -79,7 +89,8 @@ def _human(payload: dict[str, Any]) -> str:
         per.setdefault(str(row["title"]), []).append(str(row["bucket"]))
     lines.append(
         f"B0 backfill lane · unpaired {payload.get('unpaired_count', 0)} bucket(s) "
-        f"across {len(per)} operator(s) · queued {payload.get('queued_count', 0)} session(s) "
+        f"across {len(per)} operator(s) · placeholder {payload.get('spec_placeholder_total', 0)} "
+        f"· queued {payload.get('queued_count', 0)} session(s) "
         f"· eta {payload.get('eta_sec', 0)}s"
     )
     for title in sorted(per):
