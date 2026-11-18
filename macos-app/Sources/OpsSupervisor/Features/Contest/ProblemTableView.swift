@@ -1,9 +1,9 @@
 import SwiftUI
 
 enum ProblemFilter: String, CaseIterable, Identifiable {
-    case all = "All"
-    case highWeight = "×3 Weight"
-    case restoreGap = "Restore Gap"
+    case all = "全部"
+    case highWeight = "^^^ 高难题"
+    case restoreGap = "可恢复差值"
 
     var id: String { rawValue }
 }
@@ -53,7 +53,7 @@ struct ProblemTableView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Text("Wt").frame(width: 34, alignment: .leading)
+                Text("级别").frame(width: 34, alignment: .leading)
                 Text("Operator").frame(maxWidth: .infinity, alignment: .leading)
                 Text("Status").frame(width: 88, alignment: .center)
                 Text("Current").frame(width: 60, alignment: .trailing)

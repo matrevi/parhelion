@@ -54,24 +54,51 @@ struct SemanticPill: View {
     }
 }
 
+/// Linear-style stacked upward chevron tier badge (1..3 active chevrons out of 3).
 struct DifficultyBadge: View {
     let difficulty: Int
 
+    private var level: Int { min(3, max(1, difficulty)) }
+
     private var tint: Color {
-        switch difficulty {
-        case 3: return Color(red: 0.66, green: 0.36, blue: 0.94)
-        case 2: return Color(red: 0.22, green: 0.56, blue: 0.94)
+        switch level {
+        case 3: return Color(red: 0.66, green: 0.34, blue: 0.95)
+        case 2: return Color(red: 0.20, green: 0.56, blue: 0.95)
         default: return .teal
         }
     }
 
     var body: some View {
-        Text("×\(difficulty)")
-            .font(.system(size: 11, weight: .bold, design: .monospaced))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(tint.opacity(0.13)))
+        Canvas { ctx, size in
+            let cx = size.width / 2.0
+            let halfW: CGFloat = 4.6
+            let chevH: CGFloat = 3.0
+            // 3 vertical slots: index 0 = top (tier 3), 1 = mid (tier 2), 2 = bottom (tier 1)
+            let yOffsets: [CGFloat] = [4.2, 8.6, 13.0]
+
+            for slot in 0..<3 {
+                let tierForSlot = 3 - slot // top=3, mid=2, bottom=1
+                let active = level >= tierForSlot
+                let topY = yOffsets[slot]
+
+                var path = Path()
+                path.move(to: CGPoint(x: cx - halfW, y: topY + chevH))
+                path.addLine(to: CGPoint(x: cx, y: topY))
+                path.addLine(to: CGPoint(x: cx + halfW, y: topY + chevH))
+
+                ctx.stroke(
+                    path,
+                    with: .color(active ? tint : tint.opacity(0.20)),
+                    style: StrokeStyle(lineWidth: 1.85, lineCap: .round, lineJoin: .round)
+                )
+            }
+        }
+        .frame(width: 24, height: 20)
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(tint.opacity(0.12))
+        )
+        .help("难度级别 \(level) / 3（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
     }
 }
 

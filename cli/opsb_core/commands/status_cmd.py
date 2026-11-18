@@ -73,8 +73,9 @@ def run_status(args: argparse.Namespace) -> int:
     for p in payload["problems"]:
         r_str = f"#{p['rank']}" if p["rank"] else "—"
         pm = f"{p['public_mean_us']:.2f}us" if p["public_mean_us"] is not None else "—"
+        chev = ("^" * int(p["difficulty"])).ljust(3)
         print(
-            f"  [×{p['difficulty']}] {p['title']:<26} {p['status']:<14} "
+            f"  [{chev}] {p['title']:<26} {p['status']:<14} "
             f"cur={p['current_score']:>5.2f}  best={p['best_score']:>5.2f}  rank={r_str:<5}  pub={pm:<8}  [{p['wspt_tag']}]"
         )
     return 0
@@ -97,7 +98,8 @@ def run_history(args: argparse.Namespace) -> int:
 
     for p in probs:
         best_s = p["best_sha"][:7] if p["best_sha"] else "—"
-        print(f"=== {p['title']} (×{p['difficulty']}) · Current {p['current_score']:.2f} · Best {p['best_score']:.2f} ({best_s}) ===")
+        chev = "^" * int(p["difficulty"])
+        print(f"=== {p['title']} [{chev}] · Current {p['current_score']:.2f} · Best {p['best_score']:.2f} ({best_s}) ===")
         if p["public_times_us"] and p["public_tbest_us"]:
             print("  Public Cases (tbest / ours):")
             for i, (ours, tb) in enumerate(zip(p["public_times_us"], p["public_tbest_us"])):

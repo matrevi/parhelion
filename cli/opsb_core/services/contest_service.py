@@ -298,18 +298,19 @@ def build_problem_models(
         exp_step = restore_gap if (cur_score == 0 and best_score > 0) else max(restore_gap, min(12.0, leader_gap * 0.25))
         wspt = round(diff * exp_step, 2)
 
+        chev = "^" * min(3, max(1, diff))
         if cur_score == 0 and best_score > 0:
             tag = "CRITICAL RESTORE"
         elif cur_score == 0:
-            tag = f"FIRST PASS ×{diff}"
+            tag = f"FIRST PASS {chev}"
         elif restore_gap >= noise_floor:
             tag = f"RESTORE +{restore_gap:.1f}"
         elif diff == 3 and leader_gap >= 25:
-            tag = "HIGH ROI ×3"
+            tag = "HIGH ROI ^^^"
         elif leader_gap >= 25:
-            tag = f"HEADROOM ×{diff}"
+            tag = f"HEADROOM {chev}"
         else:
-            tag = f"STEADY ×{diff}"
+            tag = f"STEADY {chev}"
 
         head_sha, head_age_min, head_subject = read_head_fast(workspace / p["path"])
         cb_trips = hist_idx["pressure_12h"].get(title, 0)
