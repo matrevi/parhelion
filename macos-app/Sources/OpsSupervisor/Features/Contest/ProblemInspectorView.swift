@@ -6,12 +6,16 @@ struct ProblemInspectorView: View {
     let gitOwner: String
     @UIState private var expandedGroups: Set<Int> = []
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 13) {
                 headerRow
 
-                if problem.bestScore - problem.currentScore >= 2.5 && !problem.bestSha.isEmpty && problem.bestSha.prefix(7) != (problem.activeSha ?? "").prefix(7) {
+                if problem.bestScore - problem.currentScore >= 2.5
+                    && !problem.bestSha.isEmpty
+                    && problem.bestSha.prefix(7) != (problem.activeSha ?? "").prefix(7) {
                     restoreCallout
                 }
 
@@ -33,7 +37,8 @@ struct ProblemInspectorView: View {
                     DifficultyBadge(difficulty: problem.difficulty)
                     SemanticPill(text: problem.wsptTag, compact: true)
                 }
-                Text("\(gitOwner)/\(problem.repoSlug) · Rank \(problem.rank.map { "#\($0)" } ?? "—") / \(problem.totalTeams ?? 0)")
+                let rk = problem.rank.map { "#\($0)" } ?? "—"
+                Text("\(gitOwner)/\(problem.repoSlug) · \(lang.tr("排名", "Rank")) \(rk) / \(problem.totalTeams ?? 0)")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
@@ -42,28 +47,36 @@ struct ProblemInspectorView: View {
                 Button {
                     SystemNavigator.openURL("https://judge.invalid/problems/\(problem.problemId)")
                 } label: { Image(systemName: "globe") }
-                .help("Open on Judge")
+                .help(lang.tr("在 Judge 打开赛题", "Open on Judge"))
 
                 Button {
                     SystemNavigator.openURL("https://gitcode.com/\(gitOwner)/\(problem.repoSlug)")
                 } label: { Image(systemName: "arrow.up.forward.square") }
-                .help("Open GitCode Repository")
+                .help(lang.tr("打开 GitCode 仓库", "Open GitCode Repository"))
             }
         }
     }
 
     private var restoreCallout: some View {
-        HStack(spacing: 10) {
+        let sha7 = String(problem.bestSha.prefix(7))
+        let gain = problem.bestScore - problem.currentScore
+        return HStack(spacing: 10) {
             Image(systemName: "clock.arrow.circlepath").foregroundStyle(.orange)
             VStack(alignment: .leading, spacing: 1) {
-                Text(String(format: "Best Validated: %.2f (%@)", problem.bestScore, String(problem.bestSha.prefix(7))))
-                    .font(.system(size: 11.5, weight: .semibold))
-                Text(String(format: "Recoverable +%.2f over current %.2f", problem.bestScore - problem.currentScore, problem.currentScore))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                Text(lang.tr(
+                    String(format: "同代最优版本: %.2f (%@)", problem.bestScore, sha7),
+                    String(format: "Equiv Best Validated: %.2f (%@)", problem.bestScore, sha7)
+                ))
+                .font(.system(size: 11.5, weight: .semibold))
+                Text(lang.tr(
+                    String(format: "相比当前 %.2f 预计可恢复 +%.2f", problem.currentScore, gain),
+                    String(format: "Recoverable +%.2f over current %.2f", gain, problem.currentScore)
+                ))
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
             }
             Spacer()
-            Button("Queue Restore") {
+            Button(lang.tr("加入恢复队列", "Queue Restore")) {
                 Task { await store.restoreBest(problem: problem.title) }
             }
             .buttonStyle(.borderedProminent)
@@ -78,7 +91,7 @@ struct ProblemInspectorView: View {
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("SCORE ACCOUNTING").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    Text(lang.tr("分数构成拆解", "SCORE ACCOUNTING")).font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                     Spacer()
                     if problem.leaderScore > 0 {
                         Text(String(format: "#1 %@: %.2f", problem.leaderNickname, problem.leaderScore))
@@ -87,9 +100,9 @@ struct ProblemInspectorView: View {
                     }
                 }
                 HStack(spacing: 12) {
-                    miniStat("Public (5)", String(format: "%.2f / 10", problem.publicPts), .blue)
-                    miniStat("Hidden (45)", String(format: "%.2f / 90", problem.hiddenPts), .purple)
-                    miniStat("Hidden r̄_h", String(format: "%.1f%%", problem.impliedHiddenRatio * 100), .teal)
+                    miniStat(lang.tr("公开例 (5)", "Public (5)"), String(format: "%.2f / 10", problem.publicPts), .blue)
+                    miniStat(lang.tr("隐藏例 (45)", "Hidden (45)"), String(format: "%.2f / 90", problem.hiddenPts), .purple)
+                    miniStat(lang.tr("隐藏均比 r̄_h", "Hidden r̄_h"), String(format: "%.1f%%", problem.impliedHiddenRatio * 100), .teal)
                     if let g = problem.tbestDecayGamma {
                         miniStat("tbest γ", String(format: "%.3f", g), g < 0.98 ? .orange : .secondary)
                     }
@@ -102,12 +115,14 @@ struct ProblemInspectorView: View {
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("PUBLIC CASES · OURS vs BESTCASE (tbest)").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    Text(lang.tr("公开测例耗时对标 (tbest / 本队)", "PUBLIC CASES · OURS vs TBEST"))
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                     Spacer()
                     Text("r = tbest / ours").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
                 }
                 if problem.publicTbestUs.isEmpty {
-                    Text("No public timings recorded.").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text(lang.tr("暂无公开测例耗时数据", "No public timings recorded."))
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 } else {
                     ForEach(0..<problem.publicTbestUs.count, id: \.self) { i in
                         let tb = problem.publicTbestUs[i]
@@ -124,9 +139,10 @@ struct ProblemInspectorView: View {
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("ALL 50 TESTCASES · FOLDABLE BREAKDOWN").font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
+                    Text(lang.tr("全部 50 组测例折叠明细", "ALL 50 TESTCASES · FOLDABLE"))
+                        .font(.system(size: 10, weight: .bold)).foregroundStyle(.secondary)
                     Spacer()
-                    Button(expandedGroups.isEmpty ? "Expand All" : "Fold All") {
+                    Button(expandedGroups.isEmpty ? lang.tr("全部展开", "Expand All") : lang.tr("全部收起", "Fold All")) {
                         expandedGroups = expandedGroups.isEmpty ? Set(0..<5) : []
                     }
                     .buttonStyle(.link)
@@ -150,9 +166,10 @@ struct ProblemInspectorView: View {
                                         Text(String(format: "#%02d", tc.index))
                                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                             .frame(width: 28, alignment: .leading)
-                                        SemanticPill(text: tc.isHidden ? "Hidden" : "Public", compact: true)
+                                        SemanticPill(text: tc.isHidden ? lang.tr("隐藏", "Hidden") : lang.tr("公开", "Public"), compact: true)
                                         Spacer()
-                                        Text(tc.tbestUs.map { String(format: "tbest %.2f µs", $0) } ?? String(format: "Masked · r̄_h %.2f", problem.impliedHiddenRatio))
+                                        Text(tc.tbestUs.map { String(format: "tbest %.2f µs", $0) }
+                                             ?? String(format: "%@ · r̄_h %.2f", lang.tr("未公开", "Masked"), problem.impliedHiddenRatio))
                                             .font(.system(size: 10, design: .monospaced))
                                             .foregroundStyle(tc.tbestUs != nil ? .primary : .secondary)
                                         if let o = tc.oursUs {
@@ -168,10 +185,12 @@ struct ProblemInspectorView: View {
                             .padding(.top, 4)
                         } label: {
                             HStack {
-                                Text(String(format: "Cases #%02d – #%02d", s + 1, e))
+                                Text(lang.tr(String(format: "测例 #%02d – #%02d", s + 1, e), String(format: "Cases #%02d – #%02d", s + 1, e)))
                                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                                 Spacer()
-                                Text(pubCnt > 0 ? "\(pubCnt) Public · \(slice.count - pubCnt) Hidden" : "10 Hidden Cases")
+                                Text(pubCnt > 0
+                                     ? lang.tr("\(pubCnt) 公开 · \(slice.count - pubCnt) 隐藏", "\(pubCnt) Public · \(slice.count - pubCnt) Hidden")
+                                     : lang.tr("10 隐藏测例", "10 Hidden Cases"))
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(.secondary)
                             }
@@ -188,7 +207,7 @@ struct ProblemInspectorView: View {
     private var timelineCard: some View {
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("SUBMISSION TIMELINE (\(problem.history.count))")
+                Text(lang.tr("历史提交时间线 (\(problem.history.count))", "SUBMISSION TIMELINE (\(problem.history.count))"))
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
                 ForEach(problem.history.prefix(15)) { h in
@@ -233,7 +252,7 @@ struct ProblemInspectorView: View {
     private func ratioBar(index: Int, tbest: Double, ours: Double?, ratio: Double) -> some View {
         VStack(spacing: 4) {
             HStack(spacing: 6) {
-                Text(String(format: "Case #%02d", index)).font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Text(String(format: "#%02d", index)).font(.system(size: 11, weight: .semibold, design: .monospaced))
                 Spacer()
                 Text(String(format: "tbest %.2f µs", tbest)).font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary)
                 Text("vs").font(.system(size: 10)).foregroundStyle(.secondary)

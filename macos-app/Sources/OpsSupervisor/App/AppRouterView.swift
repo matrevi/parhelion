@@ -1,19 +1,28 @@
 import SwiftUI
 
 enum NavigationRoute: String, CaseIterable, Identifiable {
-    case contest = "Contest & Operators"
-    case npuMonitor = "NPU & Task Queues"
-    case breakthroughs = "Breakthroughs"
-    case workspaces = "Workspaces"
+    case contest
+    case npuMonitor
+    case breakthroughs
+    case workspaces
 
     var id: String { rawValue }
 
-    var caption: String {
+    func title(_ lang: AppLanguage) -> String {
         switch self {
-        case .contest: return "Leaderboard · 50-Case Ratios"
-        case .npuMonitor: return "Telemetry · Queue · Breakthrough"
-        case .breakthroughs: return "Structured Playbook · Δ Filter"
-        case .workspaces: return "Projects · Clean Scaffolder"
+        case .contest: return lang.tr("赛题与榜单", "Contest & Operators")
+        case .npuMonitor: return lang.tr("NPU 遥测与队列", "NPU & Task Queues")
+        case .breakthroughs: return lang.tr("突破经验库", "Breakthroughs")
+        case .workspaces: return lang.tr("工作区管理", "Workspaces")
+        }
+    }
+
+    func caption(_ lang: AppLanguage) -> String {
+        switch self {
+        case .contest: return lang.tr("实时总分 · 50 例对标", "Leaderboard · 50-Case Ratios")
+        case .npuMonitor: return lang.tr("示波遥测 · 提交与门禁", "Telemetry · Queue · Gate")
+        case .breakthroughs: return lang.tr("结构化经验 · Δ 筛选", "Structured Playbook · Δ Filter")
+        case .workspaces: return lang.tr("项目切换 · 零噪声脚手架", "Projects · Clean Scaffolder")
         }
     }
 
@@ -32,10 +41,12 @@ struct AppRouterView: View {
     @UIState private var route: NavigationRoute = .contest
     @UIState private var showSettings: Bool = false
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 220, ideal: 242, max: 275)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 244, max: 275)
         } detail: {
             VStack(spacing: 0) {
                 if let banner = store.bannerMessage {
@@ -59,15 +70,27 @@ struct AppRouterView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
-                Picker("Poll", selection: $store.pollIntervalSec) {
+                Picker("", selection: Binding(
+                    get: { store.lang },
+                    set: { store.setLanguage($0) }
+                )) {
+                    Text("中文").tag(AppLanguage.zh)
+                    Text("EN").tag(AppLanguage.en)
+                }
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(width: 92)
+                .help(lang.tr("切换界面语言 (中文 / English)", "Switch UI Language (中文 / English)"))
+
+                Picker(lang.tr("轮询", "Poll"), selection: $store.pollIntervalSec) {
                     Text("2s").tag(2)
                     Text("5s").tag(5)
                     Text("10s").tag(10)
                     Text("30s").tag(30)
-                    Text("Manual").tag(0)
+                    Text(lang.tr("手动", "Manual")).tag(0)
                 }
                 .pickerStyle(.menu)
-                .frame(width: 90)
+                .frame(width: 92)
                 .onChange(of: store.pollIntervalSec) { _, _ in
                     store.reschedulePolling()
                 }
@@ -78,26 +101,36 @@ struct AppRouterView: View {
                     if store.isRefreshingNpu || store.isRefreshingLocal {
                         ProgressView().controlSize(.small)
                     } else {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        Label(lang.tr("刷新", "Refresh"), systemImage: "arrow.clockwise")
                     }
                 }
-                .help("Refresh local state & SSH NPU telemetry (⌘R)")
+                .help(lang.tr("刷新本地状态与远程 NPU 遥测 (⌘R)", "Refresh local state & SSH NPU telemetry (⌘R)"))
 
                 Button {
                     showSettings = true
                 } label: {
-                    Label("Settings", systemImage: "gearshape")
+                    Label(lang.tr("设置", "Settings"), systemImage: "gearshape")
                 }
-                .help("Settings (⌘,)")
+                .help(lang.tr("系统设置 (⌘,)", "Settings (⌘,)"))
             }
         }
         .sheet(isPresented: $showSettings) {
             VStack(spacing: 0) {
                 HStack {
-                    Label("Parhelion Settings", systemImage: "slider.horizontal.3")
+                    Label(lang.tr("Parhelion 系统设置", "Parhelion Settings"), systemImage: "slider.horizontal.3")
                         .font(.headline)
                     Spacer()
-                    Button("Done") { showSettings = false }
+                    Picker("", selection: Binding(
+                        get: { store.lang },
+                        set: { store.setLanguage($0) }
+                    )) {
+                        Text("中文").tag(AppLanguage.zh)
+                        Text("English").tag(AppLanguage.en)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(width: 120)
+                    Button(lang.tr("完成", "Done")) { showSettings = false }
                         .keyboardShortcut(.defaultAction)
                 }
                 .padding(.horizontal, 18)
@@ -106,7 +139,7 @@ struct AppRouterView: View {
                 SettingsRootView()
                     .environmentObject(store)
             }
-            .frame(width: 700, height: 540)
+            .frame(width: 710, height: 540)
         }
     }
 
@@ -123,9 +156,9 @@ struct AppRouterView: View {
                         .frame(width: 20)
                         .foregroundStyle(route == item ? Color.accentColor : .secondary)
                     VStack(alignment: .leading, spacing: 1.5) {
-                        Text(item.rawValue)
+                        Text(item.title(lang))
                             .font(.system(size: 12.5, weight: .semibold))
-                        Text(item.caption)
+                        Text(item.caption(lang))
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -157,7 +190,7 @@ struct AppRouterView: View {
                 }
             }
             Divider()
-            Button("Manage Workspaces…") { route = .workspaces }
+            Button(lang.tr("管理工作区…", "Manage Workspaces…")) { route = .workspaces }
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -227,10 +260,14 @@ struct AppRouterView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(snap.npu.online
                              ? "\(snap.npu.sshHost) · \(snap.npu.primaryNpu?.socName ?? "soc-a")"
-                             : (store.isRefreshingNpu ? "Probing \(snap.npu.sshHost)…" : "\(snap.npu.sshHost) · Standby"))
+                             : (store.isRefreshingNpu
+                                ? lang.tr("正在探测 \(snap.npu.sshHost)…", "Probing \(snap.npu.sshHost)…")
+                                : "\(snap.npu.sshHost) · \(lang.tr("待机", "Standby"))"))
                             .font(.system(size: 11, weight: .semibold))
                         if let lk = snap.npu.dieLocks.first {
-                            Text(lk.state == "HELD" ? "Die0: \(lk.problem ?? "Busy")" : "Die0: Free")
+                            Text(lk.state == "HELD"
+                                 ? "Die0: \(lk.problem ?? lang.tr("占用中", "Busy"))"
+                                 : lang.tr("Die0: 空闲", "Die0: Free"))
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
@@ -266,20 +303,20 @@ struct AppRouterView: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.system(size: 28))
                     .foregroundStyle(.orange)
-                Text("Failed to load workspace telemetry")
+                Text(lang.tr("加载工作区状态失败", "Failed to load workspace telemetry"))
                     .font(.headline)
                 Text(err)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 460)
-                Button("Retry Now") {
+                Button(lang.tr("立即重试", "Retry Now")) {
                     Task { await store.refreshAll() }
                 }
                 .buttonStyle(.borderedProminent)
             } else {
                 ProgressView()
-                Text("Loading local workspace snapshot…")
+                Text(lang.tr("正在加载本地工作区快照…", "Loading local workspace snapshot…"))
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
             }

@@ -29,6 +29,7 @@ DEFAULT_DIFFICULTIES: dict[str, int] = {
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "language": "zh",
     "active_workspace": str(DEFAULT_BENCH_ROOT),
     "workspaces": [str(DEFAULT_BENCH_ROOT)],
     "npu_ssh_host": "npu",

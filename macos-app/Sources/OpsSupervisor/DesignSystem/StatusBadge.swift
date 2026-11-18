@@ -13,16 +13,16 @@ struct SemanticPill: View {
         if u.contains("突破") || u.contains("BREAKTHROUGH") {
             return (.white, Color(red: 0.88, green: 0.46, blue: 0.08))
         }
-        if u.contains("PASS ↑") || u == "PASS" || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("空闲") || u.contains("冷却已就绪") {
+        if u.contains("PASS ↑") || u == "PASS" || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
             return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }
-        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("RATE WAIT") || u.contains("COOLING") || u.contains("HELD") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") {
+        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") {
             return (Color(red: 0.90, green: 0.56, blue: 0.10), Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15))
         }
-        if u.contains("PROFILER") || u.contains("HIGH ROI") || u.contains("打包") || u.contains("编译") {
+        if u.contains("PROFILER") || u.contains("HIGH ROI") || u.contains("PACKAGING") || u.contains("COMPILING") || u.contains("打包") || u.contains("编译") {
             return (Color(red: 0.58, green: 0.38, blue: 0.95), Color(red: 0.58, green: 0.38, blue: 0.95).opacity(0.15))
         }
-        if u.contains("PRECISION") || u.contains("JUDGING") || u.contains("HEADROOM") || u.contains("远程") || u.contains("上传") || u.contains("同步") {
+        if u.contains("PRECISION") || u.contains("JUDGING") || u.contains("HEADROOM") || u.contains("REMOTE") || u.contains("UPLOADING") || u.contains("SYNCING") || u == "PUBLIC" || u == "公开" || u.contains("远程") || u.contains("上传") || u.contains("同步") {
             return (Color(red: 0.20, green: 0.56, blue: 0.96), Color(red: 0.20, green: 0.56, blue: 0.96).opacity(0.15))
         }
         if u.contains("BUILD") {

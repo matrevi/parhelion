@@ -6,6 +6,8 @@ struct BreakthroughLibraryView: View {
     @UIState private var selectedEntryId: String? = nil
     @UIState private var selectedCategory: String = "ALL"
 
+    private var lang: AppLanguage { store.lang }
+
     private var categories: [String] {
         let cats = Set(store.breakthroughEntries.map(\.category)).sorted()
         return ["ALL"] + cats
@@ -45,14 +47,13 @@ struct BreakthroughLibraryView: View {
 
     private var topFilterBar: some View {
         HStack(spacing: 12) {
-            Label("结构化突破经验库 (breakthrough/)", systemImage: "sparkles.rectangle.stack.fill")
+            Label(lang.tr("结构化突破经验库 (breakthrough/)", "Breakthrough Playbook (breakthrough/)"), systemImage: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 13.5, weight: .bold))
 
             Divider().frame(height: 18)
 
-            // Threshold Stepper + Quick Presets
             HStack(spacing: 6) {
-                Text("突破阈值:")
+                Text(lang.tr("突破阈值:", "Threshold:"))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(.secondary)
                 Stepper(
@@ -79,8 +80,8 @@ struct BreakthroughLibraryView: View {
                 }
             }
 
-            Picker("类别", selection: $selectedCategory) {
-                Text("全部类别").tag("ALL")
+            Picker(lang.tr("类别", "Category"), selection: $selectedCategory) {
+                Text(lang.tr("全部类别", "All Categories")).tag("ALL")
                 ForEach(categories.filter { $0 != "ALL" }, id: \.self) { cat in
                     Text(cat).tag(cat)
                 }
@@ -94,7 +95,7 @@ struct BreakthroughLibraryView: View {
             Button {
                 Task { await store.syncBreakthroughs() }
             } label: {
-                Label("自动归档新突破", systemImage: "arrow.triangle.2.circlepath")
+                Label(lang.tr("自动归档新突破", "Sync New"), systemImage: "arrow.triangle.2.circlepath")
                     .font(.system(size: 11.5))
             }
             .buttonStyle(.bordered)
@@ -104,7 +105,7 @@ struct BreakthroughLibraryView: View {
                 Button {
                     NSWorkspace.shared.open(URL(fileURLWithPath: store.breakthroughDir))
                 } label: {
-                    Label("打开目录", systemImage: "folder")
+                    Label(lang.tr("打开目录", "Open Folder"), systemImage: "folder")
                         .font(.system(size: 11.5))
                 }
                 .buttonStyle(.bordered)
@@ -124,10 +125,13 @@ struct BreakthroughLibraryView: View {
                         Image(systemName: "sparkles")
                             .font(.system(size: 24))
                             .foregroundStyle(.secondary)
-                        Text(String(format: "当前阈值 (Δ ≥ %.1f) 下无匹配突破档案", store.breakthroughThreshold))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Text("可调低上方阈值 (如 +3) 查看中等幅度向量化经验")
+                        Text(lang.tr(
+                            String(format: "当前阈值 (Δ ≥ %.1f) 下无匹配突破档案", store.breakthroughThreshold),
+                            String(format: "No breakthrough entries at Δ ≥ %.1f", store.breakthroughThreshold)
+                        ))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        Text(lang.tr("可调低上方阈值 (如 +3) 查看中等幅度优化经验", "Lower the threshold above (e.g. +3) to inspect moderate gains"))
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
                     }
@@ -169,9 +173,12 @@ struct BreakthroughLibraryView: View {
                     .multilineTextAlignment(.leading)
                 HStack(spacing: 6) {
                     SemanticPill(text: entry.category, compact: true)
-                    Text(String(format: "%.2f → %.2f (加权 %+.1f)", entry.scoreBefore, entry.scoreAfter, entry.deltaWeighted))
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    Text(lang.tr(
+                        String(format: "%.2f → %.2f (加权 %+.1f)", entry.scoreBefore, entry.scoreAfter, entry.deltaWeighted),
+                        String(format: "%.2f → %.2f (w %+.1f)", entry.scoreBefore, entry.scoreAfter, entry.deltaWeighted)
+                    ))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
                     Spacer()
                 }
             }
@@ -187,7 +194,7 @@ struct BreakthroughLibraryView: View {
                 Image(systemName: "book.closed")
                     .font(.system(size: 26))
                     .foregroundStyle(.secondary)
-                Text("选择左侧突破条目查看结构化经验")
+                Text(lang.tr("选择左侧突破条目查看结构化经验", "Select a breakthrough entry on the left"))
                     .font(.system(size: 12.5))
                     .foregroundStyle(.secondary)
             }

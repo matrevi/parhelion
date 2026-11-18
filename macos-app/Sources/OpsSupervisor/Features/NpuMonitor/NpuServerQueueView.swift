@@ -1,7 +1,10 @@
 import SwiftUI
 
 struct NpuServerQueueView: View {
+    @EnvironmentObject var store: ContestStore
     let npu: NpuTelemetry
+
+    private var lang: AppLanguage { store.lang }
 
     var body: some View {
         let activeCnt = npu.tasks.filter { $0.state == "ACTIVE" }.count
@@ -9,10 +12,13 @@ struct NpuServerQueueView: View {
 
         VStack(spacing: 0) {
             HStack {
-                Label("NPU Server Task Queue", systemImage: "server.rack")
+                Label(lang.tr("NPU 服务端验证队列", "NPU Server Task Queue"), systemImage: "server.rack")
                     .font(.system(size: 12.5, weight: .bold))
                 Spacer()
-                SemanticPill(text: "\(activeCnt) Active · \(waitCnt) Waiting", compact: true)
+                SemanticPill(
+                    text: lang.tr("\(activeCnt) 运行 · \(waitCnt) 等待", "\(activeCnt) Active · \(waitCnt) Waiting"),
+                    compact: true
+                )
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
@@ -24,7 +30,9 @@ struct NpuServerQueueView: View {
                     Image(systemName: "checkmark.circle")
                         .font(.system(size: 26))
                         .foregroundStyle(.secondary)
-                    Text(npu.online ? "NPU Server Idle" : "Waiting for SSH probe…")
+                    Text(npu.online
+                         ? lang.tr("NPU 服务端空闲", "NPU Server Idle")
+                         : lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
                         .font(.system(size: 12.5))
                         .foregroundStyle(.secondary)
                 }
@@ -48,7 +56,7 @@ struct NpuServerQueueView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
                     SemanticPill(text: task.stage, icon: active ? "play.fill" : "clock")
-                    Text(task.problem ?? "Queued Worker")
+                    Text(task.problem ?? lang.tr("排队任务", "Queued Worker"))
                         .font(.system(size: 13, weight: .bold))
                         .lineLimit(1)
                     if let d = task.difficulty {

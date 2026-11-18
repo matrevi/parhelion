@@ -26,10 +26,20 @@ struct OpsSupervisorApp: App {
         .defaultSize(width: 1340, height: 840)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("Refresh All Telemetry") {
+                Button(store.tr("立即刷新全局遥测", "Refresh All Telemetry")) {
                     Task { await store.refreshAll() }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+
+                Divider()
+
+                Picker(store.tr("界面语言 (Language)", "Language"), selection: Binding(
+                    get: { store.lang },
+                    set: { store.setLanguage($0) }
+                )) {
+                    Text("中文").tag(AppLanguage.zh)
+                    Text("English").tag(AppLanguage.en)
+                }
             }
         }
 

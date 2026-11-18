@@ -12,12 +12,14 @@ from .commands.status_cmd import run_history, run_status
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="opsb", description="Parhelion · Unified KernelC Contest & NPU CLI")
+    p.add_argument("--lang", choices=["zh", "en"], help="Output language (zh / en)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s_st = sub.add_parser("status", help="Contest scores, NPU telemetry, and dual queues")
     s_st.add_argument("--workspace", "-w")
     s_st.add_argument("--offline-npu", action="store_true")
     s_st.add_argument("--compact", action="store_true")
+    s_st.add_argument("--lang", choices=["zh", "en"])
     s_st.add_argument("--json", action="store_true")
     s_st.set_defaults(func=run_status)
 
@@ -101,6 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     q_cfg.add_argument("--closing-reserve", type=int)
     q_cfg.add_argument("--noise-floor", type=float)
     q_cfg.add_argument("--breakthrough-threshold", type=float)
+    q_cfg.add_argument("--lang", choices=["zh", "en"])
     q_cfg.set_defaults(func=run_queue)
     q_app = q_sub.add_parser("approve")
     q_app.add_argument("problem")

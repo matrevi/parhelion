@@ -10,12 +10,13 @@ struct SupervisorSnapshot: Codable {
     let auth: AuthStatus
     let skills: SkillsStatus
     let workspaces: [String]
+    let language: String?
 
     enum CodingKeys: String, CodingKey {
         case sampledAt = "sampled_at"
         case contest, scheduler, problems
         case submissionQueue = "submission_queue"
-        case npu, auth, skills, workspaces
+        case npu, auth, skills, workspaces, language
     }
 
     func updatingNpu(_ newNpu: NpuTelemetry) -> SupervisorSnapshot {

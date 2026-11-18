@@ -15,33 +15,35 @@ struct WorkspaceWizardView: View {
     @UIState private var isCreating: Bool = false
     @UIState private var showPreview: Bool = false
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         HStack(alignment: .top, spacing: 16) {
             SurfaceCard(padding: 14) {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Label("New Clean Contest Workspace", systemImage: "sparkles.rectangle.stack.fill")
+                        Label(lang.tr("新建零噪声竞赛工作区", "New Clean Contest Workspace"), systemImage: "sparkles.rectangle.stack.fill")
                             .font(.system(size: 15, weight: .bold))
                         Spacer()
                         SemanticPill(text: "AGENTS.md-First", compact: true)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        labeledField("Target Directory") {
+                        labeledField(lang.tr("目标目录路径", "Target Directory")) {
                             HStack(spacing: 6) {
                                 TextField("~/Competitions/...", text: $targetDir)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(size: 12, design: .monospaced))
-                                Button("Browse…", action: pickFolder)
+                                Button(lang.tr("浏览…", "Browse…"), action: pickFolder)
                                     .controlSize(.small)
                             }
                         }
 
                         HStack(spacing: 10) {
-                            labeledField("Contest Title") {
+                            labeledField(lang.tr("赛事名称", "Contest Title")) {
                                 TextField("Contest Title", text: $contestTitle).textFieldStyle(.roundedBorder)
                             }
-                            labeledField("Contest ID (Optional)") {
+                            labeledField(lang.tr("赛事 ID (选填)", "Contest ID (Optional)")) {
                                 TextField("6a9e2d...", text: $contestId)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(size: 12, design: .monospaced))
@@ -49,24 +51,24 @@ struct WorkspaceWizardView: View {
                         }
 
                         HStack(spacing: 10) {
-                            labeledField("GitCode Owner") {
+                            labeledField(lang.tr("GitCode 账号", "GitCode Owner")) {
                                 TextField("winbeau", text: $gitOwner)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(size: 12, design: .monospaced))
                             }
-                            labeledField("Private Repo Prefix") {
+                            labeledField(lang.tr("私有仓库前缀", "Private Repo Prefix")) {
                                 TextField("accel-ops", text: $repoPrefix)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(size: 12, design: .monospaced))
                             }
-                            labeledField("NPU SSH Alias") {
+                            labeledField(lang.tr("NPU SSH 别名", "NPU SSH Alias")) {
                                 TextField("npu", text: $npuHost)
                                     .textFieldStyle(.roundedBorder)
                                     .font(.system(size: 12, design: .monospaced))
                             }
                         }
 
-                        labeledField("Operators & Difficulty Weights (Name:Weight)") {
+                        labeledField(lang.tr("算子列表与难度等级 (名称:等级)", "Operators & Difficulty Tiers (Name:Tier)")) {
                             TextField("OpA:3, OpB:2", text: $problemsSpec)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, design: .monospaced))
@@ -74,13 +76,13 @@ struct WorkspaceWizardView: View {
                     }
 
                     HStack {
-                        Toggle("Switch active workspace after creation", isOn: $activateOnCreate)
+                        Toggle(lang.tr("创建后立即切换为当前工作区", "Switch active workspace after creation"), isOn: $activateOnCreate)
                             .toggleStyle(.checkbox)
                             .font(.system(size: 12))
 
                         Spacer()
 
-                        Button("Preview AGENTS.md") { showPreview = true }
+                        Button(lang.tr("预览 AGENTS.md", "Preview AGENTS.md")) { showPreview = true }
                             .buttonStyle(.bordered)
 
                         Button {
@@ -97,7 +99,7 @@ struct WorkspaceWizardView: View {
                                         problemsSpec: problemsSpec,
                                         activate: activateOnCreate
                                     )
-                                    store.bannerMessage = "Scaffolded clean workspace at \(targetDir)"
+                                    store.bannerMessage = lang.tr("已在 \(targetDir) 初始化工作区", "Scaffolded clean workspace at \(targetDir)")
                                     await store.reloadWorkspaces()
                                     if activateOnCreate {
                                         await store.switchWorkspace(targetDir)
@@ -111,7 +113,7 @@ struct WorkspaceWizardView: View {
                             if isCreating {
                                 ProgressView().controlSize(.small)
                             } else {
-                                Label("Scaffold Workspace", systemImage: "plus.rectangle.on.folder.fill")
+                                Label(lang.tr("一键初始化工作区", "Scaffold Workspace"), systemImage: "plus.rectangle.on.folder.fill")
                             }
                         }
                         .buttonStyle(.borderedProminent)
@@ -132,34 +134,38 @@ struct WorkspaceWizardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
                     Image(systemName: "square.split.bottomrightquarter").foregroundStyle(Color.accentColor)
-                    Text("Zero-Noise Layout Blueprint").font(.system(size: 13.5, weight: .bold))
+                    Text(lang.tr("零噪声目录蓝图", "Zero-Noise Layout Blueprint")).font(.system(size: 13.5, weight: .bold))
                 }
                 VStack(alignment: .leading, spacing: 5) {
-                    blueprintRow("opsb.workspace.json", "Manifest", 0, "doc.badge.gearshape")
-                    blueprintRow("AGENTS.md", "opsb CLI Protocol", 0, "sparkles")
-                    blueprintRow("<Operator>/", "Pure Problem Scope", 0, "folder.fill")
-                    blueprintRow("PROBLEM.md", "Math & Tol", 1, "function")
-                    blueprintRow("op_host/ & op_kernel/", "Editable C++", 1, "cpu")
-                    blueprintRow("tests/", "Extended Cases", 1, "checkmark.shield")
-                    blueprintRow("DESIGN.md", "Tiling & UB", 1, "ruler")
-                    blueprintRow("SCORE_HISTORY.md", "Score Ledger", 1, "chart.xyaxis.line")
-                    blueprintRow("AGENTS.md", "Zero-Skill Loop", 1, "terminal")
+                    blueprintRow("opsb.workspace.json", lang.tr("工作区配置", "Manifest"), 0, "doc.badge.gearshape")
+                    blueprintRow("AGENTS.md", lang.tr("opsb 协议", "CLI Protocol"), 0, "sparkles")
+                    blueprintRow("breakthrough/", lang.tr("结构化经验库", "Playbook"), 0, "flame.fill")
+                    blueprintRow("<Operator>/", lang.tr("纯算子目录", "Problem Scope"), 0, "folder.fill")
+                    blueprintRow("PROBLEM.md", lang.tr("精度与规格", "Math & Tol"), 1, "function")
+                    blueprintRow("op_host/ & op_kernel/", lang.tr("源码范围", "Editable C++"), 1, "cpu")
+                    blueprintRow("tests/", lang.tr("扩展测例", "Extended Cases"), 1, "checkmark.shield")
+                    blueprintRow("DESIGN.md", lang.tr("Tiling 设计", "Tiling & UB"), 1, "ruler")
+                    blueprintRow("AGENTS.md", lang.tr("零 Skill 闭环", "Zero-Skill Loop"), 1, "terminal")
                 }
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.03)))
 
                 Divider()
-                Text("SSH Die Lock · profiler · 4-Stage Gate · 190s Pacer encapsulated in global `opsb`.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
+                Text(lang.tr(
+                    "SSH Die 锁 · profiler · 四阶门禁 · 190s 限流已全部收敛于全局 `opsb`。",
+                    "SSH Die Lock · profiler · 4-Stage Gate · 190s Pacer encapsulated in global `opsb`."
+                ))
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
             }
         }
     }
 
     private func labeledField<C: View>(_ label: String, @ViewBuilder content: () -> C) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let built = content()
+        return VStack(alignment: .leading, spacing: 4) {
             Text(label).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-            content()
+            built
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -194,9 +200,9 @@ struct WorkspaceWizardView: View {
     private var previewSheet: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Label("Generated AGENTS.md Protocol", systemImage: "doc.text.fill").font(.headline)
+                Label(lang.tr("自动生成的 AGENTS.md 协议预览", "Generated AGENTS.md Protocol"), systemImage: "doc.text.fill").font(.headline)
                 Spacer()
-                Button("Close") { showPreview = false }.keyboardShortcut(.defaultAction)
+                Button(lang.tr("关闭", "Close")) { showPreview = false }.keyboardShortcut(.defaultAction)
             }
             Divider()
             ScrollView {
@@ -204,8 +210,9 @@ struct WorkspaceWizardView: View {
                 # <Operator> · Agent Guide (AGENTS.md-First)
 
                 1. Edit ONLY `op_host/`, `op_kernel/`, `tests/`, `DESIGN.md`, `SCORE_HISTORY.md`.
-                2. Commit & push to `\(gitOwner)/\(repoPrefix)-<slug>`.
-                3. Validate on NPU (`\(npuHost)`):
+                2. Review prior verified breakthroughs first:
+                   $ opsb breakthrough list
+                3. Commit & push to `\(gitOwner)/\(repoPrefix)-<slug>`, then validate on NPU (`\(npuHost)`):
                    $ opsb test <Operator> --fast
                    $ opsb test <Operator>
                 4. Inspect 50-case ratios & enqueue into the 4-Stage Gate:
@@ -219,6 +226,6 @@ struct WorkspaceWizardView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
         }
         .padding(16)
-        .frame(width: 600, height: 340)
+        .frame(width: 600, height: 360)
     }
 }

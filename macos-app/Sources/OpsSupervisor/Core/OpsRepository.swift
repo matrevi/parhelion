@@ -57,12 +57,19 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(["workspace", "gen-agents", workspace, "--json"])
     }
 
-    func updateQueueConfig(autoConsumer: Bool?, closingReserve: Int?, noiseFloor: Double?, breakthroughThreshold: Double? = nil) async throws {
+    func updateQueueConfig(
+        autoConsumer: Bool? = nil,
+        closingReserve: Int? = nil,
+        noiseFloor: Double? = nil,
+        breakthroughThreshold: Double? = nil,
+        language: String? = nil
+    ) async throws {
         var args = ["queue", "config"]
         if let ac = autoConsumer { args += ["--auto-consumer", ac ? "on" : "off"] }
         if let cr = closingReserve { args += ["--closing-reserve", "\(cr)"] }
         if let nf = noiseFloor { args += ["--noise-floor", String(format: "%.2f", nf)] }
         if let bt = breakthroughThreshold { args += ["--breakthrough-threshold", String(format: "%.2f", bt)] }
+        if let lg = language { args += ["--lang", lg] }
         _ = try await client.execute(args)
     }
 

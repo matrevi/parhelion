@@ -10,21 +10,23 @@ struct CollaboratorPopoverView: View {
     @UIState private var isSubmitting: Bool = false
     @UIState private var response: CollabInviteResponse?
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Image(systemName: "person.2.badge.gearshape.fill")
                     .foregroundStyle(Color.accentColor)
-                Text("Batch Invite GitCode Collaborator")
+                Text(lang.tr("批量邀请 GitCode 协作者", "Batch Invite GitCode Collaborator"))
                     .font(.system(size: 13, weight: .bold))
                 Spacer()
-                Text("\(problemCount) repos")
+                Text(lang.tr("\(problemCount) 个仓库", "\(problemCount) repos"))
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 8) {
-                TextField("GitCode username", text: $username)
+                TextField(lang.tr("输入 GitCode 用户名", "GitCode username"), text: $username)
                     .textFieldStyle(.roundedBorder)
                 Picker("", selection: $permission) {
                     Text("push").tag("push")
@@ -35,7 +37,7 @@ struct CollaboratorPopoverView: View {
             }
 
             HStack {
-                Toggle("Dry-run preview", isOn: $dryRun)
+                Toggle(lang.tr("仅预览 (Dry-run)", "Dry-run preview"), isOn: $dryRun)
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
                 Spacer()
@@ -60,7 +62,9 @@ struct CollaboratorPopoverView: View {
                     if isSubmitting {
                         ProgressView().controlSize(.small)
                     } else {
-                        Text(dryRun ? "Preview All Repos" : "Invite to All Repos")
+                        Text(dryRun
+                             ? lang.tr("预览全部仓库", "Preview All Repos")
+                             : lang.tr("一键邀请至全部仓库", "Invite to All Repos"))
                     }
                 }
                 .buttonStyle(.borderedProminent)

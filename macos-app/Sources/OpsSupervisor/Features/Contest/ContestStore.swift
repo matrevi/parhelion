@@ -9,6 +9,8 @@ final class ContestStore: ObservableObject {
     @Published var breakthroughEntries: [BreakthroughEntry] = []
     @Published var breakthroughDir: String = ""
     @Published var breakthroughThreshold: Double = 5.0
+    @Published var lang: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: "parhelion.lang") ?? "zh") ?? .zh
+    private var didSetLangLocally: Bool = false
     @Published var workspaces: [WorkspaceEntry] = []
     @Published var sshHosts: [SSHHostEntry] = []
     @Published var activeSSHHost: String = "npu"
@@ -59,6 +61,10 @@ final class ContestStore: ObservableObject {
             }
             if let bt = localSnap.scheduler.breakthroughThreshold {
                 breakthroughThreshold = bt
+            }
+            if !didSetLangLocally, let rawLang = localSnap.language, let parsed = AppLanguage(rawValue: rawLang) {
+                lang = parsed
+                UserDefaults.standard.set(parsed.rawValue, forKey: "parhelion.lang")
             }
             if selectedProblemTitle == nil || !localSnap.problems.contains(where: { $0.title == selectedProblemTitle }) {
                 selectedProblemTitle = localSnap.problems.first?.title
@@ -171,6 +177,19 @@ final class ContestStore: ObservableObject {
         }
     }
 
+    func tr(_ zh: String, _ en: String) -> String {
+        lang.tr(zh, en)
+    }
+
+    func setLanguage(_ newLang: AppLanguage) {
+        didSetLangLocally = true
+        lang = newLang
+        UserDefaults.standard.set(newLang.rawValue, forKey: "parhelion.lang")
+        Task {
+            try? await repository.updateQueueConfig(language: newLang.rawValue)
+        }
+    }
+
     func syncBreakthroughs() async {
         do {
             let (created, total) = try await repository.syncBreakthroughPlaybook(
@@ -179,9 +198,11 @@ final class ContestStore: ObservableObject {
             )
             await reloadBreakthroughs()
             await refreshLocal()
-            bannerMessage = created > 0
-                ? "已同步 \(created) 条新突破至经验库 (共 \(total) 条)"
-                : "经验库已是最新 (共 \(total) 条结构化突破)"
+            if created > 0 {
+                bannerMessage = tr("已同步 \(created) 条新突破至经验库 (共 \(total) 条)", "Synced \(created) new breakthrough(s) (\(total) total)")
+            } else {
+                bannerMessage = tr("经验库已是最新 (共 \(total) 条结构化突破)", "Playbook up to date (\(total) structured entries)")
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -194,7 +215,7 @@ final class ContestStore: ObservableObject {
         do {
             let (ok, msg) = try await repository.jumpSubmitNow(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
             if ok {
-                bannerMessage = msg
+                bannerMessage = tr("已启动提交 \(problem) (\(String(sha.prefix(7))))", "Launched submit for \(problem) (\(String(sha.prefix(7))))")
             } else {
                 errorMessage = msg
             }
@@ -207,7 +228,7 @@ final class ContestStore: ObservableObject {
     func approveCandidate(problem: String, sha: String, note: String) async {
         do {
             try await repository.approveSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
-            bannerMessage = "Approved & enqueued \(problem) \(String(sha.prefix(7)))"
+            bannerMessage = tr("已批准入队 \(problem) \(String(sha.prefix(7)))", "Approved & enqueued \(problem) \(String(sha.prefix(7)))")
             await refreshLocal()
         } catch {
             errorMessage = error.localizedDescription
@@ -217,7 +238,7 @@ final class ContestStore: ObservableObject {
     func skipCandidate(problem: String, sha: String) async {
         do {
             try await repository.skipSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, reason: "held via Parhelion")
-            bannerMessage = "Skipped \(problem) \(String(sha.prefix(7)))"
+            bannerMessage = tr("已忽略 \(problem) \(String(sha.prefix(7)))", "Skipped \(problem) \(String(sha.prefix(7)))")
             await refreshLocal()
         } catch {
             errorMessage = error.localizedDescription
@@ -227,7 +248,7 @@ final class ContestStore: ObservableObject {
     func restoreBest(problem: String) async {
         do {
             try await repository.restoreBestSubmission(workspace: selectedWorkspace, problem: problem)
-            bannerMessage = "Queued historical best SHA restore for \(problem)"
+            bannerMessage = tr("已将 \(problem) 历史最优版本加入恢复队列", "Queued historical best SHA restore for \(problem)")
             await refreshLocal()
         } catch {
             errorMessage = error.localizedDescription

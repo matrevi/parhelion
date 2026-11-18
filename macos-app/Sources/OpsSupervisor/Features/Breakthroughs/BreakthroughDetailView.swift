@@ -2,19 +2,30 @@ import AppKit
 import SwiftUI
 
 struct BreakthroughDetailView: View {
+    @EnvironmentObject var store: ContestStore
     let entry: BreakthroughEntry
+
+    private var lang: AppLanguage { store.lang }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 headerBanner
                 ruleHighlightBox
-                sectionCard(title: "1. 性能瓶颈诊断 (Bottleneck)", icon: "magnifyingglass.circle.fill", tint: .orange) {
+                sectionCard(
+                    title: lang.tr("1. 性能瓶颈诊断", "1. Bottleneck Diagnosis"),
+                    icon: "magnifyingglass.circle.fill",
+                    tint: .orange
+                ) {
                     Text(entry.bottleneck)
                         .font(.system(size: 12.5))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                sectionCard(title: "2. 核心突破机制 (Core Mechanisms)", icon: "cpu.fill", tint: .blue) {
+                sectionCard(
+                    title: lang.tr("2. 核心突破机制", "2. Core Breakthrough Mechanisms"),
+                    icon: "cpu.fill",
+                    tint: .blue
+                ) {
                     VStack(alignment: .leading, spacing: 7) {
                         ForEach(Array(entry.mechanisms.enumerated()), id: \.offset) { idx, mech in
                             HStack(alignment: .top, spacing: 8) {
@@ -29,7 +40,11 @@ struct BreakthroughDetailView: View {
                         }
                     }
                 }
-                sectionCard(title: "3. 精度与同步不变量 (Precision & Sync Guard)", icon: "checkmark.shield.fill", tint: Color(red: 0.10, green: 0.72, blue: 0.42)) {
+                sectionCard(
+                    title: lang.tr("3. 精度与同步不变量", "3. Precision & Sync Invariants"),
+                    icon: "checkmark.shield.fill",
+                    tint: Color(red: 0.10, green: 0.72, blue: 0.42)
+                ) {
                     Text(entry.precisionGuard)
                         .font(.system(size: 12.5))
                         .fixedSize(horizontal: false, vertical: true)
@@ -57,21 +72,21 @@ struct BreakthroughDetailView: View {
                     }
                     Spacer()
                     SemanticPill(text: entry.category.uppercased(), icon: "tag.fill", compact: true)
-                    SemanticPill(text: String(format: "🚀 突破 %+.2f", entry.deltaRaw))
+                    SemanticPill(text: String(format: "%@ %+.2f", lang.tr("突破", "BREAKTHROUGH"), entry.deltaRaw), icon: "flame.fill")
                 }
 
                 Text(entry.title)
                     .font(.system(size: 13.5, weight: .semibold))
 
                 HStack(spacing: 14) {
-                    metricChip(label: "优化前得分", value: String(format: "%.2f", entry.scoreBefore), color: .secondary)
+                    metricChip(label: lang.tr("优化前得分", "Score Before"), value: String(format: "%.2f", entry.scoreBefore), color: .secondary)
                     Image(systemName: "arrow.right")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(.tertiary)
-                    metricChip(label: "优化后得分", value: String(format: "%.2f", entry.scoreAfter), color: .primary)
+                    metricChip(label: lang.tr("优化后得分", "Score After"), value: String(format: "%.2f", entry.scoreAfter), color: .primary)
                     Divider().frame(height: 24)
-                    metricChip(label: "单题净提分", value: String(format: "%+.2f pts", entry.deltaRaw), color: Color(red: 0.10, green: 0.72, blue: 0.42))
-                    metricChip(label: "大赛加权贡献", value: String(format: "%+.2f pts", entry.deltaWeighted), color: Color(red: 0.88, green: 0.46, blue: 0.08))
+                    metricChip(label: lang.tr("单题净提分", "Raw Gain"), value: String(format: "%+.2f pts", entry.deltaRaw), color: Color(red: 0.10, green: 0.72, blue: 0.42))
+                    metricChip(label: lang.tr("大赛加权贡献", "Weighted Gain"), value: String(format: "%+.2f pts", entry.deltaWeighted), color: Color(red: 0.88, green: 0.46, blue: 0.08))
                     Spacer()
                 }
                 .padding(.top, 2)
@@ -86,7 +101,7 @@ struct BreakthroughDetailView: View {
                 .foregroundStyle(Color(red: 0.88, green: 0.52, blue: 0.08))
                 .padding(.top, 1)
             VStack(alignment: .leading, spacing: 4) {
-                Text("可迁移 KernelC 算子范式 (Transferable Pattern)")
+                Text(lang.tr("可迁移 KernelC 算子范式", "Transferable KernelC Pattern"))
                     .font(.system(size: 11.5, weight: .bold))
                     .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
                 Text(entry.transferableRule)

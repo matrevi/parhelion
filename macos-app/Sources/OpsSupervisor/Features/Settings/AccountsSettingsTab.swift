@@ -16,37 +16,43 @@ struct AccountsSettingsTab: View {
     @UIState private var gcFeedback: String? = nil
     @UIState private var isSigningInGC: Bool = false
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             SurfaceCard(padding: 12) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Label("Judge Platform", systemImage: "checkmark.seal.fill")
+                        Label(lang.tr("Judge 判题平台", "Judge Platform"), systemImage: "checkmark.seal.fill")
                             .font(.system(size: 13.5, weight: .bold))
                         Spacer()
                         if let cj = store.snapshot?.auth.judge {
-                            SemanticPill(text: cj.loggedIn ? "ACTIVE" : "EXPIRED", compact: true)
+                            SemanticPill(text: cj.loggedIn ? lang.tr("已登录", "ACTIVE") : lang.tr("已过期", "EXPIRED"), compact: true)
                         }
                     }
 
                     if let cj = store.snapshot?.auth.judge {
-                        Text("Shared Session: ~/.judge/session.json")
+                        Text(lang.tr("与 CLI 共享会话: ~/.judge/session.json", "Shared Session: ~/.judge/session.json"))
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                         if cj.loggedIn {
-                            Text("user_id: \(cj.userId ?? "—") · Expires in \(String(format: "%.0fh", cj.remainingHours ?? 0))")
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.green)
+                            let hrs = String(format: "%.0fh", cj.remainingHours ?? 0)
+                            Text(lang.tr(
+                                "user_id: \(cj.userId ?? "—") · 剩余有效期 \(hrs)",
+                                "user_id: \(cj.userId ?? "—") · Expires in \(hrs)"
+                            ))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.green)
                         }
                     }
 
                     Divider()
 
-                    TextField("Email / Phone Account", text: $cjAccount).textFieldStyle(.roundedBorder)
-                    SecureField("Password (stdin only, never stored)", text: $cjPassword).textFieldStyle(.roundedBorder)
+                    TextField(lang.tr("邮箱 / 手机号账号", "Email / Phone Account"), text: $cjAccount).textFieldStyle(.roundedBorder)
+                    SecureField(lang.tr("密码 (仅走 stdin，绝不落盘)", "Password (stdin only, never stored)"), text: $cjPassword).textFieldStyle(.roundedBorder)
 
                     HStack(spacing: 8) {
-                        Button("Fetch Captcha") {
+                        Button(lang.tr("获取图形验证码", "Fetch Captcha")) {
                             Task {
                                 if let cap = try? await store.repository.fetchCaptcha() {
                                     captchaId = cap.0
@@ -57,7 +63,7 @@ struct AccountsSettingsTab: View {
                         .controlSize(.small)
 
                         if !captchaId.isEmpty {
-                            TextField("Code", text: $captchaCode)
+                            TextField(lang.tr("验证码", "Code"), text: $captchaCode)
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 90)
                         }
@@ -88,13 +94,13 @@ struct AccountsSettingsTab: View {
                             }
                         } label: {
                             if isSigningInCJ { ProgressView().controlSize(.small) }
-                            else { Text("Sign In Judge") }
+                            else { Text(lang.tr("登录 Judge", "Sign In Judge")) }
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(cjAccount.isEmpty || cjPassword.isEmpty || isSigningInCJ)
 
                         if store.snapshot?.auth.judge.loggedIn == true {
-                            Button("Clear Session") {
+                            Button(lang.tr("清除会话", "Clear Session")) {
                                 Task {
                                     try? await store.repository.logoutJudge()
                                     await store.refreshLocal()
@@ -119,24 +125,28 @@ struct AccountsSettingsTab: View {
                             .font(.system(size: 13.5, weight: .bold))
                         Spacer()
                         if let gc = store.snapshot?.auth.gitcode {
-                            SemanticPill(text: gc.loggedIn ? "ACTIVE" : "OFFLINE", compact: true)
+                            SemanticPill(text: gc.loggedIn ? lang.tr("已授权", "ACTIVE") : lang.tr("未登录", "OFFLINE"), compact: true)
                         }
                     }
 
                     if let gc = store.snapshot?.auth.gitcode {
-                        Text("Shared with `gc` & git credential")
+                        Text(lang.tr("与 `gc` 及 git credential 共享凭据", "Shared with `gc` & git credential"))
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                         if gc.loggedIn {
-                            Text("Account: @\(gc.username ?? "—") · \(gc.protocolName ?? "https")")
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.green)
+                            Text(lang.tr(
+                                "当前账号: @\(gc.username ?? "—") · \(gc.protocolName ?? "https")",
+                                "Account: @\(gc.username ?? "—") · \(gc.protocolName ?? "https")"
+                            ))
+                            .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.green)
                         }
                     }
 
                     Divider()
 
-                    SecureField("GitCode Personal Access Token", text: $gcToken).textFieldStyle(.roundedBorder)
+                    SecureField(lang.tr("GitCode 个人访问令牌 (PAT)", "GitCode Personal Access Token"), text: $gcToken)
+                        .textFieldStyle(.roundedBorder)
 
                     Button {
                         isSigningInGC = true
@@ -151,7 +161,7 @@ struct AccountsSettingsTab: View {
                         }
                     } label: {
                         if isSigningInGC { ProgressView().controlSize(.small) }
-                        else { Text("Save Token via `gc auth login`") }
+                        else { Text(lang.tr("通过 `gc auth login` 保存令牌", "Save Token via `gc auth login`")) }
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(gcToken.isEmpty || isSigningInGC)

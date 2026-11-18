@@ -4,6 +4,8 @@ struct ContestOverviewView: View {
     @EnvironmentObject var store: ContestStore
     @UIState private var showInvitePopover: Bool = false
 
+    private var lang: AppLanguage { store.lang }
+
     private var selectedProblem: ProblemItem? {
         guard let probs = store.snapshot?.problems else { return nil }
         return probs.first(where: { $0.title == store.selectedProblemTitle }) ?? probs.first
@@ -51,7 +53,7 @@ struct ContestOverviewView: View {
                 Button {
                     SystemNavigator.openURL(snap.contest.contestUrl)
                 } label: {
-                    Label("Judge", systemImage: "safari")
+                    Label(lang.tr("判题平台", "Judge"), systemImage: "safari")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.bordered)
@@ -59,7 +61,7 @@ struct ContestOverviewView: View {
                 Button {
                     SystemNavigator.openURL(snap.contest.gitcodeUrl)
                 } label: {
-                    Label("GitCode Repos", systemImage: "chevron.left.forwardslash.chevron.right")
+                    Label(lang.tr("GitCode 仓库", "GitCode Repos"), systemImage: "chevron.left.forwardslash.chevron.right")
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.bordered)
@@ -67,7 +69,7 @@ struct ContestOverviewView: View {
                 Button {
                     showInvitePopover.toggle()
                 } label: {
-                    Label("Invite Collaborator", systemImage: "person.badge.plus")
+                    Label(lang.tr("邀请协作者", "Invite Collaborator"), systemImage: "person.badge.plus")
                         .font(.system(size: 12, weight: .semibold))
                 }
                 .buttonStyle(.borderedProminent)
@@ -78,31 +80,37 @@ struct ContestOverviewView: View {
             }
 
             HStack(spacing: 10) {
+                let pct = (snap.contest.weightedScore / Double(max(1, snap.contest.maxWeightedScore))) * 100
+                let meanRaw = snap.contest.rawScore / Double(max(1, snap.contest.problemCount))
+                let recov = max(0, snap.contest.closingPotentialWeighted - snap.contest.weightedScore)
+
                 MetricTile(
-                    title: "Weighted Total",
+                    title: lang.tr("大赛加权总分", "Weighted Total"),
                     value: String(format: "%.2f / %d", snap.contest.weightedScore, snap.contest.maxWeightedScore),
-                    detail: String(format: "%.1f%% of ceiling", (snap.contest.weightedScore / Double(max(1, snap.contest.maxWeightedScore))) * 100),
+                    detail: lang.tr(String(format: "满分占比 %.1f%%", pct), String(format: "%.1f%% of ceiling", pct)),
                     icon: "scalemass.fill",
                     accent: .accentColor
                 )
                 MetricTile(
-                    title: "Raw Sum",
+                    title: lang.tr("单题原始总分", "Raw Sum"),
                     value: String(format: "%.2f / %d", snap.contest.rawScore, snap.contest.maxRawScore),
-                    detail: String(format: "Mean %.2f / 100", snap.contest.rawScore / Double(max(1, snap.contest.problemCount))),
+                    detail: lang.tr(String(format: "单题均分 %.2f / 100", meanRaw), String(format: "Mean %.2f / 100", meanRaw)),
                     icon: "sum",
                     accent: .teal
                 )
                 MetricTile(
-                    title: "Passing Operators",
+                    title: lang.tr("通过算子数", "Passing Operators"),
                     value: "\(snap.contest.passingCount) / \(snap.contest.problemCount)",
-                    detail: snap.contest.passingCount < snap.contest.problemCount ? "Restore ready" : "All green on board",
+                    detail: snap.contest.passingCount < snap.contest.problemCount
+                        ? lang.tr("存在可恢复算子", "Restore ready")
+                        : lang.tr("全算子在榜通过", "All green on board"),
                     icon: "checkmark.seal.fill",
                     accent: snap.contest.passingCount == snap.contest.problemCount ? .green : .orange
                 )
                 MetricTile(
-                    title: "Closing Potential",
+                    title: lang.tr("同代可恢复总分", "Closing Potential"),
                     value: String(format: "%.2f", snap.contest.closingPotentialWeighted),
-                    detail: String(format: "+%.2f weighted recoverable", max(0, snap.contest.closingPotentialWeighted - snap.contest.weightedScore)),
+                    detail: lang.tr(String(format: "可追回 +%.2f 加权分", recov), String(format: "+%.2f weighted recoverable", recov)),
                     icon: "sparkles",
                     accent: .purple
                 )

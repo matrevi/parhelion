@@ -13,11 +13,13 @@ struct SSHSettingsTab: View {
     @UIState private var isTesting: Bool = false
     @UIState private var isDeploying: Bool = false
 
+    private var lang: AppLanguage { store.lang }
+
     var body: some View {
         HSplitView {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Hosts (~/.ssh/config)").font(.system(size: 12, weight: .bold))
+                    Text(lang.tr("主机列表 (~/.ssh/config)", "Hosts (~/.ssh/config)")).font(.system(size: 12, weight: .bold))
                     Spacer()
                     Button { Task { await store.reloadSSHHosts() } } label: {
                         Image(systemName: "arrow.clockwise").font(.system(size: 11))
@@ -31,7 +33,7 @@ struct SSHSettingsTab: View {
                             HStack(spacing: 6) {
                                 Text(host.alias).font(.system(size: 12.5, weight: .bold, design: .monospaced))
                                 if host.alias == store.activeSSHHost {
-                                    SemanticPill(text: "ACTIVE", compact: true)
+                                    SemanticPill(text: lang.tr("启用中", "ACTIVE"), compact: true)
                                 }
                             }
                             Text("\(host.user)@\(host.hostname):\(host.port)")
@@ -39,7 +41,7 @@ struct SSHSettingsTab: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button("Use") {
+                        Button(lang.tr("选用", "Use")) {
                             populateForm(host)
                             Task { await store.selectSSHHost(host.alias) }
                         }
@@ -55,39 +57,39 @@ struct SSHSettingsTab: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
-                    Text("NPU Host Details").font(.system(size: 13, weight: .bold))
+                    Text(lang.tr("NPU 主机连接参数", "NPU Host Details")).font(.system(size: 13, weight: .bold))
                     Spacer()
-                    SemanticPill(text: "Active: \(store.activeSSHHost)", compact: true)
+                    SemanticPill(text: "\(lang.tr("当前", "Active")): \(store.activeSSHHost)", compact: true)
                 }
 
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
                     GridRow {
-                        Text("Alias").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(lang.tr("主机别名", "Alias")).font(.system(size: 11)).foregroundStyle(.secondary)
                         TextField("npu", text: $editAlias).textFieldStyle(.roundedBorder)
                     }
                     GridRow {
-                        Text("HostName / IP").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(lang.tr("地址 / IP", "HostName / IP")).font(.system(size: 11)).foregroundStyle(.secondary)
                         TextField("124.71.x.x", text: $editHost).textFieldStyle(.roundedBorder)
                     }
                     GridRow {
-                        Text("Port & User").font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text(lang.tr("端口与用户", "Port & User")).font(.system(size: 11)).foregroundStyle(.secondary)
                         HStack(spacing: 8) {
                             TextField("22", text: $editPort).textFieldStyle(.roundedBorder).frame(width: 80)
                             TextField("developer", text: $editUser).textFieldStyle(.roundedBorder)
                         }
                     }
                     GridRow {
-                        Text("IdentityFile").font(.system(size: 11)).foregroundStyle(.secondary)
-                        TextField("~/.ssh/id_ed25519 (optional)", text: $editIdentity).textFieldStyle(.roundedBorder)
+                        Text(lang.tr("私钥路径", "IdentityFile")).font(.system(size: 11)).foregroundStyle(.secondary)
+                        TextField("~/.ssh/id_ed25519", text: $editIdentity).textFieldStyle(.roundedBorder)
                     }
                 }
 
-                Toggle("Write managed Host block to ~/.ssh/config", isOn: $writeSSHConfig)
+                Toggle(lang.tr("同时写入受管 Host 块至 ~/.ssh/config", "Write managed Host block to ~/.ssh/config"), isOn: $writeSSHConfig)
                     .toggleStyle(.checkbox)
                     .font(.system(size: 11))
 
                 HStack(spacing: 8) {
-                    Button("Save & Activate") {
+                    Button(lang.tr("保存并启用", "Save & Activate")) {
                         guard !editAlias.isEmpty, !editHost.isEmpty else { return }
                         Task {
                             do {
@@ -119,7 +121,7 @@ struct SSHSettingsTab: View {
                         }
                     } label: {
                         if isTesting { ProgressView().controlSize(.small) }
-                        else { Label("Test Connection", systemImage: "bolt.horizontal.fill") }
+                        else { Label(lang.tr("测试连接", "Test Connection"), systemImage: "bolt.horizontal.fill") }
                     }
                     .buttonStyle(.bordered)
 
@@ -129,7 +131,7 @@ struct SSHSettingsTab: View {
                         Task {
                             do {
                                 try await store.repository.deployNpuProbe(target)
-                                store.bannerMessage = "Deployed ~/.opsb/npu_probe.py to \(target)"
+                                store.bannerMessage = lang.tr("已部署 ~/.opsb/npu_probe.py 至 \(target)", "Deployed ~/.opsb/npu_probe.py to \(target)")
                                 await store.refreshNpu(silent: false)
                             } catch {
                                 store.errorMessage = error.localizedDescription
@@ -138,7 +140,7 @@ struct SSHSettingsTab: View {
                         }
                     } label: {
                         if isDeploying { ProgressView().controlSize(.small) }
-                        else { Label("Deploy Probe", systemImage: "icloud.and.arrow.up") }
+                        else { Label(lang.tr("部署遥测探针", "Deploy Probe"), systemImage: "icloud.and.arrow.up") }
                     }
                     .buttonStyle(.bordered)
                 }

@@ -33,6 +33,7 @@ def run_status(args: argparse.Namespace) -> int:
     payload["auth"] = get_auth_status(use_cache=True)
     payload["skills"] = get_skills_status()
     payload["workspaces"] = cfg.get("workspaces", [str(ws)])
+    payload["language"] = getattr(args, "lang", None) or cfg.get("language", "zh")
 
     if args.json:
         if getattr(args, "compact", False):
@@ -41,12 +42,19 @@ def run_status(args: argparse.Namespace) -> int:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
 
+    zh = payload["language"] == "zh"
     c, s, npu = payload["contest"], payload["scheduler"], payload["npu"]
     print(f"=== {c['title']} ({c['workspace']}) ===")
-    print(
-        f"Score: {c['weighted_score']:.2f} / {c['max_weighted_score']} (weighted) | "
-        f"Raw: {c['raw_score']:.2f} / {c['max_raw_score']} | Passing: {c['passing_count']}/{c['problem_count']}"
-    )
+    if zh:
+        print(
+            f"总分: {c['weighted_score']:.2f} / {c['max_weighted_score']} (加权) | "
+            f"原始分: {c['raw_score']:.2f} / {c['max_raw_score']} | 通过算子: {c['passing_count']}/{c['problem_count']}"
+        )
+    else:
+        print(
+            f"Score: {c['weighted_score']:.2f} / {c['max_weighted_score']} (weighted) | "
+            f"Raw: {c['raw_score']:.2f} / {c['max_raw_score']} | Passing: {c['passing_count']}/{c['problem_count']}"
+        )
     if npu.get("online"):
         dev = npu.get("primary_npu") or {}
         cpu = npu.get("cpu") or {}

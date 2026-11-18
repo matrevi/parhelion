@@ -1,11 +1,19 @@
 import SwiftUI
 
 enum ProblemFilter: String, CaseIterable, Identifiable {
-    case all = "全部"
-    case highWeight = "^^^ 高难题"
-    case restoreGap = "可恢复差值"
+    case all
+    case highWeight
+    case restoreGap
 
     var id: String { rawValue }
+
+    func label(_ lang: AppLanguage) -> String {
+        switch self {
+        case .all: return lang.tr("全部", "All")
+        case .highWeight: return lang.tr("^^^ 高难题", "^^^ Tier-3")
+        case .restoreGap: return lang.tr("可恢复差值", "Recoverable")
+        }
+    }
 }
 
 struct ProblemTableView: View {
@@ -14,6 +22,8 @@ struct ProblemTableView: View {
 
     @UIState private var filter: ProblemFilter = .all
     @UIState private var sortByROI: Bool = false
+
+    private var lang: AppLanguage { store.lang }
 
     private var displayed: [ProblemItem] {
         var list = problems.filter { p in
@@ -33,15 +43,15 @@ struct ProblemTableView: View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Picker("", selection: $filter) {
-                    ForEach(ProblemFilter.allCases) { f in Text(f.rawValue).tag(f) }
+                    ForEach(ProblemFilter.allCases) { f in Text(f.label(lang)).tag(f) }
                 }
                 .pickerStyle(.segmented)
-                .frame(maxWidth: 290)
+                .frame(maxWidth: 295)
 
                 Spacer()
 
                 Toggle(isOn: $sortByROI) {
-                    Label("Sort by WSPT ROI", systemImage: "arrow.up.right.circle")
+                    Label(lang.tr("按 WSPT 收益排序", "Sort by WSPT ROI"), systemImage: "arrow.up.right.circle")
                         .font(.system(size: 11, weight: .medium))
                 }
                 .toggleStyle(.button)
@@ -53,14 +63,14 @@ struct ProblemTableView: View {
             Divider()
 
             HStack(spacing: 8) {
-                Text("级别").frame(width: 34, alignment: .leading)
-                Text("算子").frame(maxWidth: .infinity, alignment: .leading)
-                Text("状态").frame(width: 88, alignment: .center)
-                Text("当前分").frame(width: 60, alignment: .trailing)
-                Text("同代最优").frame(width: 64, alignment: .trailing)
-                Text("排名").frame(width: 52, alignment: .trailing)
-                Text("公开µs").frame(width: 58, alignment: .trailing)
-                Text("调度优先级").frame(width: 120, alignment: .trailing)
+                Text(lang.tr("级别", "Tier")).frame(width: 34, alignment: .leading)
+                Text(lang.tr("算子", "Operator")).frame(maxWidth: .infinity, alignment: .leading)
+                Text(lang.tr("状态", "Status")).frame(width: 88, alignment: .center)
+                Text(lang.tr("当前分", "Current")).frame(width: 60, alignment: .trailing)
+                Text(lang.tr("同代最优", "Equiv Best")).frame(width: 68, alignment: .trailing)
+                Text(lang.tr("排名", "Rank")).frame(width: 52, alignment: .trailing)
+                Text(lang.tr("公开µs", "Pub µs")).frame(width: 58, alignment: .trailing)
+                Text(lang.tr("调度建议", "Priority")).frame(width: 120, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -102,7 +112,8 @@ struct ProblemTableView: View {
                             .foregroundStyle(.secondary)
                     }
                     if let age = p.headAgeMin {
-                        Text("· \(age < 60 ? "\(age)m" : "\(age/60)h") ago")
+                        let unit = age < 60 ? "\(age)m" : "\(age / 60)h"
+                        Text(lang.tr("· \(unit)前", "· \(unit) ago"))
                             .font(.system(size: 10))
                             .foregroundStyle(.secondary)
                     }
@@ -127,8 +138,13 @@ struct ProblemTableView: View {
                         .foregroundStyle(.orange)
                 }
             }
-            .frame(width: 64, alignment: .trailing)
-            .help(p.rawBestScore.map { String(format: "同代折算最优 %.2f（原始评测峰值 %.2f · tbest 衰减 γ=%.3f）", p.bestScore, $0, p.tbestDecayGamma ?? 1.0) } ?? "")
+            .frame(width: 68, alignment: .trailing)
+            .help(p.rawBestScore.map {
+                lang.tr(
+                    String(format: "同代折算最优 %.2f（原始峰值 %.2f · tbest γ=%.3f）", p.bestScore, $0, p.tbestDecayGamma ?? 1.0),
+                    String(format: "Contemporary Equiv Best %.2f (Raw Peak %.2f · tbest γ=%.3f)", p.bestScore, $0, p.tbestDecayGamma ?? 1.0)
+                )
+            } ?? "")
 
             Text(p.rank.map { "#\($0)" } ?? "—")
                 .font(.system(size: 11.5, design: .monospaced))

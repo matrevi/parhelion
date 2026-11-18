@@ -88,8 +88,8 @@ struct BtopTelemetryDeckView: View {
                     Image(systemName: held ? "lock.fill" : "lock.open.fill")
                         .font(.system(size: 10, weight: .bold))
                     Text(held
-                         ? "DIE0 HELD · \(lk.problem ?? "Task") · \(Formatters.duration(lk.elapsedSec))"
-                         : "DIE0 FREE · READY")
+                         ? store.tr("DIE0 占用 · \(lk.problem ?? "任务") · \(Formatters.duration(lk.elapsedSec))", "DIE0 HELD · \(lk.problem ?? "Task") · \(Formatters.duration(lk.elapsedSec))")
+                         : store.tr("DIE0 空闲 · 就绪", "DIE0 FREE · READY"))
                         .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                 }
                 .foregroundStyle(c)
@@ -116,7 +116,7 @@ struct BtopTelemetryDeckView: View {
         let curPwr = dev?.powerW ?? (samples.last?.powerW ?? 0)
         let curTemp = dev?.tempC ?? (samples.last?.tempC ?? 0)
 
-        return BtopBox(keyIndex: "1", title: "NPU Core & Power", accent: BtopPalette.cyan) {
+        return BtopBox(keyIndex: "1", title: store.tr("NPU 算力与功耗", "NPU Core & Power"), accent: BtopPalette.cyan) {
             HStack(spacing: 6) {
                 Text("\(curTemp)°C")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -155,7 +155,8 @@ struct BtopTelemetryDeckView: View {
         let l1 = npu.cpu?.load1m ?? 0
         let l5 = npu.cpu?.load5m ?? 0
 
-        return BtopBox(keyIndex: "2", title: "CPU · \(npu.cpu?.cores ?? 32) Cores", accent: BtopPalette.emerald) {
+        let nCores = npu.cpu?.cores ?? 32
+        return BtopBox(keyIndex: "2", title: store.tr("主机 CPU · \(nCores) 核", "CPU · \(nCores) Cores"), accent: BtopPalette.emerald) {
             Text(String(format: "LAV %.2f %.2f", l1, l5))
                 .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                 .foregroundStyle(BtopPalette.textDim)
@@ -194,7 +195,7 @@ struct BtopTelemetryDeckView: View {
         let ramUsedFrac = ramUsed / ramTot
         let ramCacheFrac = ramCached / ramTot
 
-        return BtopBox(keyIndex: "3", title: "Memory", accent: BtopPalette.violet) {
+        return BtopBox(keyIndex: "3", title: store.tr("显存与内存", "Memory"), accent: BtopPalette.violet) {
             Text("HBM + DDR")
                 .font(.system(size: 9.5, design: .monospaced))
                 .foregroundStyle(BtopPalette.textDim)
