@@ -395,22 +395,32 @@ def get_descendants(root_pid: int, procs: dict[int, dict[str, Any]]) -> list[int
     return result
 
 
+def _is_driver_wrapper(cmd: str) -> bool:
+    """Return True if cmd is the inline `python3 -c` 3-Phase driver script from npu-test.py.
+    Scanning its literal source text would match `CONCATD_FAST`, `profiler_launches`, `device0.lock`, etc.
+    """
+    return "python3 -c" in cmd and (
+        "bench-repo-" in cmd or "PHASE A:" in cmd or "CONCATD_FAST" in cmd
+    )
+
+
 def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> tuple[str | None, str | None]:
     problem: str | None = None
     sha: str | None = None
     for pid in pids:
-        cmd = procs.get(pid, {}).get("cmd", "")
-        if not problem:
+        raw_cmd = procs.get(pid, {}).get("cmd", "")
+        cmd = "" if _is_driver_wrapper(raw_cmd) else raw_cmd
+        if cmd and not problem:
             for p_name in KNOWN_PROBLEMS:
                 if p_name in cmd or p_name.lower() in cmd.lower():
                     problem = p_name
                     break
-        if not problem:
+        if cmd and not problem:
             for vendor_key, p_name in VENDOR_TO_PROBLEM.items():
                 if vendor_key in cmd.lower():
                     problem = p_name
                     break
-        if not sha:
+        if cmd and not sha:
             m40 = SHA_RE.search(cmd)
             if m40:
                 sha = m40.group(1)
@@ -419,8 +429,8 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
                 m_res = re.search(r"bench-results/[^/]+/([0-9a-f]{7,40})", cmd)
                 if m_res:
                     sha = m_res.group(1)
-        # Also inspect /proc/<pid>/cwd safely
-        if not problem or not sha:
+        # Also inspect /proc/<pid>/cwd safely (skip driver wrapper whose cwd is home dir)
+        if not _is_driver_wrapper(raw_cmd) and (not problem or not sha):
             try:
                 cwd = os.readlink(f"/proc/{pid}/cwd")
                 if not problem:
@@ -439,20 +449,29 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
     return problem, sha
 
 
-def classify_stage(pids: list[int], procs: dict[int, dict[str, Any]], holds_die: bool) -> tuple[str, str]:
+def classify_stage(
+    pids: list[int],
+    procs: dict[int, dict[str, Any]],
+    holds_die: bool,
+    substage_hint: str | None = None,
+) -> tuple[str, str]:
     if not holds_die:
         return "WAITING-DIE", "Waiting for exclusive NPU die lock"
-    joined = "\n".join(procs.get(pid, {}).get("cmd", "") for pid in pids)
+    non_driver = [
+        procs.get(pid, {}).get("cmd", "")
+        for pid in pids
+        if not _is_driver_wrapper(procs.get(pid, {}).get("cmd", ""))
+    ]
+    joined = "\n".join(non_driver)
     low = joined.lower()
-    if "profiler" in low or "kperf.py" in low:
-        # Extract current worker/case if visible
+    if "profiler" in low or "kperf.py" in low or substage_hint == "profiler":
         m_case = re.search(r"--(?:ref-)?worker\s+(\S+)", joined)
         detail = f"profiler ({m_case.group(1)})" if m_case else "Hardware kernel profiling (profiler)"
         return "PROFILER", detail
     if any(k in low for k in ("build.sh", "cmake", "/ccec", "compiler", "kernelc", "ninja", "g++")):
         return "BUILD", "Compiling KernelC host/kernel package"
     if "--fast" in low or "fast-lane" in low or "fast_lane" in low:
-        return "FAST-LANE", "Fast-lane smoke & публичные cases"
+        return "FAST-LANE", "Fast-lane smoke & public cases"
     if "stress" in low or "determinism" in low:
         return "STRESS", "Multi-run determinism & stress gate"
     if "extended.py" in low or "verify" in low or "run-npu.sh" in low or "pytest" in low:
@@ -462,12 +481,39 @@ def classify_stage(pids: list[int], procs: dict[int, dict[str, Any]], holds_die:
 
 def build_snapshot() -> dict[str, Any]:
     t0 = time.monotonic()
+    now_epoch = time.time()
+    opsb_home = pathlib.Path.home() / ".opsb"
     cpu = read_cpu_and_load()
     mem = read_memory()
     sdk_ver = read_sdk_version()
     npu = read_npu_smi()
     procs = read_processes()
     locks = read_locks()
+
+    # Load authoritative Phase-A CPU build heartbeats & Phase-B die session upfront
+    active_cpu_build_pids: set[int] = set()
+    cpu_builds_by_pid: dict[int, dict[str, Any]] = {}
+    cpu_builds_dir = opsb_home / "cpu_builds"
+    if cpu_builds_dir.is_dir():
+        for bf in sorted(cpu_builds_dir.glob("*.json")):
+            try:
+                bd = json.loads(bf.read_text())
+                b_pid = int(bd.get("pid") or 0)
+                if bd.get("finished_at") or (b_pid and b_pid not in procs):
+                    continue
+                if b_pid:
+                    active_cpu_build_pids.add(b_pid)
+                    cpu_builds_by_pid[b_pid] = bd
+            except Exception:
+                continue
+
+    die_session: dict[str, Any] = {}
+    sess_file = opsb_home / "die_session.json"
+    if sess_file.is_file():
+        try:
+            die_session = json.loads(sess_file.read_text()) or {}
+        except Exception:
+            die_session = {}
 
     die_holders: dict[int, int] = {}  # die_idx -> root lock holder pid
     waiting_roots: set[int] = set()
@@ -480,20 +526,25 @@ def build_snapshot() -> dict[str, Any]:
         if m_die:
             die_idx = int(m_die.group(1))
             if "WRITE" in mode:
-                die_holders[die_idx] = pid
+                # Prefer earliest ancestor holding the lock if child inherited fd
+                prev = die_holders.get(die_idx)
+                if prev is None or procs.get(pid, {}).get("elapsed_sec", 0) > procs.get(prev, {}).get("elapsed_sec", 0):
+                    die_holders[die_idx] = pid
             else:
                 waiting_roots.add(pid)
         elif path.endswith("validation.lock"):
             waiting_roots.add(pid)
 
-    # Also detect `flock -w ... device0.lock` processes that might be waiting in flock syscall
+    # Also detect `flock -w ... device0.lock` shell processes (never match inline python3 -c driver text)
     for pid, p in procs.items():
         cmd = p["cmd"]
+        if _is_driver_wrapper(cmd):
+            continue
         if "bench-device" in cmd and "flock" in cmd:
             if pid not in die_holders.values():
                 waiting_roots.add(pid)
 
-    # Remove any root pid from waiting_roots if it (or an ancestor/descendant) already holds a die lock
+    # Remove any root pid from waiting_roots if it (or an ancestor/descendant) already holds a die lock or is still in Phase A CPU build
     holder_trees: dict[int, list[int]] = {}
     all_holder_pids: set[int] = set()
     for die_idx, h_pid in die_holders.items():
@@ -504,7 +555,10 @@ def build_snapshot() -> dict[str, Any]:
         if ppid:
             all_holder_pids.add(ppid)
 
-    waiting_roots = {pid for pid in waiting_roots if pid not in all_holder_pids}
+    waiting_roots = {
+        pid for pid in waiting_roots
+        if pid not in all_holder_pids and pid not in active_cpu_build_pids
+    }
 
     tasks: list[dict[str, Any]] = []
     die_locks_info: list[dict[str, Any]] = []
@@ -516,20 +570,40 @@ def build_snapshot() -> dict[str, Any]:
         if h_pid is not None and h_pid in procs:
             tree = holder_trees.get(die_idx, [h_pid])
             prob, sha = infer_problem_and_sha(tree, procs)
-            stage, detail = classify_stage(tree, procs, holds_die=True)
-            elapsed = procs[h_pid]["elapsed_sec"]
-            die_locks_info.append(
-                {
-                    "die": die_idx,
-                    "lock_path": f"/srv/work-device{die_idx}.lock",
-                    "state": "HELD",
-                    "holder_pid": h_pid,
-                    "problem": prob or "Unknown",
-                    "sha": sha,
-                    "stage": stage,
-                    "elapsed_sec": elapsed,
-                }
+            sess_matches = bool(
+                die_session
+                and int(die_session.get("die", 0)) == die_idx
+                and (int(die_session.get("pid") or 0) in tree or int(die_session.get("pid") or 0) == h_pid)
             )
+            substage_hint = str(die_session.get("substage") or "") if sess_matches else None
+            if sess_matches:
+                prob = die_session.get("title") or prob
+                sha = die_session.get("sha") or sha
+            stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
+            # Measure ONLY actual Die 0 hold duration (from die_session.started_epoch), NEVER Phase A + queue wait!
+            if sess_matches and float(die_session.get("started_epoch") or 0) > 0:
+                elapsed = int(max(0, round(now_epoch - float(die_session["started_epoch"]))))
+            else:
+                # Fallback to child bash/python elapsed rather than Phase-A root wrapper
+                child_el = [
+                    procs[cpid]["elapsed_sec"]
+                    for cpid in tree
+                    if cpid != h_pid and cpid in procs and not _is_driver_wrapper(procs[cpid].get("cmd", ""))
+                ]
+                elapsed = max(child_el) if child_el else procs[h_pid]["elapsed_sec"]
+            lock_entry: dict[str, Any] = {
+                "die": die_idx,
+                "lock_path": f"/srv/work-device{die_idx}.lock",
+                "state": "HELD",
+                "holder_pid": h_pid,
+                "problem": prob or "Unknown",
+                "sha": sha,
+                "stage": stage,
+                "elapsed_sec": elapsed,
+            }
+            if substage_hint:
+                lock_entry["substage"] = substage_hint
+            die_locks_info.append(lock_entry)
             tasks.append(
                 {
                     "pid": h_pid,
@@ -565,36 +639,42 @@ def build_snapshot() -> dict[str, Any]:
             try:
                 td = json.loads(tf.read_text())
                 tpid = int(td.get("pid") or 0)
-                if tpid in procs:
+                if tpid in procs and tpid not in active_cpu_build_pids:
                     tickets_by_pid[tpid] = td
                     if tpid not in all_holder_pids:
                         waiting_roots.add(tpid)
             except Exception:
                 continue
 
-    # Add waiting tasks sorted by WSPT ticket priority (tier, prio, elapsed_sec)
+    # Add waiting tasks sorted by WSPT ticket priority (tier, prio, wait_sec)
     waiting_tasks_list: list[dict[str, Any]] = []
     sorted_waiters = sorted(
         waiting_roots,
         key=lambda x: (
             int(tickets_by_pid.get(x, {}).get("tier") or 1),
             float(tickets_by_pid.get(x, {}).get("prio") or 0.0),
-            procs.get(x, {}).get("elapsed_sec", 0),
+            -float(tickets_by_pid.get(x, {}).get("created") or now_epoch),
         ),
         reverse=True,
     )
     for w_pid in sorted_waiters:
-        if w_pid not in procs:
+        if w_pid not in procs or w_pid in active_cpu_build_pids:
             continue
         tree = get_descendants(w_pid, procs)
         tk = tickets_by_pid.get(w_pid, {})
         prob, sha = infer_problem_and_sha(tree, procs)
-        prob = prob or tk.get("title")
-        sha = sha or tk.get("sha")
+        # Authoritative ticket title/sha always takes precedence
+        prob = tk.get("title") or prob
+        sha = tk.get("sha") or sha
+        if not prob:
+            # Skip orphan wrapper pids without a ticket yet (e.g. mid-git-fetch before cpu_hb)
+            continue
         stage, detail = classify_stage(tree, procs, holds_die=False)
         is_boosted = int(tk.get("tier") or 0) >= 50
         if is_boosted:
             detail = "Priority boosted by OpsSupervisor"
+        tk_created = float(tk.get("created") or 0)
+        wait_elapsed = int(max(0, round(now_epoch - tk_created))) if tk_created > 0 else procs[w_pid]["elapsed_sec"]
         wt_item = {
             "pid": w_pid,
             "die": None,
@@ -602,7 +682,7 @@ def build_snapshot() -> dict[str, Any]:
             "stage": stage,
             "problem": prob,
             "sha": sha,
-            "elapsed_sec": procs[w_pid]["elapsed_sec"],
+            "elapsed_sec": wait_elapsed,
             "detail": detail,
             "boosted": is_boosted,
             "subprocesses": len(tree),
@@ -611,33 +691,22 @@ def build_snapshot() -> dict[str, Any]:
         tasks.append(wt_item)
 
     # Detect lock-free 32-core CPU builds (`~/.opsb/cpu_builds/*.json` + compiler procs outside die lock)
-    opsb_home = pathlib.Path.home() / ".opsb"
     parallel_cpu_builds: list[dict[str, Any]] = []
     seen_build_keys: set[str] = set()
-    cpu_builds_dir = opsb_home / "cpu_builds"
-    now_epoch = time.time()
-    if cpu_builds_dir.is_dir():
-        for bf in sorted(cpu_builds_dir.glob("*.json")):
-            try:
-                bd = json.loads(bf.read_text())
-                b_pid = int(bd.get("pid") or 0)
-                if bd.get("finished_at") or (b_pid and b_pid not in procs):
-                    continue
-                b_title = bd.get("title") or bd.get("problem") or "Operator"
-                b_sha = str(bd.get("sha") or "")
-                st_ep = float(bd.get("started_epoch") or 0)
-                el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
-                b_key = f"{b_title}:{b_sha[:7]}"
-                if b_key not in seen_build_keys:
-                    seen_build_keys.add(b_key)
-                    parallel_cpu_builds.append(
-                        {"pid": b_pid, "title": b_title, "sha": b_sha, "short_sha": b_sha[:7] or "—", "elapsed_sec": max(0, el_s)}
-                    )
-            except Exception:
-                continue
+    for b_pid, bd in cpu_builds_by_pid.items():
+        b_title = bd.get("title") or bd.get("problem") or "Operator"
+        b_sha = str(bd.get("sha") or "")
+        st_ep = float(bd.get("started_epoch") or 0)
+        el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
+        b_key = f"{b_title}:{b_sha[:7]}"
+        if b_key not in seen_build_keys:
+            seen_build_keys.add(b_key)
+            parallel_cpu_builds.append(
+                {"pid": b_pid, "title": b_title, "sha": b_sha, "short_sha": b_sha[:7] or "—", "elapsed_sec": max(0, el_s)}
+            )
 
     for pid, p in procs.items():
-        if pid in all_holder_pids or pid in waiting_roots:
+        if pid in all_holder_pids or pid in waiting_roots or _is_driver_wrapper(p["cmd"]):
             continue
         cmd_l = p["cmd"].lower()
         if any(k in cmd_l for k in ("build.sh", "/ccec", "compiler")) and "grep" not in cmd_l:
@@ -664,20 +733,6 @@ def build_snapshot() -> dict[str, Any]:
                 "subprocesses": 4,
             }
         )
-
-    # Enrich active die lock with `~/.opsb/die_session.json` if present
-    die_session = {}
-    sess_file = opsb_home / "die_session.json"
-    if sess_file.is_file():
-        try:
-            die_session = json.loads(sess_file.read_text()) or {}
-        except Exception:
-            die_session = {}
-    if die_session and die_locks_info and die_locks_info[0]["state"] == "HELD":
-        if die_session.get("title") and die_locks_info[0].get("problem") in (None, "Unknown"):
-            die_locks_info[0]["problem"] = die_session["title"]
-        if die_session.get("substage"):
-            die_locks_info[0]["substage"] = die_session["substage"]
 
     primary_dev = npu["devices"][0] if npu["devices"] else {
         "npu_id": 0,

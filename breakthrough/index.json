@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-18T06:30:00Z",
+  "updated_at": "2026-11-18T08:38:07.520374+00:00",
   "entries": [
     {
       "id": "BT-20261118-LayerNormV3-af0807c",
@@ -15,7 +15,14 @@
       "delta_weighted": 33.06,
       "status": "verified",
       "category": "simd-transpose",
-      "tags": ["bf16", "fp16", "TransDataTo5HD", "ReduceSum", "ping-pong", "single-TBuf"],
+      "tags": [
+        "bf16",
+        "fp16",
+        "TransDataTo5HD",
+        "ReduceSum",
+        "ping-pong",
+        "single-TBuf"
+      ],
       "title": "BF16 TransDataTo5HD Vertical SIMD Accumulate + Native FP16 + Single-TBuf Ping-Pong",
       "bottleneck": "Reproducing numpy's non-associative sequential bf16 accumulation forced serial per-row loops while per-row ReduceSum (~240 cyc) and 9 DMA/V syncs stalled tiles.",
       "mechanisms": [
@@ -41,7 +48,14 @@
       "delta_weighted": 31.34,
       "status": "verified",
       "category": "async-pipeline",
-      "tags": ["ring-buffer", "Gather", "window-slicing", "double-buffer", "MTE3-overlap", "DP"],
+      "tags": [
+        "ring-buffer",
+        "Gather",
+        "window-slicing",
+        "double-buffer",
+        "MTE3-overlap",
+        "DP"
+      ],
       "title": "Two-Half-Ring Async MTE3 + 64-Lane Window-Sliced Gather DP + Double-Buffered log_probs",
       "bottleneck": "Every DP step computed the full padded state width [0, saf), rewrote Gather offset tables via Adds, and stalled on synchronous VM3/M3V barriers to flush each log_alpha[t] row.",
       "mechanisms": [
@@ -53,6 +67,33 @@
       "precision_guard": "Preserves hardware vmax(-inf, -inf) -> 0.0f pairwise order and in-chain PipeBarrier<PIPE_V>() across all 8 int32/int64 index combinations.",
       "transferable_rule": "In sequential time-step DP kernels, buffer 2*H step outputs in UB so MTE3 bursts H rows asynchronously without blocking PIPE_V, and slice vector width to the reachable state band.",
       "doc_path": "entries/BT-20261118-CTCLossV2-0d5125c.md"
+    },
+    {
+      "id": "BT-20261118-QuantUpdateScatter-7d6aa46",
+      "problem": "QuantUpdateScatter",
+      "difficulty": 2,
+      "sha": "7d6aa463fe3c521820be68354f66411abfbc7454",
+      "baseline_sha": "d524473",
+      "timestamp": "2026-11-18T08:38:07.390502+00:00",
+      "score_before": 49.04,
+      "score_after": 64.3,
+      "delta_raw": 15.26,
+      "delta_weighted": 30.52,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "Preserve repo cwd across Phase-B bash -c and batch 14-stratum profiler into one session",
+      "bottleneck": "Prior validated baseline plateaued at 49.04 pts before 7d6aa46.",
+      "mechanisms": [
+        "E9: SCH_MODE_0 zero-TQue fast kernel",
+        "FusedGroupPass",
+        "dynamic colTile/copyStep: c128_r256 7.92->5.26us (1.51x), kv_decode_512 9.88->7.16us (1.38x), rows_big_c8 6.34->5.46us, sample 6.94->6.06us, c1024_r1024 7.18->6.58us, 116/116 green"
+      ],
+      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
+      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "doc_path": "entries/BT-20261118-QuantUpdateScatter-7d6aa46.md"
     },
     {
       "id": "BT-20261110-MultilabelMarginLoss-59f8065",
@@ -67,7 +108,13 @@
       "delta_weighted": 25.36,
       "status": "verified",
       "category": "deterministic-sync",
-      "tags": ["cross-core-reduction", "sentinel-handshake", "PipeBarrier", "Sort32", "determinism"],
+      "tags": [
+        "cross-core-reduction",
+        "sentinel-handshake",
+        "PipeBarrier",
+        "Sort32",
+        "determinism"
+      ],
       "title": "NaN-Sentinel Cross-Core Deterministic Reduction + Lean Deduplicated PIPE_V Margin Loop",
       "bottleneck": "Multi-core mean/sum reduction via float atomics or unguarded scratch buffers caused non-deterministic drift, TLE hangs, or RE on unaligned is_target tails (C = 9, 13, 16), forcing 1-core execution.",
       "mechanisms": [
@@ -86,13 +133,20 @@
       "sha": "49f905f4157a3014c7419e461ef15308b509814c",
       "baseline_sha": "ac71b7b",
       "timestamp": "2026-11-18T06:28:05Z",
-      "score_before": 29.60,
+      "score_before": 29.6,
       "score_after": 40.38,
       "delta_raw": 10.78,
       "delta_weighted": 32.34,
       "status": "verified",
       "category": "separable-folding",
-      "tags": ["dimension-collapsing", "separable-tensor", "Gather", "multi-regime", "DataCopyPad", "SetBlockDim"],
+      "tags": [
+        "dimension-collapsing",
+        "separable-tensor",
+        "Gather",
+        "multi-regime",
+        "DataCopyPad",
+        "SetBlockDim"
+      ],
       "title": "Canonical Dimension Collapsing + V3 Multi-Regime Separable H/W Vectorized Folding",
       "bottleneck": "Enumerating R-dimensional folding preimages per row folded inner W margins repeatedly for every outer preimage combination and issued fragmented per-row DataCopyPad GM reads.",
       "mechanisms": [
@@ -104,6 +158,62 @@
       "precision_guard": "340/340 extended cases green across reflect/symmetric/circular/edge/constant in fp32 & fp16, with Kahan fallback for negative paddings.",
       "transferable_rule": "For separable multi-axis stencil/fold operators, collapse unpadded axes first and reduce outer/row axes in UB before executing inner-axis Gather instructions.",
       "doc_path": "entries/BT-20261118-PadV3Grad-49f905f.md"
+    },
+    {
+      "id": "BT-20261118-ConcatD-7919dcb",
+      "problem": "ConcatD",
+      "difficulty": 3,
+      "sha": "7919dcbfac7b250a3628d8d8167dfa33b8eaf478",
+      "baseline_sha": "2dd9acd",
+      "timestamp": "2026-11-18T08:32:13.563372+00:00",
+      "score_before": 46.29,
+      "score_after": 54.43,
+      "delta_raw": 8.14,
+      "delta_weighted": 24.42,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "fix(ConcatD): guard working directory in validation/run-npu.sh for 3-Phase opsb test",
+      "bottleneck": "Prior validated baseline plateaued at 46.29 pts before 7919dcb.",
+      "mechanisms": [
+        "Simplex-MAP (18/18 buckets vs 2dd9acd, beta=0.464, d_hid=",
+        "3.97, d_pub=",
+        "0.20, improved=12, regressed=4)",
+        "All 4 stages passed (weighted E[delta]="
+      ],
+      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
+      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "doc_path": "entries/BT-20261118-ConcatD-7919dcb.md"
+    },
+    {
+      "id": "BT-20261118-ConfusionTransposeD-d4d090f",
+      "problem": "ConfusionTransposeD",
+      "difficulty": 3,
+      "sha": "d4d090fbd3e4218f0e9e89f1b8c6cdadca06ce1b",
+      "baseline_sha": "7b15ba5",
+      "timestamp": "2026-11-18T08:35:28.535009+00:00",
+      "score_before": 42.83,
+      "score_after": 48.83,
+      "delta_raw": 6.0,
+      "delta_weighted": 18.0,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "Fix C++11 CeilDiv overload and unused param in tiling",
+      "bottleneck": "Prior validated baseline plateaued at 42.83 pts before d4d090f.",
+      "mechanisms": [
+        "Simplex-MAP (12/17 buckets vs 7b15ba5, beta=0.736, d_hid=",
+        "19.73, d_pub=",
+        "1.39, improved=12, regressed=0)",
+        "All 4 stages passed"
+      ],
+      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
+      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "doc_path": "entries/BT-20261118-ConfusionTransposeD-d4d090f.md"
     },
     {
       "id": "BT-20261110-PadV3Grad-0fc367d",
@@ -118,7 +228,14 @@
       "delta_weighted": 9.69,
       "status": "verified",
       "category": "vectorization",
-      "tags": ["fp16", "Cast", "PipeBarrier", "PIPE_V", "aliasing", "narrowing"],
+      "tags": [
+        "fp16",
+        "Cast",
+        "PipeBarrier",
+        "PIPE_V",
+        "aliasing",
+        "narrowing"
+      ],
       "title": "16-Bit Vectorized Widening/Narrowing with Explicit PipeBarrier<PIPE_V> Hazard Ordering",
       "bottleneck": "Vectorizing 16-bit boundary accumulation gave 1.43x-1.76x speedups but suffered 10/270 precision failures from mixed-width Cast<half, float> / Cast<float, half> UB hazard overlap.",
       "mechanisms": [
@@ -129,5 +246,21 @@
       "transferable_rule": "Insert an explicit PipeBarrier<PIPE_V>() between 16->32-bit widening compute and 32->16-bit narrowing Cast when cycling or overlapping UB buffers on Accel soc-a.",
       "doc_path": "entries/BT-20261110-PadV3Grad-0fc367d.md"
     }
-  ]
+  ],
+  "summaries": [
+    {
+      "entry_id": "BT-20261118-ConcatD-7919dcb",
+      "agent_id": "dsh-main",
+      "agent_display": "DSH 主调度 · 全部经验汇入",
+      "agent_kind": "dsh",
+      "problem": "ConcatD",
+      "entry_sha": "1b185dcb23249d2eeeefee49831034917141b5de53d6293a671ad7d48819b635",
+      "sha8": "1b185dcb",
+      "summary": "① 可迁移机制：按形状族切换 tiling regime（多模态分核切分），高窄/多输入的形态走规避 UB bank 冲突的整行拼装布局，等宽且已对齐的形态走原路径；结论强度来自 18 桶配对实测（improved=12 / regressed=4，β=0.464，d_hid=+3.97）。\n② 适用条件：输入分片宽窄比跨过阈值、单块 UB 能容纳整行拼接、拷贝宽度 4B/2B/1B 不齐时才换布局；失效条件是各输入等宽且已按 512B 对齐（此时换布局只增加指令数，正是那 4 个回退桶）。\n③ 下一步（我这边）：把「按形态族选 tile、并用本仓配对谱反证」这条规则分别投给 StridedSliceGrad（余量 32.6、多点张量形态）和 ConfusionTransposeD（余量 27.9、转置家族）；要求各自在本仓 50 例谱上配对验证，禁止跨算子直接抄实现。",
+      "lines": 3,
+      "summary_path": "bridge/outbox/dsh-main/BT-20261118-ConcatD-7919dcb.md",
+      "collected_at": "2026-11-18T09:21:23.554065+00:00"
+    }
+  ],
+  "summaries_updated_at": "2026-11-18T09:21:23.554910+00:00"
 }
