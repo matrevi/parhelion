@@ -34,6 +34,70 @@ struct LivePipelineState: Codable {
     }
 }
 
+/// Compact `scheduler.backfill` passthrough (B0 auto-backfill lane, sourced from
+/// `scheduler/backfill.py::BackfillScheduler.summary` via `python -m scheduler.backfill_status`).
+struct BackfillPassthrough: Codable, Hashable {
+    let lane: String
+    let tier: Int
+    let autoEnabled: Bool
+    let unpairedTotal: Int
+    let unpairedByOperator: [String: Int]
+    let running: Bool
+    let runningTitle: String?
+    let estSessionSec: Double?
+    let ledgerSha: String?
+    let queuedCount: Int?
+    let etaSec: Double?
+    let etaWallSec: Double?
+    let cached: Bool?
+    let lastRun: BackfillLastRun?
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        lane = (try? c.decodeIfPresent(String.self, forKey: .lane)).flatMap { $0 } ?? "B0"
+        tier = (try? c.decodeIfPresent(Int.self, forKey: .tier)).flatMap { $0 } ?? 0
+        autoEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .autoEnabled)).flatMap { $0 } ?? false
+        unpairedTotal = (try? c.decodeIfPresent(Int.self, forKey: .unpairedTotal)).flatMap { $0 } ?? 0
+        unpairedByOperator = (try? c.decodeIfPresent([String: Int].self, forKey: .unpairedByOperator)).flatMap { $0 } ?? [:]
+        running = (try? c.decodeIfPresent(Bool.self, forKey: .running)).flatMap { $0 } ?? false
+        runningTitle = (try? c.decodeIfPresent(String.self, forKey: .runningTitle)).flatMap { $0 }
+        estSessionSec = (try? c.decodeIfPresent(Double.self, forKey: .estSessionSec)).flatMap { $0 }
+        ledgerSha = (try? c.decodeIfPresent(String.self, forKey: .ledgerSha)).flatMap { $0 }
+        queuedCount = (try? c.decodeIfPresent(Int.self, forKey: .queuedCount)).flatMap { $0 }
+        etaSec = (try? c.decodeIfPresent(Double.self, forKey: .etaSec)).flatMap { $0 }
+        etaWallSec = (try? c.decodeIfPresent(Double.self, forKey: .etaWallSec)).flatMap { $0 }
+        cached = (try? c.decodeIfPresent(Bool.self, forKey: .cached)).flatMap { $0 }
+        lastRun = (try? c.decodeIfPresent(BackfillLastRun.self, forKey: .lastRun)).flatMap { $0 }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case lane, tier, running, cached
+        case autoEnabled = "auto_enabled"
+        case unpairedTotal = "unpaired_total"
+        case unpairedByOperator = "unpaired_by_operator"
+        case runningTitle = "running_title"
+        case estSessionSec = "est_session_sec"
+        case ledgerSha = "ledger_sha"
+        case queuedCount = "queued_count"
+        case etaSec = "eta_sec"
+        case etaWallSec = "eta_wall_sec"
+        case lastRun = "last_run"
+    }
+}
+
+struct BackfillLastRun: Codable, Hashable {
+    let title: String?
+    let result: String?
+    let finishedAt: String?
+    let measuredCount: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case title, result
+        case finishedAt = "finished_at"
+        case measuredCount = "measured_count"
+    }
+}
+
 struct SchedulerState: Codable {
     let autoConsumerEnabled: Bool
     let rateLimitGapSec: Int
@@ -52,9 +116,11 @@ struct SchedulerState: Codable {
     let queueLockHeld: Bool
     let actionableCount: Int
     let pipeline: LivePipelineState?
+    /// B0 auto-backfill lane snapshot; `nil` when the probe was skipped/unavailable.
+    let backfill: BackfillPassthrough?
 
     enum CodingKeys: String, CodingKey {
-        case pipeline
+        case pipeline, backfill
         case autoConsumerEnabled = "auto_consumer_enabled"
         case rateLimitGapSec = "rate_limit_gap_sec"
         case cooldownRemainingSec = "cooldown_remaining_sec"

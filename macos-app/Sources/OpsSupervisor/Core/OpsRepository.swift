@@ -214,4 +214,71 @@ struct OpsRepository: Sendable {
     func installFallbackSkills() async throws {
         _ = try await client.execute(["skills", "install", "--targets", "dsh,codex", "--json"])
     }
+
+    // MARK: - Breakthrough hand-off bridge
+
+    func fetchBridgeStatus(workspace: String) async throws -> BridgeStatusResponse {
+        let data = try await client.execute(
+            ["bridge", "status", "--workspace", workspace, "--json"],
+            timeout: 12.0,
+            allowNonZeroExit: true
+        )
+        return try JSONDecoder().decode(BridgeStatusResponse.self, from: data)
+    }
+
+    func syncBridge(workspace: String) async throws -> (delivered: Int, skipped: Int, errors: Int) {
+        let data = try await client.execute(
+            ["bridge", "sync", "--workspace", workspace, "--json"],
+            timeout: 25.0,
+            allowNonZeroExit: true
+        )
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (0, 0, 0) }
+        return ((obj["delivered_count"] as? Int) ?? 0, (obj["skipped_count"] as? Int) ?? 0, (obj["error_count"] as? Int) ?? 0)
+    }
+
+    func collectBridgeReceipts(workspace: String) async throws -> (collected: Int, total: Int, orphaned: Int) {
+        let data = try await client.execute(
+            ["bridge", "collect", "--workspace", workspace, "--json"],
+            timeout: 20.0,
+            allowNonZeroExit: true
+        )
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (0, 0, 0) }
+        return ((obj["collected_count"] as? Int) ?? 0, (obj["total_summaries"] as? Int) ?? 0, (obj["orphaned_count"] as? Int) ?? 0)
+    }
+
+    func pullBridge(workspace: String, agentId: String, ack: Bool, entryIds: [String]) async throws -> Int {
+        var args = ["bridge", "pull", agentId, "--workspace", workspace, "--json"]
+        if ack { args.append("--ack") }
+        for entryId in entryIds { args += ["--entry", entryId] }
+        let data = try await client.execute(args, timeout: 20.0, allowNonZeroExit: true)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return 0 }
+        return (obj["count"] as? Int) ?? 0
+    }
+
+    func pushBridge(workspace: String, agentId: String, entryId: String?) async throws -> (pushed: Int, failed: Int, detail: String) {
+        var args = ["bridge", "push", agentId, "--workspace", workspace, "--json"]
+        if let entryId, !entryId.isEmpty { args += ["--entry", entryId] }
+        let data = try await client.execute(args, timeout: 60.0, allowNonZeroExit: true)
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return (0, 0, "no response") }
+        let pushed = (obj["pushed_count"] as? Int) ?? 0
+        let failed = (obj["failed_count"] as? Int) ?? 0
+        var detail = ""
+        if let failedRows = obj["failed"] as? [[String: Any]], let first = failedRows.first {
+            detail = (first["error"] as? String) ?? ""
+        }
+        return (pushed, failed, detail)
+    }
+
+    /// Reads `python -m scheduler.backfill_status --json` through the CLI; never throws for
+    /// a missing module or malformed payload — the banner needs a value, not an error.
+    func fetchBackfillStatus(workspace: String, problem: String?) async throws -> BackfillStatusReport {
+        var args = ["bench", "backfill-status", "--workspace", workspace, "--json"]
+        if let problem, !problem.isEmpty { args.insert(problem, at: 2) }
+        do {
+            let data = try await client.execute(args, timeout: 10.0, allowNonZeroExit: true)
+            return try JSONDecoder().decode(BackfillStatusReport.self, from: data)
+        } catch {
+            return BackfillStatusReport.unavailable("cli_unavailable")
+        }
+    }
 }

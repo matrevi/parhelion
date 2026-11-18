@@ -1,0 +1,12 @@
+# Bridge runtime state (deliveries, receipts, idempotency ledger) is NOT versioned.
+# The registry (`agents.json`) and the protocol (`README.md`) are.
+/ledger.jsonl
+*.lock
+/inbox/*
+/inbox/**/.DS_Store
+/inbox/.DS_Store
+/outbox/*
+/outbox/**/.DS_Store
+/outbox/.DS_Store
+!/inbox/.gitkeep
+!/outbox/.gitkeep

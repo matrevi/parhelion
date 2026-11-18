@@ -9,6 +9,19 @@ final class ContestStore: ObservableObject {
     @Published var breakthroughEntries: [BreakthroughEntry] = []
     @Published var breakthroughDir: String = ""
     @Published var breakthroughThreshold: Double = 5.0
+    @Published var breakthroughSummaryCount: Int = 0
+    @Published var breakthroughSummaries: [BreakthroughSummary] = []
+
+    // Breakthrough hand-off bridge (`opsb bridge status`)
+    @Published var bridgeStatus: BridgeStatusResponse?
+    @Published var bridgeError: String?
+    @Published var isRefreshingBridge: Bool = false
+    private var lastBridgeFetch: Date = .distantPast
+
+    // Automatic perf-bucket backfill (`opsb bench backfill-status`)
+    @Published var backfillStatus: BackfillStatusReport?
+    @Published var isBackfilling: Bool = false
+    private var lastBackfillFetch: Date = .distantPast
     @Published var lang: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: "parhelion.lang") ?? "zh") ?? .zh
     private var didSetLangLocally: Bool = false
     @Published var workspaces: [WorkspaceEntry] = []
@@ -45,6 +58,7 @@ final class ContestStore: ObservableObject {
     func refreshAll() async {
         await refreshLocal()
         await reloadBreakthroughs()
+        await reloadBridge(force: true)
         await refreshNpu(silent: false)
     }
 
@@ -71,6 +85,7 @@ final class ContestStore: ObservableObject {
             }
             errorMessage = nil
             await maybeAutoConsumeTopCandidate(localSnap)
+            await reloadBackfillStatusIfNeeded(localSnap)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -210,7 +225,122 @@ final class ContestStore: ObservableObject {
         if let cat = try? await repository.fetchBreakthroughCatalog(workspace: selectedWorkspace, minDelta: 0.5) {
             breakthroughEntries = cat.entries
             breakthroughDir = cat.directory
+            breakthroughSummaryCount = cat.summaries?.count ?? cat.summaryCount ?? 0
+            breakthroughSummaries = cat.summaries ?? []
         }
+    }
+
+    // MARK: - Breakthrough hand-off bridge
+
+    func reloadBridge(force: Bool = false) async {
+        if isRefreshingBridge { return }
+        if !force, Date().timeIntervalSince(lastBridgeFetch) < 5.0 { return }
+        isRefreshingBridge = true
+        defer {
+            isRefreshingBridge = false
+            lastBridgeFetch = Date()
+        }
+        do {
+            let status = try await repository.fetchBridgeStatus(workspace: selectedWorkspace)
+            if status.ok || !status.agents.isEmpty {
+                bridgeStatus = status
+                bridgeError = nil
+                breakthroughSummaryCount = status.summariesCount
+            } else {
+                bridgeError = tr("Bridge 返回空注册表", "Bridge returned an empty registry")
+            }
+        } catch {
+            bridgeError = error.localizedDescription
+        }
+    }
+
+    func syncBridge() async {
+        do {
+            let (delivered, skipped, errors) = try await repository.syncBridge(workspace: selectedWorkspace)
+            await reloadBridge(force: true)
+            await reloadBreakthroughs()
+            if errors > 0 {
+                errorMessage = tr("Bridge 投递 \(errors) 个错误", "Bridge reported \(errors) delivery error(s)")
+            } else if delivered > 0 {
+                bannerMessage = tr("已向 Agent 投递 \(delivered) 条经验（\(skipped) 条此前已投递）",
+                                   "Delivered \(delivered) experience note(s) (\(skipped) already delivered)")
+            } else {
+                bannerMessage = tr("Bridge 已是最新（\(skipped) 条均已投递）", "Bridge up to date (\(skipped) already delivered)")
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func collectBridge() async {
+        do {
+            let (collected, total, orphaned) = try await repository.collectBridgeReceipts(workspace: selectedWorkspace)
+            await reloadBridge(force: true)
+            await reloadBreakthroughs()
+            if orphaned > 0 {
+                errorMessage = tr("\(orphaned) 份回执找不到对应条目（已忽略）", "\(orphaned) receipt(s) had no matching entry")
+            } else if collected > 0 {
+                bannerMessage = tr("已收集 \(collected) 份 Agent 回执（累计 \(total) 份）",
+                                   "Collected \(collected) agent receipt(s) (\(total) total)")
+            } else {
+                bannerMessage = tr("回执区无新内容（累计 \(total) 份）", "No new receipts (\(total) total)")
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func ackBridgeItem(agentId: String, entryId: String) async {
+        do {
+            _ = try await repository.pullBridge(workspace: selectedWorkspace, agentId: agentId, ack: true, entryIds: [entryId])
+            await reloadBridge(force: true)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func pushBridgeItem(agentId: String, entryId: String) async {
+        do {
+            let (pushed, failed, detail) = try await repository.pushBridge(
+                workspace: selectedWorkspace,
+                agentId: agentId,
+                entryId: entryId
+            )
+            await reloadBridge(force: true)
+            if failed > 0 {
+                errorMessage = detail.isEmpty
+                    ? tr("推送失败 (\(failed))", "Push failed (\(failed))")
+                    : tr("推送失败：\(detail)", "Push failed: \(detail)")
+            } else {
+                bannerMessage = tr("已唤起 \(agentId) 的推送钩子（\(pushed) 条）", "Invoked \(agentId) transport hook (\(pushed) note(s))")
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: - Auto backfill status
+
+    private func reloadBackfillStatusIfNeeded(_ snap: SupervisorSnapshot) async {
+        // The new CLI ships `scheduler.backfill` inside the poll payload: no extra probe needed.
+        guard snap.scheduler.backfill == nil else { return }
+        let cal = (snap.problems.first { $0.title == selectedProblemTitle } ?? snap.problems.first)?.calibration
+        let unpaired = cal?.unpairedBucketCount ?? 0
+        let active = backfillStatus?.running.active ?? false
+        guard unpaired > 0 || active || backfillStatus == nil else { return }
+        guard Date().timeIntervalSince(lastBackfillFetch) >= 12.0 else { return }
+        lastBackfillFetch = Date()
+        await reloadBackfillStatus()
+    }
+
+    func reloadBackfillStatus(force: Bool = false) async {
+        if force { lastBackfillFetch = .distantPast }
+        let report = (try? await repository.fetchBackfillStatus(
+            workspace: selectedWorkspace,
+            problem: selectedProblemTitle
+        )) ?? BackfillStatusReport.unavailable("decode_failed")
+        backfillStatus = report
+        lastBackfillFetch = Date()
     }
 
     func tr(_ zh: String, _ en: String) -> String {
@@ -302,11 +432,15 @@ final class ContestStore: ObservableObject {
     }
 
     func backfillProblem(_ problem: String) async {
+        if isBackfilling { return }
+        isBackfilling = true
         bannerMessage = tr("正在补测 \(problem) 缺失性能桶…", "Backfilling missing perf buckets for \(problem)…")
+        defer { isBackfilling = false }
         do {
             try await repository.backfillProblemBench(workspace: selectedWorkspace, problem: problem)
             bannerMessage = tr("已完成 \(problem) 性能桶补测与校准", "Completed perf bucket backfill for \(problem)")
             await refreshLocal()
+            await reloadBackfillStatus(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }

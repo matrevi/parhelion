@@ -52,3 +52,32 @@ opsb breakthrough add LayerNormV3 af0807c \
   --precision-guard "Preserves numpy sequential bf16 rounding order bit-for-bit on (5, 4097)" \
   --rule "When reference requires non-associative sequential rounding per row, transpose rows into SIMD lanes rather than falling back to scalar loops"
 ```
+
+## Agent Receipts (`index.json#summaries`)
+
+Every entry can be handed to subscribed agents through the bridge
+([`../bridge/README.md`](../bridge/README.md)). Their ≤5-line summaries are folded back into an
+**additive** top-level field — `entries` is never rewritten by this path:
+
+```json
+"summaries": [
+  {
+    "entry_id": "BT-20261118-LayerNormV3-af0807c",
+    "agent_id": "codex-cross-review",
+    "problem": "LayerNormV3",
+    "entry_sha": "259fb59d…",
+    "summary": "① …\n② …\n③ …",
+    "lines": 3,
+    "summary_path": "bridge/outbox/codex-cross-review/BT-20261118-LayerNormV3-af0807c.md",
+    "collected_at": "2026-11-18T09:12:00+00:00"
+  }
+]
+```
+
+```bash
+opsb bridge sync          # deliver new entries (idempotent, also runs inside `opsb breakthrough sync`)
+opsb bridge pull <agent> --ack --json
+opsb bridge publish <agent> <entry-id> --file -
+opsb bridge collect       # -> index.json#summaries
+opsb bridge status --json # per-agent 待总结 / 已取 / 已回执
+```

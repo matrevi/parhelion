@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-18T09:00:00+00:00",
+  "agents": [
+    {
+      "agent_id": "dsh-main",
+      "display": "DSH 主调度 · 全部经验汇入",
+      "kind": "dsh",
+      "enabled": true,
+      "min_delta": 5.0,
+      "scope": {
+        "paths": ["*"],
+        "tags": []
+      },
+      "transport": {
+        "mode": "file"
+      }
+    },
+    {
+      "agent_id": "concatd-optimizer",
+      "display": "ConcatD 算子优化",
+      "kind": "dsh",
+      "enabled": true,
+      "min_delta": 0.0,
+      "scope": {
+        "paths": ["bench/ConcatD"],
+        "tags": ["多模态分核切分", "tiling-regime"]
+      },
+      "transport": {
+        "mode": "file"
+      }
+    },
+    {
+      "agent_id": "codex-cross-review",
+      "display": "Codex 跨算子机制评审",
+      "kind": "codex",
+      "enabled": true,
+      "min_delta": 3.0,
+      "scope": {
+        "paths": [],
+        "tags": [
+          "async-pipeline",
+          "双缓冲异步流水",
+          "deterministic-sync",
+          "跨核确定性同步",
+          "simd-transpose",
+          "SIMD 转置向量化"
+        ]
+      },
+      "transport": {
+        "mode": "file"
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ struct EscapeAndBackfillBannerView: View {
 
     private var lang: AppLanguage { store.lang }
     private var cal: ProblemCalibration? { problem.calibration }
+    private var backfill: BackfillStatusReport? { store.backfillStatus }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -32,26 +33,175 @@ struct EscapeAndBackfillBannerView: View {
             }
 
             if let missing = cal?.unpairedBucketCount, missing > 0 {
-                HStack(spacing: 10) {
-                    Image(systemName: "waveform.badge.exclamationmark")
-                        .foregroundStyle(.orange)
+                unpairedBanner(missing: missing)
+            }
+        }
+    }
+
+    /// Orange banner: only rendered while this operator actually has unpaired buckets.
+    /// Primary source is the free `scheduler.backfill` passthrough that ships inside
+    /// `opsb status --json`; the richer `opsb bench backfill-status` probe is only a fallback
+    /// for older CLIs. Missing data degrades to an explicit muted row — never blank, never a crash.
+    private func unpairedBanner(missing: Int) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "waveform.badge.exclamationmark")
+                .foregroundStyle(.orange)
+                .padding(.top, 1)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 7) {
                     Text(lang.tr(
                         "发现 \(missing) 个新增性能桶缺少基线配对耗时",
                         "\(missing) perf bucket(s) missing baseline pairing"
                     ))
                     .font(.system(size: 11, weight: .medium))
-                    Spacer()
-                    Button(lang.tr("一键补测 (~20s)", "Backfill (~20s)")) {
-                        Task { await store.backfillProblem(problem.title) }
+
+                    if let bf = compact {
+                        SemanticPill(text: "B0 · T\(bf.tier)", icon: "bolt.horizontal.fill", compact: true)
+                        SemanticPill(
+                            text: bf.autoEnabled
+                                ? lang.tr("自动调度已开启", "AUTO ON")
+                                : lang.tr("自动调度关闭", "AUTO OFF"),
+                            compact: true
+                        )
+                        if bf.running {
+                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                            SemanticPill(
+                                text: lang.tr("补测中 \(bf.runningTitle ?? "—")", "RUNNING \(bf.runningTitle ?? "—")"),
+                                compact: true
+                            )
+                        } else if (bf.queuedCount ?? 0) > 0 {
+                            SemanticPill(text: lang.tr("已排队 \(bf.queuedCount ?? 0)", "QUEUED \(bf.queuedCount ?? 0)"), compact: true)
+                        } else {
+                            SemanticPill(text: lang.tr("调度器待触发", "SCHEDULER IDLE"), compact: true)
+                        }
+                    } else if let bf = backfill, bf.available {
+                        if bf.running.active {
+                            ProgressView().controlSize(.small).scaleEffect(0.7)
+                            SemanticPill(text: lang.tr("自动补测中", "AUTO BACKFILLING"), compact: true)
+                        } else {
+                            SemanticPill(text: lang.tr("调度器待触发", "SCHEDULER IDLE"), compact: true)
+                        }
+                    } else if backfill != nil {
+                        SemanticPill(text: lang.tr("自动调度未就绪", "AUTO SCHEDULER N/A"), compact: true)
+                    } else {
+                        ProgressView().controlSize(.small).scaleEffect(0.7)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.orange)
-                    .controlSize(.mini)
                 }
-                .padding(9)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+
+                detailLine(missing: missing)
+            }
+
+            Spacer(minLength: 6)
+
+            Button {
+                Task { await store.backfillProblem(problem.title) }
+            } label: {
+                if store.isBackfilling {
+                    ProgressView().controlSize(.small).scaleEffect(0.7)
+                } else {
+                    Text(lang.tr("立即补测 (~20s)", "Backfill now (~20s)"))
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .controlSize(.mini)
+            .disabled(store.isBackfilling)
+
+            Button {
+                Task {
+                    await store.reloadBackfillStatus(force: true)
+                    await store.refreshLocal()
+                }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 9.5, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .help(lang.tr("刷新自动补测状态", "Refresh auto-backfill status"))
+        }
+        .padding(9)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.10)))
+    }
+
+    @ViewBuilder
+    private func detailLine(missing: Int) -> some View {
+        if let bf = compact {
+            HStack(spacing: 8) {
+                Text(lang.tr(
+                    "调度器未配对 \(bf.unpairedTotal)（本算子 \(bf.unpairedByOperator[problem.title] ?? missing)）",
+                    "scheduler unpaired \(bf.unpairedTotal) (this operator \(bf.unpairedByOperator[problem.title] ?? missing))"
+                ))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
+                if let q = bf.queuedCount, q > 0 {
+                    Text(lang.tr("排队 \(q) 个会话", "queued \(q) session(s)"))
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                if let eta = bf.etaSec {
+                    Text(lang.tr("预计 \(fmt(eta))", "ETA \(fmt(eta))"))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange)
+                }
+                if let wall = bf.etaWallSec, let eta = bf.etaSec, wall > eta + 1 {
+                    Text(lang.tr("含节流 \(fmt(wall))", "w/ throttle \(fmt(wall))"))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                if let run = bf.lastRun, let title = run.title, !title.isEmpty {
+                    Text(lang.tr("上次 \(title) \(run.result ?? "")",
+                                 "last \(title) \(run.result ?? "")").trimmingCharacters(in: .whitespaces))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                if bf.unpairedTotal == 0 && (bf.queuedCount ?? 0) == 0 {
+                    Text(lang.tr("（调度器已无待补测，校准缓存可能滞后）",
+                                 "(scheduler reports none left; calibration cache may lag)"))
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+        } else if let bf = backfill, bf.available {
+            HStack(spacing: 8) {
+                Text(lang.tr("调度器未配对 \(bf.unpairedCount) · 排队 \(bf.queuedCount)",
+                             "scheduler unpaired \(bf.unpairedCount) · queued \(bf.queuedCount)"))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                if let eta = bf.etaSec {
+                    Text(lang.tr("预计 \(Int(eta))s", "ETA \(Int(eta))s"))
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.orange)
+                }
+                Spacer()
+            }
+        } else {
+            HStack(spacing: 6) {
+                Text(lang.tr(
+                    "自动补测状态不可用，已降级为手动补测；不影响其它功能。",
+                    "Auto-backfill status unavailable; manual override still works."
+                ))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                if let reason = backfill?.reason, !reason.isEmpty {
+                    Text("[\(reason)]")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
             }
         }
+    }
+
+    private var compact: BackfillPassthrough? { store.snapshot?.scheduler.backfill }
+
+    private func fmt(_ seconds: Double) -> String {
+        if seconds >= 90 {
+            return String(format: "%.1f min", seconds / 60.0)
+        }
+        return String(format: "%.0f s", seconds)
     }
 }
 

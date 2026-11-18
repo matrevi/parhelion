@@ -8,6 +8,7 @@ import sys
 from ..config import ConfigRepository
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.auth_service import get_auth_status
+from ..services.backfill_status_service import probe_backfill_compact
 from ..services.npu_service import poll_npu_telemetry
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.skills_service import get_skills_status
@@ -29,6 +30,14 @@ def run_status(args: argparse.Namespace) -> int:
         payload["npu"] = {"online": False, "ssh_host": ssh_host, "skipped": True, "die_locks": [], "tasks": []}
     else:
         payload["npu"] = poll_npu_telemetry(ssh_host, probs_by_title)
+
+    # `scheduler.backfill` — passthrough of the B0 auto-backfill lane (scheduler/backfill.py).
+    # Hand-assembled here because `build_status()` never sees `SchedulerEngine.summary()`.
+    # Hard-capped at 200 ms and cached on the ledger sha: `opsb status` must stay fast, and
+    # a missing/slow/broken module degrades to null instead of raising.
+    payload["scheduler"]["backfill"] = (
+        None if getattr(args, "no_backfill", False) else probe_backfill_compact(ws)
+    )
 
     payload["auth"] = get_auth_status(use_cache=True)
     payload["skills"] = get_skills_status()

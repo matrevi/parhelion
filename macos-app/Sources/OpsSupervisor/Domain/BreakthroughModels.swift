@@ -43,4 +43,7 @@ struct BreakthroughCatalogResponse: Codable {
     let threshold: Double
     let directory: String
     let entries: [BreakthroughEntry]
+    /// Agent receipts collected by `opsb bridge collect` (additive field on index.json).
+    let summaries: [BreakthroughSummary]?
+    let summaryCount: Int?
 }

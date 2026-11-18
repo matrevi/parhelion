@@ -32,12 +32,16 @@ echo "==> [3/4] Assembling OpsSupervisor.app bundle..."
 cp "$BIN_PATH" "$APP_BUNDLE/Contents/MacOS/OpsSupervisor"
 chmod +x "$APP_BUNDLE/Contents/MacOS/OpsSupervisor"
 
-# Bundle embedded CLI, Scheduler, Bench-Specs, and Breakthrough Playbook inside Contents/Resources/
-for subdir in cli scheduler bench-specs breakthrough; do
+# Bundle embedded CLI, Scheduler, Bench-Specs, Breakthrough Playbook and Bridge protocol
+# inside Contents/Resources/ (bridge runtime state — inbox/outbox/ledger — is excluded).
+for subdir in cli scheduler bench-specs breakthrough bridge; do
     rm -rf "$APP_BUNDLE/Contents/Resources/$subdir"
     if [[ -d "$SUPERVISOR_ROOT/$subdir" ]]; then
         mkdir -p "$APP_BUNDLE/Contents/Resources/$subdir"
-        rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.state' "$SUPERVISOR_ROOT/$subdir/" "$APP_BUNDLE/Contents/Resources/$subdir/"
+        rsync -a --exclude='__pycache__' --exclude='*.pyc' --exclude='.state' \
+              --exclude='ledger.jsonl' --exclude='inbox' --exclude='outbox' --exclude='*.lock' \
+              "$SUPERVISOR_ROOT/$subdir/" "$APP_BUNDLE/Contents/Resources/$subdir/"
+        mkdir -p "$APP_BUNDLE/Contents/Resources/$subdir/inbox" "$APP_BUNDLE/Contents/Resources/$subdir/outbox"
     fi
 done
 chmod +x "$APP_BUNDLE/Contents/Resources/cli/opsb" "$APP_BUNDLE/Contents/Resources/cli/opsb_core/probe/npu_probe.py"

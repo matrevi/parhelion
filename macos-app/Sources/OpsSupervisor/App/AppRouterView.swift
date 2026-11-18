@@ -4,6 +4,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
     case contest
     case npuMonitor
     case breakthroughs
+    case bridge
     case workspaces
 
     var id: String { rawValue }
@@ -13,6 +14,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         case .contest: return lang.tr("赛题与榜单", "Contest & Operators")
         case .npuMonitor: return lang.tr("NPU 遥测与队列", "NPU & Task Queues")
         case .breakthroughs: return lang.tr("突破经验库", "Breakthroughs")
+        case .bridge: return lang.tr("经验转交", "Experience Bridge")
         case .workspaces: return lang.tr("工作区管理", "Workspaces")
         }
     }
@@ -22,6 +24,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         case .contest: return lang.tr("实时总分 · 50 例对标", "Leaderboard · 50-Case Ratios")
         case .npuMonitor: return lang.tr("示波遥测 · 提交与门禁", "Telemetry · Queue · Gate")
         case .breakthroughs: return lang.tr("结构化经验 · Δ 筛选", "Structured Playbook · Δ Filter")
+        case .bridge: return lang.tr("Agent 投递 · 回执台账", "Agent Delivery · Receipts")
         case .workspaces: return lang.tr("项目切换 · 零噪声脚手架", "Projects · Clean Scaffolder")
         }
     }
@@ -31,6 +34,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         case .contest: return "chart.bar.xaxis"
         case .npuMonitor: return "cpu.fill"
         case .breakthroughs: return "sparkles.rectangle.stack.fill"
+        case .bridge: return "arrow.triangle.branch"
         case .workspaces: return "folder.badge.gearshape"
         }
     }
@@ -60,6 +64,7 @@ struct AppRouterView: View {
                     case .contest: ContestOverviewView()
                     case .npuMonitor: NpuMonitorView()
                     case .breakthroughs: BreakthroughLibraryView()
+                    case .bridge: BridgePanelView()
                     case .workspaces: WorkspaceManagerView()
                     }
                 } else {
@@ -236,6 +241,16 @@ struct AppRouterView: View {
                 let cnt = store.breakthroughEntries.filter { $0.deltaRaw >= store.breakthroughThreshold }.count
                 if cnt > 0 {
                     Text("\(cnt)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color(red: 0.92, green: 0.52, blue: 0.10).opacity(0.16)))
+                }
+            case .bridge:
+                let pending = store.bridgeStatus?.totals.pending ?? 0
+                if pending > 0 {
+                    Text("\(pending)")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
                         .padding(.horizontal, 6)

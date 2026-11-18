@@ -11,6 +11,7 @@ from typing import Any
 
 from ..config import SUPERVISOR_ROOT, ConfigRepository, invalidate_ttl_cache, read_json, resolve_python_exe, utc_now
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
+from ..services.backfill_status_service import filter_backfill_status, read_backfill_status
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.scaffold_service import scaffold_operator_bench
 
@@ -48,6 +49,31 @@ def run_bench(args: argparse.Namespace) -> int:
     ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
     zh = (getattr(args, "lang", None) or cfg.get("language", "zh")) == "zh"
     sub = args.bench_cmd
+
+    if sub == "backfill-status":
+        # Contract: `python -m scheduler.backfill_status --json` (owned by the auto-backfill workstream).
+        report = filter_backfill_status(read_backfill_status(ws), getattr(args, "problem", None))
+        if args.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if not report["available"]:
+            print(
+                f"Auto-backfill status unavailable ({report['reason']}) · "
+                f"fallback: calibration.unpaired_bucket_count + manual `opsb bench backfill <Problem>`"
+            )
+            return 0
+        running = report.get("running") or {}
+        print(
+            f"Auto-backfill: {report['unpaired_count']} unpaired · {report['queued_count']} queued · "
+            f"running={'yes' if running.get('active') else 'no'} · "
+            f"last_run={report.get('last_run') or '—'} · eta={report.get('eta_sec')}s · "
+            f"ledger={str(report.get('ledger_sha') or '—')[:12]}"
+        )
+        for item in (report.get("unpaired") or [])[:10]:
+            print(f"  ? {item.get('problem') or '—':<22} {item.get('bucket_id') or item.get('label')} [{item.get('stratum')}]")
+        for item in (report.get("queued") or [])[:10]:
+            print(f"  → {item.get('problem') or '—':<22} {item.get('bucket_id') or item.get('label')} [{item.get('stratum')}]")
+        return 0
 
     if sub == "init":
         rc, parsed, _ = _call_bridge_subcmd(ws, "bench-init", ["--title", args.problem] if args.problem else [])

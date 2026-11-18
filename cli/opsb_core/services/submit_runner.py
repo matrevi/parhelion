@@ -272,6 +272,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
         try:
             from ..config import ConfigRepository
             from .breakthrough_service import sync_breakthroughs_from_items
+            from .bridge_service import sync_after_breakthrough_change
             from .queue_service import compute_workspace_snapshot
 
             cfg = ConfigRepository.load()
@@ -279,6 +280,8 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
             thresh = float(snap["scheduler"].get("breakthrough_threshold", 5.0))
             probs_map = {p["title"]: p for p in snap["problems"]}
             sync_breakthroughs_from_items(workspace, snap["submission_queue"], probs_map, thresh)
+            # Auto-archived entries must reach the subscribed agents without a manual sync.
+            sync_after_breakthrough_change(workspace)
         except Exception:
             pass
     return 0
