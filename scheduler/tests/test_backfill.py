@@ -21,6 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from scheduler.backfill import (  # noqa: E402
     LANE_BACKFILL,
     TICKET_TIER,
+    build_measurement_plan,
     BackfillConfig,
     BackfillLedger,
     BackfillScheduler,
@@ -155,6 +156,149 @@ class PlanPureFunctionTest(unittest.TestCase):
         self.assertEqual(len(per["runs"]), 3)
 
         self.assertEqual(build_perf_plan("no flags", [])["runs"], [])
+
+
+class MeasurementPlanTest(unittest.TestCase):
+    """kperf (hardware Task Duration) must outrank perf.py; `--root` retargeting is recorded."""
+
+    def _repo(self, tmp: str, files: dict[str, str]) -> pathlib.Path:
+        repo = pathlib.Path(tmp) / "op"
+        (repo / "validation").mkdir(parents=True, exist_ok=True)
+        for name, text in files.items():
+            (repo / "validation" / name).write_text(text)
+        return repo
+
+    def test_kperf_wins_over_perf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, {
+                "kperf.py": "ap.add_argument('--cases', default='')\nap.add_argument('--device', default=0)\n"
+                            "ap.add_argument('--root', default='')\n",
+                "perf.py": "ap.add_argument('--cases', default='')\n",
+            })
+            plan = build_measurement_plan(repo, ["b1", "b2"])
+            self.assertEqual(plan["tool"], "kperf")
+            self.assertEqual(plan["mode"], "kperf_batch")
+            self.assertEqual(plan["runs"], [["--cases", "b1,b2"]])
+            self.assertTrue(plan["uses_root"])
+            self.assertTrue(plan["supports_device"])
+
+    def test_perf_fallback_without_kperf(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, {"perf.py": "ap.add_argument('--filter', default='')\n"})
+            plan = build_measurement_plan(repo, ["b1"])
+            self.assertEqual(plan["tool"], "perf")
+            self.assertEqual(plan["mode"], "full_spectrum")
+            self.assertFalse(plan["uses_root"])
+
+    def test_empty_bucket_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(build_measurement_plan(pathlib.Path(tmp), [])["runs"], [])
+
+
+class DeterministicFailureTest(unittest.TestCase):
+    """A bucket id absent from the harness case table must not burn retries or builds."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.sched = _FakeScheduler(pathlib.Path(self.tmp.name), [_row("A", "ghost_proxy", 1.0)])
+        self.sched.save_config(min_interval_sec=0.0)
+        self.sched.ledger.append({
+            "event": "finished", "session_key": "s0", "result": "case_not_in_harness",
+            "bucket_keys": [bucket_key("A", "ghost_proxy", SHA)], "buckets": ["ghost_proxy"],
+            "title": "A", "baseline_sha": SHA, "ended_epoch": self.sched.clock(),
+        })
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_never_requeued_even_when_forced(self) -> None:
+        self.assertEqual(self.sched.plan(), [])
+        self.assertEqual(self.sched.plan(force=True), [])
+        self.assertEqual(self.sched.dispatch(force=True, dry_run=False, npu=_free_npu())["reason"], "queue_empty")
+
+    def test_reported_as_unmeasurable_not_queued(self) -> None:
+        payload = self.sched.status(npu=_free_npu())
+        self.assertEqual(payload["queued_count"], 0)
+        self.assertEqual(payload["unmeasurable"][0]["title"], "A")
+        self.assertEqual(payload["unmeasurable"][0]["buckets"], ["ghost_proxy"])
+
+
+class UnmeasuredBucketTest(unittest.TestCase):
+    """Harness ran fine but produced no row for an id -> deterministic, never retried."""
+
+    def test_partial_success_parks_the_missing_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "real", 1.0), _row("A", "ghost", 0.5)])
+            sched.save_config(min_interval_sec=0.0)
+            sched.runner = sched._recording_runner(["MS_PROF case=real median=9.0 min=8.0"])
+            out = sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
+            self.assertEqual(out["result"], "ok")
+            self.assertEqual(list(out["measured"]), ["real"])
+            rec = [r for r in sched.ledger.records() if r.get("event") == "finished"][-1]
+            self.assertEqual(rec["unmeasured_buckets"], ["ghost"])
+            # ghost is deterministic-unmeasurable: gone from the queue, reported instead
+            self.assertEqual(sched.plan(), [])
+            self.assertEqual(sched.plan(force=True), [])
+            payload = sched.status(npu=_free_npu())
+            self.assertEqual(payload["unmeasurable"][0]["buckets"], ["ghost"])
+            self.assertEqual(payload["unmeasurable"][0]["reason"], "case_not_in_harness")
+
+
+class BudgetTest(unittest.TestCase):
+    def test_cold_cache_pays_the_build_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "a1", 1.0), _row("B", "b1", 1.0)])
+            for job in sched.plan():
+                self.assertEqual(job["est_build_sec"], sched.config().est_build_sec)
+                self.assertEqual(job["budget_sec"], round(sched.est_session_sec() + sched.config().est_build_sec, 1))
+            payload = sched.status(npu=_free_npu())
+            self.assertAlmostEqual(payload["eta_sec"], payload["eta_lock_sec"] + payload["eta_build_sec"], places=1)
+
+    def test_warm_cache_drops_the_build_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "a1", 1.0)])
+            # a *successful* session keeps its worktree -> warm cache for 7 days
+            sched.ledger.append({
+                "event": "finished", "session_key": "prev", "result": "ok", "measured_count": 1,
+                "build_ok": True, "title": "A", "baseline_sha": SHA, "ended_epoch": sched.clock(),
+            })
+            job = sched.plan(force=True)[0]
+            self.assertEqual(job["est_build_sec"], 0.0)
+
+    def test_built_but_unmeasured_still_warms_the_cache(self) -> None:
+        """A 136s build is not thrown away because the case table turned out to lack the id."""
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "a1", 1.0)])
+            sched.ledger.append({
+                "event": "finished", "session_key": "prev", "result": "case_not_in_harness",
+                "build_ok": True, "built": True, "title": "A", "baseline_sha": SHA,
+                "ended_epoch": sched.clock(),
+            })
+            self.assertEqual(sched.plan(force=True)[0]["est_build_sec"], 0.0)
+
+    def test_failed_session_does_not_warm_the_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "a1", 1.0)])
+            sched.ledger.append({
+                "event": "finished", "session_key": "prev", "result": "build_failed",
+                "build_ok": False, "title": "A", "baseline_sha": SHA, "ended_epoch": sched.clock(),
+            })
+            self.assertEqual(sched.plan(force=True)[0]["est_build_sec"], sched.config().est_build_sec)
+
+
+class ForceBypassTest(unittest.TestCase):
+    def test_force_bypasses_auto_backoff_but_not_the_attempt_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            sched = _FakeScheduler(pathlib.Path(tmp), [_row("A", "a1", 1.0)])
+            key = bucket_key("A", "a1", SHA)
+            sched.ledger.append({"event": "finished", "session_key": "s0", "result": "no_timing_evidence",
+                                 "bucket_keys": [key], "ended_epoch": sched.clock()})
+            self.assertEqual(sched.plan(), [])                     # auto: backoff
+            self.assertEqual(len(sched.plan(force=True)), 1)       # manual: immediate retry
+            for i in range(sched.config().max_attempts_per_key):
+                sched.ledger.append({"event": "finished", "session_key": f"s{i}", "result": "no_timing_evidence",
+                                     "bucket_keys": [key], "ended_epoch": sched.clock()})
+            self.assertEqual(sched.plan(force=True), [])           # cap still applies
 
 
 class LedgerTest(unittest.TestCase):
@@ -400,7 +544,10 @@ class StatusContractTest(unittest.TestCase):
         self.assertEqual(payload["tier"], 0)
         self.assertEqual(payload["unpaired_count"], 3)
         self.assertEqual(payload["queued_count"], 2)  # coalesced per operator
-        self.assertEqual(payload["eta_sec"], round(sum(j["est_sec"] for j in payload["queued"]), 1))
+        # eta = perf budget + build budget for cold caches; eta_lock = die time only
+        self.assertEqual(payload["eta_sec"], round(sum(j["budget_sec"] for j in payload["queued"]), 1))
+        self.assertEqual(payload["eta_lock_sec"], round(sum(j["est_sec"] for j in payload["queued"]), 1))
+        self.assertGreater(payload["eta_build_sec"], 0.0)
         self.assertEqual(len(payload["ledger_sha"]), 64)
         self.assertIsNone(payload["running"])
         self.assertIsNone(payload["last_run"])
@@ -452,7 +599,7 @@ class CalibrationMergeTest(unittest.TestCase):
 
             class _Store:
                 def timings_for(self, title, sha):
-                    return {"cases": store_cases, "runtime_soc": soc}
+                    return {"cases": store_cases, "runtime_soc": soc, "modality": "profiler"}
 
             cal.backfill = _Store()
         else:
@@ -475,12 +622,36 @@ class CalibrationMergeTest(unittest.TestCase):
         self.assertEqual(modality, "profiler")
 
     def test_cross_soc_backfill_is_rejected(self) -> None:
+        """`exec`/`dev_us`-derived backfill values carry the host floor: same epoch only."""
+        from scheduler.calibration import BenchmarkCalibrator
+        from scheduler.estimator import ScoreEstimator
+
         buckets = self._buckets()
         b0, b1 = buckets[0]["id"], buckets[1]["id"]
         ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
-        cal = self._cal(ws, {b1: 21.5}, soc="soc-b")
+        cal = BenchmarkCalibrator(ws, estimator=ScoreEstimator(ws), specs_root=BENCH_SPECS)
+        cal.backfill = type(
+            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": "soc-b",
+                                                          "modality": "exec_normalized"}}
+        )()
         timings, _t, _soc, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
-        self.assertNotIn(b1, timings)  # hardware-epoch invariant preserved
+        self.assertNotIn(b1, timings)
+
+    def test_cross_soc_profiler_backfill_is_accepted(self) -> None:
+        """Hardware profiler Task Duration is device time, hence epoch-robust."""
+        from scheduler.calibration import BenchmarkCalibrator
+        from scheduler.estimator import ScoreEstimator
+
+        buckets = self._buckets()
+        b0, b1 = buckets[0]["id"], buckets[1]["id"]
+        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-b", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        cal = BenchmarkCalibrator(ws, estimator=ScoreEstimator(ws), specs_root=BENCH_SPECS)
+        cal.backfill = type(
+            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": "soc-a",
+                                                          "modality": "profiler"}}
+        )()
+        timings, _t, _soc, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
+        self.assertEqual(timings.get(b1), 21.5)
 
     def test_backfill_supplies_timings_when_no_log_exists(self) -> None:
         buckets = self._buckets()

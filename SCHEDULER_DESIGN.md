@@ -135,9 +135,15 @@ Declarative benchmark specifications in `ops-supervisor/bench-specs/<Problem>/{c
 
 ### 3.4 The 4-Stage Submission Gate & Token-Bucket Reserve
 
+> **S1 log verdicts are structured, not substring scans** (`gate.py::parse_log_verdicts`,
+> §7). A `git checkout` echo quoting an older commit subject
+> (`Previous HEAD position was 39fea6c … GATE_FAIL`) used to reject a genuinely passing
+> source; `VALIDATION_PASSED` / `EXTENDED_RC=0` is now diagnostic only, because
+> `run-npu.sh` prints it unconditionally.
+
 | Stage | Name | Pass Predicate | Failure Tag / Action |
 |---|---|---|---|
-| **S1** | `SAFETY` | `result.json` `exit_code == 0`, 40-char SHA git tree verified, `FAST_LANE != 1`, `EXTENDED_PASSED` present, zero `EXTENDED_FAILED`/`VALIDATION_FAILED`/`STRESS_CASE_FAIL`/`Wrong Answer:`, all `mismatched=0/N`, `GATE_DET ... identical=True`. Kernel commits touching `SetAtomicAdd`/`SyncAll` with no prior online `Pass` **must** carry `STRESS_DONE failures=0` or `DETERMINISTIC`. | `REJECTED_GATE` (never enqueued; even `override approve` sdkot bypass S1) |
+| **S1** | `SAFETY` | `result.json` `exit_code == 0`, 40-char SHA git tree verified, `FAST_LANE != 1`, `EXTENDED_PASSED` present, **line-anchored** log verdicts (`^EXTENDED_FAILED`, `^EXTENDED_CASES_FAILED`, `^VALIDATION_FAILED`, `^STRESS_CASE_FAIL`, `^NON_DETERMINISTIC`, `^GATE_FAIL`, `^Wrong Answer:`, `^EXTENDED_RC=[1-9]`) all absent, all `mismatched=0/N`, `GATE_DET ... identical=True`. Kernel commits touching `SetAtomicAdd`/`SyncAll` with no prior online `Pass` **must** carry `STRESS_DONE failures=0` or `DETERMINISTIC`. | `REJECTED_GATE` (never enqueued; even `override approve` sdkot bypass S1) |
 | **S2** | `NOISE_FLOOR` | $\Delta_{\text{expected}} \ge +2.50\text{ pts}$ ($\approx 0.93\,\sigma_{\text{jitter}}$), **OR** $S_{p,\text{curr}} = 0$ / `status != "Pass"` (`CRITICAL_RESTORE`), **OR** explicit `force=True` with $\Delta_{\text{expected}} \ge 0$ (and `cand_sha != active_sha`). | `HOLD_LOW_GAIN` (parked in `held_items` to preserve daily quota) |
 | **S3** | `CIRCUIT_BREAKER` | Rolling $12\text{h}$ window compares **decay-adjusted contemporary scores** (`discount_draw_to_contemporary`) so 8-day-old peaks never penalize new-epoch passes; trips at $\ge 6$ consecutive non-improving shots or $\ge 2$ consecutive zeroing errors (`WA`/`TLE`/`RE`). `CRITICAL_RESTORE` passes via `HALF_OPEN`. | `CIRCUIT_OPEN` (`Switch Baseline` required) |
 | **S4** | `QUOTA_RESERVE` | Dual Token Bucket: ① Rate bucket ($1\text{ token} / 190\text{s}$ $\to$ `RATE_WAIT`); ② Beijing-day (`UTC+8` `00:00` reset) 50-shot budget reserves $\max(2, N_{\text{true\_restore}} + 1)$ slots strictly for problems with `true_restore_gain >= 2.5` or $S_p = 0$. Approved queue drains by `(CRITICAL_RESTORE desc, d_p * delta_expected desc)`. | `HOLD_LOW_GAIN` (if inside closing reserve) or `RATE_WAIT` |
@@ -253,7 +259,7 @@ and since $tier_O > tier_B = 0$, we get `admit(B) ⇒ ¬∃O waiting`. Aging ($w
 
 **Two more independent barriers** make the lemma hold even if admission were bypassed:
 1. The die is a kernel `flock(LOCK_EX)` on `bench-device0.lock`. `B0` performs only `LOCK_EX | LOCK_NB` attempts (never a blocking `flock -w`), so it can never enter the VFS waitqueue ahead of an operator's blocking locker — the “convoy starvation” pathology from §1.1.
-2. `B0` holds the die for **perf only** (`python3 validation/perf.py`, no `cmake`/`compiler`, no `git checkout`, no `build.sh`, no `results/` write, no repo lock) with `try/finally` unlock + `perf_timeout_sec` watchdog, so the worst-case delay it can impose on a newly arriving operator is one bounded perf pass (`~20s`), never a build. The session only starts when the server working tree *is* the baseline commit — or a **C++-identical** one (empty `op_host/`+`op_kernel/` diff, the same fingerprint-identity rule as §3.1, logged as `head_used`/`cpp_identical_head`); otherwise it aborts with `server_head_mismatch` **before** the die, rather than checking out (and potentially rebuilding) the operator's tree.
+2. `B0` holds the die for **perf only** (`python3 validation/perf.py`, no `cmake`/`compiler`, no `git checkout`, no `build.sh`, no `results/` write, no repo lock) with `try/finally` unlock + `perf_timeout_sec` watchdog, so the worst-case delay it can impose on a newly arriving operator is one bounded perf pass (`~20s`), never a build. The baseline commit is **materialized off to the side** (`git worktree add --detach /home/developer/work/.backfill/<Title>-<sha8> <sha>`, or a `git archive` export when worktree is unavailable), built there, and measured with the current `validation/` harness retargeted via `--root`; the operator's working tree is never checked out, rebuilt or written (§6.7).
 
 The client-side gate is stricter than the server-side one: `admission()` refuses to *dispatch* at all when telemetry is offline (`npu_telemetry_offline`, fail-closed), a die lock is `HELD`, `npu_tickets[]` contains any `tier >= 1` entry, or any `PROFILER/PRECISION/FAST-LANE/STRESS/BUILD` task is active. `force=True` — the UI button — bypasses **only** the AUTO throttle (`min_interval_sec`, `max_sessions_per_hour`, `lane_disabled`, backoff); it can never bypass these four hardware-priority predicates.
 
@@ -289,7 +295,9 @@ Independent module entry (no new `opsb` subcommand, `cli/` untouched); pure `std
  "eta_sec":  176.0,
  "ledger_sha": "e3b0c442…b855"}
 ```
-plus additive `eta_wall_sec`, `stale_inflight[]`, `admission` (the full proof: `allowed`, `reasons[]`, `details.die_locks/operator_tickets_waiting/operator_ticket_owners`), `config`, `paired_via_backfill`, `derived_tiers`. `--dispatch` is the only mutating mode; `--dry-run` prints the session plan *and* the admission proof without touching the die; `--offline` is fail-closed (plan only). Runtime: **86 ms offline / 1.1 s live** for all 10 operators.
+plus additive `eta_wall_sec`, `eta_lock_sec`, `eta_build_sec`, `unmeasurable[]`, `stale_inflight[]`, `admission` (the full proof: `allowed`, `reasons[]`, `details.die_locks/operator_tickets_waiting/operator_ticket_owners`), `config`, `paired_via_backfill`, `derived_tiers`.
+
+`unmeasurable[]` is the honest counterpart of `queued[]`: a bucket whose id the operator's harness does not implement (`case_not_in_harness`, or a session that completed without emitting a row for it) can never be paired by waiting, so it is parked, never retried, and surfaced for a spec fix instead of burning rebuilds. `--dispatch` is the only mutating mode; `--dry-run` prints the session plan *and* the admission proof without touching the die; `--offline` is fail-closed (plan only). Runtime: **86 ms offline / 1.1 s live** for all 10 operators.
 
 `cli_bridge status` gains one additive field `backfill = {lane, tier, auto_enabled, unpaired_by_operator{}, unpaired_total, running, running_title, last_run, est_session_sec, ledger_sha}` computed from the already-loaded calibration docs (zero extra scans, `status` stays inside the app's `3.5 s` IPC budget), and a new `backfill` subcommand makes the existing `opsb bench backfill <Title>` button path (`cli/opsb_core/commands/bench_cmd.py → scheduler.cli_bridge backfill`) finally resolve to real work instead of a `127` fallback. The remote probe additionally publishes `npu_tickets[]` (read-only `/tmp/opsb-npu-tickets/*.json`) and a `BACKFILL` task tag for a B0 die holder.
 
@@ -301,6 +309,127 @@ No poller, no resident process (§ “no background loops”): the planner is pu
 
 Auto pacing (`BackfillConfig`, `<state>/backfill_config.json`): `min_interval_sec = 900`, `max_sessions_per_hour = 4`, `max_attempts_per_key = 3`, `backoff_sec = 3600`, `max_buckets_per_session = 32`, `est_session_sec = 22` (self-calibrating to the ledger median once `>= 2` successful sessions exist). At the measured `22s` per session, the whole 47-bucket deficit costs `176s` of die time — i.e. **≈ 1.1 % of one 4.4-hour operator day**, while removing the `2.6x` unpaired `sigma` penalty from every candidate estimate.
 
-### 6.7 Verification without occupying the die
-Per the hard constraint (“offline replay or `--dry-run`, never grab the die”), the lane ships with `scheduler/tests/test_backfill.py` (41 stdlib `unittest` cases, `0.7s`, no SSH): ticket-ordering proof, coalescing/dedup, `build_perf_plan` per repo flag dialect, ledger torn-tail/join semantics, all admission predicates (including *“a waiting Q1 ticket blocks even `force=True`”*), dry-run-never-executes, one-session-per-operator, never-rerun-after-success, backoff + `max_attempts`, dead-pid resume vs live-pid single-flight, `exec=` host-floor normalisation, the status contract, the calibration merge (holes filled, values never overridden, cross-SoC rejected), and three read-only real-workspace invariants (census `==` `calibration.json::unpaired_bucket_count` for all 10 operators; `status` additive + `< 5s`; dry-run writes nothing).
+### 6.7 Materializing the baseline commit (the run that actually produces pairings)
+A pinned baseline is almost never the server working tree HEAD (each repo sits on its newest
+commit), so a session must **reconstruct the baseline off to the side** without touching the
+operator's checkout:
 
+1. **Materialize** — `git worktree add --detach /home/developer/work/.backfill/<Title>-<sha8> <sha>`
+   (detached; the operator tree keeps its HEAD, its package and its dirty state). Fallback when
+   worktree support/permissions are missing: `git archive <sha> | tar -x -C <dir>` (the project
+   `build.sh` is git-independent) — recorded as `wt_method: git_archive` instead of `worktree`.
+2. **Phase A build, `0.0s` die lock** — `source set_env.sh; sed s/COMPUTE_UNIT=…/ build.sh | bash -s -- -j4`
+   *inside the worktree*, then `.opsb_backfill_build.json` (`sha, soc, target, rc, build_sec, at`).
+   A warm marker (same sha, `rc == 0`, package present, age `<= build_cache_days = 7`) skips the
+   build entirely; a failed build deletes the worktree so a half-built tree can never be cached.
+3. **Phase B measure, die held** — the *current* `validation/` harness is retargeted at the
+   baseline build (`kperf.py --root <worktree>`, or the current harness injected into the
+   disposable worktree for repos without `--root`), because the baseline's own case table may
+   predate the bucket shapes (`kperf k_8x4096_*` was added after the pinned `59f8065`). The
+   Accel toolkit environment is imported once (`source set_env.sh` → `os.environ`) so `profiler`
+   resolves. Timing rows are parsed by `parse_validation_perf` — the same parser as every
+   `validation.log` — and stored under `(title, baseline_sha)`.
+4. **Cleanup** — a tree with a green marker (`rc == 0`, matching sha, package present) is kept as
+   the build cache **even when the measurement failed** (a `136 s` build must not be thrown away
+   because the case table later turned out not to contain the id); a failed *build*, an expired
+   entry (`> build_cache_days`) or a `--force` rebuild removes it (`worktree remove --force` +
+   `worktree prune`). The ledger field `build_ok` — not `result == ok` — drives `est_build_sec`.
+   The reaper runs at the head of every session, so a dead worktree can always be recovered.
+
+Measured end-to-end (2026-11-18, `MultilabelMarginLoss` @ `59f8065`, 2 buckets, real die):
+
+| quantity | measured |
+|---|---:|
+| Phase A build (cold, `worktree add` + `build.sh -j4`) | **20.0 s** (0.0 s die lock) |
+| Phase B die hold (`kperf --cases k_8x4096_mean,k_8x4096_none`) | **18.35 s** |
+| session wall (`duration_sec`) | **39.47 s** |
+| paired timings | `k_8x4096_mean = 691.3 us`, `k_8x4096_none = 688.48 us` (profiler) |
+| `unpaired` before → after | **47 → 45** (Multilabel `2 → 0`) |
+| warm-cache re-run (same sha) | `build_cached = true`, build skipped, die hold **9.31 s**, `691.2 us` (0.01 % drift) |
+| worktree footprint kept as cache | 11 MiB |
+
+### 6.8 Budget, admission for “idle-run”, and the degradation ladder
+
+**Budget** — `est_build_sec = 55 s` (cold-build prior; the measured cold build is `20 s` for a
+small operator and `136 s` for `StridedSliceGrad`, so the prior is deliberately pessimistic) plus
+`est_session_sec` (learned median of successful die holds, prior `22 s`, measured `18.35 s`).
+`eta_sec = sum(budget_sec)` over `queued[]`, split into `eta_lock_sec` (die time) and
+`eta_build_sec` (CPU-only, no lock). With all 8 sessions cold: **`eta_sec ≈ 539–616 s`
+(`eta_lock_sec ≈ 154–176 s`) ≈ 10 min wall**, of which only ~3 min touches the die.
+
+**Cold-queue reality check (2026-11-18)** — of the 47 unpaired buckets only **11** name a case the
+operator's harness actually implements (Multilabel 2, `PReluGradUpdate` 6, `StridedSliceGrad` 2,
+`ConfusionTransposeD` 1); the other 36 are spec-side proxy ids (`*_proxy`, plus two parser
+artifacts `PReluGradUpdate:min/median`) that no harness can execute. Those are parked as
+`unmeasurable[]` (`case_not_in_harness`) rather than retried, so the honest remaining queue is
+**3 sessions / ≈ 114 s of die+build time** — exactly why the lane must distinguish “waiting” from
+“impossible”.
+
+**Admission for an auto run** (all four must hold; `force` bypasses only the throttle):
+`telemetry online` · `no die lock HELD` · `no ticket with tier >= 1` · `no active
+PROFILER/PRECISION/FAST-LANE/STRESS/BUILD task` — then the tier-0 ticket and `LOCK_EX|LOCK_NB`
+make the operator priority structural (§6.2). A manual “立即补测” additionally skips
+`min_interval_sec`/hourly cap/backoff but still sdkot take a die an operator is waiting for.
+
+**Degradation ladder** (never a silent failure — every rung emits a named `reason` that lands in
+`queued[].last_failure` and `status.last_run`):
+
+| condition | mechanism | reported |
+|---|---|---|
+| `git worktree` unavailable (permissions/old git) | `git archive` export into the same directory | `wt_method: git_archive` |
+| worktree dir dead / stale | `git worktree prune` + rebuild at the head of every session | `reaped: [...]` |
+| disk `bavail < 5 GiB` | refuse before touching anything | `reason: disk_low` |
+| baseline sha absent from the server clone | refuse (no fetch side effects) | `reason: baseline_sha_missing` |
+| no prebuilt package / build fails | delete worktree, keep attempts for backoff | `reason: build_failed` |
+| harness lacks the case ids | inject the current harness, else park the key | `harness_source`, `case_not_in_harness` |
+| `profiler`/toolkit missing from `PATH` | import the sourced environment once | `toolkit_env` |
+| build+measure exceed budgets | `build_timeout_sec`/`perf_timeout_sec` kill + release the die | `reason: build_failed / measurement_rc_nonzero` |
+
+### 6.9 Verification
+Per the hard constraint (“offline replay or `--dry-run`, never grab the die”), the lane ships with `scheduler/tests/test_backfill.py` + `scheduler/tests/test_gate_log_verdicts.py` (61 stdlib `unittest` cases, `<1s`, no SSH in tests): ticket-ordering proof, coalescing/dedup, `build_perf_plan` per repo flag dialect, ledger torn-tail/join semantics, all admission predicates (including *“a waiting Q1 ticket blocks even `force=True`”*), dry-run-never-executes, one-session-per-operator, never-rerun-after-success, backoff + `max_attempts`, dead-pid resume vs live-pid single-flight, `exec=` host-floor normalisation, the status contract, the calibration merge (holes filled, values never overridden, cross-SoC rejected), and three read-only real-workspace invariants (census `==` `calibration.json::unpaired_bucket_count` for all 10 operators; `status` additive + `< 5s`; dry-run writes nothing).
+
+
+---
+
+## 7. S1 `SAFETY` Log Verdicts: Structured, Not Substring (`gate.py::parse_log_verdicts`)
+
+**The bug (live, tonight).** `results/CTCLossV2/2b9d49de…/validation.log` line 3 is a `git checkout`
+echo:
+
+```
+Previous HEAD position was 39fea6c test(det_bad): print first 24 mismatched (t, s) coordinates on GATE_FAIL
+```
+
+The old S1 rule (`for bad_marker in (...): if bad_marker in log_text`) matched the token `GATE_FAIL`
+inside that *quoted commit subject* and rejected the commit (`REJECTED_GATE`, `[S1:SAFETY]
+validation.log contains failure token 'GATE_FAIL'`). The log's own verdict was `VALIDATION_PASSED`,
+and the source went on to score **`52.85 → 56.21` (`+3.36`)** online — the night's only positive
+delta, blocked by the gate.
+
+**The rule.** `parse_log_verdicts()` classifies every non-empty line into exactly one of:
+
+1. **reflog / fetch echo** (`Previous HEAD position was …`, `HEAD is now at …`, `From <url>`,
+   `  a1b2c3d..d4e5f6a  main -> origin/main`, `123 files changed`) → *prose*; a marker there is
+   counted in `echo_tokens_skipped` and never fatal. This is the class that caused the false positive.
+2. **green tail** (`VALIDATION_PASSED`, `EXTENDED_RC=0`) → recorded as `green_tail: true`, purely
+   diagnostic: `run-npu.sh` prints `VALIDATION_PASSED` unconditionally, so it can never override a
+   real verdict (proof: all 14 `EXTENDED_RC=1` logs also print `VALIDATION_PASSED`).
+3. **anchored failure** — the marker is the line's *first* token (an optional `[TAG]` runner prefix is
+   allowed): `^EXTENDED_FAILED`, `^EXTENDED_CASES_FAILED`, `^VALIDATION_FAILED`, `^STRESS_CASE_FAIL`,
+   `^NON_DETERMINISTIC`, `^GATE_FAIL`, `^Wrong Answer:`, and **new** `^EXTENDED_RC=(?!0)\d+`.
+   Only these veto S1.
+4. **everything else** (mid-line mention, markdown table cell, stack-trace text, path names) → prose.
+
+**Two consequences measured over all 328 historical `validation.log` files:**
+
+| | count | detail |
+|---|---:|---|
+| logs the old substring rule rejected | 78 | overwhelmingly genuine failures |
+| **false positives removed** | **1** | `CTCLossV2 2b9d49d` (reflog echo, green tail) |
+| **failures the old rule missed** | **14** | `LayerNormV3 …` `EXTENDED_RC=1` with `VALIDATION_PASSED` and no `EXTENDED_PASSED` (previously caught only indirectly by `MISSING_EXTENDED_PASSED`, i.e. with a misleading reason) |
+| `S1:SAFETY` rejections in `results/submit-queue.jsonl` | 1 | only `CTCLossV2 2b9d49d` — now `SAFETY_OK` (re-evaluated: S1 passes, S2 correctly holds it as *already active at 56.21*) |
+
+**Fixtures** (`scheduler/tests/fixtures/`, byte-derived from the real logs): the trimmed
+`ctclossv2_2b9d49d_reflog_echo.log` must pass; `layer_norm_extended_rc1_with_green_tail.log` must
+fail on `EXTENDED_RC`; `anchored_failure_with_prose.log` carries a genuine `EXTENDED_FAILED`
+alongside table/stack-trace/traceback prose and must fail on line 10 only.

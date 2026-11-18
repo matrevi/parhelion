@@ -399,19 +399,22 @@ class BenchmarkCalibrator:
                 raw_pool[k] = max(3.6, v - dev_ovh)
             modality = "dev_us"
 
-        # B0 backfill pairings are hardware `profiler` measurements of the same baseline commit:
-        # they only *fill holes* (never override a primary log timing) and must not cross a
-        # hardware epoch (the design doc's same-`RUNTIME_SOC` pairing invariant).
+        # B0 backfill pairings only *fill holes* — a primary `validation.log` timing always
+        # wins.  Hardware `profiler` Task Duration is pure device kernel time, so it is
+        # epoch-robust (§3.2's `RUNTIME_SOC` caution is about host-enqueue floors);
+        # `exec`/`dev_us`-derived backfill values DO carry that floor and stay same-epoch only.
         if backfill and backfill.get("cases"):
             bf_cases = backfill["cases"] or {}
             bf_soc = backfill.get("runtime_soc")
-            if not bf_soc or not soc or bf_soc == soc:
+            bf_mod = backfill.get("modality") or "profiler"
+            epoch_ok = (bf_mod == "profiler") or not bf_soc or not soc or bf_soc == soc
+            if epoch_ok:
                 for k, v in bf_cases.items():
                     if k in raw_pool or not isinstance(v, (int, float)) or v <= 0:
                         continue
                     raw_pool[k] = float(v)
                     if modality == "none":
-                        modality = "profiler"
+                        modality = "profiler" if bf_mod == "profiler" else bf_mod
                         soc = soc or bf_soc
 
         matched: dict[str, float] = {}

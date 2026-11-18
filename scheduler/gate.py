@@ -176,6 +176,74 @@ def verdict_stages_list(stages: list[StageResult]) -> list[StageResult]:
 
 
 _MISMATCH_RE = re.compile(r"mismatched=(\d+)/(\d+)")
+
+#: `git` reflog / fetch echo lines: text on them is prose (a commit subject), never a verdict.
+#: Real false positive this guards: `Previous HEAD position was 39fea6c test(det_bad): print
+#: first 24 mismatched (t, s) coordinates on GATE_FAIL` made S1 reject a commit that passed.
+_GIT_ECHO_RE = re.compile(
+    r"^\s*(?:"
+    r"Previous HEAD position was\b"
+    r"|HEAD is now at\b"
+    r"|From\s+(?:https?://|git@|\S+\.git\b)"
+    r"|\*\s*(?:branch|\[new branch\]|\[tag\])"
+    r"|\d+\s+files?\s+changed\b"
+    r"|[0-9a-f]{7,40}\.\.[0-9a-f]{7,40}\s"
+    r"|[0-9a-f]{7,40}\s+(?:[A-Za-z]|\[)"
+    r")"
+)
+
+#: Tokens that, on a *reflog echo* line, are prose — reported but never fatal.
+_FAILURE_TOKENS: tuple[str, ...] = (
+    "EXTENDED_FAILED",
+    "EXTENDED_CASES_FAILED",
+    "VALIDATION_FAILED",
+    "STRESS_CASE_FAIL",
+    "Wrong Answer:",
+    "NON_DETERMINISTIC",
+    "GATE_FAIL",
+)
+
+#: Structured, **line-anchored** failure verdicts. Only these may veto S1.
+_ANCHORED_FAILURE_RES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("EXTENDED_FAILED", re.compile(r"^(?:\[[A-Z_]+\]\s*)?EXTENDED_FAILED\b")),
+    ("EXTENDED_CASES_FAILED", re.compile(r"^(?:\[[A-Z_]+\]\s*)?EXTENDED_CASES_FAILED\b")),
+    ("VALIDATION_FAILED", re.compile(r"^(?:\[[A-Z_]+\]\s*)?VALIDATION_FAILED\b")),
+    ("STRESS_CASE_FAIL", re.compile(r"^(?:\[[A-Z_]+\]\s*)?STRESS_CASE_FAIL\b")),
+    ("NON_DETERMINISTIC", re.compile(r"^(?:\[[A-Z_]+\]\s*)?NON_DETERMINISTIC\b")),
+    ("GATE_FAIL", re.compile(r"^(?:\[[A-Z_]+\]\s*)?GATE_FAIL\b")),
+    ("Wrong Answer:", re.compile(r"^Wrong Answer:")),
+    # A non-passing extended suite is fatal even when `run-npu.sh` still prints VALIDATION_PASSED
+    ("EXTENDED_RC", re.compile(r"^EXTENDED_RC=(?!0\b)\d+")),
+)
+
+
+def parse_log_verdicts(log_text: str) -> dict[str, Any]:
+    """Line-anchored failure verdicts plus green-tail evidence for a `validation.log`.
+
+    Semantics (see `SubmissionGate._check_log_failure_markers`):
+      * only a line whose *first* token is the verdict can fail a log;
+      * `git` reflog / fetch echoes are excluded (a commit subject may quote any token);
+      * `VALIDATION_PASSED` / `EXTENDED_RC=0` is recorded as `green_tail` for diagnostics but
+        **never** overrides an anchored failure (`run-npu.sh` prints it unconditionally).
+    """
+    failures: list[dict[str, Any]] = []
+    echoes: list[dict[str, Any]] = []
+    green_tail = False
+    for lineno, raw in enumerate(log_text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        if _GIT_ECHO_RE.match(line):
+            if any(tok in line for tok in _FAILURE_TOKENS):
+                echoes.append({"line": lineno, "text": line[:200]})
+            continue
+        if line.startswith("VALIDATION_PASSED") or re.match(r"^EXTENDED_RC=0\b", line):
+            green_tail = True
+        for token, rx in _ANCHORED_FAILURE_RES:
+            if rx.match(line):
+                failures.append({"token": token, "line": lineno, "text": line[:200]})
+                break
+    return {"failures": failures, "echo_tokens_skipped": echoes, "green_tail": green_tail}
 _EXTENDED_PASS_RE = re.compile(r"EXTENDED_PASSED(?:\s+(\d+))?")
 _STRESS_DONE_RE = re.compile(r"STRESS_DONE\s+runs=(\d+)\s+failures=(\d+)")
 _GATE_BAD_RE = re.compile(r"GATE_BAD\b.*?\bbad=(\d+)/(\d+)")
@@ -220,6 +288,33 @@ class SubmissionGate:
             except Exception:
                 pass
         return passed
+
+    def _check_log_failure_markers(self, log_text: str) -> StageResult | None:
+        """S1 log-verdict rule: structured, line-anchored, reflog-echo aware.
+
+        Replaces the historical substring scan, which rejected
+        `results/CTCLossV2/2b9d49d/validation.log` because a `git checkout` echo quoted the
+        *previous* commit subject (`... coordinates on GATE_FAIL`) even though the log ended
+        in `VALIDATION_PASSED` and the source scored `52.85 -> 56.21 (+3.36)` online.
+        """
+        verdicts = parse_log_verdicts(log_text)
+        if verdicts["failures"]:
+            first = verdicts["failures"][0]
+            return StageResult(
+                stage="SAFETY",
+                passed=False,
+                code="LOG_FAILURE_MARKER",
+                reason=f"validation.log contains failure verdict '{first['token']}' (line {first['line']})",
+                metrics={
+                    "token": first["token"],
+                    "line": first["line"],
+                    "text": first["text"],
+                    "failure_count": len(verdicts["failures"]),
+                    "echo_tokens_skipped": len(verdicts["echo_tokens_skipped"]),
+                    "green_tail": verdicts["green_tail"],
+                },
+            )
+        return None
 
     def _check_kernel_cross_core_tokens(self, title: str, sha: str) -> list[str]:
         repo = self.workspace / "bench" / title
@@ -360,22 +455,9 @@ class SubmissionGate:
                 reason="Validated with FAST_LANE=1 subset only; run full Q1 validation before submitting",
             )
 
-        for bad_marker in (
-            "EXTENDED_FAILED",
-            "EXTENDED_CASES_FAILED",
-            "VALIDATION_FAILED",
-            "STRESS_CASE_FAIL",
-            "Wrong Answer:",
-            "NON_DETERMINISTIC",
-            "GATE_FAIL",
-        ):
-            if bad_marker in log_text:
-                return StageResult(
-                    stage="SAFETY",
-                    passed=False,
-                    code="LOG_FAILURE_MARKER",
-                    reason=f"validation.log contains failure token '{bad_marker}'",
-                )
+        marker_result = self._check_log_failure_markers(log_text)
+        if marker_result is not None:
+            return marker_result
 
         ext_matches = _EXTENDED_PASS_RE.findall(log_text)
         if not ext_matches:

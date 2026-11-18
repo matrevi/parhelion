@@ -1,0 +1,14 @@
+# trimmed fixture of results/CTCLossV2/2b9d49de0f68d1396199557303c6017588ef800d/validation.log
+From https://git.invalid/bench-ctclossv2
+   39fea6c..2b9d49d  main       -> origin/main
+Previous HEAD position was 39fea6c test(det_bad): print first 24 mismatched (t, s) coordinates on GATE_FAIL
+HEAD is now at 2b9d49d fix(CTCLossV2): pad lossBuf to 64 floats so Level-0 tail Exp/Adds sdkot overlap packBuf0
+Verified commit: 2b9d49de0f68d1396199557303c6017588ef800d
+[PHASE-A] Building KernelC package + examples on 32-core CPU (0s NPU lock)...
+# ... (build + extended + kperf output elided) ...
+PASS: neg_log_likelihood.bin, mismatched=0/1
+PASS: log_alpha.bin, mismatched=0/170
+EXTENDED_PASSED 34 cases
+KPERF_JSON [{"mode": "custom", "case": "t4_c5_s1", "T": 4, "C": 5, "labels": 1, "U": 3, "ops": ["CtcLossV2"], "n": 5, "durations_us": [5.78, 5.9, 7.84, 8.1, 8.14], "median_us": 7.84, "min_us": 5.78}, {"mode": "custom", "case": "t10_c5_s8", "T": 10, "C": 5, "labels": 8, "U": 17, "ops": ["CtcLossV2"], "n": 5, "durations_us": [7.2, 7.22, 7.32, 8.86, 9.02], "median_us": 7.32, "min_us": 7.2}, {"mode": "custom", "case": "t25_c16_s10", "T": 25, "C": 16, "labels": 10, "U": 21, "ops": ["CtcLossV2"], "n": 5, "durations_us": [9.66, 9.9, 11.3, 11.36, 11.64], "median_us": 11.3, "min_us": 9.66}, {"mode": "custom", "case": "t50_c32_s20", "T": 50, "C": 32, "labels": 20, "U": 41, "ops": ["CtcLossV2"], "n": 5, "durations_us": [14.68, 14.76, 15.0, 16.54, 16.7], "median_us": 15.0, "min_us": 14.68}, {"mode": "custom", "case": "t100_c32_s40", "T": 100, "C": 32, "labels": 40, "U": 81, "ops": ["CtcLossV2"], "n": 5, "durations_us": [27.3, 27.32, 29.28, 29.44, 29.56], "median_us": 29.28, "min_us": 27.3}, {"mode": "custom", "case": "t200_c64_s80", "T": 200, "C": 64, "labels": 80, "U": 161, "ops": ["CtcLossV2"], "n": 5, "durations_us": [55.56, 55.58, 55.7, 57.42, 57.46], "median_us": 55.7, "min_us": 55.56}, {"mode": "custom", "case": "t100_c512_s40", "T": 100, "C": 512, "labels": 40, "U": 81, "ops": ["CtcLossV2"], "n": 5, "durations_us": [27.52, 27.62, 31.76, 31.96, 32.04], "median_us": 31.76, "min_us": 27.52}, {"mode": "custom", "case": "t50_c5000_s20", "T": 50, "C": 5000, "labels": 20, "U": 41, "ops": ["CtcLossV2"], "n": 5, "durations_us": [14.92, 14.92, 14.92, 38.66, 38.72], "median_us": 14.92, "min_us": 14.92}, {"mode": "custom", "case": "t650_c64_s600", "T": 650, "C": 64, "labels": 600, "U": 1201, "ops": ["CtcLossV2"], "n": 5, "durations_us": [153.68, 153.68, 158.64, 158.64, 158.68], "median_us": 158.64, "min_us": 153.68}]
+KPERF_JSON [{"mode": "torch", "case": "t50_c32_s20", "T": 50, "C": 32, "labels": 20, "U": 41, "ops": ["CTCLossV3"], "n": 5, "durations_us": [90.52, 90.88, 91.16, 92.16, 92.92], "median_us": 91.16, "min_us": 90.52}]
+VALIDATION_PASSED

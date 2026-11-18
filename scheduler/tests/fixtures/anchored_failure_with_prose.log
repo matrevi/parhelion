@@ -1,0 +1,12 @@
+From https://git.invalid/bench-padv3grad
+   f48af88..7edfb33  main       -> origin/main
+Previous HEAD position was f48af88 fix: guard GATE_FAIL printing in det_bad harness
+HEAD is now at 7edfb33 test(extended): cover negative pad crop
+| case | reduction | status |
+| odd_prime_3d | mean | GATE_FAIL |
+Traceback (most recent call last):
+  File "validation/extended.py", line 42, in <module>
+    raise SystemExit('GATE_FAIL batch=7')
+EXTENDED_FAILED case=odd_prime_3d reduction=mean reason=boundary
+EXTENDED_CASES_FAILED 1/17
+VALIDATION_PASSED
