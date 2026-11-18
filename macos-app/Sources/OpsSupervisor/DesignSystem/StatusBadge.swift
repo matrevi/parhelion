@@ -54,7 +54,7 @@ struct SemanticPill: View {
     }
 }
 
-/// Linear-style stacked upward chevron tier badge (1..3 active chevrons out of 3).
+/// Stacked upward chevron tier badge: draws EXACTLY `level` (1, 2, or 3) solid chevrons, vertically centered.
 struct DifficultyBadge: View {
     let difficulty: Int
 
@@ -71,16 +71,14 @@ struct DifficultyBadge: View {
     var body: some View {
         Canvas { ctx, size in
             let cx = size.width / 2.0
-            let halfW: CGFloat = 4.6
-            let chevH: CGFloat = 3.0
-            // 3 vertical slots: index 0 = top (tier 3), 1 = mid (tier 2), 2 = bottom (tier 1)
-            let yOffsets: [CGFloat] = [4.2, 8.6, 13.0]
+            let halfW: CGFloat = 4.8
+            let chevH: CGFloat = 3.2
+            let stepY: CGFloat = 4.2
+            let totalH = chevH + CGFloat(level - 1) * stepY
+            let startY = (size.height - totalH) / 2.0
 
-            for slot in 0..<3 {
-                let tierForSlot = 3 - slot // top=3, mid=2, bottom=1
-                let active = level >= tierForSlot
-                let topY = yOffsets[slot]
-
+            for i in 0..<level {
+                let topY = startY + CGFloat(i) * stepY
                 var path = Path()
                 path.move(to: CGPoint(x: cx - halfW, y: topY + chevH))
                 path.addLine(to: CGPoint(x: cx, y: topY))
@@ -88,8 +86,8 @@ struct DifficultyBadge: View {
 
                 ctx.stroke(
                     path,
-                    with: .color(active ? tint : tint.opacity(0.20)),
-                    style: StrokeStyle(lineWidth: 1.85, lineCap: .round, lineJoin: .round)
+                    with: .color(tint),
+                    style: StrokeStyle(lineWidth: 1.95, lineCap: .round, lineJoin: .round)
                 )
             }
         }
@@ -98,7 +96,7 @@ struct DifficultyBadge: View {
             RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .fill(tint.opacity(0.12))
         )
-        .help("难度级别 \(level) / 3（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
+        .help("难度级别 \(level) 级（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
     }
 }
 

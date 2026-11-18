@@ -187,18 +187,33 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
                     h["note"] = h["note"] or out.get("note", "")
                     h["submission_id"] = h["submission_id"] or out.get("submission_id")
 
-    best_by_prob: dict[str, tuple[float, str]] = {}
+    raw_best_by_prob: dict[str, tuple[float, str, str]] = {}
+    latest_sub_by_prob: dict[str, dict[str, Any]] = {}
     for t, h_list in history_by_prob.items():
         h_list.sort(key=lambda x: x.get("at") or "")
         prev_pass = 0.0
+        prev_dt = None
         for h in h_list:
             sc = h.get("score")
+            cur_dt = parse_iso(h.get("at"))
+            if h.get("status") not in ("rejected", "skipped", "duplicate"):
+                latest_sub_by_prob[t] = h
             if sc is not None:
-                h["delta"] = round(float(sc) - prev_pass, 2)
+                # Same-Epoch ΔS @ t_eval: discount prev_pass by ~0.48%/day across multi-day gaps
+                eff_prev = prev_pass
+                if prev_pass > 0 and prev_dt and cur_dt:
+                    gap_days = max(0.0, (cur_dt - prev_dt).total_seconds() / 86400.0)
+                    if gap_days >= 1.0:
+                        eff_prev = prev_pass * max(0.84, 1.0 - 0.0048 * gap_days)
+                h["delta"] = round(float(sc) - eff_prev, 2)
                 if h.get("status") == "Pass" and float(sc) > 0:
                     prev_pass = float(sc)
-                    if float(sc) >= best_by_prob.get(t, (0.0, ""))[0]:
-                        best_by_prob[t] = (float(sc), h["sha"])
+                    prev_dt = cur_dt
+                    if float(sc) >= raw_best_by_prob.get(t, (0.0, "", ""))[0]:
+                        raw_best_by_prob[t] = (float(sc), h["sha"], h.get("at") or "")
+                elif h.get("status") in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error", "Compile Error"):
+                    prev_pass = 0.0
+                    prev_dt = cur_dt
             else:
                 h["delta"] = None
 
@@ -206,7 +221,8 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
         "outcome_rows": outcome_rows,
         "history_by_prob": history_by_prob,
         "sha_pass_scores": sha_pass_scores,
-        "best_by_prob": best_by_prob,
+        "raw_best_by_prob": raw_best_by_prob,
+        "latest_sub_by_prob": latest_sub_by_prob,
         "last_submitted_dt": last_sub_dt,
         "used_24h": used_24h,
         "pressure_12h": pressure_12h,
@@ -247,8 +263,52 @@ def build_problem_models(
         raw_total += cur_score
         weighted_total += diff * cur_score
 
-        hist_best, hist_best_sha = hist_idx["best_by_prob"].get(title, (0.0, ""))
-        best_score = max(cur_score, hist_best)
+        # Non-stationary tbest(t) decay & Contemporary Equiv Best (Ŝ_best)
+        now_dt = utc_now()
+        latest_sub = hist_idx["latest_sub_by_prob"].get(title, {})
+        active_sha = latest_sub.get("sha") or ""
+        active_judged = float(latest_sub["score"]) if latest_sub.get("score") is not None else 0.0
+        active_dt = parse_iso(latest_sub.get("at"))
+        active_age_days = max(0.0, (now_dt - active_dt).total_seconds() / 86400.0) if active_dt else 0.0
+
+        gamma_p = (cur_score / active_judged) if (cur_score > 0 and active_judged > 0) else 1.0
+        gamma_p = min(1.02, max(0.78, gamma_p))
+        daily_decay = ((1.0 - gamma_p) / active_age_days) if active_age_days >= 0.5 else 0.0045
+        daily_decay = min(0.015, max(0.0, daily_decay))
+
+        raw_peak_sc, raw_peak_sha, raw_peak_at = hist_idx["raw_best_by_prob"].get(title, (cur_score, active_sha, ""))
+
+        # Group historical Pass runs by 7-char SHA prefix to compute multi-draw Contemporary Equiv Best Ŝ_best
+        runs_by_sha: dict[str, list[tuple[float, Any, str]]] = {}
+        for h in hist_idx["history_by_prob"].get(title, []):
+            if h.get("status") == "Pass" and (h.get("score") or 0) > 0 and h.get("sha"):
+                s7 = h["sha"][:7]
+                runs_by_sha.setdefault(s7, []).append((float(h["score"]), parse_iso(h.get("at")), h["sha"]))
+
+        best_equiv = cur_score
+        best_equiv_sha = active_sha
+        for s7, runs in runs_by_sha.items():
+            full_s = max((r[2] for r in runs), key=len)
+            if active_sha and s7 == active_sha[:7] and cur_score > 0:
+                # Active SHA is already on the live board right now -> contemporary score IS cur_score!
+                cand_equiv = cur_score
+            else:
+                discounted = []
+                for r_sc, r_dt, _ in runs:
+                    if active_dt and r_dt and abs((r_dt - active_dt).total_seconds()) <= 86400:
+                        discounted.append(r_sc * gamma_p)
+                    elif r_dt:
+                        age_d = max(0.0, (now_dt - r_dt).total_seconds() / 86400.0)
+                        discounted.append(r_sc * max(0.82, 1.0 - daily_decay * age_d))
+                    else:
+                        discounted.append(r_sc * gamma_p)
+                cand_equiv = sum(discounted) / len(discounted)
+            if cand_equiv > best_equiv + 1e-6:
+                best_equiv = cand_equiv
+                best_equiv_sha = full_s
+
+        best_score = round(best_equiv, 2)
+        hist_best_sha = best_equiv_sha or raw_peak_sha
 
         b_info = boards.get(title, {})
         tcs_raw = b_info.get("testcases") or []
@@ -293,7 +353,8 @@ def build_problem_models(
                 }
             )
 
-        restore_gap = max(0.0, best_score - cur_score)
+        is_distinct_restore = bool(hist_best_sha and (not active_sha or hist_best_sha[:7] != active_sha[:7]))
+        restore_gap = max(0.0, best_score - cur_score) if is_distinct_restore else 0.0
         leader_gap = max(0.0, (leader_score if leader_score > 0 else 70.0) - cur_score)
         exp_step = restore_gap if (cur_score == 0 and best_score > 0) else max(restore_gap, min(12.0, leader_gap * 0.25))
         wspt = round(diff * exp_step, 2)
@@ -303,7 +364,7 @@ def build_problem_models(
             tag = "CRITICAL RESTORE"
         elif cur_score == 0:
             tag = f"FIRST PASS {chev}"
-        elif restore_gap >= noise_floor:
+        elif is_distinct_restore and restore_gap >= max(2.5, noise_floor):
             tag = f"RESTORE +{restore_gap:.1f}"
         elif diff == 3 and leader_gap >= 25:
             tag = "HIGH ROI ^^^"
@@ -332,6 +393,10 @@ def build_problem_models(
                 "current_score": round(cur_score, 2),
                 "weighted_score": round(diff * cur_score, 2),
                 "best_score": round(best_score, 2),
+                "raw_best_score": round(raw_peak_sc, 2),
+                "raw_best_at": raw_peak_at,
+                "tbest_decay_gamma": round(gamma_p, 4),
+                "active_sha": active_sha,
                 "best_sha": hist_best_sha,
                 "leader_score": round(leader_score, 2),
                 "leader_nickname": leader_nick,

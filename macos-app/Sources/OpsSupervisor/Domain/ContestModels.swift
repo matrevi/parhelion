@@ -79,6 +79,10 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let currentScore: Double
     let weightedScore: Double
     let bestScore: Double
+    let rawBestScore: Double?
+    let rawBestAt: String?
+    let tbestDecayGamma: Double?
+    let activeSha: String?
     let bestSha: String
     let leaderScore: Double
     let leaderNickname: String
@@ -111,6 +115,10 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case currentScore = "current_score"
         case weightedScore = "weighted_score"
         case bestScore = "best_score"
+        case rawBestScore = "raw_best_score"
+        case rawBestAt = "raw_best_at"
+        case tbestDecayGamma = "tbest_decay_gamma"
+        case activeSha = "active_sha"
         case bestSha = "best_sha"
         case leaderScore = "leader_score"
         case leaderNickname = "leader_nickname"

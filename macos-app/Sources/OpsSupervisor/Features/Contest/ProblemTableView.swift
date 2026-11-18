@@ -20,7 +20,7 @@ struct ProblemTableView: View {
             switch filter {
             case .all: return true
             case .highWeight: return p.difficulty == 3
-            case .restoreGap: return p.bestScore - p.currentScore >= 1.0 || p.currentScore == 0
+            case .restoreGap: return p.bestScore - p.currentScore >= 2.5 || p.currentScore == 0
             }
         }
         if sortByROI {
@@ -54,13 +54,13 @@ struct ProblemTableView: View {
 
             HStack(spacing: 8) {
                 Text("级别").frame(width: 34, alignment: .leading)
-                Text("Operator").frame(maxWidth: .infinity, alignment: .leading)
-                Text("Status").frame(width: 88, alignment: .center)
-                Text("Current").frame(width: 60, alignment: .trailing)
-                Text("Best").frame(width: 60, alignment: .trailing)
-                Text("Rank").frame(width: 52, alignment: .trailing)
-                Text("Pub µs").frame(width: 58, alignment: .trailing)
-                Text("Priority").frame(width: 120, alignment: .trailing)
+                Text("算子").frame(maxWidth: .infinity, alignment: .leading)
+                Text("状态").frame(width: 88, alignment: .center)
+                Text("当前分").frame(width: 60, alignment: .trailing)
+                Text("同代最优").frame(width: 64, alignment: .trailing)
+                Text("排名").frame(width: 52, alignment: .trailing)
+                Text("公开µs").frame(width: 58, alignment: .trailing)
+                Text("调度优先级").frame(width: 120, alignment: .trailing)
             }
             .font(.system(size: 10.5, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -121,13 +121,14 @@ struct ProblemTableView: View {
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "%.2f", p.bestScore))
                     .font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                if gap >= 0.5 {
+                if gap >= 2.5 {
                     Text(String(format: "-%.1f", gap))
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.orange)
                 }
             }
-            .frame(width: 60, alignment: .trailing)
+            .frame(width: 64, alignment: .trailing)
+            .help(p.rawBestScore.map { String(format: "同代折算最优 %.2f（原始评测峰值 %.2f · tbest 衰减 γ=%.3f）", p.bestScore, $0, p.tbestDecayGamma ?? 1.0) } ?? "")
 
             Text(p.rank.map { "#\($0)" } ?? "—")
                 .font(.system(size: 11.5, design: .monospaced))

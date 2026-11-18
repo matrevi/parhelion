@@ -11,7 +11,7 @@ struct ProblemInspectorView: View {
             VStack(alignment: .leading, spacing: 13) {
                 headerRow
 
-                if problem.bestScore > problem.currentScore + 0.2 && !problem.bestSha.isEmpty {
+                if problem.bestScore - problem.currentScore >= 2.5 && !problem.bestSha.isEmpty && problem.bestSha.prefix(7) != (problem.activeSha ?? "").prefix(7) {
                     restoreCallout
                 }
 
@@ -90,6 +90,9 @@ struct ProblemInspectorView: View {
                     miniStat("Public (5)", String(format: "%.2f / 10", problem.publicPts), .blue)
                     miniStat("Hidden (45)", String(format: "%.2f / 90", problem.hiddenPts), .purple)
                     miniStat("Hidden r̄_h", String(format: "%.1f%%", problem.impliedHiddenRatio * 100), .teal)
+                    if let g = problem.tbestDecayGamma {
+                        miniStat("tbest γ", String(format: "%.3f", g), g < 0.98 ? .orange : .secondary)
+                    }
                 }
             }
         }
