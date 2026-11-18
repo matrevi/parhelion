@@ -38,6 +38,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "daily_quota_limit": 50,
         "closing_reserve": 12,
         "noise_floor_delta": 2.7,
+        "breakthrough_threshold": 5.0,
         "rate_limit_gap_sec": 190,
         "circuit_breaker_limit": 6,
     },

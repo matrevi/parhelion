@@ -10,6 +10,9 @@ struct SemanticPill: View {
         if u.contains("CRITICAL") || u.contains("榜上0分") {
             return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
         }
+        if u.contains("突破") || u.contains("BREAKTHROUGH") {
+            return (.white, Color(red: 0.88, green: 0.46, blue: 0.08))
+        }
         if u.contains("PASS ↑") || u == "PASS" || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("空闲") || u.contains("冷却已就绪") {
             return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }

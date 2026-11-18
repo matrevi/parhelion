@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 
 from .commands.admin_cmd import run_auth, run_collab, run_skills, run_ssh, run_workspace
+from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
 from .commands.status_cmd import run_history, run_status
@@ -87,10 +88,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     s_q = sub.add_parser("queue", help="Submission queue & gate actions")
     q_sub = s_q.add_subparsers(dest="q_cmd", required=True)
+    q_ls = q_sub.add_parser("list", help="List and filter submissions (supports --breakthrough)")
+    q_ls.add_argument("--breakthrough", "-b", action="store_true", help="Filter only breakthrough jumps (Δ >= threshold)")
+    q_ls.add_argument("--min-delta", type=float, help="Override breakthrough Δ threshold (pts)")
+    q_ls.add_argument("--status", choices=["all", "pending", "completed"], default="all")
+    q_ls.add_argument("--problem", "-p")
+    q_ls.add_argument("--workspace", "-w")
+    q_ls.add_argument("--json", action="store_true")
+    q_ls.set_defaults(func=run_queue_list)
     q_cfg = q_sub.add_parser("config")
     q_cfg.add_argument("--auto-consumer")
     q_cfg.add_argument("--closing-reserve", type=int)
     q_cfg.add_argument("--noise-floor", type=float)
+    q_cfg.add_argument("--breakthrough-threshold", type=float)
     q_cfg.set_defaults(func=run_queue)
     q_app = q_sub.add_parser("approve")
     q_app.add_argument("problem")
@@ -162,6 +172,59 @@ def build_parser() -> argparse.ArgumentParser:
     sh_sv.add_argument("--activate", action="store_true")
     sh_sv.add_argument("--write-ssh-config", action="store_true")
     sh_sv.set_defaults(func=run_ssh)
+
+    s_bt = sub.add_parser("breakthrough", help="Structured KernelC breakthrough playbook & Δ filter")
+    bt_sub = s_bt.add_subparsers(dest="bt_cmd")
+    s_bt.add_argument("--min-delta", type=float, help="Minimum raw score jump Δ (pts)")
+    s_bt.add_argument("--problem", "-p")
+    s_bt.add_argument("--category", "-c")
+    s_bt.add_argument("--include-candidates", action="store_true")
+    s_bt.add_argument("--workspace", "-w")
+    s_bt.add_argument("--json", action="store_true")
+    s_bt.set_defaults(func=run_breakthrough, bt_cmd="list")
+
+    bt_ls = bt_sub.add_parser("list", help="List structured breakthroughs above threshold")
+    bt_ls.add_argument("--min-delta", type=float)
+    bt_ls.add_argument("--problem", "-p")
+    bt_ls.add_argument("--category", "-c")
+    bt_ls.add_argument("--include-candidates", action="store_true")
+    bt_ls.add_argument("--workspace", "-w")
+    bt_ls.add_argument("--json", action="store_true")
+    bt_ls.set_defaults(func=run_breakthrough)
+
+    bt_sh = bt_sub.add_parser("show", help="Show full structured breakthrough document")
+    bt_sh.add_argument("query", help="Breakthrough ID, commit SHA prefix, or problem title")
+    bt_sh.add_argument("--workspace", "-w")
+    bt_sh.add_argument("--json", action="store_true")
+    bt_sh.set_defaults(func=run_breakthrough)
+
+    bt_th = bt_sub.add_parser("threshold", help="Get or set shared breakthrough Δ threshold")
+    bt_th.add_argument("value", nargs="?", type=float)
+    bt_th.add_argument("--workspace", "-w")
+    bt_th.add_argument("--json", action="store_true")
+    bt_th.set_defaults(func=run_breakthrough)
+
+    bt_sy = bt_sub.add_parser("sync", help="Auto-sync verified high-Δ submissions into breakthrough/")
+    bt_sy.add_argument("--min-delta", type=float)
+    bt_sy.add_argument("--workspace", "-w")
+    bt_sy.add_argument("--json", action="store_true")
+    bt_sy.set_defaults(func=run_breakthrough)
+
+    bt_ad = bt_sub.add_parser("add", help="Record or enrich a structured breakthrough entry")
+    bt_ad.add_argument("problem")
+    bt_ad.add_argument("sha")
+    bt_ad.add_argument("--title", required=True)
+    bt_ad.add_argument("--category", default="tiling-regime")
+    bt_ad.add_argument("--bottleneck", default="")
+    bt_ad.add_argument("--mechanism", action="append", help="Repeatable mechanism bullet")
+    bt_ad.add_argument("--precision-guard", default="")
+    bt_ad.add_argument("--rule", default="")
+    bt_ad.add_argument("--tags", default="")
+    bt_ad.add_argument("--score-before", type=float)
+    bt_ad.add_argument("--score-after", type=float)
+    bt_ad.add_argument("--workspace", "-w")
+    bt_ad.add_argument("--json", action="store_true")
+    bt_ad.set_defaults(func=run_breakthrough)
 
     s_sk = sub.add_parser("skills", help="Optional fallback skills for dsh & codex")
     sk_sub = s_sk.add_subparsers(dest="skills_cmd", required=True)

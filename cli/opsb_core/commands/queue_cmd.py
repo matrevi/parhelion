@@ -95,6 +95,8 @@ def run_queue(args: argparse.Namespace) -> int:
         if args.noise_floor is not None:
             sched["noise_floor_delta"] = round(max(0.0, min(15.0, float(args.noise_floor))), 2)
             bridge_extra.extend(["--noise-floor", str(sched["noise_floor_delta"])])
+        if getattr(args, "breakthrough_threshold", None) is not None:
+            sched["breakthrough_threshold"] = round(max(0.5, min(50.0, float(args.breakthrough_threshold))), 2)
         ConfigRepository.save(cfg)
         if bridge_extra:
             invoke_bridge(ws, "config", bridge_extra)

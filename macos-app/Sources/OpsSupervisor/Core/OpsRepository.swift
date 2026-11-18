@@ -57,12 +57,34 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(["workspace", "gen-agents", workspace, "--json"])
     }
 
-    func updateQueueConfig(autoConsumer: Bool?, closingReserve: Int?, noiseFloor: Double?) async throws {
+    func updateQueueConfig(autoConsumer: Bool?, closingReserve: Int?, noiseFloor: Double?, breakthroughThreshold: Double? = nil) async throws {
         var args = ["queue", "config"]
         if let ac = autoConsumer { args += ["--auto-consumer", ac ? "on" : "off"] }
         if let cr = closingReserve { args += ["--closing-reserve", "\(cr)"] }
         if let nf = noiseFloor { args += ["--noise-floor", String(format: "%.2f", nf)] }
+        if let bt = breakthroughThreshold { args += ["--breakthrough-threshold", String(format: "%.2f", bt)] }
         _ = try await client.execute(args)
+    }
+
+    func fetchBreakthroughCatalog(workspace: String, minDelta: Double = 0.5) async throws -> BreakthroughCatalogResponse {
+        let data = try await client.execute(
+            ["breakthrough", "list", "--workspace", workspace, "--min-delta", String(format: "%.2f", minDelta), "--json"],
+            timeout: 8.0
+        )
+        return try JSONDecoder().decode(BreakthroughCatalogResponse.self, from: data)
+    }
+
+    func syncBreakthroughPlaybook(workspace: String, minDelta: Double) async throws -> (Int, Int) {
+        let data = try await client.execute(
+            ["breakthrough", "sync", "--workspace", workspace, "--min-delta", String(format: "%.2f", minDelta), "--json"],
+            timeout: 10.0
+        )
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let created = (obj["created_ids"] as? [String])?.count ?? 0
+            let total = (obj["total_entries"] as? Int) ?? 0
+            return (created, total)
+        }
+        return (0, 0)
     }
 
     func jumpSubmitNow(workspace: String, problem: String, sha: String, note: String) async throws -> (Bool, String) {

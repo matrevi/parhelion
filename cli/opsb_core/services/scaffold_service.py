@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import utc_now
+from .breakthrough_service import scaffold_breakthrough_dir
 from .templates_md import DESIGN_MD, PROBLEM_AGENTS_MD, PROBLEM_SPEC_MD, SCORE_HISTORY_MD, WORKSPACE_AGENTS_MD
 
 
@@ -64,6 +65,7 @@ def scaffold_workspace(
 
     results_dir = target_dir / "results"
     results_dir.mkdir(exist_ok=True)
+    bt_dir = scaffold_breakthrough_dir(target_dir)
     if not (results_dir / "score-snapshot.json").exists():
         snap = {p["title"]: {"rank": None, "status": "no-submission", "score": 0.0, "public_times_us": []} for p in normalized}
         (results_dir / "score-snapshot.json").write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")

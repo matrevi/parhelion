@@ -3,6 +3,7 @@ import SwiftUI
 enum NavigationRoute: String, CaseIterable, Identifiable {
     case contest = "Contest & Operators"
     case npuMonitor = "NPU & Task Queues"
+    case breakthroughs = "Breakthroughs"
     case workspaces = "Workspaces"
 
     var id: String { rawValue }
@@ -10,7 +11,8 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
     var caption: String {
         switch self {
         case .contest: return "Leaderboard · 50-Case Ratios"
-        case .npuMonitor: return "Telemetry · 4-Stage Gate"
+        case .npuMonitor: return "Telemetry · Queue · Breakthrough"
+        case .breakthroughs: return "Structured Playbook · Δ Filter"
         case .workspaces: return "Projects · Clean Scaffolder"
         }
     }
@@ -19,6 +21,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return "chart.bar.xaxis"
         case .npuMonitor: return "cpu.fill"
+        case .breakthroughs: return "sparkles.rectangle.stack.fill"
         case .workspaces: return "folder.badge.gearshape"
         }
     }
@@ -45,6 +48,7 @@ struct AppRouterView: View {
                     switch route {
                     case .contest: ContestOverviewView()
                     case .npuMonitor: NpuMonitorView()
+                    case .breakthroughs: BreakthroughLibraryView()
                     case .workspaces: WorkspaceManagerView()
                     }
                 } else {
@@ -194,6 +198,16 @@ struct AppRouterView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(Color.orange.opacity(0.16)))
+                }
+            case .breakthroughs:
+                let cnt = store.breakthroughEntries.filter { $0.deltaRaw >= store.breakthroughThreshold }.count
+                if cnt > 0 {
+                    Text("\(cnt)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(Color(red: 0.92, green: 0.52, blue: 0.10).opacity(0.16)))
                 }
             case .workspaces:
                 EmptyView()

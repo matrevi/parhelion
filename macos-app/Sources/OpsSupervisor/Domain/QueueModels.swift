@@ -46,6 +46,8 @@ struct SchedulerState: Codable {
     let closingReserve: Int
     let availableNormalShots: Int
     let noiseFloorDelta: Double
+    let breakthroughThreshold: Double?
+    let breakthroughCount: Int?
     let circuitBreakerLimit: Int
     let queueLockHeld: Bool
     let actionableCount: Int
@@ -64,6 +66,8 @@ struct SchedulerState: Codable {
         case closingReserve = "closing_reserve"
         case availableNormalShots = "available_normal_shots"
         case noiseFloorDelta = "noise_floor_delta"
+        case breakthroughThreshold = "breakthrough_threshold"
+        case breakthroughCount = "breakthrough_count"
         case circuitBreakerLimit = "circuit_breaker_limit"
         case queueLockHeld = "queue_lock_held"
         case actionableCount = "actionable_count"
@@ -109,6 +113,9 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
     let estimatedScore: Double?
     let actualScore: Double?
     let deltaScore: Double?
+    let breakthroughDelta: Double?
+    let isBreakthrough: Bool?
+    let experienceId: String?
     let wsptPriority: Double
     let gates: GateBreakdown
     let canApprove: Bool
@@ -127,6 +134,9 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
         case estimatedScore = "estimated_score"
         case actualScore = "actual_score"
         case deltaScore = "delta_score"
+        case breakthroughDelta = "breakthrough_delta"
+        case isBreakthrough = "is_breakthrough"
+        case experienceId = "experience_id"
         case wsptPriority = "wspt_priority"
         case canApprove = "can_approve"
         case canSkip = "can_skip"

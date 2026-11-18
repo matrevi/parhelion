@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/winbeau/parhelion/breakthrough/schema.json",
+  "title": "Parhelion Structured Breakthrough Experience Entry",
+  "type": "object",
+  "required": [
+    "id",
+    "problem",
+    "difficulty",
+    "sha",
+    "timestamp",
+    "score_before",
+    "score_after",
+    "delta_raw",
+    "delta_weighted",
+    "status",
+    "category",
+    "tags",
+    "title",
+    "bottleneck",
+    "mechanisms",
+    "precision_guard",
+    "transferable_rule",
+    "doc_path"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^BT-[0-9]{8}-[A-Za-z0-9_]+-[0-9a-f]{7,12}$",
+      "description": "Stable identifier: BT-<YYYYMMDD>-<Problem>-<shortSHA>"
+    },
+    "problem": { "type": "string" },
+    "difficulty": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "sha": { "type": "string", "minLength": 7 },
+    "baseline_sha": { "type": ["string", "null"] },
+    "timestamp": { "type": "string" },
+    "score_before": { "type": "number" },
+    "score_after": { "type": "number" },
+    "delta_raw": { "type": "number", "description": "Same-epoch gain over prior non-zero Pass baseline" },
+    "delta_weighted": { "type": "number", "description": "difficulty * delta_raw" },
+    "status": {
+      "type": "string",
+      "enum": ["verified", "candidate"],
+      "description": "verified = online Pass judged; candidate = local NPU verified"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "simd-transpose",
+        "async-pipeline",
+        "separable-folding",
+        "deterministic-sync",
+        "vectorization",
+        "tiling-regime",
+        "dma-coalescing"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "title": { "type": "string" },
+    "bottleneck": { "type": "string" },
+    "mechanisms": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "precision_guard": { "type": "string" },
+    "transferable_rule": { "type": "string" },
+    "doc_path": { "type": "string" }
+  }
+}

@@ -125,6 +125,24 @@ struct SchedulerBarView: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
+                    Text("突破筛选阈值 (Breakthrough)")
+                        .font(.system(size: 11.5))
+                    Spacer()
+                    Stepper(
+                        String(format: "Δ ≥ %.1f", store.breakthroughThreshold),
+                        value: Binding(
+                            get: { store.breakthroughThreshold },
+                            set: { nv in Task { await store.updateScheduler(breakthroughThreshold: nv) } }
+                        ),
+                        in: 1.0...25.0,
+                        step: 1.0
+                    )
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
                     Text("防抖最小提分阈值 (自动入队)")
                         .font(.system(size: 11.5))
                     Spacer()

@@ -21,8 +21,10 @@ parhelion/
 │       └── Features/
 │           ├── Contest/               # ContestStore, Operator table, 50-case Inspector, Collaborator invite
 │           ├── NpuMonitor/            # Live NPU header, interactive SchedulerBar, Server & Submit queues
+│           ├── Breakthroughs/         # Configurable Δ filter & structured KernelC optimization playbook UI
 │           ├── Workspaces/            # Workspace switcher & clean AGENTS.md-first wizard
 │           └── Settings/              # SSH config, shared Judge/GitCode auth, dsh/codex toolchain
+├── breakthrough/                      # Structured KernelC optimization playbook (schema.json + index.json + entries/*.md)
 ├── cli/
 │   ├── opsb                           # Thin executable entrypoint (~/.local/bin/opsb)
 │   └── opsb_core/                     # Layered Python package
@@ -47,7 +49,10 @@ open dist/OpsSupervisor.app
 ln -sf "$(pwd)/cli/opsb" ~/.local/bin/opsb
 opsb npu agent-install
 
-# Query status & operator history
+# Query status, operator history & structured breakthroughs
 opsb status
 opsb history <Operator>
+opsb queue list --breakthrough --min-delta 5.0
+opsb breakthrough list
+opsb breakthrough show <ID|Operator>
 ```

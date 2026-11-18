@@ -6,6 +6,9 @@ import Foundation
 final class ContestStore: ObservableObject {
     @Published var snapshot: SupervisorSnapshot?
     @Published var telemetryHistory: [TelemetrySample] = []
+    @Published var breakthroughEntries: [BreakthroughEntry] = []
+    @Published var breakthroughDir: String = ""
+    @Published var breakthroughThreshold: Double = 5.0
     @Published var workspaces: [WorkspaceEntry] = []
     @Published var sshHosts: [SSHHostEntry] = []
     @Published var activeSSHHost: String = "npu"
@@ -32,12 +35,14 @@ final class ContestStore: ObservableObject {
         await refreshLocal()
         async let wsLoad: () = reloadWorkspaces()
         async let sshLoad: () = reloadSSHHosts()
+        async let btLoad: () = reloadBreakthroughs()
         async let npuLoad: () = refreshNpu(silent: true)
-        _ = await (wsLoad, sshLoad, npuLoad)
+        _ = await (wsLoad, sshLoad, btLoad, npuLoad)
     }
 
     func refreshAll() async {
         await refreshLocal()
+        await reloadBreakthroughs()
         await refreshNpu(silent: false)
     }
 
@@ -51,6 +56,9 @@ final class ContestStore: ObservableObject {
                 snapshot = localSnap.updatingNpu(existingNpu)
             } else {
                 snapshot = localSnap
+            }
+            if let bt = localSnap.scheduler.breakthroughThreshold {
+                breakthroughThreshold = bt
             }
             if selectedProblemTitle == nil || !localSnap.problems.contains(where: { $0.title == selectedProblemTitle }) {
                 selectedProblemTitle = localSnap.problems.first?.title
@@ -134,10 +142,46 @@ final class ContestStore: ObservableObject {
 
     // MARK: - Queue & Gate Mutations
 
-    func updateScheduler(autoConsumer: Bool? = nil, closingReserve: Int? = nil, noiseFloor: Double? = nil) async {
+    func updateScheduler(
+        autoConsumer: Bool? = nil,
+        closingReserve: Int? = nil,
+        noiseFloor: Double? = nil,
+        breakthroughThreshold: Double? = nil
+    ) async {
+        if let bt = breakthroughThreshold {
+            self.breakthroughThreshold = bt
+        }
         do {
-            try await repository.updateQueueConfig(autoConsumer: autoConsumer, closingReserve: closingReserve, noiseFloor: noiseFloor)
+            try await repository.updateQueueConfig(
+                autoConsumer: autoConsumer,
+                closingReserve: closingReserve,
+                noiseFloor: noiseFloor,
+                breakthroughThreshold: breakthroughThreshold
+            )
             await refreshLocal()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func reloadBreakthroughs() async {
+        if let cat = try? await repository.fetchBreakthroughCatalog(workspace: selectedWorkspace, minDelta: 0.5) {
+            breakthroughEntries = cat.entries
+            breakthroughDir = cat.directory
+        }
+    }
+
+    func syncBreakthroughs() async {
+        do {
+            let (created, total) = try await repository.syncBreakthroughPlaybook(
+                workspace: selectedWorkspace,
+                minDelta: breakthroughThreshold
+            )
+            await reloadBreakthroughs()
+            await refreshLocal()
+            bannerMessage = created > 0
+                ? "已同步 \(created) 条新突破至经验库 (共 \(total) 条)"
+                : "经验库已是最新 (共 \(total) 条结构化突破)"
         } catch {
             errorMessage = error.localizedDescription
         }

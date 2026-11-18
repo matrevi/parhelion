@@ -85,6 +85,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     inflight_short = pipeline.get("active_short_sha") or ""
 
     extra_cands: list[dict[str, Any]] = []
+    bt_thresh = float(sched.get("breakthrough_threshold", 5.0))
     for uc in bridge.get("unsubmitted_candidates") or []:
         t, sha = uc.get("title", ""), uc.get("sha", "")
         if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha.startswith(inflight_short):
@@ -108,12 +109,16 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         raw_tag = uc.get("status_tag") or "READY"
         badge = badge_norm.get(raw_tag, raw_tag.replace("_", " "))
         note = " · ".join(x for x in (est_obj.get("detail"), uc.get("gate_reason")) if x)
+        is_crit_rest = bool(uc.get("is_critical_restore", False))
+        cand_bt = round(est_sc - cur_sc, 2) if (est_sc is not None and cur_sc > 0 and not is_crit_rest) else None
 
         if (t, sha) in existing:
             for item in payload["submission_queue"]:
                 if item["title"] == t and item["sha"] == sha and item["kind"] != "completed":
                     if est_sc is not None:
                         item["estimated_score"] = est_sc
+                    item["breakthrough_delta"] = cand_bt
+                    item["is_breakthrough"] = bool(cand_bt is not None and cand_bt >= bt_thresh)
                     item["gates"] = gates
                     item["wspt_priority"] = gates["wspt_score"]
                     if note:
@@ -140,11 +145,15 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     "estimated_score": est_sc,
                     "actual_score": None,
                     "delta_score": None,
+                    "breakthrough_delta": cand_bt,
+                    "is_breakthrough": bool(cand_bt is not None and cand_bt >= bt_thresh),
+                    "experience_id": None,
+                    "baseline_pass_sha": None,
                     "wspt_priority": gates["wspt_score"],
                     "gates": gates,
                     "can_approve": True,
                     "can_skip": True,
-                    "can_restore": bool(uc.get("is_critical_restore", False)),
+                    "can_restore": is_crit_rest,
                 }
             )
 
@@ -153,6 +162,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             pair = (item["title"], item["sha"])
             if pair in est_by_pair:
                 item["estimated_score"] = est_by_pair[pair]
+                if item["current_score"] > 0 and item["badge"] != "CRITICAL RESTORE":
+                    cbd = round(item["estimated_score"] - item["current_score"], 2)
+                    item["breakthrough_delta"] = cbd
+                    item["is_breakthrough"] = cbd >= bt_thresh
 
     if extra_cands:
         active = [x for x in payload["submission_queue"] if x["kind"] != "completed"] + extra_cands
@@ -160,3 +173,4 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         done = [x for x in payload["submission_queue"] if x["kind"] == "completed"]
         payload["submission_queue"] = active + done
         sched["actionable_count"] = len(active)
+    sched["breakthrough_count"] = sum(1 for x in payload["submission_queue"] if x.get("is_breakthrough"))

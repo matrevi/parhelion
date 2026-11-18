@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl, utc_now
+from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
 from .judge_sync import compute_synchronized_pipeline
 
@@ -52,6 +53,7 @@ def _probe_queue_lock(lock_file: Path) -> bool:
 def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     sched_cfg = cfg.get("scheduler", DEFAULT_CONFIG["scheduler"])
     noise_floor = float(sched_cfg.get("noise_floor_delta", 2.7))
+    bt_threshold = float(sched_cfg.get("breakthrough_threshold", 5.0))
     daily_limit = int(sched_cfg.get("daily_quota_limit", 50))
     closing_reserve = int(sched_cfg.get("closing_reserve", 12))
     gap_sec = int(sched_cfg.get("rate_limit_gap_sec", 190))
@@ -59,6 +61,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     now = utc_now()
     meta = resolve_workspace_meta(workspace)
+    exp_map = index_experience_by_commit(workspace)
     hist_idx = index_submission_history(workspace)
     problems_out, contest_summary = build_problem_models(workspace, meta, hist_idx, noise_floor, cb_limit)
     prob_map = {p["title"]: p for p in problems_out}
@@ -136,6 +139,10 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                         "estimated_score": est,
                         "actual_score": None,
                         "delta_score": None,
+                        "breakthrough_delta": None,
+                        "is_breakthrough": False,
+                        "experience_id": exp_map.get((t, b_sha[:7])),
+                        "baseline_pass_sha": None,
                         "wspt_priority": gates["wspt_score"],
                         "gates": gates,
                         "can_approve": True,
@@ -145,6 +152,10 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 )
 
     prior_board: dict[str, float] = {}
+    last_pass_score: dict[str, float] = {}
+    last_pass_sha: dict[str, str] = {}
+    peak_pass_score: dict[str, float] = {}
+    seen_pass_shas: set[tuple[str, str]] = set()
     chron_items: list[dict[str, Any]] = []
     for idx, q in enumerate(queue_rows):
         t, sha, q_at = q.get("title", ""), q.get("sha", ""), q.get("queued_at", "")
@@ -180,6 +191,11 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 badge = "HOLD: NOISE"
             else:
                 badge = "READY"
+            cand_bt_delta = (
+                round((est or cur_sc) - cur_sc, 2)
+                if (cur_sc > 0 and not is_rest and (t, sha[:7]) not in seen_pass_shas and "restore" not in note.lower())
+                else None
+            )
             chron_items.append(
                 {
                     "id": f"queued-{idx}-{t}-{sha[:7]}",
@@ -200,6 +216,10 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "estimated_score": est,
                     "actual_score": None,
                     "delta_score": None,
+                    "breakthrough_delta": cand_bt_delta,
+                    "is_breakthrough": bool(cand_bt_delta is not None and cand_bt_delta >= bt_threshold),
+                    "experience_id": exp_map.get((t, sha[:7])),
+                    "baseline_pass_sha": last_pass_sha.get(t),
                     "wspt_priority": gates["wspt_score"],
                     "gates": gates,
                     "can_approve": badge in ("HOLD: NOISE", "CIRCUIT OPEN"),
@@ -211,9 +231,23 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             st = out.get("status", "done")
             actual = float(out["score"]) if out.get("score") is not None else None
             delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
+            bt_delta: float | None = None
+            base_p_sha = last_pass_sha.get(t)
+            effective_note = str(out.get("note") or note or "")
+            low_note = effective_note.strip().lower()
+            is_restore_note = any(low_note.startswith(pfx) for pfx in ("restore", "rollback", "retry restore", "closing restore"))
             if st == "Pass":
                 badge = "PASS ↑" if (delta is None or delta >= 0) else "PASS ↓"
                 if actual is not None:
+                    prev_p = last_pass_score.get(t)
+                    peak_p = peak_pass_score.get(t, 0.0)
+                    is_repeat = (t, sha[:7]) in seen_pass_shas
+                    if (not is_repeat) and (not is_restore_note) and (prev_p is not None and prev_p > 0) and (actual >= peak_p - 0.5):
+                        bt_delta = round(actual - prev_p, 2)
+                    seen_pass_shas.add((t, sha[:7]))
+                    last_pass_score[t] = actual
+                    last_pass_sha[t] = sha[:7]
+                    peak_pass_score[t] = max(peak_p, actual)
                     prior_board[t] = actual
             elif st == "skipped":
                 badge = "HOLD: NOISE"
@@ -231,7 +265,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "difficulty": int(p_obj.get("difficulty", 2)),
                     "sha": sha,
                     "short_sha": sha[:7],
-                    "note": out.get("note") or note,
+                    "note": effective_note,
                     "detail": out.get("detail", ""),
                     "submission_id": out.get("submission_id"),
                     "queued_at": q_at,
@@ -243,6 +277,10 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "estimated_score": est,
                     "actual_score": round(actual, 2) if actual is not None else None,
                     "delta_score": delta,
+                    "breakthrough_delta": bt_delta,
+                    "is_breakthrough": bool(bt_delta is not None and bt_delta >= bt_threshold),
+                    "experience_id": exp_map.get((t, sha[:7])),
+                    "baseline_pass_sha": base_p_sha,
                     "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
                     "gates": {
                         "safety_ok": st not in ("rejected", "Compile Error", "Runtime Error", "Wrong Answer"),
@@ -288,6 +326,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "closing_reserve": closing_reserve,
             "available_normal_shots": avail_shots,
             "noise_floor_delta": noise_floor,
+            "breakthrough_threshold": bt_threshold,
+            "breakthrough_count": sum(1 for x in (active_q + done_q) if x.get("is_breakthrough")),
             "circuit_breaker_limit": cb_limit,
             "queue_lock_held": queue_lock_held,
             "actionable_count": len(active_q),

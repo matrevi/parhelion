@@ -2,6 +2,7 @@ import SwiftUI
 
 enum QueueViewTab: String, CaseIterable, Identifiable {
     case waiting = "待提交队列"
+    case breakthrough = "突破筛选"
     case history = "历史评测记录"
     case held = "低收益暂缓"
 
@@ -14,9 +15,11 @@ struct SubmissionQueueView: View {
 
     @StateObject private var clock = WallClockTicker()
     @UIState private var selectedTab: QueueViewTab = .waiting
+    @UIState private var inspectedExperience: BreakthroughEntry? = nil
 
     private var pipeline: LivePipelineState? { store.snapshot?.scheduler.pipeline }
     private var isBusySubmitting: Bool { (pipeline?.isBusy ?? false) || store.isLaunchingSubmit }
+    private var btThreshold: Double { store.breakthroughThreshold }
 
     private var waitingItems: [SubmissionQueueItem] {
         items.filter { $0.kind != "completed" && !$0.badge.contains("HOLD") && !$0.badge.contains("CIRCUIT") }
@@ -30,10 +33,32 @@ struct SubmissionQueueView: View {
         items.filter { $0.kind == "completed" }
     }
 
+    private var breakthroughItems: [SubmissionQueueItem] {
+        items
+            .filter { ($0.breakthroughDelta ?? -999.0) >= btThreshold }
+            .sorted { a, b in
+                let aPend = a.kind != "completed"
+                let bPend = b.kind != "completed"
+                if aPend != bPend { return aPend && !bPend }
+                return (a.breakthroughDelta ?? 0) > (b.breakthroughDelta ?? 0)
+            }
+    }
+
+    private func matchedExperience(for item: SubmissionQueueItem) -> BreakthroughEntry? {
+        if let eid = item.experienceId, let e = store.breakthroughEntries.first(where: { $0.id == eid }) {
+            return e
+        }
+        return store.breakthroughEntries.first { $0.problem == item.title && $0.shortSha == item.shortSha }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             headerTabs
             Divider()
+            if selectedTab == .breakthrough {
+                breakthroughThresholdBar
+                Divider()
+            }
 
             ScrollView {
                 LazyVStack(spacing: 9) {
@@ -50,6 +75,18 @@ struct SubmissionQueueView: View {
                         } else {
                             ForEach(Array(combined.enumerated()), id: \.element.id) { idx, item in
                                 candidateCard(item, rankIndex: idx + 1)
+                            }
+                        }
+                    case .breakthrough:
+                        if breakthroughItems.isEmpty {
+                            emptyHint(String(format: "当前阈值 (Δ ≥ %.1f pts) 下暂无匹配的突破提交，可调低阈值查看", btThreshold))
+                        } else {
+                            ForEach(Array(breakthroughItems.enumerated()), id: \.element.id) { idx, item in
+                                if item.kind == "completed" {
+                                    completedCard(item)
+                                } else {
+                                    candidateCard(item, rankIndex: idx + 1)
+                                }
                             }
                         }
                     case .history:
@@ -73,6 +110,22 @@ struct SubmissionQueueView: View {
                 .padding(10)
             }
         }
+        .sheet(item: $inspectedExperience) { entry in
+            VStack(spacing: 0) {
+                HStack {
+                    Label("结构化突破档案 · \(entry.id)", systemImage: "sparkles.rectangle.stack.fill")
+                        .font(.system(size: 13.5, weight: .bold))
+                    Spacer()
+                    Button("关闭") { inspectedExperience = nil }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                Divider()
+                BreakthroughDetailView(entry: entry)
+            }
+            .frame(width: 680, height: 520)
+        }
     }
 
     private var headerTabs: some View {
@@ -82,15 +135,63 @@ struct SubmissionQueueView: View {
             Spacer()
             Picker("", selection: $selectedTab) {
                 Text("待提交 (\(waitingItems.count))").tag(QueueViewTab.waiting)
-                Text("历史记录 (\(completedItems.count))").tag(QueueViewTab.history)
+                Text("突破 (\(breakthroughItems.count))").tag(QueueViewTab.breakthrough)
+                Text("历史 (\(completedItems.count))").tag(QueueViewTab.history)
                 Text("暂缓 (\(heldItems.count))").tag(QueueViewTab.held)
             }
             .pickerStyle(.segmented)
             .controlSize(.small)
-            .frame(width: 295)
+            .frame(width: 345)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
+    }
+
+    private var breakthroughThresholdBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "flame.fill")
+                .font(.system(size: 11.5))
+                .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
+            Text("突破筛选阈值:")
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Stepper(
+                value: Binding(
+                    get: { btThreshold },
+                    set: { nv in Task { await store.updateScheduler(breakthroughThreshold: nv) } }
+                ),
+                in: 1.0...25.0,
+                step: 1.0
+            ) {
+                Text(String(format: "Δ ≥ %.1f", btThreshold))
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(Color(red: 0.88, green: 0.46, blue: 0.08))
+            }
+            .controlSize(.small)
+
+            ForEach([3.0, 5.0, 10.0, 15.0], id: \.self) { preset in
+                Button(String(format: "+%.0f", preset)) {
+                    Task { await store.updateScheduler(breakthroughThreshold: preset) }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(abs(btThreshold - preset) < 0.1 ? .orange : .secondary)
+            }
+
+            Spacer()
+
+            Button {
+                Task { await store.syncBreakthroughs() }
+            } label: {
+                Label("归档至经验库", systemImage: "arrow.down.doc.fill")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Color(red: 0.92, green: 0.56, blue: 0.10).opacity(0.07))
     }
 
     // MARK: - Top Pinned Live In-Flight Judge Card
@@ -159,6 +260,9 @@ struct SubmissionQueueView: View {
                     Text(item.title).font(.system(size: 13, weight: .bold))
                     Text(item.shortSha).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                     Spacer()
+                    if let btd = item.breakthroughDelta, btd >= btThreshold {
+                        SemanticPill(text: String(format: "预计突破 %+.2f", btd), icon: "flame.fill", compact: true)
+                    }
                     SemanticPill(text: readableCandidateBadge(item.badge))
                 }
 
@@ -241,6 +345,9 @@ struct SubmissionQueueView: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
                     Spacer()
+                    if let btd = item.breakthroughDelta, btd >= btThreshold {
+                        SemanticPill(text: String(format: "突破 %+.2f", btd), icon: "flame.fill", compact: true)
+                    }
                     SemanticPill(text: readableHistoryBadge(item))
                 }
 
@@ -278,6 +385,18 @@ struct SubmissionQueueView: View {
                         .lineLimit(1)
 
                     Spacer()
+
+                    if let exp = matchedExperience(for: item) {
+                        Button {
+                            inspectedExperience = exp
+                        } label: {
+                            Label("经验档案", systemImage: "book.pages.fill")
+                                .font(.system(size: 11))
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(.orange)
+                        .controlSize(.mini)
+                    }
 
                     if passed {
                         Button {

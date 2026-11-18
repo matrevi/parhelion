@@ -52,3 +52,18 @@ def resolve_commit_sha(repo_dir: Path, rev: str) -> str | None:
         timeout=2.0,
     )
     return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def read_commit_subject(repo_dir: Path, rev: str) -> str:
+    if not (repo_dir / ".git").exists() or not rev:
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "log", "-1", "--format=%s", rev],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        return proc.stdout.strip() if proc.returncode == 0 else ""
+    except Exception:
+        return ""

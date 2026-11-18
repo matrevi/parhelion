@@ -15,6 +15,9 @@ opsb test <Problem> --fast           # Fast-lane smoke build + public cases on N
 opsb test <Problem>                  # Full extended boundary + determinism + profiler gate
 opsb history <Problem>               # 50-case ratios (tbest / ours) & submission timeline
 opsb submit <Problem> <SHA> --note ""# Evaluate 4-Stage Gate & enqueue commit
+opsb queue list --breakthrough       # Filter high-jump breakthrough submissions (Δ >= threshold)
+opsb breakthrough list               # Inspect structured KernelC optimization playbook (`breakthrough/`)
+opsb breakthrough show <ID|Problem>  # Read full structured breakthrough mechanism & reusable rule
 ```
 
 ## Scoring & 4-Stage Gate Summary

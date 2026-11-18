@@ -1,0 +1,133 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-18T06:30:00Z",
+  "entries": [
+    {
+      "id": "BT-20261118-LayerNormV3-af0807c",
+      "problem": "LayerNormV3",
+      "difficulty": 2,
+      "sha": "af0807c2c6001fdcfd870ebb05b8262864556033",
+      "baseline_sha": "bf2beb9",
+      "timestamp": "2026-11-18T06:05:19Z",
+      "score_before": 27.13,
+      "score_after": 43.66,
+      "delta_raw": 16.53,
+      "delta_weighted": 33.06,
+      "status": "verified",
+      "category": "simd-transpose",
+      "tags": ["bf16", "fp16", "TransDataTo5HD", "ReduceSum", "ping-pong", "single-TBuf"],
+      "title": "BF16 TransDataTo5HD Vertical SIMD Accumulate + Native FP16 + Single-TBuf Ping-Pong",
+      "bottleneck": "Reproducing numpy's non-associative sequential bf16 accumulation forced serial per-row loops while per-row ReduceSum (~240 cyc) and 9 DMA/V syncs stalled tiles.",
+      "mechanisms": [
+        "Transpose 16 rows in UB via TransDataTo5HD so vertical SIMD Add executes exact sequential bf16 rounding across 16 rows simultaneously (~9x speedup)",
+        "Pack multiple rows into batched ReduceSumMultiN to amortize ~240-cycle reduction startup",
+        "Native FP16 compute path + fused b1/b2 parameter broadcast",
+        "Single-TBuf arena with double-buffered MTE2/PIPE_V/MTE3 ping-pong"
+      ],
+      "precision_guard": "Bit-identical to sequential numpy bf16 saturation (2080 == 2080 on (5, 4097)); 75/75 extended cases 3-run SHA-256 deterministic.",
+      "transferable_rule": "When a golden reference requires non-associative sequential rounding along a reduction axis, transpose 16 independent rows via TransDataTo5HD and step vertically with SIMD vector instructions.",
+      "doc_path": "entries/BT-20261118-LayerNormV3-af0807c.md"
+    },
+    {
+      "id": "BT-20261118-CTCLossV2-0d5125c",
+      "problem": "CTCLossV2",
+      "difficulty": 2,
+      "sha": "0d5125cd90baa4e421abfa72a042a021a1eaba50",
+      "baseline_sha": "02c2048",
+      "timestamp": "2026-11-18T06:11:42Z",
+      "score_before": 37.18,
+      "score_after": 52.85,
+      "delta_raw": 15.67,
+      "delta_weighted": 31.34,
+      "status": "verified",
+      "category": "async-pipeline",
+      "tags": ["ring-buffer", "Gather", "window-slicing", "double-buffer", "MTE3-overlap", "DP"],
+      "title": "Two-Half-Ring Async MTE3 + 64-Lane Window-Sliced Gather DP + Double-Buffered log_probs",
+      "bottleneck": "Every DP step computed the full padded state width [0, saf), rewrote Gather offset tables via Adds, and stalled on synchronous VM3/M3V barriers to flush each log_alpha[t] row.",
+      "mechanisms": [
+        "Slice Gather/Max/Exp/Ln/Select to the active 64-lane band [cStart, cEnd) and fuse boundary masks via And into a single Select per step",
+        "Per-slot 32B -inf guard + scalar Gather srcBaseOffset eliminate per-step Adds(offBC/offP) rewrites",
+        "Two-half-ring (2*H slots) UB layout drains completed DP rows on MTE3 asynchronously while PIPE_V computes the opposite half-ring",
+        "Double-buffered multi-row log_probs MTE2 prefetch + external TPipe for register-promoted loop scalars"
+      ],
+      "precision_guard": "Preserves hardware vmax(-inf, -inf) -> 0.0f pairwise order and in-chain PipeBarrier<PIPE_V>() across all 8 int32/int64 index combinations.",
+      "transferable_rule": "In sequential time-step DP kernels, buffer 2*H step outputs in UB so MTE3 bursts H rows asynchronously without blocking PIPE_V, and slice vector width to the reachable state band.",
+      "doc_path": "entries/BT-20261118-CTCLossV2-0d5125c.md"
+    },
+    {
+      "id": "BT-20261110-MultilabelMarginLoss-59f8065",
+      "problem": "MultilabelMarginLoss",
+      "difficulty": 2,
+      "sha": "59f80657c0fc0dcf1fbd1e735cf36b2c34651bb3",
+      "baseline_sha": "495ca5c",
+      "timestamp": "2026-11-10T04:17:12Z",
+      "score_before": 43.96,
+      "score_after": 56.64,
+      "delta_raw": 12.68,
+      "delta_weighted": 25.36,
+      "status": "verified",
+      "category": "deterministic-sync",
+      "tags": ["cross-core-reduction", "sentinel-handshake", "PipeBarrier", "Sort32", "determinism"],
+      "title": "NaN-Sentinel Cross-Core Deterministic Reduction + Lean Deduplicated PIPE_V Margin Loop",
+      "bottleneck": "Multi-core mean/sum reduction via float atomics or unguarded scratch buffers caused non-deterministic drift, TLE hangs, or RE on unaligned is_target tails (C = 9, 13, 16), forcing 1-core execution.",
+      "mechanisms": [
+        "Out-of-domain NaN sentinel (0x7FC00000) + explicit gate-word handshake with DataCacheCleanAndInvalid for zero-workspace cross-core synchronization",
+        "Fixed-order fp32 summation on core 0 + single sizeof(T) write to y[0] + deferred is_target prefix restore",
+        "Deduplicated target histogram driving tight Adds -> Maxs -> Muls -> Add PIPE_V loop with one final Select + ReduceSum"
+      ],
+      "precision_guard": "100% bit-identical across 2,860 stress launches (including 1,800 launches on C = 9, 13, 16 race shapes).",
+      "transferable_rule": "Replace non-deterministic cross-core float atomics on scalar outputs with cache-coherent GM slots guarded by an out-of-domain sentinel (NaN 0x7FC00000) + DataCacheCleanAndInvalid, summed in fixed core order on block 0.",
+      "doc_path": "entries/BT-20261110-MultilabelMarginLoss-59f8065.md"
+    },
+    {
+      "id": "BT-20261118-PadV3Grad-49f905f",
+      "problem": "PadV3Grad",
+      "difficulty": 3,
+      "sha": "49f905f4157a3014c7419e461ef15308b509814c",
+      "baseline_sha": "ac71b7b",
+      "timestamp": "2026-11-18T06:28:05Z",
+      "score_before": 29.60,
+      "score_after": 40.38,
+      "delta_raw": 10.78,
+      "delta_weighted": 32.34,
+      "status": "verified",
+      "category": "separable-folding",
+      "tags": ["dimension-collapsing", "separable-tensor", "Gather", "multi-regime", "DataCopyPad", "SetBlockDim"],
+      "title": "Canonical Dimension Collapsing + V3 Multi-Regime Separable H/W Vectorized Folding",
+      "bottleneck": "Enumerating R-dimensional folding preimages per row folded inner W margins repeatedly for every outer preimage combination and issued fragmented per-row DataCopyPad GM reads.",
+      "mechanisms": [
+        "Canonical dimension collapsing drops unit dims and fuses adjacent zero-pad dims so 4D/5D NCHW/NCDHW tensors reduce to 1D/2D/3D with zero copy",
+        "Separable Kronecker folding accumulates outer and H margins in UB first so inner W Gather<float> folding runs only once per output row",
+        "4 specialized execution regimes: Pure Copy MTE2<->MTE3 stream, Column-Chunked Wide Parallel, Whole-2D-Plane single-DMA batch, and Row-Tiled separable accumulator",
+        "Byte-weighted SetBlockDim (~16 KB effective work per AIV core) balances small-shape dispatch vs 40-core saturation"
+      ],
+      "precision_guard": "340/340 extended cases green across reflect/symmetric/circular/edge/constant in fp32 & fp16, with Kahan fallback for negative paddings.",
+      "transferable_rule": "For separable multi-axis stencil/fold operators, collapse unpadded axes first and reduce outer/row axes in UB before executing inner-axis Gather instructions.",
+      "doc_path": "entries/BT-20261118-PadV3Grad-49f905f.md"
+    },
+    {
+      "id": "BT-20261110-PadV3Grad-0fc367d",
+      "problem": "PadV3Grad",
+      "difficulty": 3,
+      "sha": "0fc367de124f4cd43c729b34437daa67a0bc2069",
+      "baseline_sha": "d3160b6",
+      "timestamp": "2026-11-10T09:29:44Z",
+      "score_before": 27.15,
+      "score_after": 30.38,
+      "delta_raw": 3.23,
+      "delta_weighted": 9.69,
+      "status": "verified",
+      "category": "vectorization",
+      "tags": ["fp16", "Cast", "PipeBarrier", "PIPE_V", "aliasing", "narrowing"],
+      "title": "16-Bit Vectorized Widening/Narrowing with Explicit PipeBarrier<PIPE_V> Hazard Ordering",
+      "bottleneck": "Vectorizing 16-bit boundary accumulation gave 1.43x-1.76x speedups but suffered 10/270 precision failures from mixed-width Cast<half, float> / Cast<float, half> UB hazard overlap.",
+      "mechanisms": [
+        "64-lane vectorized fp16 -> fp32 Cast widening into row-tile UB accumulators",
+        "Explicit PipeBarrier<PIPE_V>() ordering narrowing Cast strictly behind widening + Add stages across loop iterations"
+      ],
+      "precision_guard": "Eliminated all 10 fp16 precision failures (260/270 -> 270/270 green) while retaining full 1.76x vectorized speedup.",
+      "transferable_rule": "Insert an explicit PipeBarrier<PIPE_V>() between 16->32-bit widening compute and 32->16-bit narrowing Cast when cycling or overlapping UB buffers on Accel soc-a.",
+      "doc_path": "entries/BT-20261110-PadV3Grad-0fc367d.md"
+    }
+  ]
+}
