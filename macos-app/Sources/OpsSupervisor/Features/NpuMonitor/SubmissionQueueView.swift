@@ -23,11 +23,19 @@ struct SubmissionQueueView: View {
     private var btThreshold: Double { store.breakthroughThreshold }
 
     private var waitingItems: [SubmissionQueueItem] {
-        items.filter { $0.kind != "completed" && !$0.badge.contains("HOLD") && !$0.badge.contains("CIRCUIT") }
+        items.filter {
+            $0.kind != "completed"
+                && !$0.badge.contains("HOLD")
+                && !$0.badge.contains("CIRCUIT")
+                && !$0.badge.contains("ESCAPE")
+        }
     }
 
     private var heldItems: [SubmissionQueueItem] {
-        items.filter { $0.kind != "completed" && ($0.badge.contains("HOLD") || $0.badge.contains("CIRCUIT")) }
+        items.filter {
+            $0.kind != "completed"
+                && ($0.badge.contains("HOLD") || $0.badge.contains("CIRCUIT") || $0.badge.contains("ESCAPE"))
+        }
     }
 
     private var completedItems: [SubmissionQueueItem] {

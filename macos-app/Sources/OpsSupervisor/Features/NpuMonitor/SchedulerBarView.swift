@@ -24,26 +24,28 @@ struct SchedulerBarView: View {
         HStack(spacing: 12) {
             judgeStatusPill(judgeElapsed: judgeEl)
 
-            SemanticPill(
-                text: cdRem == 0
-                    ? lang.tr("冷却已就绪 (可立即提交)", "Cooldown Ready (Submit Now)")
-                    : lang.tr("平台限流冷却 \(cdRem)s / \(gap)s", "Rate Cooldown \(cdRem)s / \(gap)s"),
-                icon: cdRem == 0 ? "checkmark.bolt.fill" : "timer",
-                compact: false
-            )
-
-            if let slots = pipeline?.accountSlots?.filter({ $0.enabled && $0.loggedIn }), slots.count > 1 {
-                HStack(spacing: 5) {
-                    ForEach(slots) { slot in
+            let activeSlots = (pipeline?.accountSlots ?? []).filter { $0.enabled && $0.loggedIn }
+            if activeSlots.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(activeSlots) { slot in
                         let sRem = clock.cooldownRemaining(endsAt: slot.cooldownEndsEpoch)
-                        Text(sRem == 0 ? "\(slot.label):\(lang.tr("就绪", "OK"))" : "\(slot.label):\(sRem)s")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(sRem == 0 ? .green : .orange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2.5)
-                            .background(Capsule().fill((sRem == 0 ? Color.green : Color.orange).opacity(0.13)))
+                        SemanticPill(
+                            text: sRem == 0
+                                ? "\(slot.label) · \(lang.tr("就绪", "Ready"))"
+                                : "\(slot.label) · \(sRem)s / \(gap)s",
+                            icon: sRem == 0 ? "checkmark.bolt.fill" : "timer",
+                            compact: false
+                        )
                     }
                 }
+            } else {
+                SemanticPill(
+                    text: cdRem == 0
+                        ? lang.tr("冷却已就绪 (可立即提交)", "Cooldown Ready (Submit Now)")
+                        : lang.tr("平台限流冷却 \(cdRem)s / \(gap)s", "Rate Cooldown \(cdRem)s / \(gap)s"),
+                    icon: cdRem == 0 ? "checkmark.bolt.fill" : "timer",
+                    compact: false
+                )
             }
 
             Button {

@@ -160,7 +160,7 @@ class BenchmarkCalibrator:
             specs_root
             or (pathlib.Path(__file__).resolve().parents[1] / "bench-specs")
         )
-        self.verified_escapes = verified_escapes or {}
+        self.verified_escapes = verified_escapes if verified_escapes is not None else {}
         # B0 backfill lane store (`<state>/backfill_timings.json`); built lazily on first use
         self.state_dir = pathlib.Path(state_dir) if state_dir else None
         self.backfill: Any = None

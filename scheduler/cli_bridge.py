@@ -1083,6 +1083,7 @@ class SchedulerEngine:
             raise ValueError(f"Unknown problem title: {title}")
         res = self.calibrator.verify_escape(title=title, bad_sha=bad_sha, good_sha=good_sha)
         if res.get("ok"):
+            self.verified_escapes.update(self.calibrator.verified_escapes)
             self._save_state()
         return res
 
