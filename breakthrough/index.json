@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-22T13:06:44.906727+00:00",
+  "updated_at": "2026-11-22T17:47:50.216858+00:00",
   "entries": [
     {
       "id": "BT-20261110-SyncBatchNormGatherStats-ecd5aa8",
@@ -34,6 +34,89 @@
       "precision_guard": "Bit-identical to scalar AccurateVariance across 240K-element replay and 48/48 extended cases. Mandatory PipeBarrier<PIPE_V>() between dependent vector ops regardless of buffer aliasing (removing 39 barriers broke new_variance 1024/1024 at C=1024).",
       "transferable_rule": "Vectorize Dekker/TwoSum compensated arithmetic preserving exact operand order and mandatory PipeBarrier<PIPE_V>(), overlap multi-stream DataCopyPad via depth-4 TQue, keep unused workspace at 1024B, and size SetBlockDim against the ~0.12us/block dispatch floor (~32KB/block, >=4-block stability floor).",
       "doc_path": "entries/BT-20261110-SyncBatchNormGatherStats-ecd5aa8.md"
+    },
+    {
+      "id": "BT-20261122-QuantUpdateScatter-28b9ce3",
+      "problem": "QuantUpdateScatter",
+      "difficulty": 2,
+      "sha": "28b9ce34802f7842357d84f84e48a90e21b7575e",
+      "baseline_sha": "e29b285",
+      "timestamp": "2026-11-22T14:54:35.608898+00:00",
+      "score_before": 67.84,
+      "score_after": 85.89,
+      "delta_raw": 18.05,
+      "delta_weighted": 36.1,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "E19.2: replace lambda with __aicore__ ChunkCursor struct",
+      "bottleneck": "Prior baseline `e29b285` plateaued at 67.84 pts; `28b9ce3` lifted online score to 85.89 pts (+18.05 raw / +36.10 weighted). Top paired hardware speedups: odd_c129_i8_proxy 6.2->2.7us (2.32x), sample 2.5->1.7us (1.45x), c1024_r1024 6.4->4.8us (1.31x).",
+      "mechanisms": [
+        "E19.2: replace lambda with __aicore__ ChunkCursor struct"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 144 cases, exit_code=0) and passed online 50-case Judge evaluation at 85.89 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (tiling-regime), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/quant_update_scatter_tiling.cpp      |   36 +-",
+        "op_kernel/quant_update_scatter.cpp           |   25 +-",
+        "op_kernel/quant_update_scatter.h             | 2355 +++++++++++++-------------",
+        "op_kernel/quant_update_scatter_tiling_data.h |   14 +-",
+        "op_kernel/quant_update_scatter_tiling_key.h  |   14 +-",
+        "5 files changed, 1237 insertions(+), 1207 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "odd_c129_i8_proxy",
+          6.22,
+          2.68,
+          2.3208955223880596
+        ],
+        [
+          "sample",
+          2.5,
+          1.72,
+          1.4534883720930232
+        ],
+        [
+          "c1024_r1024",
+          6.36,
+          4.84,
+          1.3140495867768596
+        ],
+        [
+          "c128_r256",
+          4.56,
+          4.06,
+          1.1231527093596059
+        ],
+        [
+          "single_row_decode_proxy",
+          8.34,
+          7.56,
+          1.1031746031746033
+        ],
+        [
+          "rows_big_c8",
+          2.8,
+          2.6,
+          1.0769230769230769
+        ],
+        [
+          "kv_decode_512",
+          6.0,
+          5.58,
+          1.075268817204301
+        ],
+        [
+          "large_ele_c128",
+          6.82,
+          6.42,
+          1.0623052959501558
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-QuantUpdateScatter-28b9ce3.md"
     },
     {
       "id": "BT-20261118-LayerNormV3-af0807c",
@@ -266,6 +349,171 @@
       "doc_path": "entries/BT-20261122-SyncBatchNormGatherStats-de25877.md"
     },
     {
+      "id": "BT-20261122-ConfusionTransposeD-31affc6",
+      "problem": "ConfusionTransposeD",
+      "difficulty": 3,
+      "sha": "31affc6e0efa33024e7c9f8398b2240414f01807",
+      "baseline_sha": "d8eb6da",
+      "timestamp": "2026-11-22T13:29:53.164454+00:00",
+      "score_before": 56.4,
+      "score_after": 65.72,
+      "delta_raw": 9.32,
+      "delta_weighted": 27.96,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "perf: divisor-of-40 block ladder (1/10/20/40) + zero-Cast u32 TinyLut (<=240w) + 20-block <=64KB mid-UB",
+      "bottleneck": "Prior baseline `d8eb6da` plateaued at 56.40 pts; `31affc6` lifted online score to 65.72 pts (+9.32 raw / +27.96 weighted). Top paired hardware speedups: perm_5d 5.4->3.8us (1.42x), rev_3d_16 3.2->2.3us (1.37x), f32_128x128 3.3->2.5us (1.35x).",
+      "mechanisms": [
+        "[main] divisor-of-40 ladder (1/10/20/40)",
+        "zero-Cast u32 TinyLut (<=240w)",
+        "SMALL_VEC (<=8KB): sum_med 120.04->108.32us (vs 133.44 ccdc5cb), legacy12_med 39.98->35.62us, ref_2x2x2 1.58->1.22us, ref_4d_t 1.62->1.32us, ref_3d_t 1.60->1.22us, f32_128x128 3.34->2.48us, perm_5d 5.44->3.84us",
+        "160/160 bit-exact"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 160 cases, exit_code=0) and passed online 50-case Judge evaluation at 65.72 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (tiling-regime), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/confusion_transpose_d_tiling.cpp | 59 ++++++++++++++++++++++++--------",
+        "op_kernel/confusion_transpose_d.h        | 32 ++++++-----------",
+        "2 files changed, 55 insertions(+), 36 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "perm_5d",
+          5.44,
+          3.84,
+          1.4166666666666667
+        ],
+        [
+          "rev_3d_16",
+          3.2,
+          2.34,
+          1.3675213675213678
+        ],
+        [
+          "f32_128x128",
+          3.34,
+          2.48,
+          1.346774193548387
+        ],
+        [
+          "cyclic_3d_a",
+          1.58,
+          1.2,
+          1.3166666666666669
+        ],
+        [
+          "ref_3d_t",
+          1.6,
+          1.22,
+          1.3114754098360657
+        ],
+        [
+          "f32_2d_tail",
+          1.64,
+          1.26,
+          1.3015873015873014
+        ],
+        [
+          "ref_2x2x2",
+          1.58,
+          1.22,
+          1.2950819672131149
+        ],
+        [
+          "ref_2d_t",
+          1.6,
+          1.26,
+          1.26984126984127
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-ConfusionTransposeD-31affc6.md"
+    },
+    {
+      "id": "BT-20261122-ConfusionTransposeD-3938863",
+      "problem": "ConfusionTransposeD",
+      "difficulty": 3,
+      "sha": "39388639a651675c7a956740b166a739fa5f1433",
+      "baseline_sha": "31affc6",
+      "timestamp": "2026-11-22T14:14:08.221718+00:00",
+      "score_before": 65.72,
+      "score_after": 74.11,
+      "delta_raw": 8.39,
+      "delta_weighted": 25.17,
+      "status": "verified",
+      "category": "dma-coalescing",
+      "tags": [
+        "Gather"
+      ],
+      "title": "perf(exp-b): V3 add SCH_WHOLE_UB 1D-DMA gather, q4Blocks warm LUT, 20b small/mid, 64x64 i64",
+      "bottleneck": "Prior baseline `31affc6` plateaued at 65.72 pts; `3938863` lifted online score to 74.11 pts (+8.39 raw / +25.17 weighted). Top paired hardware speedups: perm_5d 3.8->1.6us (2.40x), attn_small_span 4.0->2.5us (1.59x), attn_0213_bf16 4.4->2.9us (1.52x).",
+      "mechanisms": [
+        "perf(exp-b): V3 add SCH_WHOLE_UB 1D-DMA gather, q4Blocks warm LUT, 20b small/mid, 64x64 i64"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 160 cases, exit_code=0) and passed online 50-case Judge evaluation at 74.11 pts.",
+      "transferable_rule": "When optimizing `dma-coalescing` bottlenecks (Gather), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/confusion_transpose_d_tiling.cpp      |  278 ++--",
+        "op_kernel/confusion_transpose_d.h             | 1774 +++++++++++++++----------",
+        "op_kernel/confusion_transpose_d_tiling_data.h |    6 +-",
+        "op_kernel/confusion_transpose_d_tiling_key.h  |   24 +-",
+        "4 files changed, 1207 insertions(+), 875 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "perm_5d",
+          3.84,
+          1.6,
+          2.4
+        ],
+        [
+          "attn_small_span",
+          3.98,
+          2.5,
+          1.592
+        ],
+        [
+          "attn_0213_bf16",
+          4.42,
+          2.9,
+          1.5241379310344827
+        ],
+        [
+          "f32_256x256",
+          3.82,
+          2.62,
+          1.4580152671755724
+        ],
+        [
+          "attn_0213_f16",
+          4.74,
+          3.36,
+          1.4107142857142858
+        ],
+        [
+          "nhwc_to_nchw",
+          4.1,
+          3.18,
+          1.2893081761006286
+        ],
+        [
+          "u8_nchw_nhwc",
+          5.22,
+          4.12,
+          1.2669902912621358
+        ],
+        [
+          "f16_2d_tail",
+          1.46,
+          1.18,
+          1.2372881355932204
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-ConfusionTransposeD-3938863.md"
+    },
+    {
       "id": "BT-20261118-ConcatD-7919dcb",
       "problem": "ConcatD",
       "difficulty": 3,
@@ -298,6 +546,95 @@
       "precision_guard": "Bit-exact 90/90 isolated extended cases across fp32/fp16/bf16/int8/int64 & unaligned/zero-width inputs. Pure DMA uses explicit MTE2_MTE3/MTE3_MTE2 events; all noinline header specialists must be static for multi-TU schMode fatbin linking; WS_SYS_SIZE=4096U kept non-zero.",
       "transferable_rule": "Isolate heavy vector/gather specialists into a separate schMode tilingKey using static __attribute__((noinline)) functions so pure-DMA paths stay lean, trim tiling payloads to 64B via rawTiling->SetDataSize(), and cap DMA blockDim at the SoC HBM saturation knee (~22 AIV cores on soc-a at 2-4MB) with 1 core below 16KB.",
       "doc_path": "entries/BT-20261118-ConcatD-7919dcb.md"
+    },
+    {
+      "id": "BT-20261122-PadV3Grad-37fd777",
+      "problem": "PadV3Grad",
+      "difficulty": 3,
+      "sha": "37fd777790a819271bad96fb5c877925fab88c5d",
+      "baseline_sha": "be05c5b",
+      "timestamp": "2026-11-22T16:05:36.130043+00:00",
+      "score_before": 43.62,
+      "score_after": 51.54,
+      "delta_raw": 7.92,
+      "delta_weighted": 23.76,
+      "status": "verified",
+      "category": "vectorization",
+      "tags": [
+        "fp16"
+      ],
+      "title": "V12.0: H-First Pure-Vector 2D engine (tiny/pub/bigpad) + Zero-Stack 1D + Plane-Aligned Pack3C + Periodic u64 M",
+      "bottleneck": "Prior baseline `be05c5b` plateaued at 43.62 pts; `37fd777` lifted online score to 51.54 pts (+7.92 raw / +23.76 weighted). Top paired hardware speedups: lg_8x32x256x256_ed_f16 53.0->35.0us (1.51x), lg_8x32x256x256_f32 63.3->43.9us (1.44x), bigpad_2d_8x8_p16 9.3->6.7us (1.39x).",
+      "mechanisms": [
+        "V12.0: H-First Pure-Vector 2D engine (tiny/pub/bigpad)",
+        "Zero-Stack 1D",
+        "Plane-Aligned Pack3C",
+        "Periodic u64 Mask",
+        "Batched fp16 H-fold"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 544 cases, exit_code=0) and passed online 50-case Judge evaluation at 51.54 pts.",
+      "transferable_rule": "When optimizing `vectorization` bottlenecks (fp16), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/pad_v3_grad_tiling.cpp      |  262 +++--",
+        "op_kernel/pad_v3_grad.cpp           |   87 +-",
+        "op_kernel/pad_v3_grad.h             |    6 +-",
+        "op_kernel/pad_v3_grad_direct3c.h    | 1562 ++++++++-------------------",
+        "op_kernel/pad_v3_grad_pack3c.h      | 1896 +++++++++++++++++++++++++++++++++",
+        "op_kernel/pad_v3_grad_tall1d.h      |  599 +++--------",
+        "op_kernel/pad_v3_grad_tiling_data.h |   14 +-",
+        "op_kernel/pad_v3_grad_tiny.h        | 1988 ++++++++++++++++++++++++-----------"
+      ],
+      "paired_speedups": [
+        [
+          "lg_8x32x256x256_ed_f16",
+          52.96,
+          34.96,
+          1.5148741418764302
+        ],
+        [
+          "lg_8x32x256x256_f32",
+          63.3,
+          43.86,
+          1.4432284541723666
+        ],
+        [
+          "bigpad_2d_8x8_p16",
+          9.32,
+          6.7,
+          1.391044776119403
+        ],
+        [
+          "ladder_4d_nopad",
+          2.62,
+          2.04,
+          1.2843137254901962
+        ],
+        [
+          "neg_pad_crop_proxy",
+          4.38,
+          3.5,
+          1.2514285714285713
+        ],
+        [
+          "pub_16x16_f16",
+          4.66,
+          3.84,
+          1.2135416666666667
+        ],
+        [
+          "padH100_1x1x128x64_ed",
+          18.1,
+          15.12,
+          1.1970899470899472
+        ],
+        [
+          "oddW_4x16x64x50_f16",
+          12.58,
+          10.78,
+          1.1669758812615956
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-PadV3Grad-37fd777.md"
     },
     {
       "id": "BT-20261122-LayerNormV3-e21fdce",
@@ -385,6 +722,176 @@
         ]
       ],
       "doc_path": "entries/BT-20261122-LayerNormV3-e21fdce.md"
+    },
+    {
+      "id": "BT-20261122-ConcatD-c8b5521",
+      "problem": "ConcatD",
+      "difficulty": 3,
+      "sha": "c8b55211e9e55be59c4ba8688903a091708c0196",
+      "baseline_sha": "5a8d07f",
+      "timestamp": "2026-11-22T14:03:55.382942+00:00",
+      "score_before": 57.17,
+      "score_after": 64.31,
+      "delta_raw": 7.14,
+      "delta_weighted": 21.42,
+      "status": "verified",
+      "category": "async-pipeline",
+      "tags": [
+        "ring-buffer",
+        "schMode-isolation"
+      ],
+      "title": "[exp-b] v2: 7 razor-thin zero-spill schModes + 512B GM alignment + fixed TILE2D colCores + VEC32 minW<=64 + no",
+      "bottleneck": "Prior baseline `5a8d07f` plateaued at 57.17 pts; `c8b5521` lifted online score to 64.31 pts (+7.14 raw / +21.42 weighted). Top paired hardware speedups: many32_rows_unalign 4.8->4.3us (1.12x), odd_tails 2.0->1.8us (1.09x), small_2d 1.4->1.3us (1.05x).",
+      "mechanisms": [
+        "[exp-b] v2: 7 razor-thin zero-spill schModes",
+        "512B GM alignment",
+        "fixed TILE2D colCores",
+        "VEC32 minW<=64",
+        "noinline Ring4"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 90 cases, exit_code=0) and passed online 50-case Judge evaluation at 64.31 pts.",
+      "transferable_rule": "When optimizing `async-pipeline` bottlenecks (ring-buffer, schMode-isolation), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/concat_d_tiling.cpp      |  216 +++-",
+        "op_kernel/concat_d.h             | 2607 +++++++++++++++++++++++---------------",
+        "op_kernel/concat_d_tiling_data.h |   33 +-",
+        "op_kernel/concat_d_tiling_key.h  |   21 +-",
+        "4 files changed, 1781 insertions(+), 1096 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "many32_rows_unalign",
+          4.84,
+          4.32,
+          1.1203703703703702
+        ],
+        [
+          "odd_tails",
+          1.96,
+          1.8,
+          1.0888888888888888
+        ],
+        [
+          "small_2d",
+          1.36,
+          1.3,
+          1.0461538461538462
+        ],
+        [
+          "many16_rows_align",
+          3.12,
+          3.0,
+          1.04
+        ],
+        [
+          "small_1k_align",
+          1.2,
+          1.16,
+          1.0344827586206897
+        ],
+        [
+          "unalign_f16_3in",
+          3.7,
+          3.58,
+          1.0335195530726258
+        ],
+        [
+          "unalign_f32_w12_16",
+          3.0,
+          2.92,
+          1.0273972602739727
+        ],
+        [
+          "int32_mid",
+          2.42,
+          2.38,
+          1.0168067226890756
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-ConcatD-c8b5521.md"
+    },
+    {
+      "id": "BT-20261122-ConcatD-aa74f56",
+      "problem": "ConcatD",
+      "difficulty": 3,
+      "sha": "aa74f5696992a01b55031622e5b5442bcfee0b7d",
+      "baseline_sha": "c8b5521",
+      "timestamp": "2026-11-22T14:47:23.633638+00:00",
+      "score_before": 64.31,
+      "score_after": 71.0,
+      "delta_raw": 6.69,
+      "delta_weighted": 20.07,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "schMode-isolation"
+      ],
+      "title": "[main] V3: Half-chip port-contention-free block ladder (1/4/8/10/20/40) + VREDUCEV2 TinyPack schMode=7 (pub1-5",
+      "bottleneck": "Prior baseline `c8b5521` plateaued at 64.31 pts; `aa74f56` lifted online score to 71.00 pts (+6.69 raw / +20.07 weighted). Top paired hardware speedups: tiny32 3.1->1.8us (1.78x), many64 4.1->2.4us (1.69x), unalign_bf16_w16 3.9->2.7us (1.42x).",
+      "mechanisms": [
+        "[main] V3: Half-chip port-contention-free block ladder (1/4/8/10/20/40)",
+        "VREDUCEV2 TinyPack schMode=7 (pub1-5 single store)"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 90 cases, exit_code=0) and passed online 50-case Judge evaluation at 71.00 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (schMode-isolation), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/concat_d_tiling.cpp      |  364 ++---",
+        "op_kernel/concat_d.h             | 3166 +++++++++++++++++++++-----------------",
+        "op_kernel/concat_d_tiling_data.h |   34 +-",
+        "op_kernel/concat_d_tiling_key.h  |   22 +-",
+        "4 files changed, 1953 insertions(+), 1633 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "tiny32",
+          3.14,
+          1.76,
+          1.7840909090909092
+        ],
+        [
+          "many64",
+          4.12,
+          2.44,
+          1.6885245901639345
+        ],
+        [
+          "unalign_bf16_w16",
+          3.86,
+          2.72,
+          1.4191176470588234
+        ],
+        [
+          "axismid",
+          5.08,
+          3.76,
+          1.3510638297872342
+        ],
+        [
+          "few_outer_2m",
+          5.02,
+          3.88,
+          1.2938144329896906
+        ],
+        [
+          "unalign_f16_w8",
+          2.94,
+          2.28,
+          1.2894736842105263
+        ],
+        [
+          "unalign_f32_w4",
+          2.94,
+          2.3,
+          1.2782608695652176
+        ],
+        [
+          "small_128b_rows",
+          2.0,
+          1.74,
+          1.1494252873563218
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-ConcatD-aa74f56.md"
     },
     {
       "id": "BT-20261118-PReluGradUpdate-7efadf8",
@@ -569,6 +1076,173 @@
       "doc_path": "entries/BT-20261118-ConfusionTransposeD-d4d090f.md"
     },
     {
+      "id": "BT-20261122-LayerNormV3-8c8c164",
+      "problem": "LayerNormV3",
+      "difficulty": 2,
+      "sha": "8c8c1643dea31f82d0894d11a31849d970f20201",
+      "baseline_sha": "4061824",
+      "timestamp": "2026-11-22T14:03:37.228555+00:00",
+      "score_before": 65.45,
+      "score_after": 71.3,
+      "delta_raw": 5.85,
+      "delta_weighted": 11.7,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "v11.1: fix dependent template ubBuf.template Get<uint8_t>()",
+      "bottleneck": "Prior baseline `4061824` plateaued at 65.45 pts; `8c8c164` lifted online score to 71.30 pts (+5.85 raw / +11.70 weighted). Top paired hardware speedups: f32_4x6x8 5.1->2.8us (1.82x), f16_4096x1024 23.8->23.3us (1.02x), f32_1024x1024 11.5->11.2us (1.02x).",
+      "mechanisms": [
+        "v11.1: fix dependent template ubBuf.template Get<uint8_t>()"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 109 cases, exit_code=0) and passed online 50-case Judge evaluation at 71.30 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (tiling-regime), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/layer_norm_v3_tiling.cpp |  33 +--",
+        "op_kernel/layer_norm_v3.cpp      |   8 +-",
+        "op_kernel/layer_norm_v3.h        | 615 ++++++++++++++++++++++++---------------",
+        "3 files changed, 394 insertions(+), 262 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "f32_4x6x8",
+          5.1,
+          2.8,
+          1.8214285714285714
+        ],
+        [
+          "f16_4096x1024",
+          23.78,
+          23.26,
+          1.0223559759243337
+        ],
+        [
+          "f32_1024x1024",
+          11.48,
+          11.24,
+          1.0213523131672597
+        ],
+        [
+          "bf16_1024x1024",
+          90.4,
+          90.92,
+          0.9942806863176419
+        ],
+        [
+          "f32_64x8192",
+          7.92,
+          8.14,
+          0.9729729729729729
+        ],
+        [
+          "f32_2x20000",
+          14.92,
+          15.44,
+          0.966321243523316
+        ],
+        [
+          "f16_512x512",
+          7.08,
+          7.38,
+          0.959349593495935
+        ],
+        [
+          "f32_256x512",
+          6.36,
+          6.82,
+          0.9325513196480939
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-LayerNormV3-8c8c164.md"
+    },
+    {
+      "id": "BT-20261122-PReluGradUpdate-1baa854",
+      "problem": "PReluGradUpdate",
+      "difficulty": 1,
+      "sha": "1baa85444835a605f124c7df155ddbd81649a8bb",
+      "baseline_sha": "29a557a",
+      "timestamp": "2026-11-22T13:44:09.533406+00:00",
+      "score_before": 65.74,
+      "score_after": 71.55,
+      "delta_raw": 5.81,
+      "delta_weighted": 5.81,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "bf16",
+        "Gather"
+      ],
+      "title": "[exp-b] V1.2: fix bf16 vconv/vsel RAW pipe_barrier + gate ROW_2D_PAD B to inner>=128 + enlarge GATHER tile 384",
+      "bottleneck": "Prior baseline `29a557a` plateaued at 65.74 pts; `1baa854` lifted online score to 71.55 pts (+5.81 raw / +5.81 weighted). Top paired hardware speedups: sample_4_6_8 5.0->2.1us (2.40x), tiny_1_1 2.1->1.5us (1.44x), 4d_64_1024_3_3_f16 10.6->7.4us (1.43x).",
+      "mechanisms": [
+        "[exp-b] V1.2: fix bf16 vconv/vsel RAW pipe_barrier",
+        "gate ROW_2D_PAD B to inner>=128",
+        "enlarge GATHER tile 3840/6912"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 138 cases, exit_code=0) and passed online 50-case Judge evaluation at 71.55 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (bf16, Gather), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/p_relu_grad_update_tiling.cpp      |  551 +++----",
+        "op_kernel/p_relu_grad_update.cpp           |   15 +-",
+        "op_kernel/p_relu_grad_update.h             | 2353 ++++++++++++++++++----------",
+        "op_kernel/p_relu_grad_update_tiling_data.h |  100 +-",
+        "op_kernel/p_relu_grad_update_tiling_key.h  |    7 +-",
+        "5 files changed, 1765 insertions(+), 1261 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "sample_4_6_8",
+          5.0,
+          2.08,
+          2.4038461538461537
+        ],
+        [
+          "tiny_1_1",
+          2.1,
+          1.46,
+          1.4383561643835618
+        ],
+        [
+          "4d_64_1024_3_3_f16",
+          10.56,
+          7.36,
+          1.434782608695652
+        ],
+        [
+          "sample_4_6_8_bf16",
+          2.42,
+          1.8,
+          1.3444444444444443
+        ],
+        [
+          "high_c16384_proxy",
+          7.96,
+          6.4,
+          1.24375
+        ],
+        [
+          "sample_4_6_8_f16",
+          2.32,
+          2.08,
+          1.1153846153846152
+        ],
+        [
+          "4d_4_8192_7_7_f32",
+          12.78,
+          11.62,
+          1.0998278829604131
+        ],
+        [
+          "4d_16_64_32_32",
+          7.4,
+          6.92,
+          1.069364161849711
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-PReluGradUpdate-1baa854.md"
+    },
+    {
       "id": "BT-20261122-MultilabelMarginLoss-9f92b0a",
       "problem": "MultilabelMarginLoss",
       "difficulty": 2,
@@ -655,6 +1329,256 @@
         ]
       ],
       "doc_path": "entries/BT-20261122-MultilabelMarginLoss-9f92b0a.md"
+    },
+    {
+      "id": "BT-20261122-StridedSliceGrad-8dca63c",
+      "problem": "StridedSliceGrad",
+      "difficulty": 3,
+      "sha": "8dca63c50c0974985a6f9471ddb42d016f505e14",
+      "baseline_sha": "9585ce5",
+      "timestamp": "2026-11-22T13:29:02.162911+00:00",
+      "score_before": 56.83,
+      "score_after": 61.75,
+      "delta_raw": 4.92,
+      "delta_weighted": 14.76,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "bf16",
+        "fp16"
+      ],
+      "title": "v5: noinline RunEngine2 (zero Odo stack in Engine 0/1), Super-Row 2.1C/2.1B batching (all outer strides + 16K ",
+      "bottleneck": "Prior baseline `9585ce5` plateaued at 56.83 pts; `8dca63c` lifted online score to 61.75 pts (+4.92 raw / +14.76 weighted). Top paired hardware speedups: r1_partial 5.2->3.0us (1.72x), tiny_r2 4.5->2.9us (1.56x), full_r2_big 8.0->7.4us (1.08x).",
+      "mechanisms": [
+        "v5: noinline RunEngine2 (zero Odo stack in Engine 0/1), Super-Row 2.1C/2.1B batching (all outer strides",
+        "16K fp16/bf16 cap), universal interior BuildStridedRow (odd Q), balanced Regime 2.2",
+        "cached chunk tables"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 243 cases, exit_code=0) and passed online 50-case Judge evaluation at 61.75 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (bf16, fp16), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_kernel/strided_slice_grad.h | 747 ++++++++++++++++++++++-------------------",
+        "1 file changed, 405 insertions(+), 342 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "r1_partial",
+          5.22,
+          3.04,
+          1.7171052631578947
+        ],
+        [
+          "tiny_r2",
+          4.48,
+          2.88,
+          1.5555555555555558
+        ],
+        [
+          "full_r2_big",
+          7.96,
+          7.4,
+          1.0756756756756756
+        ],
+        [
+          "fp16_mid",
+          6.92,
+          6.58,
+          1.0516717325227962
+        ],
+        [
+          "r1_step3",
+          7.76,
+          7.52,
+          1.0319148936170213
+        ],
+        [
+          "full_r4",
+          6.14,
+          6.04,
+          1.0165562913907285
+        ],
+        [
+          "r2_lastdim_half",
+          7.48,
+          7.36,
+          1.016304347826087
+        ],
+        [
+          "r2_neg_step",
+          2.94,
+          2.92,
+          1.0068493150684932
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-StridedSliceGrad-8dca63c.md"
+    },
+    {
+      "id": "BT-20261122-StridedSliceGrad-306c457",
+      "problem": "StridedSliceGrad",
+      "difficulty": 3,
+      "sha": "306c457a2e010c2e2f2a1888e86f71533a3a20e6",
+      "baseline_sha": "dd7de48",
+      "timestamp": "2026-11-22T14:18:58.852773+00:00",
+      "score_before": 62.99,
+      "score_after": 67.63,
+      "delta_raw": 4.64,
+      "delta_weighted": 13.92,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "tiling-regime"
+      ],
+      "title": "v8a: fix PIPE_ALL global namespace in strided_slice_grad.cpp",
+      "bottleneck": "Prior baseline `dd7de48` plateaued at 62.99 pts; `306c457` lifted online score to 67.63 pts (+4.64 raw / +13.92 weighted). Top paired hardware speedups: r2_shrink 3.6->3.0us (1.22x), r2_unaligned 3.4->2.9us (1.20x), r2_neg_step 4.0->3.3us (1.19x).",
+      "mechanisms": [
+        "v8a: fix PIPE_ALL global namespace in strided_slice_grad.cpp"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 243 cases, exit_code=0) and passed online 50-case Judge evaluation at 67.63 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (tiling-regime), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/strided_slice_grad_tiling.cpp     |   53 +-",
+        "op_kernel/strided_slice_grad.cpp          |   26 +-",
+        "op_kernel/strided_slice_grad.h            | 3060 +++++++++++++++--------------",
+        "op_kernel/strided_slice_grad_tiling_key.h |    8 +-",
+        "4 files changed, 1648 insertions(+), 1499 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "r2_shrink",
+          3.62,
+          2.96,
+          1.222972972972973
+        ],
+        [
+          "r2_unaligned",
+          3.44,
+          2.86,
+          1.202797202797203
+        ],
+        [
+          "r2_neg_step",
+          3.98,
+          3.34,
+          1.1916167664670658
+        ],
+        [
+          "r2_lastdim_step2",
+          6.64,
+          5.86,
+          1.1331058020477816
+        ],
+        [
+          "r1_partial",
+          5.14,
+          4.76,
+          1.0798319327731092
+        ],
+        [
+          "r1_step3",
+          5.44,
+          5.08,
+          1.0708661417322836
+        ],
+        [
+          "r4_ellipsis",
+          5.28,
+          5.08,
+          1.0393700787401574
+        ],
+        [
+          "tiny_r2",
+          4.62,
+          4.48,
+          1.03125
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-StridedSliceGrad-306c457.md"
+    },
+    {
+      "id": "BT-20261122-ConcatD-4832524",
+      "problem": "ConcatD",
+      "difficulty": 3,
+      "sha": "48325243a1336c8c4b66fbbe5db0dbb636736268",
+      "baseline_sha": "aa74f56",
+      "timestamp": "2026-11-22T15:15:01.056968+00:00",
+      "score_before": 71.0,
+      "score_after": 75.6,
+      "delta_raw": 4.6,
+      "delta_weighted": 13.8,
+      "status": "verified",
+      "category": "simd-transpose",
+      "tags": [
+        "TransDataTo5HD",
+        "Gather"
+      ],
+      "title": "exp-b v8: zero-index TransDataTo5HD<u16> ZIP2 interleaver + 16KB Gather4 + half-chip cap",
+      "bottleneck": "Prior baseline `aa74f56` plateaued at 71.00 pts; `4832524` lifted online score to 75.60 pts (+4.60 raw / +13.80 weighted). Top paired hardware speedups: small_8k_unalign 2.1->1.6us (1.33x), many32_rows_unalign 4.8->4.1us (1.18x), odd_tails 1.9->1.6us (1.17x).",
+      "mechanisms": [
+        "[exp-b] v8: zero-index TransDataTo5HD<u16> ZIP2",
+        "16KB Gather4",
+        "half-chip<=20",
+        "1D tiny-row (32/32 beat torch, sum_med 113.28us vs aa74f56 117.36us, anchor11 34.72us, vs_torch 220.07%)"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 90 cases, exit_code=0) and passed online 50-case Judge evaluation at 75.60 pts.",
+      "transferable_rule": "When optimizing `simd-transpose` bottlenecks (TransDataTo5HD, Gather), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/concat_d_tiling.cpp      |  457 +++--",
+        "op_kernel/concat_d.h             | 4046 +++++++++++++++++++++-----------------",
+        "op_kernel/concat_d_tiling_data.h |   39 +-",
+        "op_kernel/concat_d_tiling_key.h  |   18 +-",
+        "4 files changed, 2560 insertions(+), 2000 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "small_8k_unalign",
+          2.1,
+          1.58,
+          1.3291139240506329
+        ],
+        [
+          "many32_rows_unalign",
+          4.82,
+          4.08,
+          1.1813725490196079
+        ],
+        [
+          "odd_tails",
+          1.9,
+          1.62,
+          1.1728395061728394
+        ],
+        [
+          "small_4k_axis0",
+          1.24,
+          1.12,
+          1.107142857142857
+        ],
+        [
+          "tiny32",
+          1.76,
+          1.6,
+          1.0999999999999999
+        ],
+        [
+          "small_2d",
+          1.36,
+          1.24,
+          1.0967741935483872
+        ],
+        [
+          "many8",
+          1.76,
+          1.62,
+          1.0864197530864197
+        ],
+        [
+          "many64",
+          2.44,
+          2.3,
+          1.0608695652173914
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-ConcatD-4832524.md"
     },
     {
       "id": "BT-20261122-CTCLossV2-1af7003",
@@ -747,6 +1671,87 @@
         ]
       ],
       "doc_path": "entries/BT-20261122-CTCLossV2-1af7003.md"
+    },
+    {
+      "id": "BT-20261122-StridedSliceGrad-ba4a357",
+      "problem": "StridedSliceGrad",
+      "difficulty": 3,
+      "sha": "ba4a357b94d9f4724097a2e753d7367140d221a6",
+      "baseline_sha": "3267c09",
+      "timestamp": "2026-11-22T17:47:48.454315+00:00",
+      "score_before": 67.63,
+      "score_after": 71.57,
+      "delta_raw": 3.94,
+      "delta_weighted": 11.82,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "Gather"
+      ],
+      "title": "fix(exp-b v14-fix): zero RunSmallStridedCold tail after BuildBatchGatherTable (fixes 64-elem kInfOff WA)",
+      "bottleneck": "Prior baseline `3267c09` plateaued at 67.63 pts; `ba4a357` lifted online score to 71.57 pts (+3.94 raw / +11.82 weighted). Top paired hardware speedups: r1_partial 4.9->2.5us (1.95x), tiny_r2 4.0->2.5us (1.60x), full_r2_huge 23.6->23.8us (0.99x).",
+      "mechanisms": [
+        "[exp-b v14-fix] Escape-unlocked fix for RunSmallStridedCold 64-elem kInfOff tail WA (373/373 PASS incl all 16-bit finite/subnormal/Inf sweep)",
+        "keeps v14 hidden-regime speedups"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 373 cases, exit_code=0) and passed online 50-case Judge evaluation at 71.57 pts.",
+      "transferable_rule": "When optimizing `tiling-regime` bottlenecks (Gather), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/strided_slice_grad_tiling.cpp |  27 +-",
+        "op_kernel/strided_slice_grad.h        | 644 ++++++++++++++++++++++------------",
+        "2 files changed, 433 insertions(+), 238 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "r1_partial",
+          4.88,
+          2.5,
+          1.952
+        ],
+        [
+          "tiny_r2",
+          4.02,
+          2.52,
+          1.5952380952380951
+        ],
+        [
+          "full_r2_huge",
+          23.58,
+          23.8,
+          0.9907563025210083
+        ],
+        [
+          "r3_inner_full",
+          7.38,
+          7.52,
+          0.9813829787234043
+        ],
+        [
+          "r2_neg_step",
+          2.48,
+          2.54,
+          0.9763779527559054
+        ],
+        [
+          "r3_mid_slice",
+          7.52,
+          7.82,
+          0.9616368286445012
+        ],
+        [
+          "full_r2_big",
+          4.74,
+          4.94,
+          0.9595141700404858
+        ],
+        [
+          "oddQ_step2",
+          5.14,
+          5.38,
+          0.9553903345724907
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-StridedSliceGrad-ba4a357.md"
     },
     {
       "id": "BT-20261118-CTCLossV2-2b9d49d",

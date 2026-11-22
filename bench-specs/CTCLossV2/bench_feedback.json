@@ -1,15 +1,15 @@
 {
   "schema_version": "2.0",
   "title": "CTCLossV2",
-  "updated_at": "2026-11-22T16:47:33.617369+00:00",
+  "updated_at": "2026-11-22T17:50:59.850949+00:00",
   "model_version": "2.0",
   "health": {
-    "loocv_mae_pts": 1.83,
-    "loocv_rmse_pts": 2.0,
-    "loocv_spearman": 0.8,
-    "loocv_dir_acc": 1.0,
-    "calibration_trust": 0.636,
-    "transfer_gamma": 0.8125,
+    "loocv_mae_pts": 1.87,
+    "loocv_rmse_pts": 2.59,
+    "loocv_spearman": 0.5,
+    "loocv_dir_acc": 0.75,
+    "calibration_trust": 0.674,
+    "transfer_gamma": 0.7396,
     "alpha_cold": 0.0,
     "spec_buckets": 13,
     "effective_buckets": 13,
@@ -18,109 +18,90 @@
   },
   "high_residual_events": [
     {
-      "base_sha": "be12685",
-      "cand_sha": "0c769ba",
-      "cand_full_sha": "0c769babf5b853024a8fa911e193d6ee16995737",
-      "actual_delta": 3.64,
-      "pred_delta": 6.83,
-      "residual_eps": -3.19,
-      "sign_flip": false,
+      "base_sha": "0c769ba",
+      "cand_sha": "c114817",
+      "cand_full_sha": "c114817a24f693dee2a64e09cad22a3b4d808ee1",
+      "actual_delta": -2.61,
+      "pred_delta": 2.59,
+      "residual_eps": -5.2,
+      "sign_flip": true,
       "thermal_drift_us": 0.0,
       "causes": [
-        "UNPAIRED_PROXY"
+        "ANTI_CORR_DOMINANCE"
       ]
     }
   ],
   "strong_positive_buckets": [
     {
       "bucket": "t100_c32_s40",
-      "corr": 0.936,
-      "pairs": 10,
+      "corr": 0.908,
+      "pairs": 15,
       "in_spec": true,
       "stratum": "M_MID_UB",
       "learned_w": 0.22,
-      "tau_active_us": 16.875
+      "tau_active_us": 16.565
     },
     {
       "bucket": "t4_c5_s1",
-      "corr": 0.862,
-      "pairs": 10,
-      "in_spec": true,
-      "stratum": "S_SMALL_CORE",
-      "learned_w": 0.18072,
-      "tau_active_us": 3.385
-    },
-    {
-      "bucket": "t50_c32_s20",
-      "corr": 0.845,
-      "pairs": 10,
-      "in_spec": true,
-      "stratum": "M_MID_UB",
-      "learned_w": 0.15887,
-      "tau_active_us": 9.201
-    },
-    {
-      "bucket": "t10_c5_s8",
-      "corr": 0.843,
-      "pairs": 10,
+      "corr": 0.841,
+      "pairs": 15,
       "in_spec": true,
       "stratum": "S_SMALL_CORE",
       "learned_w": 0.22,
-      "tau_active_us": 4.739
+      "tau_active_us": 3.344
+    },
+    {
+      "bucket": "t50_c32_s20",
+      "corr": 0.819,
+      "pairs": 15,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.12424,
+      "tau_active_us": 9.41
     },
     {
       "bucket": "t25_c16_s10",
-      "corr": 0.812,
-      "pairs": 10,
+      "corr": 0.766,
+      "pairs": 15,
       "in_spec": true,
       "stratum": "S_SMALL_CORE",
-      "learned_w": 0.02552,
-      "tau_active_us": 6.266
+      "learned_w": 0.02438,
+      "tau_active_us": 6.35
     },
     {
-      "bucket": "t200_c64_s80",
-      "corr": 0.697,
-      "pairs": 10,
+      "bucket": "t10_c5_s8",
+      "corr": 0.676,
+      "pairs": 15,
       "in_spec": true,
-      "stratum": "L_HBM_TILED",
-      "learned_w": 0.06606,
-      "tau_active_us": 45.981
-    },
-    {
-      "bucket": "t100_c512_s40",
-      "corr": 0.563,
-      "pairs": 10,
-      "in_spec": true,
-      "stratum": "M_MID_UB",
-      "learned_w": 0.04937,
-      "tau_active_us": 24.044
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.00761,
+      "tau_active_us": 4.165
     },
     {
       "bucket": "t650_c64_s600",
-      "corr": 0.469,
-      "pairs": 10,
+      "corr": 0.573,
+      "pairs": 15,
       "in_spec": true,
       "stratum": "X_EXTREME",
-      "learned_w": 0.03581,
-      "tau_active_us": 146.238
+      "learned_w": 0.14166,
+      "tau_active_us": 146.615
     }
   ],
   "misleading_anti_corr_buckets": [
     {
       "bucket": "t50_c5000_s20",
-      "corr": -0.642,
-      "pairs": 10,
+      "corr": -0.687,
+      "pairs": 15,
       "in_spec": true,
       "stratum": "M_MID_UB",
-      "learned_w": 0.00213,
-      "tau_active_us": 18.657
+      "learned_w": 0.002,
+      "tau_active_us": 15.938
     }
   ],
   "untracked_promote_candidates": [],
   "unexplained_residual_dimensions": [
     "No observed local profiler bucket with dtype=float16",
-    "No observed local profiler bucket with dtype=bfloat16",
-    "Active commit lacks `.o` binary size telemetry (will auto-populate on next `opsb test`)"
+    "No observed local profiler bucket with dtype=bfloat16"
   ],
   "suggested_new_cases": [
     {
@@ -136,5 +117,5 @@
       "reason": "Missing bfloat16 coverage in active profiler spectrum"
     }
   ],
-  "agent_guidance": "Prioritize optimizing ['t100_c32_s40', 't4_c5_s1', 't50_c32_s20', 't10_c5_s8']; avoid sacrificing hot paths for anti-correlated ['t50_c5000_s20']."
+  "agent_guidance": "Prioritize optimizing ['t100_c32_s40', 't4_c5_s1', 't50_c32_s20', 't25_c16_s10']; avoid sacrificing hot paths for anti-correlated ['t50_c5000_s20']."
 }
