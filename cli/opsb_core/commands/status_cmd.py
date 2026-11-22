@@ -9,6 +9,7 @@ from ..config import ConfigRepository
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.auth_service import get_auth_status
 from ..services.backfill_status_service import probe_backfill_compact
+from ..services.board_refresh_service import refresh_if_stale_async
 from ..services.npu_service import poll_npu_telemetry
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.skills_service import get_skills_status
@@ -38,6 +39,8 @@ def run_status(args: argparse.Namespace) -> int:
     payload["scheduler"]["backfill"] = (
         None if getattr(args, "no_backfill", False) else probe_backfill_compact(ws)
     )
+    # 24h drift check: automatically refresh live tbest(t), frontier, board scores & recalibrate
+    payload["scheduler"]["board_freshness"] = refresh_if_stale_async(ws)
 
     payload["auth"] = get_auth_status(use_cache=True)
     payload["skills"] = get_skills_status()

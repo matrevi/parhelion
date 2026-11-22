@@ -195,6 +195,14 @@ def build_parser() -> argparse.ArgumentParser:
     bn_dg.add_argument("--json", action="store_true")
     bn_dg.set_defaults(func=run_bench)
 
+    bn_rb = bn_sub.add_parser("refresh-board", help="Refresh live tbest(t), frontier & board scores (auto when >=24h stale) and recalibrate")
+    bn_rb.add_argument("--force", action="store_true", help="Refresh even if <24h old")
+    bn_rb.add_argument("--max-age-hours", type=float, default=24.0)
+    bn_rb.add_argument("--no-calibrate", action="store_true")
+    bn_rb.add_argument("--workspace", "-w")
+    bn_rb.add_argument("--json", action="store_true")
+    bn_rb.set_defaults(func=run_bench)
+
     bn_bs = bn_sub.add_parser("backfill-status", help="Auto-backfill scheduler progress (degrades cleanly)")
     bn_bs.add_argument("problem", nargs="?")
     bn_bs.add_argument("--workspace", "-w")

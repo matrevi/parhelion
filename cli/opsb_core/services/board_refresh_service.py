@@ -1,0 +1,352 @@
+"""24h Auto-Drift Refresh: live `tbest(t)`, frontier, board scores & Simplex MAP recalibration.
+
+In multi-day KernelC contests, site-wide `tbest_i(t)` tightens monotonically as rival
+teams submit faster kernels.  If an agent or `OpsSupervisor.app` starts >24h after the
+last submission (or >24h after the last board refresh), cached `tbest`, frontier Top1/Top5,
+live scores (`gamma_p`), and `calibration.json` predictions go stale.
+
+This service performs a lightweight read-only refresh (`GET /api/problems/{pid}/ranking`)
+across all contest problems (~2s total, zero rate-limit cost), persists
+`results/scoring-evidence/live-board-tbest.json`, refreshes `results/score-snapshot.json`,
+and re-runs `BenchmarkCalibrator` so predicted scores, `gamma_p`, and bucket headroom
+stay anchored to live `tbest(t)`.
+"""
+from __future__ import annotations
+
+import fcntl
+import json
+import os
+import subprocess
+import threading
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from ..config import SUPERVISOR_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+
+DEFAULT_STALE_HOURS = 24.0
+ATTEMPT_THROTTLE_SEC = 300.0
+REQUEST_TIMEOUT_SEC = 10.0
+
+_bg_lock = threading.Lock()
+_bg_running = False
+
+
+def live_board_path(workspace: Path) -> Path:
+    return workspace / "results" / "scoring-evidence" / "live-board-tbest.json"
+
+
+def _lock_path(workspace: Path) -> Path:
+    return workspace / "results" / "scoring-evidence" / ".board-refresh.lock"
+
+
+def _session_info() -> tuple[str, str, str]:
+    """Return (base_url, cookie_header, user_id) from `~/.judge/session.json`."""
+    path = Path(os.environ.get("JUDGE_SESSION_FILE") or (Path.home() / ".judge" / "session.json"))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+    user_id = str(data.get("user_id") or "")
+    jar = []
+    for rec in data.get("cookies") or []:
+        name = rec.get("name")
+        value = rec.get("value")
+        if name and value is not None:
+            jar.append(f"{name}={value}")
+    return base, "; ".join(jar), user_id
+
+
+def _get_json(base: str, cookie: str, path: str) -> Any:
+    req = urllib.request.Request(
+        base + path,
+        headers={
+            "Accept": "application/json",
+            "Cookie": cookie,
+            "User-Agent": "opsb-board-refresh/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SEC) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _latest_submit_epoch(workspace: Path) -> float:
+    results_dir = workspace / "results"
+    latest = 0.0
+    if not results_dir.is_dir():
+        return latest
+    for rf in results_dir.glob("*/*/submission-receipt.json"):
+        rd = read_json(rf, {})
+        if isinstance(rd, dict):
+            dt = parse_iso(rd.get("submitted_at"))
+            if dt:
+                latest = max(latest, dt.timestamp())
+    for o in read_jsonl(results_dir / "submit-queue-outcome.jsonl"):
+        if o.get("status") not in ("rejected", "skipped", "duplicate") and o.get("submission_id"):
+            dt = parse_iso(o.get("submitted_at") or o.get("finished_at"))
+            if dt:
+                latest = max(latest, dt.timestamp())
+    return latest
+
+
+def inspect_board_freshness(workspace: Path, max_age_hours: float = DEFAULT_STALE_HOURS) -> dict[str, Any]:
+    now_ep = utc_now().timestamp()
+    bp = live_board_path(workspace)
+    data = read_json(bp, {}) if bp.is_file() else {}
+    fetched_dt = parse_iso(data.get("fetched_at")) if isinstance(data, dict) else None
+    attempt_dt = parse_iso(data.get("attempt_at")) if isinstance(data, dict) else None
+    last_sub_ep = _latest_submit_epoch(workspace)
+
+    refresh_age_hrs = round((now_ep - fetched_dt.timestamp()) / 3600.0, 2) if fetched_dt else None
+    submit_age_hrs = round((now_ep - last_sub_ep) / 3600.0, 2) if last_sub_ep > 0 else None
+    attempt_age_sec = (now_ep - attempt_dt.timestamp()) if attempt_dt else float("inf")
+
+    stale = False
+    reason = "fresh"
+    if fetched_dt is None:
+        stale = True
+        reason = "never_refreshed"
+    elif refresh_age_hrs is not None and refresh_age_hrs >= max_age_hours:
+        stale = True
+        reason = f"refresh_age={refresh_age_hrs:.1f}h>={max_age_hours:.0f}h"
+    elif (
+        last_sub_ep > 0
+        and submit_age_hrs is not None
+        and submit_age_hrs >= max_age_hours
+        and fetched_dt.timestamp() < last_sub_ep + max_age_hours * 3600.0
+    ):
+        stale = True
+        reason = f"submit_gap={submit_age_hrs:.1f}h>={max_age_hours:.0f}h"
+
+    throttled = stale and (attempt_age_sec < ATTEMPT_THROTTLE_SEC)
+    return {
+        "stale": stale,
+        "should_refresh": stale and not throttled,
+        "throttled": throttled,
+        "reason": reason,
+        "last_refreshed_at": data.get("fetched_at") if isinstance(data, dict) else None,
+        "refresh_age_hours": refresh_age_hrs,
+        "hours_since_last_submit": submit_age_hrs,
+        "max_age_hours": max_age_hours,
+    }
+
+
+def _atomic_write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def refresh_board_and_recalibrate(
+    workspace: Path,
+    *,
+    force: bool = False,
+    max_age_hours: float = DEFAULT_STALE_HOURS,
+    recalibrate: bool = True,
+) -> dict[str, Any]:
+    """Fetch live tbest / frontier / board scores for all 10 problems and recalibrate models."""
+    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
+    if not force and not fresh["should_refresh"]:
+        return {"ok": True, "skipped": True, **fresh}
+
+    lock_f = _lock_path(workspace)
+    lock_f.parent.mkdir(parents=True, exist_ok=True)
+    with lock_f.open("a") as lf:
+        try:
+            fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"ok": True, "skipped": True, "reason": "refresh_in_progress", **fresh}
+
+        try:
+            # Re-check after lock acquisition
+            fresh2 = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
+            if not force and not fresh2["should_refresh"]:
+                return {"ok": True, "skipped": True, **fresh2}
+
+            bp = live_board_path(workspace)
+            prev_payload = read_json(bp, {}) if bp.is_file() else {}
+            prev_boards = prev_payload.get("problems", {}) if isinstance(prev_payload, dict) else {}
+
+            # Mark attempt timestamp immediately so failures don't hot-loop
+            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            if isinstance(prev_payload, dict):
+                prev_payload["attempt_at"] = now_iso
+                try:
+                    _atomic_write_json(bp, prev_payload)
+                except Exception:
+                    pass
+
+            base, cookie, user_id = _session_info()
+            probs_path = workspace / "bench" / "problems.json"
+            problems = read_json(probs_path, [])
+            if not isinstance(problems, list) or not problems:
+                return {"ok": False, "error": f"missing or empty {probs_path}"}
+
+            snap_path = workspace / "results" / "score-snapshot.json"
+            snap = read_json(snap_path, {}) if snap_path.is_file() else {}
+            if not isinstance(snap, dict):
+                snap = {}
+
+            updated_problems: dict[str, Any] = {}
+            drift_alerts: list[dict[str, Any]] = []
+
+            for p in problems:
+                title = p.get("title")
+                pid = p.get("problem_id")
+                if not title or not pid:
+                    continue
+
+                tbest_list: list[float] = []
+                total_cases = 50
+                frontier_top1: float | None = None
+                frontier_top5: float | None = None
+                our_row: dict[str, Any] | None = None
+                tc_ids: list[str] = []
+
+                for page in range(1, 7):
+                    d = _get_json(base, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100")
+                    if page == 1:
+                        total_cases = int(d.get("total_testcase_count") or len(d.get("testcases") or []) or 50)
+                        tcs = d.get("testcases") or []
+                        tbest_list = [float(x["tbest"]) for x in tcs if x.get("tbest") is not None][:5]
+                        tc_ids = [str(x.get("id") or x.get("_id") or "") for x in tcs[:5]]
+                        rows1 = d.get("rows") or []
+                        if rows1:
+                            frontier_top1 = round(float(rows1[0].get("score") or 0.0), 2)
+                            frontier_top5 = round(float(rows1[min(4, len(rows1) - 1)].get("score") or 0.0), 2)
+                    rows = d.get("rows") or []
+                    for r in rows:
+                        if user_id and str(r.get("user_id") or "") == user_id:
+                            our_row = r
+                            break
+                    if our_row is not None or page >= int(d.get("pages") or 1):
+                        break
+
+                prev_entry = prev_boards.get(title) or {}
+                prev_tbest = prev_entry.get("tbest") or []
+                tbest_delta_pct = None
+                if len(tbest_list) == 5 and len(prev_tbest) == 5 and sum(prev_tbest) > 0:
+                    tbest_delta_pct = round(((sum(tbest_list) - sum(prev_tbest)) / sum(prev_tbest)) * 100.0, 2)
+
+                our_times: list[float] = []
+                if our_row is not None:
+                    res_list = our_row.get("result") or []
+                    if res_list and isinstance(res_list[0], dict):
+                        id_set = set(tc_ids)
+                        our_times = [
+                            float(x["time"])
+                            for x in res_list
+                            if (not id_set or str(x.get("testcase_id") or "") in id_set) and x.get("time") is not None
+                        ][:5]
+                    elif isinstance(our_row.get("times"), list):
+                        our_times = [float(x) for x in our_row["times"][:5] if x is not None]
+
+                    prev_snap = snap.get(title) if isinstance(snap.get(title), dict) else {}
+                    prev_score = prev_snap.get("score")
+                    live_status = str(our_row.get("status") or prev_snap.get("status") or "")
+                    live_score = round(float(our_row.get("score") or 0.0), 2) if live_status == "Pass" else 0.0
+                    snap[title] = {
+                        **prev_snap,
+                        "rank": our_row.get("rank"),
+                        "status": live_status,
+                        "submission_id": our_row.get("submission_id") or prev_snap.get("submission_id"),
+                        "score": live_score,
+                        "public_times_us": our_times if our_times else prev_snap.get("public_times_us", []),
+                        "board_refreshed_at": now_iso,
+                    }
+                    if isinstance(prev_score, (int, float)) and abs(live_score - float(prev_score)) >= 0.05:
+                        drift_alerts.append({
+                            "title": title,
+                            "score_before": round(float(prev_score), 2),
+                            "score_after": live_score,
+                            "delta": round(live_score - float(prev_score), 2),
+                        })
+
+                updated_problems[title] = {
+                    "problem_id": pid,
+                    "tbest": tbest_list,
+                    "tbest_delta_pct": tbest_delta_pct,
+                    "total_testcase_count": total_cases,
+                    "frontier_top1": frontier_top1,
+                    "frontier_top5": frontier_top5,
+                    "our_score": snap.get(title, {}).get("score"),
+                    "our_rank": snap.get(title, {}).get("rank"),
+                    "our_status": snap.get(title, {}).get("status"),
+                    "our_public_times_us": our_times,
+                }
+
+            payload = {
+                "schema_version": 1,
+                "fetched_at": now_iso,
+                "attempt_at": now_iso,
+                "trigger_reason": "manual_force" if force else fresh2["reason"],
+                "problems": updated_problems,
+                "score_drifts": drift_alerts,
+            }
+            _atomic_write_json(bp, payload)
+            _atomic_write_json(snap_path, snap)
+
+            calibrated_ok = False
+            if recalibrate:
+                try:
+                    py_exe = resolve_python_exe(workspace)
+                    proc = subprocess.run(
+                        [py_exe, "-m", "scheduler.cli_bridge", "calibrate", "--workspace", str(workspace)],
+                        cwd=str(SUPERVISOR_ROOT),
+                        capture_output=True,
+                        text=True,
+                        timeout=30.0,
+                    )
+                    calibrated_ok = proc.returncode == 0
+                except Exception:
+                    calibrated_ok = False
+
+            invalidate_ttl_cache("scheduler_bridge")
+            try:
+                from . import ranking_service
+                ranking_service.refresh_async(workspace, force=True)
+            except Exception:
+                pass
+
+            return {
+                "ok": True,
+                "skipped": False,
+                "fetched_at": now_iso,
+                "trigger_reason": payload["trigger_reason"],
+                "problems_refreshed": len(updated_problems),
+                "recalibrated": calibrated_ok,
+                "score_drifts": drift_alerts,
+                "problems": updated_problems,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:300], **fresh}
+        finally:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_UN)
+            except Exception:
+                pass
+
+
+def refresh_if_stale_async(workspace: Path, max_age_hours: float = DEFAULT_STALE_HOURS) -> dict[str, Any]:
+    """Non-blocking 24h drift check for `opsb status` / agent startup."""
+    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
+    if not fresh["should_refresh"]:
+        return {**fresh, "auto_triggered": False}
+
+    global _bg_running
+    with _bg_lock:
+        if _bg_running:
+            return {**fresh, "auto_triggered": False}
+        _bg_running = True
+
+    def _run() -> None:
+        global _bg_running
+        try:
+            refresh_board_and_recalibrate(workspace, force=False, max_age_hours=max_age_hours, recalibrate=True)
+        finally:
+            with _bg_lock:
+                _bg_running = False
+
+    threading.Thread(target=_run, daemon=True, name="opsb-board-refresh-24h").start()
+    return {**fresh, "auto_triggered": True}

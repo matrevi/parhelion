@@ -664,6 +664,17 @@ class ScoreEstimator:
                         tbest[title] = [float(x) for x in vals]
             except Exception:
                 pass
+        # Live 24h auto-refreshed tbest(t) overrides historical snapshot
+        live_bt = self.workspace / "results" / "scoring-evidence" / "live-board-tbest.json"
+        if live_bt.is_file():
+            try:
+                data = json.loads(live_bt.read_text()).get("problems", {})
+                for title, pdata in data.items():
+                    vals = pdata.get("tbest") or []
+                    if len(vals) == 5 and all(float(x) > 0 for x in vals):
+                        tbest[title] = [float(x) for x in vals]
+            except Exception:
+                pass
         return tbest
 
     def _load_frontier(self) -> dict[str, tuple[float, float]]:
@@ -678,6 +689,18 @@ class ScoreEstimator:
                         top1 = float(rows[0]["score"])
                         top5 = float(rows[min(4, len(rows) - 1)]["score"])
                         front[title] = (top1, top5)
+            except Exception:
+                pass
+        # Live 24h auto-refreshed frontier Top1/Top5 overrides historical snapshot
+        live_bt = self.workspace / "results" / "scoring-evidence" / "live-board-tbest.json"
+        if live_bt.is_file():
+            try:
+                data = json.loads(live_bt.read_text()).get("problems", {})
+                for title, pdata in data.items():
+                    t1 = pdata.get("frontier_top1")
+                    t5 = pdata.get("frontier_top5")
+                    if t1 is not None and t5 is not None and float(t1) > 0:
+                        front[title] = (float(t1), float(t5))
             except Exception:
                 pass
         return front

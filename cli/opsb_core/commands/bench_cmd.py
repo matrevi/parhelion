@@ -12,6 +12,7 @@ from typing import Any
 from ..config import SUPERVISOR_ROOT, ConfigRepository, invalidate_ttl_cache, read_json, resolve_python_exe, utc_now
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.backfill_status_service import filter_backfill_status, read_backfill_status
+from ..services.board_refresh_service import refresh_board_and_recalibrate
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.scaffold_service import scaffold_operator_bench
 
@@ -49,6 +50,44 @@ def run_bench(args: argparse.Namespace) -> int:
     ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
     zh = (getattr(args, "lang", None) or cfg.get("language", "zh")) == "zh"
     sub = args.bench_cmd
+
+    if sub == "refresh-board":
+        res = refresh_board_and_recalibrate(
+            ws,
+            force=bool(getattr(args, "force", False)),
+            max_age_hours=float(getattr(args, "max_age_hours", 24.0)),
+            recalibrate=not bool(getattr(args, "no_calibrate", False)),
+        )
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return 0 if res.get("ok") else 1
+        if not res.get("ok"):
+            print(f"Board refresh failed: {res.get('error')}", file=sys.stderr)
+            return 1
+        if res.get("skipped"):
+            print(f"Board tbest(t) is fresh ({res.get('reason')}; last={res.get('last_refreshed_at')})")
+            return 0
+        print(
+            f"Refreshed live tbest(t) + frontier + scores for {res.get('problems_refreshed')} problems "
+            f"(trigger={res.get('trigger_reason')}, recalibrated={res.get('recalibrated')})"
+        )
+        for title, info in sorted((res.get("problems") or {}).items()):
+            tb = info.get("tbest") or []
+            tb_s = ", ".join(f"{x:.2f}" for x in tb) if tb else "—"
+            dp = info.get("tbest_delta_pct")
+            dp_s = f" ({dp:+.2f}%)" if dp is not None else ""
+            sc = info.get("our_score")
+            sc_s = f"{sc:.2f}" if isinstance(sc, (int, float)) else "—"
+            print(
+                f"  {title:<26} score={sc_s:>6}  top1={info.get('frontier_top1')}  "
+                f"cases={info.get('total_testcase_count')}  tbest=[{tb_s}]{dp_s}"
+            )
+        drifts = res.get("score_drifts") or []
+        if drifts:
+            print("Score drifts detected:")
+            for d in drifts:
+                print(f"  {d['title']:<26} {d['score_before']:.2f} -> {d['score_after']:.2f} ({d['delta']:+.2f} pts)")
+        return 0
 
     if sub == "backfill-status":
         # Contract: `python -m scheduler.backfill_status --json` (owned by the auto-backfill workstream).
