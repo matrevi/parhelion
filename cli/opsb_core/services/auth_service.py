@@ -46,7 +46,17 @@ def _read_session_file_status(cj_path: Path) -> dict[str, Any]:
         d = json.loads(cj_path.read_text(encoding="utf-8"))
         uid = d.get("user_id")
         has_cookies = bool(d.get("cookies"))
-        dt = parse_iso(str(d["logged_in_at"])) if d.get("logged_in_at") else datetime.datetime.fromtimestamp(st.st_mtime, tz=datetime.timezone.utc)
+        raw_la = d.get("logged_in_at")
+        dt = None
+        if isinstance(raw_la, (int, float)) and raw_la > 0:
+            dt = datetime.datetime.fromtimestamp(float(raw_la), tz=datetime.timezone.utc)
+        elif isinstance(raw_la, str) and raw_la.strip():
+            try:
+                dt = datetime.datetime.fromtimestamp(float(raw_la.strip()), tz=datetime.timezone.utc)
+            except ValueError:
+                dt = parse_iso(raw_la)
+        if dt is None:
+            dt = datetime.datetime.fromtimestamp(st.st_mtime, tz=datetime.timezone.utc)
         if uid and has_cookies and dt:
             exp = dt + datetime.timedelta(days=7)
             rem_h = round((exp - utc_now()).total_seconds() / 3600.0, 1)
