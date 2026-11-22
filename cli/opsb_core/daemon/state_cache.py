@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import CONFIG_DIR, DEFAULT_CONFIG, ConfigRepository, parse_iso, read_json, read_jsonl, utc_now
+from ..config import CONFIG_DIR, DEFAULT_CONFIG, SESSIONS_DIR, ConfigRepository, parse_iso, read_json, read_jsonl, utc_now
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.auth_service import get_auth_status, list_judge_accounts
 from ..services.backfill_status_service import probe_backfill_compact
@@ -110,6 +110,7 @@ class _WorkspaceStateEntry:
         _feed("bcfg", sup / "scheduler" / ".state" / "backfill_config.json")
         _feed("cfg", CONFIG_DIR / "config.json")
         _feed("accts", CONFIG_DIR / "cj_accounts.json")
+        _feed("psess", SESSIONS_DIR)
         _feed("cj", Path.home() / ".judge" / "session.json")
         _feed("cjs", Path.home() / ".judge" / "sessions")
 

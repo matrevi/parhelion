@@ -21,14 +21,14 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..config import CONFIG_DIR, SUPERVISOR_ROOT, read_json, resolve_python_exe, utc_now
+from ..config import CACHE_DIR, SUPERVISOR_ROOT, read_json, resolve_python_exe, utc_now
 
 BACKFILL_MODULE = "scheduler.backfill_status"
 _STATUS_KEYS = ("unpaired", "queued", "running", "last_run", "eta_sec", "ledger_sha")
 # `opsb status` is on every operator agent's hot path: the probe is hard-capped at 200 ms and
 # cached on the ledger sha, so a steady state costs zero subprocesses.
 STATUS_BUDGET_SEC = 0.2
-CACHE_PATH = CONFIG_DIR / ".cache_backfill_status.json"
+CACHE_PATH = CACHE_DIR / ".cache_backfill_status.json"
 CACHE_TTL_SEC = 20.0
 EMPTY_SHA = hashlib.sha256(b"").hexdigest()
 
@@ -342,7 +342,7 @@ def _ledger_fingerprint(ledger_path: str | None, workspace: Path | None) -> str:
 
 def _write_cache(payload: dict[str, Any]) -> None:
     try:
-        CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = CACHE_PATH.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         os.replace(tmp, CACHE_PATH)

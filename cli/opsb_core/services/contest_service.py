@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..config import CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
+from ..config import CACHE_DIR, CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
 from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
 
@@ -73,7 +73,7 @@ def load_slim_boards(board_path: Path) -> dict[str, Any]:
     """Cache only top-1 row + 50 testcase tbest entries keyed by file mtime (<0.5ms hit)."""
     if not board_path.is_file():
         return {}
-    cache_path = CONFIG_DIR / ".board_slim_cache.json"
+    cache_path = CACHE_DIR / ".board_slim_cache.json"
     try:
         mtime = board_path.stat().st_mtime_ns
         if cache_path.is_file():
@@ -94,7 +94,7 @@ def load_slim_boards(board_path: Path) -> dict[str, Any]:
             "rows": [rows[0]] if rows else [],
         }
     try:
-        CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         cache_path.write_text(json.dumps({"mtime": mtime, "boards": slim}, separators=(",", ":")), encoding="utf-8")
     except Exception:
         pass

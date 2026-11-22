@@ -1,7 +1,7 @@
 """Unified Active CLI & JSON IPC Bridge (`scheduler.cli_bridge`).
 
 Directly embedded by `OpsSupervisor.app` and invoked by the `opsb` CLI:
-    python3 -m scheduler.cli_bridge status --workspace /Users/winbeau/Competitions/ops-bench
+    python3 -m scheduler.cli_bridge status --workspace /path/to/ops-bench
     python3 -m scheduler.cli_bridge evaluate --title <Title> --sha <SHA> [--speedup <k>]
     python3 -m scheduler.cli_bridge submit --title <Title> [--sha <SHA>] [--note <note>] [--force]
     python3 -m scheduler.cli_bridge drain [--once] [--dry-run]
@@ -17,6 +17,7 @@ import datetime
 import fcntl
 import json
 import math
+import os
 import pathlib
 import subprocess
 import sys
@@ -30,7 +31,21 @@ from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
 
-DEFAULT_WORKSPACE = pathlib.Path("/Users/winbeau/Competitions/ops-bench")
+def _detect_default_workspace() -> pathlib.Path:
+    env_ws = os.environ.get("OPSB_WORKSPACE")
+    if env_ws:
+        return pathlib.Path(env_ws).expanduser().resolve()
+    cwd = pathlib.Path.cwd().resolve()
+    for anc in [cwd, *cwd.parents]:
+        if (anc / "opsb.workspace.json").is_file() or (anc / "bench" / "problems.json").is_file():
+            return anc
+    candidate = pathlib.Path(__file__).resolve().parents[2]
+    if (candidate / "bench" / "problems.json").is_file():
+        return candidate
+    return cwd
+
+
+DEFAULT_WORKSPACE = _detect_default_workspace()
 PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
 DEFAULT_STATE_DIR = PACKAGE_DIR / ".state"
 
@@ -1321,7 +1336,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--workspace",
         type=pathlib.Path,
         default=DEFAULT_WORKSPACE,
-        help="Contest workspace root (default: /Users/winbeau/Competitions/ops-bench)",
+        help="Contest workspace root (auto-detected from OPSB_WORKSPACE or cwd)",
     )
     common.add_argument(
         "--state-dir",

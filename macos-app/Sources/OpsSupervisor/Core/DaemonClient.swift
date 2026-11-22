@@ -9,7 +9,7 @@ enum DaemonClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidStateFile:
-            return "Missing or invalid ~/.config/parhelion/daemon.json"
+            return "Missing or invalid ~/.parhelion/daemon.json"
         case .unauthorized:
             return "Daemon rejected X-Opsb-Token (401)"
         case .badHttpStatus(let code):
@@ -61,18 +61,27 @@ actor DaemonClient {
         return URLSession(configuration: cfg)
     }()
 
-    private var stateFileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/parhelion/daemon.json")
+    private var stateFileCandidates: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        var list: [URL] = []
+        if let override = ProcessInfo.processInfo.environment["PARHELION_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !override.isEmpty {
+            list.append(URL(fileURLWithPath: override).appendingPathComponent("daemon.json"))
+        }
+        list.append(home.appendingPathComponent(".parhelion/daemon.json"))
+        list.append(home.appendingPathComponent(".config/parhelion/daemon.json"))
+        return list
     }
 
     private func loadMetadataFromDisk() -> DaemonAuthMetadata? {
-        guard let data = try? Data(contentsOf: stateFileURL),
-              let meta = try? JSONDecoder().decode(DaemonAuthMetadata.self, from: data),
-              meta.port > 0, !meta.token.isEmpty else {
-            return nil
+        for url in stateFileCandidates {
+            if let data = try? Data(contentsOf: url),
+               let meta = try? JSONDecoder().decode(DaemonAuthMetadata.self, from: data),
+               meta.port > 0, !meta.token.isEmpty {
+                return meta
+            }
         }
-        return meta
+        return nil
     }
 
     private func probeHealth(_ meta: DaemonAuthMetadata) async -> DaemonHealthResponse? {

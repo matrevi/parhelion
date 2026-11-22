@@ -11,10 +11,37 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import CONFIG_DIR, DEFAULT_BENCH_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_ttl_cache, utc_now, write_ttl_cache
+from ..config import (
+    CONFIG_DIR,
+    DEFAULT_BENCH_ROOT,
+    SESSIONS_DIR as PARHELION_SESSIONS_DIR,
+    SUPERVISOR_ROOT,
+    discover_default_workspace,
+    invalidate_ttl_cache,
+    parse_iso,
+    read_json,
+    read_ttl_cache,
+    resolve_python_exe,
+    utc_now,
+    write_ttl_cache,
+)
 
-SESSIONS_DIR = Path.home() / ".judge" / "sessions"
+SESSIONS_DIR = PARHELION_SESSIONS_DIR
+LEGACY_SESSIONS_DIR = Path.home() / ".judge" / "sessions"
 ACCOUNTS_REGISTRY = CONFIG_DIR / "cj_accounts.json"
+
+
+def _resolve_judge_submit_dir() -> Path:
+    candidates: list[Path] = []
+    ws = discover_default_workspace()
+    if ws is not None:
+        candidates.append(ws / "skills" / "judge-submit")
+    candidates.append(SUPERVISOR_ROOT.parent / "skills" / "judge-submit")
+    candidates.append(SUPERVISOR_ROOT / "skills" / "judge-submit")
+    for c in candidates:
+        if (c / "judge_cli.py").is_file():
+            return c
+    return candidates[0]
 
 GC_CANDIDATES = [
     Path.home() / ".local" / "share" / "pnpm" / "bin" / "gc",
@@ -76,7 +103,16 @@ def _read_session_file_status(cj_path: Path) -> dict[str, Any]:
 
 
 def read_judge_status() -> dict[str, Any]:
-    return _read_session_file_status(Path.home() / ".judge" / "session.json")
+    candidates = []
+    env_p = os.environ.get("JUDGE_SESSION_FILE")
+    if env_p:
+        candidates.append(Path(env_p).expanduser())
+    candidates.append(SESSIONS_DIR / "primary.json")
+    candidates.append(Path.home() / ".judge" / "session.json")
+    for cand in candidates:
+        if cand.is_file():
+            return _read_session_file_status(cand)
+    return _read_session_file_status(candidates[-1])
 
 
 def _load_accounts_registry() -> list[dict[str, Any]]:
@@ -113,6 +149,11 @@ def list_judge_accounts() -> list[dict[str, Any]]:
         if not aid or aid == "primary":
             continue
         sf = Path(str(item.get("session_file") or (SESSIONS_DIR / f"{aid}.json"))).expanduser()
+        if not sf.is_file():
+            for alt in (SESSIONS_DIR / f"{aid}.json", LEGACY_SESSIONS_DIR / f"{aid}.json"):
+                if alt.is_file():
+                    sf = alt
+                    break
         st = _read_session_file_status(sf)
         out.append(
             {
@@ -158,7 +199,7 @@ def remove_judge_account(account_id: str) -> dict[str, Any]:
     if removed is None:
         return {"ok": False, "error": f"Unknown account slot: {account_id}"}
     sf = Path(str(removed.get("session_file") or "")).expanduser()
-    if sf.is_file() and SESSIONS_DIR in sf.parents:
+    if sf.is_file() and (SESSIONS_DIR in sf.parents or LEGACY_SESSIONS_DIR in sf.parents):
         sf.unlink(missing_ok=True)
     _save_accounts_registry(kept)
     return {"ok": True, "accounts": list_judge_accounts()}
@@ -233,9 +274,8 @@ def get_auth_status(use_cache: bool = True) -> dict[str, Any]:
 
 
 def fetch_judge_captcha() -> dict[str, Any]:
-    judge_dir = DEFAULT_BENCH_ROOT / "skills" / "judge-submit"
-    venv_py = DEFAULT_BENCH_ROOT / ".venv" / "bin" / "python"
-    py_exe = str(venv_py) if venv_py.is_file() else sys.executable
+    judge_dir = _resolve_judge_submit_dir()
+    py_exe = resolve_python_exe(discover_default_workspace())
     code = (
         "import json, sys, tempfile, pathlib\n"
         f"sys.path.insert(0, {str(judge_dir)!r})\n"
@@ -264,9 +304,8 @@ def login_judge(
     account_id: str | None = None,
     label: str = "",
 ) -> dict[str, Any]:
-    judge_dir = DEFAULT_BENCH_ROOT / "skills" / "judge-submit"
-    venv_py = DEFAULT_BENCH_ROOT / ".venv" / "bin" / "python"
-    py_exe = str(venv_py) if venv_py.is_file() else sys.executable
+    judge_dir = _resolve_judge_submit_dir()
+    py_exe = resolve_python_exe(discover_default_workspace())
 
     target_slot = (account_id or "primary").strip() or "primary"
     session_file: Path | None = None

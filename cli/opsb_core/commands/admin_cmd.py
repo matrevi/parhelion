@@ -79,7 +79,7 @@ def run_workspace(args: argparse.Namespace) -> int:
 
     if args.ws_cmd == "gen-agents":
         target = Path(args.target_dir).expanduser().resolve()
-        if target == DEFAULT_BENCH_ROOT:
+        if DEFAULT_BENCH_ROOT is not None and target == DEFAULT_BENCH_ROOT:
             raise SystemExit("Refused on legacy ops-bench root; clean gen-agents targets opsb clean workspaces.")
         meta = resolve_workspace_meta(target)
         res = scaffold_workspace(

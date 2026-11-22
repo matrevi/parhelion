@@ -62,6 +62,8 @@ struct AppRouterView: View {
                     case .breakthroughs: BreakthroughLibraryView()
                     case .workspaces: WorkspaceManagerView()
                     }
+                } else if store.workspacesLoaded && store.selectedWorkspace.isEmpty {
+                    WorkspaceManagerView()
                 } else {
                     emptyLoadingState
                 }
@@ -189,10 +191,14 @@ struct AppRouterView: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(URL(fileURLWithPath: store.selectedWorkspace).lastPathComponent)
+                    Text(store.selectedWorkspace.isEmpty
+                         ? lang.tr("未绑定工作区", "No Workspace")
+                         : URL(fileURLWithPath: store.selectedWorkspace).lastPathComponent)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    Text(store.selectedWorkspace)
+                    Text(store.selectedWorkspace.isEmpty
+                         ? lang.tr("请创建或选择竞赛工作区", "Create or select a workspace")
+                         : store.selectedWorkspace)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

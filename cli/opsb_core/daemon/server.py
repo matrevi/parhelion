@@ -19,14 +19,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from ..config import CLI_DIR, ConfigRepository, resolve_python_exe, utc_now
+from ..config import (
+    CLI_DIR,
+    DAEMON_LOCK_PATH,
+    DAEMON_LOG_PATH,
+    DAEMON_STATE_PATH,
+    PARHELION_HOME,
+    ConfigRepository,
+    ensure_parhelion_migrated,
+    resolve_python_exe,
+    utc_now,
+)
 from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
 
-DAEMON_CONFIG_DIR = Path.home() / ".config" / "parhelion"
-DAEMON_STATE_PATH = DAEMON_CONFIG_DIR / "daemon.json"
-DAEMON_LOCK_PATH = DAEMON_CONFIG_DIR / "daemon.lock"
-DAEMON_LOG_PATH = DAEMON_CONFIG_DIR / "daemon.log"
+DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
 
 
@@ -337,7 +344,9 @@ def _bind_server(preferred_port: int, handler_cls: type[http.server.BaseHTTPRequ
 
 
 def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFAULT_PORT) -> int:
+    ensure_parhelion_migrated()
     DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    DAEMON_LOG_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     token = secrets.token_urlsafe(32)
     stop_event = threading.Event()
     runtime = OpsbDaemonRuntime(workspace=workspace, ssh_host=ssh_host, port=preferred_port, token=token)
@@ -386,7 +395,9 @@ def start_daemon(
     port: int = DEFAULT_PORT,
     background: bool = False,
 ) -> dict[str, Any]:
+    ensure_parhelion_migrated()
     DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    DAEMON_LOG_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     with DAEMON_LOCK_PATH.open("a") as lf:
         fcntl.flock(lf, fcntl.LOCK_EX)
         try:

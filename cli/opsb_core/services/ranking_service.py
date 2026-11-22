@@ -76,11 +76,17 @@ def _age_sec(payload: dict[str, Any] | None) -> float:
 
 
 def _session() -> tuple[str, str]:
-    """Return (base_url, cookie_header) from the official CLI session, dependency-free."""
+    """Return (base_url, cookie_header) from `~/.parhelion/sessions/` or `~/.judge/session.json`."""
     import json as _json
     import os
 
-    path = Path(os.environ.get("JUDGE_SESSION_FILE") or (Path.home() / ".judge" / "session.json"))
+    parhelion_home = Path(os.environ.get("PARHELION_HOME") or os.environ.get("OPSB_HOME") or (Path.home() / ".parhelion")).expanduser()
+    candidates = [
+        os.environ.get("JUDGE_SESSION_FILE"),
+        str(parhelion_home / "sessions" / "primary.json"),
+        str(Path.home() / ".judge" / "session.json"),
+    ]
+    path = next((Path(c).expanduser() for c in candidates if c and Path(c).expanduser().is_file()), Path.home() / ".judge" / "session.json")
     data = _json.loads(path.read_text(encoding="utf-8"))
     base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
     jar = []

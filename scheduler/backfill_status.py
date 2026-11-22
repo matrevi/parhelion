@@ -37,13 +37,28 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from typing import Any
 
 from .backfill import LANE_BACKFILL, BackfillScheduler, offline_npu_sentinel
 
-DEFAULT_WORKSPACE = pathlib.Path("/Users/winbeau/Competitions/ops-bench")
+def _detect_default_workspace() -> pathlib.Path:
+    env_ws = os.environ.get("OPSB_WORKSPACE")
+    if env_ws:
+        return pathlib.Path(env_ws).expanduser().resolve()
+    cwd = pathlib.Path.cwd().resolve()
+    for anc in [cwd, *cwd.parents]:
+        if (anc / "opsb.workspace.json").is_file() or (anc / "bench" / "problems.json").is_file():
+            return anc
+    candidate = pathlib.Path(__file__).resolve().parents[2]
+    if (candidate / "bench" / "problems.json").is_file():
+        return candidate
+    return cwd
+
+
+DEFAULT_WORKSPACE = _detect_default_workspace()
 
 
 def _build_parser() -> argparse.ArgumentParser:

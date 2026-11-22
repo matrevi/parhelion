@@ -16,7 +16,7 @@ from typing import Any
 class _CooldownReservationCancelled(BaseException):
     """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
-from ..config import CONFIG_DIR, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..config import CONFIG_DIR, LOGS_DIR, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .auth_service import list_judge_accounts
 from .judge_sync import INFLIGHT_FILE
 
@@ -373,8 +373,8 @@ def spawn_jump_submit(
             pass
 
     py_exe = resolve_python_exe(workspace)
-    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    log_path = CONFIG_DIR / "last_jump_submit.log"
+    LOGS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log_path = LOGS_DIR / "last_jump_submit.log"
     with log_path.open("a", encoding="utf-8") as log_fh:
         proc = subprocess.Popen(
             [

@@ -17,11 +17,12 @@ final class ContestStore: ObservableObject {
     @Published var lang: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: "parhelion.lang") ?? "zh") ?? .zh
     private var didSetLangLocally: Bool = false
     @Published var workspaces: [WorkspaceEntry] = []
+    @Published var workspacesLoaded: Bool = false
     @Published var sshHosts: [SSHHostEntry] = []
     @Published var activeSSHHost: String = "npu"
 
-    @Published var selectedWorkspace: String = "/Users/winbeau/Competitions/ops-bench"
-    @Published var selectedProblemTitle: String? = "ConcatD"
+    @Published var selectedWorkspace: String = ""
+    @Published var selectedProblemTitle: String? = nil
 
     @Published var isRefreshingLocal: Bool = false
     @Published var isLaunchingSubmit: Bool = false
@@ -50,11 +51,13 @@ final class ContestStore: ObservableObject {
     }
 
     func bootstrap() async {
+        await reloadWorkspaces()
+        await reloadSSHHosts()
+        guard !selectedWorkspace.isEmpty else {
+            return
+        }
         await refreshLocal(force: true)
-        async let wsLoad: () = reloadWorkspaces()
-        async let sshLoad: () = reloadSSHHosts()
-        async let btLoad: () = reloadBreakthroughs()
-        _ = await (wsLoad, sshLoad, btLoad)
+        await reloadBreakthroughs()
         startTelemetryStream()
     }
 
@@ -266,10 +269,13 @@ final class ContestStore: ObservableObject {
     // MARK: - Workspaces & SSH
 
     func reloadWorkspaces() async {
+        defer { workspacesLoaded = true }
         if let res = try? await repository.listWorkspaces() {
             workspaces = res.workspaces
             if let act = res.activeWorkspace, !act.isEmpty {
                 selectedWorkspace = act
+            } else if selectedWorkspace.isEmpty, let first = res.workspaces.first(where: { !$0.workspace.isEmpty }) {
+                selectedWorkspace = first.workspace
             }
         }
     }

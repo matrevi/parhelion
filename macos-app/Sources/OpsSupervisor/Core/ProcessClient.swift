@@ -30,20 +30,68 @@ private final class PipeCaptureBuffer: @unchecked Sendable {
     }
 }
 
-/// Deadlock-free async subprocess runner with concurrent stdout/stderr pipe draining.
+/// Portable deadlock-free async subprocess runner with concurrent stdout/stderr pipe draining.
 struct ProcessClient: Sendable {
     let executablePath: String
 
     init() {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let candidates = [
-            "/Users/winbeau/Competitions/ops-bench/ops-supervisor/cli/opsb",
-            "\(home)/.local/bin/opsb",
-            Bundle.main.resourceURL?.appendingPathComponent("cli/opsb").path
-        ].compactMap { $0 }
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        let envBin = ProcessInfo.processInfo.environment["OPSB_BIN"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let pathBins = (ProcessInfo.processInfo.environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map { "\($0)/opsb" }
 
-        self.executablePath = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) })
+        var candidates: [String] = []
+        if let envBin, !envBin.isEmpty {
+            candidates.append(envBin)
+        }
+        candidates.append(contentsOf: [
+            "\(home)/.local/bin/opsb",
+            "/opt/homebrew/bin/opsb",
+            "/usr/local/bin/opsb",
+        ])
+        if let bundled = Bundle.main.resourceURL?.appendingPathComponent("cli/opsb").path {
+            candidates.append(bundled)
+        }
+        candidates.append(contentsOf: pathBins)
+
+        self.executablePath = candidates.first(where: { fm.isExecutableFile(atPath: $0) })
+            ?? Bundle.main.resourceURL?.appendingPathComponent("cli/opsb").path
             ?? "\(home)/.local/bin/opsb"
+    }
+
+    private static func extractWorkspaceArg(from args: [String]) -> String? {
+        if let idx = args.firstIndex(of: "--workspace"), idx + 1 < args.count {
+            let v = args[idx + 1].trimmingCharacters(in: .whitespacesAndNewlines)
+            return v.isEmpty ? nil : v
+        }
+        for arg in args where arg.hasPrefix("--workspace=") {
+            let v = String(arg.dropFirst("--workspace=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !v.isEmpty { return v }
+        }
+        return nil
+    }
+
+    private static func resolvePythonExecutable(workspace: String?) -> String? {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser.path
+        var candidates: [String] = []
+        if let envPy = ProcessInfo.processInfo.environment["OPSB_PYTHON"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !envPy.isEmpty {
+            candidates.append(envPy)
+        }
+        if let ws = workspace, !ws.isEmpty {
+            candidates.append("\(ws)/.venv/bin/python")
+            candidates.append("\(ws)/.venv/bin/python3")
+        }
+        candidates.append(contentsOf: [
+            "\(home)/.parhelion/venv/bin/python",
+            "\(home)/.parhelion/venv/bin/python3",
+            "/opt/homebrew/bin/python3",
+            "/usr/local/bin/python3",
+        ])
+        return candidates.first(where: { fm.isExecutableFile(atPath: $0) })
     }
 
     func execute(
@@ -53,19 +101,31 @@ struct ProcessClient: Sendable {
         allowNonZeroExit: Bool = false
     ) async throws -> Data {
         let exe = executablePath
+        let wsArg = Self.extractWorkspaceArg(from: args)
+        let pythonPath = Self.resolvePythonExecutable(workspace: wsArg)
         return try await withCheckedThrowingContinuation { continuation in
             let proc = Process()
-            let venvPython = "/Users/winbeau/Competitions/ops-bench/.venv/bin/python"
-            if FileManager.default.isExecutableFile(atPath: venvPython) {
-                proc.executableURL = URL(fileURLWithPath: venvPython)
+            if let pythonPath {
+                proc.executableURL = URL(fileURLWithPath: pythonPath)
                 proc.arguments = [exe] + args
             } else {
                 proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
                 proc.arguments = ["python3", exe] + args
             }
 
+            let home = FileManager.default.homeDirectoryForCurrentUser.path
             var env = ProcessInfo.processInfo.environment
-            let extra = "/Users/winbeau/Competitions/ops-bench/.venv/bin:/opt/homebrew/bin:/usr/local/bin:\(NSHomeDirectory())/.local/bin:\(NSHomeDirectory())/.local/share/pnpm/bin"
+            var pathComponents = [
+                "\(home)/.parhelion/venv/bin",
+                "/opt/homebrew/bin",
+                "/usr/local/bin",
+                "\(home)/.local/bin",
+                "\(home)/.local/share/pnpm/bin",
+            ]
+            if let wsArg, !wsArg.isEmpty {
+                pathComponents.insert("\(wsArg)/.venv/bin", at: 0)
+            }
+            let extra = pathComponents.joined(separator: ":")
             env["PATH"] = "\(extra):\(env["PATH"] ?? "/usr/bin:/bin")"
             proc.environment = env
 

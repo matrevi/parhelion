@@ -43,8 +43,14 @@ def _lock_path(workspace: Path) -> Path:
 
 
 def _session_info() -> tuple[str, str, str]:
-    """Return (base_url, cookie_header, user_id) from `~/.judge/session.json`."""
-    path = Path(os.environ.get("JUDGE_SESSION_FILE") or (Path.home() / ".judge" / "session.json"))
+    """Return (base_url, cookie_header, user_id) from `~/.parhelion/sessions/` or `~/.judge/session.json`."""
+    parhelion_home = Path(os.environ.get("PARHELION_HOME") or os.environ.get("OPSB_HOME") or (Path.home() / ".parhelion")).expanduser()
+    candidates = [
+        os.environ.get("JUDGE_SESSION_FILE"),
+        str(parhelion_home / "sessions" / "primary.json"),
+        str(Path.home() / ".judge" / "session.json"),
+    ]
+    path = next((Path(c).expanduser() for c in candidates if c and Path(c).expanduser().is_file()), Path.home() / ".judge" / "session.json")
     data = json.loads(path.read_text(encoding="utf-8"))
     base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
     user_id = str(data.get("user_id") or "")
@@ -61,10 +67,14 @@ def _all_team_sessions() -> list[tuple[str, str, str]]:
     """Return all connected teammate sessions (base_url, cookie_header, user_id)."""
     out: list[tuple[str, str, str]] = []
     seen_uids: set[str] = set()
+    parhelion_home = Path(os.environ.get("PARHELION_HOME") or os.environ.get("OPSB_HOME") or (Path.home() / ".parhelion")).expanduser()
     candidates: list[Path] = []
     env_p = os.environ.get("JUDGE_SESSION_FILE")
     if env_p:
         candidates.append(Path(env_p))
+    candidates.append(parhelion_home / "sessions" / "primary.json")
+    if (parhelion_home / "sessions").is_dir():
+        candidates.extend(sorted((parhelion_home / "sessions").glob("*.json")))
     candidates.append(Path.home() / ".judge" / "session.json")
     sdir = Path.home() / ".judge" / "sessions"
     if sdir.is_dir():
