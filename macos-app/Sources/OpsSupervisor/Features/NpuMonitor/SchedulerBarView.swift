@@ -25,14 +25,16 @@ struct SchedulerBarView: View {
             judgeStatusPill(judgeElapsed: judgeEl)
 
             let activeSlots = (pipeline?.accountSlots ?? []).filter { $0.enabled && $0.loggedIn }
-            if activeSlots.count > 1 {
+            if !activeSlots.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(activeSlots) { slot in
                         let sRem = clock.cooldownRemaining(endsAt: slot.cooldownEndsEpoch)
+                        let used = slot.usedToday ?? scheduler.usedToday24h
+                        let lim = slot.dailyLimit ?? scheduler.dailyQuotaLimit
                         SemanticPill(
                             text: sRem == 0
-                                ? "\(slot.label) · \(lang.tr("就绪", "Ready"))"
-                                : "\(slot.label) · \(sRem)s / \(gap)s",
+                                ? "\(slot.label) · \(lang.tr("就绪", "Ready")) · \(used)/\(lim)"
+                                : "\(slot.label) · \(sRem)s · \(used)/\(lim)",
                             icon: sRem == 0 ? "checkmark.bolt.fill" : "timer",
                             compact: false
                         )
@@ -41,8 +43,8 @@ struct SchedulerBarView: View {
             } else {
                 SemanticPill(
                     text: cdRem == 0
-                        ? lang.tr("冷却已就绪 (可立即提交)", "Cooldown Ready (Submit Now)")
-                        : lang.tr("平台限流冷却 \(cdRem)s / \(gap)s", "Rate Cooldown \(cdRem)s / \(gap)s"),
+                        ? lang.tr("冷却已就绪 · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)", "Ready · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)")
+                        : lang.tr("冷却 \(cdRem)s/\(gap)s · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)", "Cooldown \(cdRem)s/\(gap)s · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)"),
                     icon: cdRem == 0 ? "checkmark.bolt.fill" : "timer",
                     compact: false
                 )
@@ -59,13 +61,6 @@ struct SchedulerBarView: View {
             .help(lang.tr("在默认浏览器中打开判题记录 (https://123.249.115.173/me)", "Open judge submissions in default browser (https://123.249.115.173/me)"))
 
             Spacer()
-
-            Text(lang.tr(
-                "今日额度: \(scheduler.usedToday24h) / \(scheduler.dailyQuotaLimit)",
-                "24h Quota: \(scheduler.usedToday24h) / \(scheduler.dailyQuotaLimit)"
-            ))
-            .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-            .foregroundStyle(.secondary)
 
             Divider().frame(height: 18)
 

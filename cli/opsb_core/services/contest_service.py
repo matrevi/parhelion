@@ -453,16 +453,18 @@ def build_problem_models(
         "closing_potential_weighted": round(closing_pot, 2),
         "model_mae_pts": round(sum(valid_maes) / len(valid_maes), 2) if valid_maes else None,
     }
-    # Contest-wide team ranking (public board), cached on disk; failures degrade silently.
+    # Contest-wide team ranking (public board), non-blocking cache read + background refresh every 30s or on score change.
     try:
         from . import ranking_service
 
-        rk = ranking_service.team_ranking(
-            workspace,
-            contest_id=str(meta.get("contest_id") or ranking_service.DEFAULT_CONTEST_ID),
-            team_name=str(meta.get("team_name") or ranking_service.DEFAULT_TEAM_NAME),
-        )
+        cid = str(meta.get("contest_id") or ranking_service.DEFAULT_CONTEST_ID)
+        tname = str(meta.get("team_name") or ranking_service.DEFAULT_TEAM_NAME)
+        rk = ranking_service.team_ranking(workspace, contest_id=cid, team_name=tname, allow_fetch=False)
         contest_summary.update(ranking_service.summary_fields(rk))
+        stale = (rk is None) or (ranking_service._age_sec(rk) > ranking_service.CACHE_TTL_SEC)
+        score_shifted = bool(rk is not None and abs(round(weighted_total, 2) - float(rk.get("score") or 0.0)) >= 0.5)
+        if stale or score_shifted:
+            ranking_service.refresh_async(workspace, contest_id=cid, team_name=tname, force=False)
     except Exception:
         import os
         if os.environ.get("OPSB_RANKING_DEBUG"):

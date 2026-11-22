@@ -384,6 +384,8 @@ def compute_synchronized_pipeline(
             "enabled": s["enabled"],
             "cooldown_remaining_sec": s["cooldown_remaining_sec"],
             "cooldown_ends_epoch": s["cooldown_ends_epoch"],
+            "used_today": int(s.get("used_today") or 0),
+            "daily_limit": int(s.get("daily_limit") or 50),
             "phase": s["phase"],
             "active_title": s["active_title"],
         }

@@ -7,6 +7,8 @@ struct PipelineAccountSlot: Codable, Identifiable, Hashable {
     let enabled: Bool
     let cooldownRemainingSec: Int
     let cooldownEndsEpoch: Double
+    let usedToday: Int?
+    let dailyLimit: Int?
     let phase: String
     let activeTitle: String?
 
@@ -15,6 +17,8 @@ struct PipelineAccountSlot: Codable, Identifiable, Hashable {
         case loggedIn = "logged_in"
         case cooldownRemainingSec = "cooldown_remaining_sec"
         case cooldownEndsEpoch = "cooldown_ends_epoch"
+        case usedToday = "used_today"
+        case dailyLimit = "daily_limit"
         case activeTitle = "active_title"
     }
 }

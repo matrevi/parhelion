@@ -33,15 +33,28 @@ def lock_file_for(workspace: Path, account_id: str) -> Path:
     return (res / ".submit-queue.lock") if account_id == "primary" else (res / f".submit-queue-{account_id}.lock")
 
 
-def compute_account_slots(workspace: Path, outcome_rows: list[dict[str, Any]] | None = None, gap_sec: int = MIN_RATE_GAP_SEC) -> list[dict[str, Any]]:
-    """Compute per-teammate-account independent 190s cooldown & live worker status."""
+def compute_account_slots(
+    workspace: Path,
+    outcome_rows: list[dict[str, Any]] | None = None,
+    gap_sec: int = MIN_RATE_GAP_SEC,
+    daily_limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Compute per-teammate-account independent 190s cooldown, Beijing-day quota & live worker status."""
+    import datetime as _dt
+
     results_dir = workspace / "results"
     if outcome_rows is None:
         outcome_rows = read_jsonl(results_dir / "submit-queue-outcome.jsonl")
     accounts = list_judge_accounts()
     uid_to_aid = {str(a.get("user_id")): str(a["id"]) for a in accounts if a.get("user_id")}
 
+    bj_tz = _dt.timezone(_dt.timedelta(hours=8))
+    bj_now = utc_now().astimezone(bj_tz)
+    bj_day_start_ep = bj_now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+
     last_epoch_by_aid: dict[str, float] = {str(a["id"]): 0.0 for a in accounts}
+    today_sids_by_aid: dict[str, set[str]] = {str(a["id"]): set() for a in accounts}
+
     for r_file in results_dir.glob("*/*/submission-receipt.json"):
         rd = read_json(r_file, {})
         dt = parse_iso(rd.get("submitted_at"))
@@ -51,7 +64,11 @@ def compute_account_slots(workspace: Path, outcome_rows: list[dict[str, Any]] | 
         if not aid or aid not in last_epoch_by_aid:
             aid = uid_to_aid.get(str(rd.get("user_id") or ""), "primary")
         if aid in last_epoch_by_aid:
-            last_epoch_by_aid[aid] = max(last_epoch_by_aid[aid], dt.timestamp())
+            ts = dt.timestamp()
+            last_epoch_by_aid[aid] = max(last_epoch_by_aid[aid], ts)
+            sid = str(rd.get("submission_id") or "")
+            if sid and ts >= bj_day_start_ep:
+                today_sids_by_aid[aid].add(sid)
 
     for o in outcome_rows:
         if o.get("status") not in ("rejected", "skipped", "duplicate") and o.get("submission_id"):
@@ -61,7 +78,11 @@ def compute_account_slots(workspace: Path, outcome_rows: list[dict[str, Any]] | 
             aid = str(o.get("account_id") or "primary")
             if aid not in last_epoch_by_aid:
                 aid = "primary"
-            last_epoch_by_aid[aid] = max(last_epoch_by_aid[aid], dt.timestamp())
+            ts = dt.timestamp()
+            last_epoch_by_aid[aid] = max(last_epoch_by_aid[aid], ts)
+            sid = str(o.get("submission_id") or "")
+            if sid and ts >= bj_day_start_ep:
+                today_sids_by_aid[aid].add(sid)
 
     now_ep = utc_now().timestamp()
     slots: list[dict[str, Any]] = []
@@ -96,6 +117,8 @@ def compute_account_slots(workspace: Path, outcome_rows: list[dict[str, Any]] | 
                 "enabled": bool(a.get("enabled", True)),
                 "cooldown_ends_epoch": round(ends_ep, 2),
                 "cooldown_remaining_sec": rem,
+                "used_today": len(today_sids_by_aid.get(aid, set())),
+                "daily_limit": daily_limit,
                 "phase": phase,
                 "active_title": active_title,
                 "active_sha": active_sha,

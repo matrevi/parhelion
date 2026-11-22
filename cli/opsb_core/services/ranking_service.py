@@ -25,8 +25,8 @@ from typing import Any
 DEFAULT_CONTEST_ID = "6a9e2d04bf41025d60f21804"
 DEFAULT_TEAM_NAME = "XJU第二少年团"
 
-CACHE_TTL_SEC = 300.0          # serve-fresh window for status reads
-ATTEMPT_INTERVAL_SEC = 120.0   # never hit the API more often than this
+CACHE_TTL_SEC = 30.0           # serve-fresh window for status reads (30s)
+ATTEMPT_INTERVAL_SEC = 15.0    # minimum gap between background ranking refreshes
 REQUEST_TIMEOUT_SEC = 6.0
 
 _refresh_lock = threading.Lock()
@@ -196,15 +196,69 @@ def refresh_async(
     *,
     contest_id: str = DEFAULT_CONTEST_ID,
     team_name: str = DEFAULT_TEAM_NAME,
+    force: bool = True,
 ) -> None:
-    """Force a refresh off the critical path (used after every judged submission)."""
+    """Spawn a detached non-blocking background process to refresh team ranking.
+
+    Unlike a daemon Thread (which dies immediately when a short-lived CLI process exits),
+    a detached subprocess reliably completes the HTTP request and updates `team-ranking.json`
+    without ever blocking the 0.5s/1s UI polling loop.
+    """
+    import fcntl
+    import os
+    import subprocess
+
     ws = Path(workspace) if workspace else _workspace_root()
+    path = _cache_path(ws)
+    if not force:
+        cached = _read_cache(path)
+        if cached:
+            last_try = cached.get("attempt_at") or cached.get("fetched_at")
+            if last_try and _age_sec({"fetched_at": last_try}) < ATTEMPT_INTERVAL_SEC:
+                return
 
-    def _run() -> None:
-        time.sleep(1.0)  # let the judge's own score sync land first
-        team_ranking(ws, contest_id=contest_id, team_name=team_name, force=True)
+    lock_path = path.with_suffix(".lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a") as lf:
+            try:
+                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(lf, fcntl.LOCK_UN)
+            except BlockingIOError:
+                return  # another background ranking refresh is already running
+    except Exception:
+        pass
 
-    threading.Thread(target=_run, name="opsb-team-ranking-refresh", daemon=True).start()
+    pkg_root = str(Path(__file__).resolve().parents[2])
+    code = (
+        "import fcntl, pathlib, sys, time\n"
+        f"sys.path.insert(0, {pkg_root!r})\n"
+        "from opsb_core.services import ranking_service\n"
+        f"ws = pathlib.Path({str(ws)!r})\n"
+        f"lp = pathlib.Path({str(lock_path)!r})\n"
+        "lp.parent.mkdir(parents=True, exist_ok=True)\n"
+        "with lp.open('a') as lf:\n"
+        "    try:\n"
+        "        fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except BlockingIOError:\n"
+        "        sys.exit(0)\n"
+        "    try:\n"
+        f"        if {bool(force)!r}: time.sleep(1.0)\n"
+        f"        ranking_service.team_ranking(ws, contest_id={contest_id!r}, team_name={team_name!r}, force=True)\n"
+        "    finally:\n"
+        "        fcntl.flock(lf, fcntl.LOCK_UN)\n"
+    )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", code],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+        )
+    except Exception:
+        pass
 
 
 def summary_fields(payload: dict[str, Any] | None) -> dict[str, Any]:
