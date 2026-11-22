@@ -49,7 +49,6 @@ struct BreakthroughDetailView: View {
                         .font(.system(size: 12.5))
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                agentReceiptsSection
                 tagsAndFileRow
             }
             .padding(16)
@@ -136,44 +135,6 @@ struct BreakthroughDetailView: View {
                 builtContent
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    /// Agent summaries collected by `opsb bridge collect` for this entry.
-    @ViewBuilder
-    private var agentReceiptsSection: some View {
-        let receipts = store.breakthroughSummaries.filter { $0.entryId == entry.id }
-        if !receipts.isEmpty {
-            sectionCard(
-                title: lang.tr("4. Agent 回执 (\(receipts.count))", "4. Agent Receipts (\(receipts.count))"),
-                icon: "checkmark.seal.fill",
-                tint: Color(red: 0.12, green: 0.68, blue: 0.62)
-            ) {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(receipts) { receipt in
-                        VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                SemanticPill(text: receipt.agentId, compact: true)
-                                Text(receipt.agentDisplay)
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if let ts = receipt.collectedAt {
-                                    Text(String(ts.prefix(19)).replacingOccurrences(of: "T", with: " "))
-                                        .font(.system(size: 9.5, design: .monospaced))
-                                        .foregroundStyle(.tertiary)
-                                }
-                            }
-                            Text(receipt.summary)
-                                .font(.system(size: 11.5))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.03)))
-                    }
-                }
-            }
         }
     }
 

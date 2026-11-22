@@ -11,11 +11,9 @@ from ..services.breakthrough_service import (
     VALID_CATEGORIES,
     get_entry_detail,
     load_catalog,
-    load_summaries,
     save_catalog_entry,
     sync_breakthroughs_from_items,
 )
-from ..services.bridge_service import sync_after_breakthrough_change
 from ..services.git_fast import resolve_commit_sha
 from ..services.queue_service import compute_workspace_snapshot
 
@@ -88,24 +86,10 @@ def run_breakthrough(args: argparse.Namespace) -> int:
         thresh = float(args.min_delta) if args.min_delta is not None else cur_thresh
         probs_map = {p["title"]: p for p in snap["problems"]}
         res = sync_breakthroughs_from_items(ws, snap["submission_queue"], probs_map, thresh)
-        # Manual/auto sync must hand the (possibly new) entries to the agents immediately.
-        bridge_res = sync_after_breakthrough_change(ws)
-        res["bridge"] = {
-            "delivered": bridge_res.get("delivered_count", 0),
-            "skipped": bridge_res.get("skipped_count", 0),
-            "errors": bridge_res.get("error_count", 0),
-            "bridge_dir": bridge_res.get("bridge_dir", ""),
-        }
-        res["summary_count"] = len(load_summaries(ws))
         if args.json:
             print(json.dumps(res, ensure_ascii=False, indent=2))
         else:
             print(f"Synced breakthrough playbook ({res['directory']}): +{len(res['created_ids'])} new, {res['total_entries']} total.")
-            print(
-                f"  bridge: +{res['bridge']['delivered']} delivered / "
-                f"{res['bridge']['skipped']} already delivered / {res['bridge']['errors']} error(s) · "
-                f"{res['summary_count']} receipt(s) collected"
-            )
         return 0
 
     if args.bt_cmd == "show":
@@ -161,11 +145,10 @@ def run_breakthrough(args: argparse.Namespace) -> int:
             "doc_path": f"entries/{entry_id}.md",
         }
         saved = save_catalog_entry(ws, entry, overwrite_doc=True)
-        bridge_res = sync_after_breakthrough_change(ws)
         if args.json:
-            print(json.dumps({"ok": True, "entry": saved, "bridge": bridge_res}, ensure_ascii=False, indent=2))
+            print(json.dumps({"ok": True, "entry": saved}, ensure_ascii=False, indent=2))
         else:
-            print(f"Saved {saved['id']} (+{saved['delta_raw']:.2f} pts) · bridge +{bridge_res.get('delivered_count', 0)} delivered")
+            print(f"Saved {saved['id']} (+{saved['delta_raw']:.2f} pts)")
         return 0
 
     # Default: `opsb breakthrough list`
@@ -185,23 +168,17 @@ def run_breakthrough(args: argparse.Namespace) -> int:
         and (not args.problem or x["title"].lower() == args.problem.lower())
     ]
 
-    summaries = load_summaries(ws)
     out_payload = {
         "threshold": thresh,
         "directory": cat["directory"],
         "entries": entries,
         "matching_submissions": bt_submissions,
-        "summaries": summaries,
-        "summary_count": len(summaries),
     }
     if args.json:
         print(json.dumps(out_payload, ensure_ascii=False, indent=2))
         return 0
 
-    print(
-        f"=== Parhelion Breakthrough Playbook (Δ >= {thresh:.1f} pts) · {cat['directory']} "
-        f"· {len(summaries)} agent receipt(s) ==="
-    )
+    print(f"=== Parhelion Breakthrough Playbook (Δ >= {thresh:.1f} pts) · {cat['directory']} ===")
     if not entries:
         print("  (No structured entries above current threshold; lower `--min-delta` or run `opsb breakthrough sync`.)")
     for e in entries:

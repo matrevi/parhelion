@@ -5,7 +5,6 @@ import argparse
 
 from .commands.admin_cmd import run_auth, run_collab, run_skills, run_ssh, run_workspace
 from .commands.bench_cmd import run_bench
-from .commands.bridge_cmd import run_bridge
 from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
@@ -299,72 +298,6 @@ def build_parser() -> argparse.ArgumentParser:
     bt_ad.add_argument("--workspace", "-w")
     bt_ad.add_argument("--json", action="store_true")
     bt_ad.set_defaults(func=run_breakthrough)
-
-    s_br = sub.add_parser("bridge", help="Breakthrough hand-off bridge (agents.json · inbox/outbox · ledger)")
-    br_sub = s_br.add_subparsers(dest="bridge_cmd")
-    s_br.add_argument("--workspace", "-w")
-    s_br.add_argument("--bridge-dir", dest="bridge_dir")
-    s_br.add_argument("--json", action="store_true")
-    s_br.set_defaults(func=run_bridge, bridge_cmd="status", agent_id=None)
-
-    br_st = br_sub.add_parser("status", help="Per-agent 待总结 / 已取 / 已回执 overview")
-    br_st.add_argument("agent_id", nargs="?")
-    br_st.add_argument("--workspace", "-w")
-    br_st.add_argument("--bridge-dir", dest="bridge_dir")
-    br_st.add_argument("--json", action="store_true")
-    br_st.set_defaults(func=run_bridge)
-
-    br_sy = br_sub.add_parser("sync", help="Route new breakthroughs into inbox/<agent>/ (idempotent)")
-    br_sy.add_argument("--min-delta", type=float)
-    br_sy.add_argument("--agent", action="append", help="Limit routing to specific agent_id (repeatable)")
-    br_sy.add_argument("--dry-run", action="store_true")
-    br_sy.add_argument("--workspace", "-w")
-    br_sy.add_argument("--bridge-dir", dest="bridge_dir")
-    br_sy.add_argument("--json", action="store_true")
-    br_sy.set_defaults(func=run_bridge)
-
-    br_pl = br_sub.add_parser("pull", help="Fetch pending notes for one agent (--ack marks them pulled)")
-    br_pl.add_argument("agent_id")
-    br_pl.add_argument("--ack", action="store_true")
-    br_pl.add_argument("--entry", action="append", help="Limit pull to specific entry_id (repeatable)")
-    br_pl.add_argument("--workspace", "-w")
-    br_pl.add_argument("--bridge-dir", dest="bridge_dir")
-    br_pl.add_argument("--json", action="store_true")
-    br_pl.set_defaults(func=run_bridge)
-
-    br_pb = br_sub.add_parser("publish", help="Write an agent's <=5 line receipt into outbox/<agent>/")
-    br_pb.add_argument("agent_id")
-    br_pb.add_argument("entry_id")
-    br_pb.add_argument("--file", default=None, help="Receipt file path, or `-` for stdin")
-    br_pb.add_argument("--workspace", "-w")
-    br_pb.add_argument("--bridge-dir", dest="bridge_dir")
-    br_pb.add_argument("--json", action="store_true")
-    br_pb.set_defaults(func=run_bridge)
-
-    br_cl = br_sub.add_parser("collect", help="Fold outbox receipts into breakthrough/index.json#summaries")
-    br_cl.add_argument("--agent", action="append")
-    br_cl.add_argument("--workspace", "-w")
-    br_cl.add_argument("--bridge-dir", dest="bridge_dir")
-    br_cl.add_argument("--json", action="store_true")
-    br_cl.set_defaults(func=run_bridge)
-
-    br_ph = br_sub.add_parser("push", help="Escalate pending file deliveries to exec/http hooks")
-    br_ph.add_argument("agent_id", nargs="?")
-    br_ph.add_argument("--entry", default=None)
-    br_ph.add_argument("--dry-run", action="store_true")
-    br_ph.add_argument("--workspace", "-w")
-    br_ph.add_argument("--bridge-dir", dest="bridge_dir")
-    br_ph.add_argument("--json", action="store_true")
-    br_ph.set_defaults(func=run_bridge)
-
-    br_wa = br_sub.add_parser("watch", help="Foreground single-consumer loop (headless only, never a daemon)")
-    br_wa.add_argument("--interval", type=float, default=20.0)
-    br_wa.add_argument("--once", action="store_true")
-    br_wa.add_argument("--no-escalate", action="store_true")
-    br_wa.add_argument("--workspace", "-w")
-    br_wa.add_argument("--bridge-dir", dest="bridge_dir")
-    br_wa.add_argument("--json", action="store_true")
-    br_wa.set_defaults(func=run_bridge)
 
     s_sk = sub.add_parser("skills", help="Optional fallback skills for dsh & codex")
     sk_sub = s_sk.add_subparsers(dest="skills_cmd", required=True)

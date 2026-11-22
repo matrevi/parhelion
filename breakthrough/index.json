@@ -1,7 +1,41 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-18T08:38:07.520374+00:00",
+  "updated_at": "2026-11-22T10:40:00+00:00",
   "entries": [
+    {
+      "id": "BT-20261110-SyncBatchNormGatherStats-ecd5aa8",
+      "problem": "SyncBatchNormGatherStats",
+      "difficulty": 2,
+      "sha": "ecd5aa84543125e0c9a8f1cfd458631ffe467f86",
+      "baseline_sha": "f8c6803",
+      "timestamp": "2026-11-10T00:25:00Z",
+      "score_before": 6.69,
+      "score_after": 55.1,
+      "delta_raw": 48.41,
+      "delta_weighted": 96.82,
+      "status": "verified",
+      "category": "vectorization",
+      "tags": [
+        "workspace-1KB",
+        "Dekker-TwoSum",
+        "error-compensation",
+        "PipeBarrier",
+        "TQue-depth4",
+        "DMA-overlap",
+        "dispatch-floor"
+      ],
+      "title": "1KB Workspace Floor Removal + Vectorized Dekker/TwoSum Variance + Depth-4 TQue + 32KB/Block Core Sizing",
+      "bottleneck": "99% of online time (650-1798us) was template 16MB workspace overhead, followed by scalar Dekker/TwoSum variance (~88ns/elem, f32_c8192 29.16us), depth-1 TQue serialization, and 0.12us/block dispatch floor (32 blocks at C=8192).",
+      "mechanisms": [
+        "Lowered declared workspace 16MB -> 1024B after verifying zero workspace dereference and zero KFC APIs (6.69 -> 33.61, online 650-1798us -> 6.2-7.0us)",
+        "Vectorized Dekker split (4097.0f * x) + TwoSum + factor.lo compensation into 39 element-wise Mul/Sub/Add/Muls ops with exact operand order (f32_c8192 29.16 -> 6.64us, 4.39x)",
+        "Raised TQue depth 1 -> 4 (106KB < 192KB UB) to batch 4 input and 4 output DataCopyPad DMAs",
+        "Follow-up 544439e (55.10 -> 57.45): SetBlockDim = clamp(ceil(C/1024), 4, AIV) (~32KB/block + 4-block stability floor, C=64 6.62 -> 2.58us, C=8192 6.58 -> 4.64us) + 32B DataCopy hitting 724GB/s HBM roof"
+      ],
+      "precision_guard": "Bit-identical to scalar AccurateVariance across 240K-element replay and 48/48 extended cases. Mandatory PipeBarrier<PIPE_V>() between dependent vector ops regardless of buffer aliasing (removing 39 barriers broke new_variance 1024/1024 at C=1024).",
+      "transferable_rule": "Eliminate template 16MB workspace down to 1024B whenever the kernel never dereferences workspace or calls KFC APIs; vectorize Dekker/TwoSum compensated arithmetic preserving exact operand order and mandatory PipeBarrier<PIPE_V>(); and size SetBlockDim against the ~0.12us/block dispatch floor (~32KB/block, >=4-block stability floor).",
+      "doc_path": "entries/BT-20261110-SyncBatchNormGatherStats-ecd5aa8.md"
+    },
     {
       "id": "BT-20261118-LayerNormV3-af0807c",
       "problem": "LayerNormV3",
@@ -21,18 +55,19 @@
         "TransDataTo5HD",
         "ReduceSum",
         "ping-pong",
-        "single-TBuf"
+        "single-TBuf",
+        "SqrtRNE"
       ],
       "title": "BF16 TransDataTo5HD Vertical SIMD Accumulate + Native FP16 + Single-TBuf Ping-Pong",
-      "bottleneck": "Reproducing numpy's non-associative sequential bf16 accumulation forced serial per-row loops while per-row ReduceSum (~240 cyc) and 9 DMA/V syncs stalled tiles.",
+      "bottleneck": "Reproducing numpy's non-associative sequential bf16 accumulation forced serial per-row loops (bf16_1024x1024 936.86-1969.5us), while per-row ReduceSum (~240 cyc) and 9 serial DMA/V syncs stalled tiles.",
       "mechanisms": [
-        "Transpose 16 rows in UB via TransDataTo5HD so vertical SIMD Add executes exact sequential bf16 rounding across 16 rows simultaneously (~9x speedup)",
-        "Pack multiple rows into batched ReduceSumMultiN to amortize ~240-cycle reduction startup",
-        "Native FP16 compute path + fused b1/b2 parameter broadcast",
-        "Single-TBuf arena with double-buffered MTE2/PIPE_V/MTE3 ping-pong"
+        "Transpose 16-32 rows in UB via hardware TransDataTo5HD<uint16_t> (zero workspace) so vertical SIMD Add executes exact sequential bf16 rounding in parallel (bf16_1024x1024 936.86 -> 103.54us, 9.05x)",
+        "Pack multiple rows into batched ReduceSumMultiN + resident==2 single-read wide-row path (cols <= 32K fp32 / 64K 16-bit)",
+        "Native 128-wide FP16 compute path (f16_4096x1024 96.68 -> 51.00us, beating torch 52.44us) + fused b1/b2 parameter broadcast",
+        "Single-TBuf arena with 256B bank-conflict skew and double-buffered MTE2/PIPE_V/MTE3 ping-pong (online public cases 11.7-23.6 -> 6.0-12.4us)"
       ],
-      "precision_guard": "Bit-identical to sequential numpy bf16 saturation (2080 == 2080 on (5, 4097)); 75/75 extended cases 3-run SHA-256 deterministic.",
-      "transferable_rule": "When a golden reference requires non-associative sequential rounding along a reduction axis, transpose 16 independent rows via TransDataTo5HD and step vertically with SIMD vector instructions.",
+      "precision_guard": "Bit-identical to sequential numpy bf16 saturation (2080 == 2080 on (5, 4097)) + exact IEEE-754 RNE scalar RoundHalf & 64-bit Tuckerman SqrtRNE; 75/75 extended cases 3-run SHA-256 deterministic. Avoid 2-step WholeReduceSum (regressed 64c85cf 6-11% on 512/1024-col shapes) and never call SyncAll() in pure AIV kernels (ACL 507035).",
+      "transferable_rule": "When a golden reference requires non-associative sequential rounding along a reduction axis, transpose 16-32 independent rows via TransDataTo5HD and step vertically with SIMD vector instructions; keep horizontal vadd folding + single WholeReduceSum and gate statBlock=1 strictly to low-row shapes.",
       "doc_path": "entries/BT-20261118-LayerNormV3-af0807c.md"
     },
     {
@@ -57,15 +92,15 @@
         "DP"
       ],
       "title": "Two-Half-Ring Async MTE3 + 64-Lane Window-Sliced Gather DP + Double-Buffered log_probs",
-      "bottleneck": "Every DP step computed the full padded state width [0, saf), rewrote Gather offset tables via Adds, and stalled on synchronous VM3/M3V barriers to flush each log_alpha[t] row.",
+      "bottleneck": "Every DP step computed the full padded state width [0, saf), rewrote Gather offset tables via Adds, stalled on synchronous VM3/M3V barriers to flush each log_alpha[t] row, and fell back to 16MB Slow() on wide C/S.",
       "mechanisms": [
         "Slice Gather/Max/Exp/Ln/Select to the active 64-lane band [cStart, cEnd) and fuse boundary masks via And into a single Select per step",
-        "Per-slot 32B -inf guard + scalar Gather srcBaseOffset eliminate per-step Adds(offBC/offP) rewrites",
-        "Two-half-ring (2*H slots) UB layout drains completed DP rows on MTE3 asynchronously while PIPE_V computes the opposite half-ring",
-        "Double-buffered multi-row log_probs MTE2 prefetch + external TPipe for register-promoted loop scalars"
+        "Per-slot 32B -inf guard + scalar Gather srcBaseOffset eliminate per-step Adds(offBC/offP) rewrites even when classes % 8 != 0",
+        "Two-half-ring (2*H slots) UB layout drains completed DP rows on MTE3 asynchronously while PIPE_V computes the opposite half-ring (t50 30.16 -> 15.16us, 5.91x vs CTCLossV3; t200 122.9 -> 57.3us, 2.14x)",
+        "Double-buffered multi-row log_probs MTE2 prefetch + zero-TQue two-TBuf UB envelope up to states<=2048 / classes~44K (eliminating 16MB Slow() cliff, 50-60x on wide C/S) + external TPipe"
       ],
-      "precision_guard": "Preserves hardware vmax(-inf, -inf) -> 0.0f pairwise order and in-chain PipeBarrier<PIPE_V>() across all 8 int32/int64 index combinations.",
-      "transferable_rule": "In sequential time-step DP kernels, buffer 2*H step outputs in UB so MTE3 bursts H rows asynchronously without blocking PIPE_V, and slice vector width to the reachable state band.",
+      "precision_guard": "Preserves hardware vmax(-inf, -inf) -> 0.0f pairwise order and in-chain PipeBarrier<PIPE_V>() across all 8 int32/int64 index combinations; online public cases 11.6/8.3/8.3/10.1/10.1 -> 7.7/6.2/6.4/7.5/7.5us.",
+      "transferable_rule": "In sequential time-step DP kernels, buffer 2*H step outputs in UB so MTE3 bursts H rows asynchronously without blocking PIPE_V, pass row offsets via Gather srcBaseOffset, and slice vector width to the reachable state band.",
       "doc_path": "entries/BT-20261118-CTCLossV2-0d5125c.md"
     },
     {
@@ -82,17 +117,24 @@
       "status": "verified",
       "category": "tiling-regime",
       "tags": [
-        "tiling-regime"
+        "tilingKey",
+        "schMode",
+        "zero-TQue",
+        "in-UB-overwrite",
+        "fused-group",
+        "dynamic-colTile",
+        "front-loaded-DMA"
       ],
-      "title": "Preserve repo cwd across Phase-B bash -c and batch 14-stratum profiler into one session",
-      "bottleneck": "Prior validated baseline plateaued at 49.04 pts before 7d6aa46.",
+      "title": "SCH_MODE_0 Zero-TQue Fast Kernel + FusedGroupPass In-UB Overwrite + Dynamic colTile/copyStep",
+      "bottleneck": "At d524473 (49.04), small/medium shapes paid TQue<2> bookkeeping and Copy+Update serialization (c128_r256 7.92us, sample 6.94us), high-batch KV-decode fragmented var into 512 tiny 128B stores (kv_decode_512 9.88us vs torch 7.44us), and fixed colTile=4096 starved cores on wide C.",
       "mechanisms": [
-        "E9: SCH_MODE_0 zero-TQue fast kernel",
-        "FusedGroupPass",
-        "dynamic colTile/copyStep: c128_r256 7.92->5.26us (1.51x), kv_decode_512 9.88->7.16us (1.38x), rows_big_c8 6.34->5.46us, sample 6.94->6.06us, c1024_r1024 7.18->6.58us, 116/116 green"
+        "Specialized SCH_MODE_0 zero-TQue KernelFast (116KB static UB): RunSingleCoreInUB issues var/scales/zp/updates in one MTE2 burst, overwrites updated slices in UB via 32B DataCopy, and writes var_out in one Store1D; RunFrontLoaded hides update MTE2 behind CopyPass",
+        "FusedGroupPass (in SCH_MODE_1 KernelStream) streams double-buffered 32KB whole-group var stages, overwrites updated rows directly in UB, and flushes contiguous 32KB bursts (kv_decode_512 9.88 -> 7.16us, 1.38x, beating torch)",
+        "Dynamic colTile ([512, 4096]) + dynamic copyStep (8/16/32KB) + front-loaded first update tile saturate AIV cores on wide-C and preserve double-buffering on ~1MB shapes (c128_r256 7.92 -> 5.26us 1.51x, c1024_r1024 7.18 -> 6.58us)",
+        "Builds on precursor d524473 (44.76 -> 49.04): depth-2 TQue ping-pong, gated multi-row O(log2) scale replication, 32B DataCopy fast path, and UB index cache"
       ],
-      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
-      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "precision_guard": "Bit-exact int8 (0/64 sample, 116/116 isolated extended cases) + offline state-machine check (WALK_OK 2041 quant blocks + 279 copy/fused partitions). vvPtr != yyPtr guards in-place aliasing; compile-time disjoint event IDs (0..1 / 2..3 / 4) prevent TQue collisions; every Cast/DataCopy <-> arithmetic boundary keeps PipeBarrier<PIPE_V>().",
+      "transferable_rule": "Isolate small/single-batch shapes onto a dedicated zero-TQue SCH_MODE_0 kernel binary (in-UB overwrite + front-loaded DMA overlap), fuse small-group scatter-copies in UB to turn fragmented writes into 32KB contiguous bursts, and dynamically shrink colTile/copyStep whenever fixed tiles under-occupy AIV cores.",
       "doc_path": "entries/BT-20261118-QuantUpdateScatter-7d6aa46.md"
     },
     {
@@ -112,18 +154,19 @@
         "cross-core-reduction",
         "sentinel-handshake",
         "PipeBarrier",
-        "Sort32",
+        "dedup-histogram",
+        "zero-workspace",
         "determinism"
       ],
       "title": "NaN-Sentinel Cross-Core Deterministic Reduction + Lean Deduplicated PIPE_V Margin Loop",
-      "bottleneck": "Multi-core mean/sum reduction via float atomics or unguarded scratch buffers caused non-deterministic drift, TLE hangs, or RE on unaligned is_target tails (C = 9, 13, 16), forcing 1-core execution.",
+      "bottleneck": "Multi-core mean/sum reduction via float atomics (32B-granular SetAtomicAdd OOB into 4B y[0] -> TLE) or unguarded scratch buffers (fast worker publishing before core 0 sentinel -> RE) caused online zeroing, forcing 1-core fallback (43.96 pts).",
       "mechanisms": [
         "Out-of-domain NaN sentinel (0x7FC00000) + explicit gate-word handshake with DataCacheCleanAndInvalid for zero-workspace cross-core synchronization",
-        "Fixed-order fp32 summation on core 0 + single sizeof(T) write to y[0] + deferred is_target prefix restore",
+        "Fixed-order fp32 summation on core 0 + single sizeof(T) write to y[0] + deferred is_target prefix restore (32x1024 mean 3178 -> 108.36us 29.3x, 256x32 mean 705 -> 27.78us 25.4x, 64x64 mean 325 -> 17.98us 18.1x)",
         "Deduplicated target histogram driving tight Adds -> Maxs -> Muls -> Add PIPE_V loop with one final Select + ReduceSum"
       ],
-      "precision_guard": "100% bit-identical across 2,860 stress launches (including 1,800 launches on C = 9, 13, 16 race shapes).",
-      "transferable_rule": "Replace non-deterministic cross-core float atomics on scalar outputs with cache-coherent GM slots guarded by an out-of-domain sentinel (NaN 0x7FC00000) + DataCacheCleanAndInvalid, summed in fixed core order on block 0.",
+      "precision_guard": "100% bit-identical across 2,860 stress launches (including 1,800 launches on C = 9, 13, 16 race shapes). Negative lesson (f8c1f9c vs 2d0af18): never compile Sort32/MrgSort into the small-C kernel or trigger at C<=128 (regressed small shapes 1.4-2.5x); isolate KernelSort in SCH_MODE_1 gated to C>=512 & C*min(C,L)>=131072.",
+      "transferable_rule": "Replace non-deterministic cross-core float atomics on scalar outputs with cache-coherent GM slots guarded by an out-of-domain sentinel (NaN 0x7FC00000) + DataCacheCleanAndInvalid, summed in fixed core order on block 0; isolate heavy Sort32 paths in a separate TILING_KEY.",
       "doc_path": "entries/BT-20261110-MultilabelMarginLoss-59f8065.md"
     },
     {
@@ -148,14 +191,14 @@
         "SetBlockDim"
       ],
       "title": "Canonical Dimension Collapsing + V3 Multi-Regime Separable H/W Vectorized Folding",
-      "bottleneck": "Enumerating R-dimensional folding preimages per row folded inner W margins repeatedly for every outer preimage combination and issued fragmented per-row DataCopyPad GM reads.",
+      "bottleneck": "Enumerating R-dimensional folding preimages per row folded inner W margins repeatedly for every outer preimage combination and issued fragmented per-row DataCopyPad GM reads (bigpad_2d_8x8_p64 1523.79us, wide_1x1x2x8192 460.13us).",
       "mechanisms": [
         "Canonical dimension collapsing drops unit dims and fuses adjacent zero-pad dims so 4D/5D NCHW/NCDHW tensors reduce to 1D/2D/3D with zero copy",
-        "Separable Kronecker folding accumulates outer and H margins in UB first so inner W Gather<float> folding runs only once per output row",
-        "4 specialized execution regimes: Pure Copy MTE2<->MTE3 stream, Column-Chunked Wide Parallel, Whole-2D-Plane single-DMA batch, and Row-Tiled separable accumulator",
-        "Byte-weighted SetBlockDim (~16 KB effective work per AIV core) balances small-shape dispatch vs 40-core saturation"
+        "Separable Kronecker folding accumulates outer and H margins in UB first so inner W Gather<float> folding runs only once per output row (bigpad_p64 1523.79 -> 12.12us 125.7x, fp16_4d 142.20 -> 16.71us 8.51x)",
+        "4 specialized execution regimes: Pure Copy MTE2<->MTE3 stream, Column-Chunked Wide Parallel (wide_1x1x2x8192 460.13 -> 5.82us 79.1x), Whole-2D-Plane single-DMA batch, and Row-Tiled separable accumulator",
+        "Byte-weighted SetBlockDim (~16 KB effective work per AIV core) balances small-shape dispatch vs 40-core saturation (online public cases 7.0-7.9 -> 5.75-6.55us)"
       ],
-      "precision_guard": "340/340 extended cases green across reflect/symmetric/circular/edge/constant in fp32 & fp16, with Kahan fallback for negative paddings.",
+      "precision_guard": "340/340 extended cases green across reflect/symmetric/circular/edge/constant in fp32 & fp16, with Kahan fallback for negative paddings or outer multiplicity > 96.",
       "transferable_rule": "For separable multi-axis stencil/fold operators, collapse unpadded axes first and reduce outer/row axes in UB before executing inner-axis Gather instructions.",
       "doc_path": "entries/BT-20261118-PadV3Grad-49f905f.md"
     },
@@ -173,19 +216,93 @@
       "status": "verified",
       "category": "tiling-regime",
       "tags": [
-        "tiling-regime"
+        "tilingKey",
+        "schMode",
+        "static-noinline",
+        "SetDataSize-64B",
+        "HBM-core-scaling",
+        "vector-gather",
+        "1B-byte-packing"
       ],
-      "title": "fix(ConcatD): guard working directory in validation/run-npu.sh for 3-Phase opsb test",
-      "bottleneck": "Prior validated baseline plateaued at 46.29 pts before 7919dcb.",
+      "title": "Multi-schMode Binary Isolation + 64B Cacheline Tiling + HBM-Saturation Core Ramp + UB Vector Gather",
+      "bottleneck": "2dd9acd's UB Vector Gather cut 32-case sum_med 5.71x (1056.8 -> 185.2us) but regressed online (49.65 -> 46.29) due to monolithic binary bloat (scalar_ratio 0.74-0.93 on pure DMA), 1704B tiling struct, 4-core small-shape floor, and 40-core over-dispatch past soc-a HBM saturation.",
       "mechanisms": [
-        "Simplex-MAP (18/18 buckets vs 2dd9acd, beta=0.464, d_hid=",
-        "3.97, d_pub=",
-        "0.20, improved=12, regressed=4)",
-        "All 4 stages passed (weighted E[delta]="
+        "Isolated pure-DMA specialists (SCH_MODE_0) from UB Vector Gather specialists (SCH_MODE_1, GatherWord<u32|u16> + GatherByte 1B packing) via static __attribute__((noinline)) + if constexpr(sizeof(DTYPE_X)) pruning",
+        "Dropped coreStart[40][2] (1704B -> 1064B) and called rawTiling->SetDataSize(actualBytes) to shrink host->device tiling transfer to 64B (1 cacheline) when count<=3 or sameWidth",
+        "Added CONCATD_COPY_FLAT1 single-shot 32KB UB coalescing & 1-input outer collapse, plus LoadMetaToUb gating (count>=8/16)",
+        "Mode-aware HBM-saturation blockDim ramp (1 core <=16KB; ~22 AIV cores at 2-4MB; 16KB/core for Gather1): 32-case sum_med 185.17 -> 163.53us (vs_torch 143.6%), small_1k_align 2.29 -> 1.69us, unalign_u8_w3_5 8.36 -> 5.32us"
       ],
-      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
-      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "precision_guard": "Bit-exact 90/90 isolated extended cases across fp32/fp16/bf16/int8/int64 & unaligned/zero-width inputs. Pure DMA uses explicit MTE2_MTE3/MTE3_MTE2 events; all noinline header specialists must be static for multi-TU schMode fatbin linking; WS_SYS_SIZE=4096U kept non-zero.",
+      "transferable_rule": "Isolate heavy vector/gather specialists into a separate schMode tilingKey using static __attribute__((noinline)) functions so pure-DMA paths stay lean, trim tiling payloads to 64B via rawTiling->SetDataSize(), and cap DMA blockDim at the SoC HBM saturation knee (~22 AIV cores on soc-a at 2-4MB) with 1 core below 16KB.",
       "doc_path": "entries/BT-20261118-ConcatD-7919dcb.md"
+    },
+    {
+      "id": "BT-20261118-PReluGradUpdate-7efadf8",
+      "problem": "PReluGradUpdate",
+      "difficulty": 1,
+      "sha": "7efadf8d437042d39fc1ce49e0e25e61c35fa591",
+      "baseline_sha": "33363f0",
+      "timestamp": "2026-11-18T10:00:00Z",
+      "score_before": 55.76,
+      "score_after": 62.44,
+      "delta_raw": 6.68,
+      "delta_weighted": 6.68,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "schMode",
+        "48-bank-coloring",
+        "TMP_UB_OFFSET",
+        "splitCore",
+        "Gather",
+        "BUILD_GROW",
+        "ping-pong",
+        "scalar-GM-dedup"
+      ],
+      "title": "6-schMode Static 48-Bank UB Arena + Bimodal Subcore Warmth + Deduplicated BUILD_GROW GM Reads",
+      "bottleneck": "Scalar/control pipe (aiv_scalar_ratio 0.348 fp32 / 0.437 fp16) dominated TQue/branch overhead, unaligned small-inner shapes hit scalar GM+PipeBarrier<PIPE_ALL> cliffs (53us), and 40-core dispatch amplified redundant BUILD_GROW scalar GM reads (2d_4200_3 12.61 -> 29.23us).",
+      "mechanisms": [
+        "6 compile-time schMode TILING_KEY kernels (SCALAR/LARGE_INNER/PAT_ONCE/WINDOW/GATHER/MASKED_TILE) shrinking per-mode I-cache ~5x",
+        "Host-precomputed 48-bank conflict-free static UB arena (<184KB) coloring 8 ping-pong buffers at distinct mod-1536B residues with manual (EVENT_ID0, EVENT_ID1) ping-pong & Level-0 whole-repeat Mul/Muls",
+        "Bimodal subcore I-cache warmth dispatch (<=16KB -> 1 block, >16KB -> 40 blocks 512B-aligned): 4d_64_1024_3_3 53.02 -> 9.82us (5.40x), 1M fp32 12.58 -> 8.96us (1.87 TB/s)",
+        "Deduplicated BUILD_GROW GM reads (7efadf8, 57.81 -> 62.44): load unique wc weights from GM once into UB then replicate locally (8x-16x less scalar GM traffic; 2d_4200_3 29.23 -> 12.90us, 2.27x)"
+      ],
+      "precision_guard": "93/93 isolated extended cases green (fp32/fp16/bf16). Static UB arenas MUST reserve >=10KB below ubSize (dav_c220 TMP_UB_OFFSET = ubSize - 8KB used internally by Select); zero-init wBuf before Gather; fp16 vector counts must round up to 128 elements.",
+      "transferable_rule": "Specialize broadcast regimes into compile-time TILING_KEY kernels over a host-colored 48-bank static UB arena strictly below ubSize - 10KB (TMP_UB_OFFSET), use bimodal 1-or-all-AIV dispatch for I-cache warmth, and deduplicate per-core prologue scalar GM reads into UB before replicating.",
+      "doc_path": "entries/BT-20261118-PReluGradUpdate-7efadf8.md"
+    },
+    {
+      "id": "BT-20261118-StridedSliceGrad-f2cee3b",
+      "problem": "StridedSliceGrad",
+      "difficulty": 3,
+      "sha": "f2cee3b1691a24a83789854b7c2403e054d55f4d",
+      "baseline_sha": "edc7d7b",
+      "timestamp": "2026-11-18T09:48:00.659250+00:00",
+      "score_before": 46.06,
+      "score_after": 52.54,
+      "delta_raw": 6.48,
+      "delta_weighted": 19.44,
+      "status": "verified",
+      "category": "dma-coalescing",
+      "tags": [
+        "dim-collapsing",
+        "4x32KB-ring",
+        "SkipStepRows",
+        "multi-row-Gather",
+        "element-vs-traffic-cores",
+        "sentinel-32B-padding"
+      ],
+      "title": "Canonical Dim Collapsing + 4x32KB Flat Ring + SkipStepRows Multi-Row Gather + Element-Count Core Sizing",
+      "bottleneck": "Serialized 1D MTE2/MTE3 loops capped huge slices at ~11GB/s/core (full_r2_huge 81-104us), row-by-row odometer walks spent 21.8us on aiv_scalar (r3_mid_slice 38.7us), and traffic-byte core sizing starved scatter-heavy r5_mixed at 4 cores (40.0us).",
+      "mechanisms": [
+        "Device-side CollapseDims merges full unit-stride trailing dims right-to-left (collapsing whole/outer slices to 1D and (64,128,256) to 2D) over a single static 182.5KB 512B-aligned TBuf pool",
+        "Engine 1 streams 1D unit-stride slices through a 512B-aligned 4x32KB MTE2<->MTE3 hardware ring (full_r2_huge 81.0 -> 28.6us min / 103.8 -> 29.6us med, 3.5x)",
+        "Engine 2.1 skips maximal zero spans via O(m) SkipStepRows into 16KB ZeroSpans (r3_mid_slice aiv_scalar 21.8 -> 3.27us, total 38.7 -> 16.7us) and batches forward/reversed rows via 4-event double-buffered O(log2) Gather",
+        "Element-count blockDim sizing above 4KB (clamp(ceil(total/256), 2, maxCores)) + 1-core whole-tensor UB burst <=4KB cut 13-level min sum 221.5 -> 134.4us (1.65x; r5_mixed 40.0 -> 13.0us, 3.07x)"
+      ],
+      "precision_guard": "195/195 isolated per-process extended cases green (raw bit moves). Sentinel offset kSentElem=8224 (>= cap+32) prevents 32B-tail DataCopyPad corruption; explicit HardEvents for MTE3 reuse (never PipeBarrier<PIPE_MTE3>); da1ba4d pitched-store trap proved output buffers must be NaN-poisoned in harnesses and pitched stores over many rows regress MTE3.",
+      "transferable_rule": "Collapse full unit-stride trailing dims, skip outer zero spans in O(m) into bulk ZeroSpans, stream 1D slices via a 512B-aligned 4x32KB ring, batch multi-row scatters via O(log2) Gather (sentinel >= cap+32), and size blockDim by output element count (not traffic bytes) when scalar scatter/odometer work dominates.",
+      "doc_path": "entries/BT-20261118-StridedSliceGrad-f2cee3b.md"
     },
     {
       "id": "BT-20261118-ConfusionTransposeD-d4d090f",
@@ -199,21 +316,61 @@
       "delta_raw": 6.0,
       "delta_weighted": 18.0,
       "status": "verified",
-      "category": "tiling-regime",
+      "category": "simd-transpose",
       "tags": [
-        "tiling-regime"
+        "Gather",
+        "canonical-coalescing",
+        "int8-widen-cast",
+        "double-buffer",
+        "Level0-normal-mode",
+        "vector-doubling",
+        "zero-workspace"
       ],
-      "title": "Fix C++11 CeilDiv overload and unused param in tiling",
-      "bottleneck": "Prior validated baseline plateaued at 42.83 pts before d4d090f.",
+      "title": "Canonical Axis Coalescing + Universal Double-Buffered Level-0 Gather Transpose (All 11 Dtypes incl. 1B)",
+      "bottleneck": "1-byte dtypes had no vector path (i8_512x512 513.0us scalar), TransDataTo5HD imposed a ~6us fixed issue wall on medium squares (f32_1024x1024 28.5us, f32_128x128 6.94us), and incomplete BuildPlan folding missed NCHW<->NHWC & cyclic 3D permutations.",
       "mechanisms": [
-        "Simplex-MAP (12/17 buckets vs 7b15ba5, beta=0.736, d_hid=",
-        "19.73, d_pub=",
-        "1.39, improved=12, regressed=0)",
-        "All 4 stages passed"
+        "Full canonical adjacent-axis coalescing without UB-chunk truncation collapses NCHW<->NHWC, cyclic 3D, and 4D block swaps into 2D/batched-2D transposes and splits >48KB spans across 40 cores",
+        "Universal double-buffered 2D in-UB Normal-mode Level-0 Gather<u32|u16> block transpose (zero SetMaskCount toggling, zero 6us TransDataTo5HD wall; f32_1024x1024 28.48 -> 15.26us, f32_128x128 6.94 -> 3.79us)",
+        "Odd/1-byte dtypes widened bit-exactly via Level-0 Cast<half, uint8_t> -> Gather<u16> -> Cast<uint8_t, half> (i8_512x512 513.01 -> 8.54us, 60.1x, beating torch 14.9us)",
+        "Single-descriptor 2D GM<->UB DMA + 4-event ping-pong + zero workspace + follow-up ea0d191/6606085 (48.83 -> 50.11) O(log2) 32B-chunk Level-0 Adds offset doubling (32-case sum_med 200.11us, 2.54x vs torch)"
       ],
-      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
-      "transferable_rule": "Apply tiling-regime optimization (tiling-regime) with paired NPU verification.",
+      "precision_guard": "Bit-exact across all 11 dtypes (160/160 extended, 556-1356 plan checks, 29,667 offset-doubling combinations). srcRowsAlloc guards partial tail Gather reads; hasGathered gates V_S before offset rebuild. Anti-pattern (52f8066, 48.83 -> 47.56): moving <=128B broadcast headers from scalar GetValue() to all-core MTE2 DataCopy caused +2.13us cacheline contention.",
+      "transferable_rule": "Coalesce all adjacent source-contiguous axes without UB-chunk truncation, replace fixed-latency TransDataTo5HD with single-descriptor 2D double-buffered Normal-mode Level-0 Gather<u32|u16> (widening 1B dtypes via Cast<half,u8>->Gather<u16>->Cast<u8,half>), build periodic offset tables via O(log2) Level-0 Adds, and keep <=128B broadcast headers on scalar GetValue().",
       "doc_path": "entries/BT-20261118-ConfusionTransposeD-d4d090f.md"
+    },
+    {
+      "id": "BT-20261118-CTCLossV2-2b9d49d",
+      "problem": "CTCLossV2",
+      "difficulty": 2,
+      "sha": "2b9d49de0f68d1396199557303c6017588ef800d",
+      "baseline_sha": "0d5125c",
+      "timestamp": "2026-11-18T09:12:00Z",
+      "score_before": 52.85,
+      "score_after": 56.21,
+      "delta_raw": 3.36,
+      "delta_weighted": 6.72,
+      "status": "verified",
+      "category": "dma-coalescing",
+      "tags": [
+        "Level-0",
+        "SetMaskNorm",
+        "Gather-pack",
+        "8-row-coalescing",
+        "scalar-bitmask",
+        "differential-clear",
+        "256B-padding-trap"
+      ],
+      "title": "Hoisted Level-0 Intrinsics + 8-Row Gather Pack MTE3 Coalescing + Differential Slot Clear",
+      "bottleneck": "Level-2 vector APIs emitted ~65 redundant SPR mask ops/step, boundary masking cost 2x CompareScalar+And+Select (+2 PipeBarriers/step), full-row -inf Duplicate ran on every ring slot reuse (wide U=1201 198us), and odd-stride U forced H unaligned DataCopyPad writes.",
+      "mechanisms": [
+        "Hoisted SetMaskNorm()+ResetMask() with Level-0 <T, false> intrinsics and contiguous [s0,s1,s2] scratch fusing 3x Exp into 1 call",
+        "2-cycle scalar boundary bitmask + SetVectorMask + Duplicate<float, false> replaced 2x CompareScalar+And+Select, cutting 2 PipeBarrier<PIPE_V>()s/step",
+        "Differential [dirtyLo, dirtyHi) per-slot clearing overlapped with Gather (t650_c64_s600 U=1201 198.14 -> 158.64us, 1.25x)",
+        "8-row Gather pack into contiguous 8*U floats (32B-aligned) turned 8 DataCopyPad writes into 1 aligned DataCopy burst + Cycle-0 async MTE2 prologue (t50 15.00us, 6.08x vs CTCLossV3)"
+      ],
+      "precision_guard": "Critical 256B repeat-padding invariant: with hoisted SetMaskNorm()+ResetMask(), Level-0 <float, false> repeat=1 ALWAYS writes a full 64-float (256B) vector; padding lossBuf from 16 -> 64 floats fixed async MTE3 packBuf0 overwrite (bad 48/9100 -> 0/9100, 34/34 extended + 3-run DET green).",
+      "transferable_rule": "Hoist SetMaskNorm()+ResetMask() with Level-0 <T, false> intrinsics, fuse unary ops over contiguous scratch, pack 8 odd-stride rows via Gather into 1 aligned 32B MTE3 burst, and always pad every Level-0 destination buffer to a full 256B repeat when adjacent UB buffers are live on async MTE3.",
+      "doc_path": "entries/BT-20261118-CTCLossV2-2b9d49d.md"
     },
     {
       "id": "BT-20261110-PadV3Grad-0fc367d",
@@ -237,30 +394,14 @@
         "narrowing"
       ],
       "title": "16-Bit Vectorized Widening/Narrowing with Explicit PipeBarrier<PIPE_V> Hazard Ordering",
-      "bottleneck": "Vectorizing 16-bit boundary accumulation gave 1.43x-1.76x speedups but suffered 10/270 precision failures from mixed-width Cast<half, float> / Cast<float, half> UB hazard overlap.",
+      "bottleneck": "Vectorizing 16-bit boundary accumulation gave 1.43x-1.76x speedups (~27x/48x vs scalar) but suffered 10/270 precision failures from mixed-width Cast<half, float> / Cast<float, half> UB hazard overlap.",
       "mechanisms": [
         "64-lane vectorized fp16 -> fp32 Cast widening into row-tile UB accumulators",
         "Explicit PipeBarrier<PIPE_V>() ordering narrowing Cast strictly behind widening + Add stages across loop iterations"
       ],
-      "precision_guard": "Eliminated all 10 fp16 precision failures (260/270 -> 270/270 green) while retaining full 1.76x vectorized speedup.",
+      "precision_guard": "Eliminated all 10 fp16 precision failures (260/270 -> 270/270 green, sub 6af2e3ac6bd0f9be3774af69) while retaining full 1.76x vectorized speedup.",
       "transferable_rule": "Insert an explicit PipeBarrier<PIPE_V>() between 16->32-bit widening compute and 32->16-bit narrowing Cast when cycling or overlapping UB buffers on Accel soc-a.",
       "doc_path": "entries/BT-20261110-PadV3Grad-0fc367d.md"
     }
-  ],
-  "summaries": [
-    {
-      "entry_id": "BT-20261118-ConcatD-7919dcb",
-      "agent_id": "dsh-main",
-      "agent_display": "DSH 主调度 · 全部经验汇入",
-      "agent_kind": "dsh",
-      "problem": "ConcatD",
-      "entry_sha": "1b185dcb23249d2eeeefee49831034917141b5de53d6293a671ad7d48819b635",
-      "sha8": "1b185dcb",
-      "summary": "① 可迁移机制：按形状族切换 tiling regime（多模态分核切分），高窄/多输入的形态走规避 UB bank 冲突的整行拼装布局，等宽且已对齐的形态走原路径；结论强度来自 18 桶配对实测（improved=12 / regressed=4，β=0.464，d_hid=+3.97）。\n② 适用条件：输入分片宽窄比跨过阈值、单块 UB 能容纳整行拼接、拷贝宽度 4B/2B/1B 不齐时才换布局；失效条件是各输入等宽且已按 512B 对齐（此时换布局只增加指令数，正是那 4 个回退桶）。\n③ 下一步（我这边）：把「按形态族选 tile、并用本仓配对谱反证」这条规则分别投给 StridedSliceGrad（余量 32.6、多点张量形态）和 ConfusionTransposeD（余量 27.9、转置家族）；要求各自在本仓 50 例谱上配对验证，禁止跨算子直接抄实现。",
-      "lines": 3,
-      "summary_path": "bridge/outbox/dsh-main/BT-20261118-ConcatD-7919dcb.md",
-      "collected_at": "2026-11-18T09:21:23.554065+00:00"
-    }
-  ],
-  "summaries_updated_at": "2026-11-18T09:21:23.554910+00:00"
+  ]
 }

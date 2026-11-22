@@ -50,13 +50,6 @@ struct BreakthroughLibraryView: View {
             Label(lang.tr("结构化突破经验库 (breakthrough/)", "Breakthrough Playbook (breakthrough/)"), systemImage: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 13.5, weight: .bold))
 
-            SemanticPill(
-                text: lang.tr("Agent 回执 \(store.breakthroughSummaryCount)",
-                              "Agent receipts \(store.breakthroughSummaryCount)"),
-                icon: "checkmark.seal.fill",
-                compact: true
-            )
-
             Divider().frame(height: 18)
 
             HStack(spacing: 6) {

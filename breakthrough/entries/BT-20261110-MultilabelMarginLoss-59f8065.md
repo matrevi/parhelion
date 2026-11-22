@@ -11,7 +11,7 @@ delta_raw: 12.68
 delta_weighted: 25.36
 status: verified
 category: deterministic-sync
-tags: [cross-core-reduction, sentinel-handshake, PipeBarrier, Sort32, determinism]
+tags: [cross-core-reduction, sentinel-handshake, PipeBarrier, dedup-histogram, zero-workspace, determinism]
 title: "NaN-Sentinel Cross-Core Deterministic Reduction + Lean Deduplicated PIPE_V Margin Loop"
 ---
 
@@ -28,9 +28,11 @@ When `reduction` is `mean` or `sum`, all active AIV blocks must reduce their par
 3. **Deduplicated Target Histogram + Single-`Select` Vector Loop**:
    Accumulates repeated target labels before the class scan (`cnt_l * max(0, 1 + x_j - x_l)`), driving `PIPE_V` with tight `Adds -> Maxs -> Muls -> Add` instructions and a single final `Select` + `ReduceSum` per row.
 
-## 3. Precision & Synchronization Invariants
-- Verified across **2,860 consecutive NPU launches** (including 600 launches each on race-trigger shapes `C = 9, 13, 16`) with zero bit-flips and zero hangs.
+## 3. Measured Speedups, Invariants & Negative Lessons
+- **Measured speedups (`495ca5c` -> `59f8065`)**: `32x1024 mean`: `3178 -> 108.36 us` (**29.3x**); `256x32 mean`: `705 -> 27.78 us` (**25.4x**); `64x64 mean`: `325 -> 17.98 us` (**18.1x**).
+- **Online-zeroing post-mortems prevented**: (a) `f77146d` TLE — 32B-granular `SetAtomicAdd` into 4 B `y[0]` caused a 28 B OOB write masked locally by 512 B `aclrtMalloc` slack; (b) `af84e85` RE — fast worker cores on small `C` (`0.3–0.5 us`) published before core 0's NaN sentinel write landed (`~0.3 us`), clobbering the slot. Explicit gate-word handshake eliminated both (**2,860 consecutive NPU launches**, including 600 launches each on race shapes `C = 9, 13, 16`, 0 bit-flips).
 - Deferred restoration of `is_target[0 .. stageWords]` ensures output tensor `is_target` remains exact after core-0 reduction finishes.
+- **Negative lesson (`f8c1f9c` vs `2d0af18` hybrid)**: compiling `O(C log C)` hardware `Sort32`/`MrgSort` into the same binary as small-`C` `O(nd*C)` paths and triggering `Sort32` at `C <= 128` regressed small/medium shapes by **1.4x–2.5x** (`k_32x10_none 6.18 -> 15.38 us`, `k_64x64_none 15.36 -> 30.62 us`). Isolating `KernelSort` into a separate `SCH_MODE_1` `TILING_KEY` gated to `C >= 512` & `C * min(C,L) >= 131072` (`2d0af18`) fully preserved small-`C` speed while accelerating `8x4096` **8.5x** (`688 -> 81 us`) and `8192` **23.5x** (`3805 -> 162 us`).
 
 ## 4. Reusable KernelC Pattern
 > **Rule (`deterministic-sync`)**: Avoid hardware `SetAtomicAdd` when online tests require strict multi-dtype reproducibility or small scalar outputs (`y[0]`); instead, pass per-core `fp32` partials via cache-coherent GM slots guarded by an out-of-domain bit pattern (`0x7FC00000` NaN) + `DataCacheCleanAndInvalid`, and reduce in fixed core order on block 0.

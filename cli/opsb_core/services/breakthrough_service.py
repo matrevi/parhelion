@@ -201,24 +201,15 @@ def save_catalog_entry(workspace: Path, entry: dict[str, Any], overwrite_doc: bo
         existing.append(entry)
 
     existing.sort(key=lambda x: (float(x.get("delta_raw", 0.0)), x.get("timestamp", "")), reverse=True)
-    # Preserve every unrelated top-level field (`summaries`, `summaries_updated_at`, …) so the
-    # bridge receipts written by `opsb bridge collect` are never clobbered by an entry sync.
-    payload: dict[str, Any] = dict(raw) if isinstance(raw, dict) else {}
-    payload["schema_version"] = int(payload.get("schema_version") or 1)
-    payload["updated_at"] = utc_now().isoformat()
-    payload["entries"] = existing
+    payload: dict[str, Any] = {
+        "schema_version": int((raw or {}).get("schema_version") or 1) if isinstance(raw, dict) else 1,
+        "updated_at": utc_now().isoformat(),
+        "entries": existing,
+    }
     tmp = idx_path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(tmp, idx_path)
     return entry
-
-
-def load_summaries(workspace: Path) -> list[dict[str, Any]]:
-    """Agent receipts collected by `opsb bridge collect` (append-only field on index.json)."""
-    bt_dir = resolve_breakthrough_dir(workspace)
-    raw = read_json(bt_dir / "index.json", {}) or {}
-    rows = raw.get("summaries") if isinstance(raw, dict) else None
-    return [dict(s) for s in (rows or []) if isinstance(s, dict)]
 
 
 def sync_breakthroughs_from_items(

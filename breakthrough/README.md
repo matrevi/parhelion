@@ -53,31 +53,7 @@ opsb breakthrough add LayerNormV3 af0807c \
   --rule "When reference requires non-associative sequential rounding per row, transpose rows into SIMD lanes rather than falling back to scalar loops"
 ```
 
-## Agent Receipts (`index.json#summaries`)
+## Maintenance & Distillation Workflow
 
-Every entry can be handed to subscribed agents through the bridge
-([`../bridge/README.md`](../bridge/README.md)). Their ≤5-line summaries are folded back into an
-**additive** top-level field — `entries` is never rewritten by this path:
-
-```json
-"summaries": [
-  {
-    "entry_id": "BT-20261118-LayerNormV3-af0807c",
-    "agent_id": "codex-cross-review",
-    "problem": "LayerNormV3",
-    "entry_sha": "259fb59d…",
-    "summary": "① …\n② …\n③ …",
-    "lines": 3,
-    "summary_path": "bridge/outbox/codex-cross-review/BT-20261118-LayerNormV3-af0807c.md",
-    "collected_at": "2026-11-18T09:12:00+00:00"
-  }
-]
-```
-
-```bash
-opsb bridge sync          # deliver new entries (idempotent, also runs inside `opsb breakthrough sync`)
-opsb bridge pull <agent> --ack --json
-opsb bridge publish <agent> <entry-id> --file -
-opsb bridge collect       # -> index.json#summaries
-opsb bridge status --json # per-agent 待总结 / 已取 / 已回执
-```
+- **Automatic skeleton capture**: After an online `Pass` exceeding the configured threshold (`Δ >= breakthrough_threshold`), `opsb` records a baseline entry via `opsb breakthrough sync`.
+- **Subagent-driven distillation & cross-operator transfer**: Deep analysis (verifying exact kernel/tiling commits, measured `profiler` before/after numbers, precision/synchronization invariants, and reusable KernelC rules) and cross-operator propagation are handled in the background by the main agent dispatching subagents, which update `index.json` and `entries/*.md` via `opsb breakthrough add` or direct edits.
