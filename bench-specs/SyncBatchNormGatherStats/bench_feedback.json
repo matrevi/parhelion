@@ -1,0 +1,178 @@
+{
+  "schema_version": "2.0",
+  "title": "SyncBatchNormGatherStats",
+  "updated_at": "2026-11-22T16:47:42.811131+00:00",
+  "model_version": "2.0",
+  "health": {
+    "loocv_mae_pts": 2.95,
+    "loocv_rmse_pts": 3.4,
+    "loocv_spearman": 0.5,
+    "loocv_dir_acc": 1.0,
+    "calibration_trust": 0.452,
+    "transfer_gamma": 0.9517,
+    "alpha_cold": 0.0,
+    "spec_buckets": 31,
+    "effective_buckets": 31,
+    "unpaired_spec_buckets": 13,
+    "high_residual_event_count": 1
+  },
+  "high_residual_events": [
+    {
+      "base_sha": "59b5c9a",
+      "cand_sha": "73046fe",
+      "cand_full_sha": "73046fe82ea33a8de5caf5321280d309115676a4",
+      "actual_delta": 0.47,
+      "pred_delta": 5.81,
+      "residual_eps": -5.34,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNPAIRED_PROXY",
+        "ANTI_CORR_DOMINANCE",
+        "MISSING_LARGE_N_DIM"
+      ]
+    }
+  ],
+  "strong_positive_buckets": [
+    {
+      "bucket": "f32_c64",
+      "corr": 0.998,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.0994,
+      "tau_active_us": 2.116
+    },
+    {
+      "bucket": "f32_c1",
+      "corr": 0.988,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.05309,
+      "tau_active_us": 1.999
+    },
+    {
+      "bucket": "f16_c1024",
+      "corr": 0.982,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.14237,
+      "tau_active_us": 2.184
+    },
+    {
+      "bucket": "f32_c33",
+      "corr": 0.974,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.22,
+      "tau_active_us": 2.17
+    },
+    {
+      "bucket": "f32_c1024",
+      "corr": 0.967,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.1492,
+      "tau_active_us": 2.422
+    },
+    {
+      "bucket": "f16_c128",
+      "corr": 0.965,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.12097,
+      "tau_active_us": 2.208
+    },
+    {
+      "bucket": "f32_c1m",
+      "corr": 0.961,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.10513,
+      "tau_active_us": 25.342
+    },
+    {
+      "bucket": "f32_c262144",
+      "corr": 0.934,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.01082,
+      "tau_active_us": 10.722
+    },
+    {
+      "bucket": "f32_c65536",
+      "corr": 0.933,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.00964,
+      "tau_active_us": 6.12
+    },
+    {
+      "bucket": "f16_c65536",
+      "corr": 0.917,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.00946,
+      "tau_active_us": 5.442
+    }
+  ],
+  "misleading_anti_corr_buckets": [
+    {
+      "bucket": "f32_c8192_n1",
+      "corr": -0.581,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": 2.846
+    },
+    {
+      "bucket": "f32_c8192",
+      "corr": -0.389,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": 2.968
+    },
+    {
+      "bucket": "f16_c8192",
+      "corr": -0.316,
+      "pairs": 5,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": 2.826
+    }
+  ],
+  "untracked_promote_candidates": [],
+  "unexplained_residual_dimensions": [
+    "No observed local profiler bucket with dtype=bfloat16",
+    "Missing large world_size / large-N reduction dimension (current logs vary C only)",
+    "Active commit lacks `.o` binary size telemetry (will auto-populate on next `opsb test`)"
+  ],
+  "suggested_new_cases": [
+    {
+      "id": "auto_bfloat16_mid_case",
+      "dtype": "bfloat16",
+      "action": "add_new_validation_case",
+      "reason": "Missing bfloat16 coverage in active profiler spectrum"
+    },
+    {
+      "id": "sbn_w64_c2048_largeN_f32",
+      "dtype": "float32",
+      "action": "add_new_validation_case",
+      "reason": "Cover large world_size/N axis alongside large C"
+    }
+  ],
+  "agent_guidance": "Prioritize optimizing ['f32_c64', 'f32_c1', 'f16_c1024', 'f32_c33']; avoid sacrificing hot paths for anti-correlated ['f32_c8192_n1', 'f32_c8192', 'f16_c8192']."
+}

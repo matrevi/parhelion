@@ -122,13 +122,16 @@ class LiveCorpusHasNoAggregateKeysTest(unittest.TestCase):
         self.assertEqual(offenders, [])
 
     def test_the_prlu_prof_summary_log_still_carries_kernel_evidence(self) -> None:
-        with_prof = [
+        with_prof_only = [
             path
             for path in sorted((REAL_WORKSPACE / "results" / "PReluGradUpdate").glob("*/validation.log"))
-            if "PROF_SUMMARY " in path.read_text(errors="replace")
+            if "PROF_SUMMARY " in (txt := path.read_text(errors="replace"))
+            and "KPERF_JSON " not in txt
+            and "MS_PROF " not in txt
+            and "KPERF " not in txt
         ]
-        self.assertTrue(with_prof, "PReluGradUpdate has PROF_SUMMARY logs")
-        parsed = parse_validation_perf(with_prof[-1].read_text(errors="replace"))
+        self.assertTrue(with_prof_only, "PReluGradUpdate has PROF_SUMMARY-only legacy logs")
+        parsed = parse_validation_perf(with_prof_only[-1].read_text(errors="replace"))
         self.assertIn("PReluGradUpdate", parsed["prof_kernel_stats"])
         self.assertEqual(parsed["profiler_cases"], {})  # no case-level row in this log at all
 

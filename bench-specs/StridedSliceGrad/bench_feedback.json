@@ -1,0 +1,226 @@
+{
+  "schema_version": "2.0",
+  "title": "StridedSliceGrad",
+  "updated_at": "2026-11-22T16:47:42.721619+00:00",
+  "model_version": "2.0",
+  "health": {
+    "loocv_mae_pts": 1.95,
+    "loocv_rmse_pts": 2.7,
+    "loocv_spearman": 0.191,
+    "loocv_dir_acc": 0.7,
+    "calibration_trust": 0.703,
+    "transfer_gamma": 0.432,
+    "alpha_cold": 0.0,
+    "spec_buckets": 21,
+    "effective_buckets": 32,
+    "unpaired_spec_buckets": 1,
+    "high_residual_event_count": 4
+  },
+  "high_residual_events": [
+    {
+      "base_sha": "9585ce5",
+      "cand_sha": "8dca63c",
+      "cand_full_sha": "8dca63c50c0974985a6f9471ddb42d016f505e14",
+      "actual_delta": 3.67,
+      "pred_delta": -0.18,
+      "residual_eps": 3.86,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "b7e7639",
+      "cand_sha": "dd7de48",
+      "cand_full_sha": "dd7de480db02a0ccad5a5129081004c5d90d94b3",
+      "actual_delta": 2.35,
+      "pred_delta": -1.2,
+      "residual_eps": 3.56,
+      "sign_flip": true,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "dd7de48",
+      "cand_sha": "306c457",
+      "cand_full_sha": "306c457a2e010c2e2f2a1888e86f71533a3a20e6",
+      "actual_delta": 4.64,
+      "pred_delta": 0.15,
+      "residual_eps": 4.49,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "306c457",
+      "cand_sha": "9b647a2",
+      "cand_full_sha": "9b647a271843aab20e3f113c64b0a7e86c02b003",
+      "actual_delta": -7.66,
+      "pred_delta": -0.14,
+      "residual_eps": -7.52,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    }
+  ],
+  "strong_positive_buckets": [
+    {
+      "bucket": "s21_mid_q512",
+      "corr": 0.796,
+      "pairs": 6,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.00861,
+      "tau_active_us": 3.977
+    },
+    {
+      "bucket": "oddQ_unalg_s1",
+      "corr": 0.79,
+      "pairs": 6,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.01356,
+      "tau_active_us": 4.627
+    },
+    {
+      "bucket": "r3_mid_slice",
+      "corr": 0.694,
+      "pairs": 88,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.22,
+      "tau_active_us": 7.502
+    },
+    {
+      "bucket": "sparse_zero_4m",
+      "corr": 0.692,
+      "pairs": 6,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.0124,
+      "tau_active_us": 4.839
+    },
+    {
+      "bucket": "r2_lastdim_half",
+      "corr": 0.657,
+      "pairs": 88,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.0422,
+      "tau_active_us": 3.337
+    },
+    {
+      "bucket": "full_r2_big",
+      "corr": 0.63,
+      "pairs": 88,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.20905,
+      "tau_active_us": 4.695
+    },
+    {
+      "bucket": "r4_ellipsis",
+      "corr": 0.599,
+      "pairs": 82,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.00961,
+      "tau_active_us": 3.688
+    },
+    {
+      "bucket": "fp16_mid",
+      "corr": 0.556,
+      "pairs": 82,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.01236,
+      "tau_active_us": 3.308
+    },
+    {
+      "bucket": "r3_inner_full",
+      "corr": 0.426,
+      "pairs": 82,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.00298,
+      "tau_active_us": 7.317
+    },
+    {
+      "bucket": "r5_mixed",
+      "corr": 0.367,
+      "pairs": 88,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.00274,
+      "tau_active_us": 4.328
+    }
+  ],
+  "misleading_anti_corr_buckets": [
+    {
+      "bucket": "r2_odd_q_mid",
+      "corr": -0.98,
+      "pairs": 7,
+      "in_spec": false,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.0039,
+      "tau_active_us": null
+    },
+    {
+      "bucket": "r2_outer_step2",
+      "corr": -0.724,
+      "pairs": 7,
+      "in_spec": false,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.00829,
+      "tau_active_us": null
+    },
+    {
+      "bucket": "oddQ_step2",
+      "corr": -0.501,
+      "pairs": 6,
+      "in_spec": false,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.002,
+      "tau_active_us": 5.059
+    },
+    {
+      "bucket": "big_1d_step2",
+      "corr": -0.444,
+      "pairs": 6,
+      "in_spec": false,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.002,
+      "tau_active_us": 6.926
+    },
+    {
+      "bucket": "r2_neg_big",
+      "corr": -0.423,
+      "pairs": 7,
+      "in_spec": false,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.0135,
+      "tau_active_us": null
+    }
+  ],
+  "untracked_promote_candidates": [],
+  "unexplained_residual_dimensions": [
+    "Unmeasured *_proxy buckets (1): bf16_mid_proxy",
+    "3-run cold-start sensitivity to compiled kernel `.o` ELF size / .text bloat",
+    "Active commit lacks `.o` binary size telemetry (will auto-populate on next `opsb test`)"
+  ],
+  "suggested_new_cases": [
+    {
+      "id": "bf16_mid_proxy",
+      "action": "add_to_validation_profiler",
+      "reason": "Spec proxy bucket has no direct local profiler measurement"
+    }
+  ],
+  "agent_guidance": "Prioritize optimizing ['s21_mid_q512', 'oddQ_unalg_s1', 'r3_mid_slice', 'sparse_zero_4m']; avoid sacrificing hot paths for anti-correlated ['r2_odd_q_mid', 'r2_outer_step2', 'oddQ_step2']."
+}

@@ -40,14 +40,29 @@ def run_submit(args: argparse.Namespace) -> int:
         (it for it in snap["submission_queue"] if it["title"] == title and it["sha"].startswith(sha[:7]) and it["kind"] != "completed"),
         None,
     )
-    est = (matched_cand or {}).get("estimated_score") or estimate_score_from_note(args.note or "", prob["current_score"], prob["best_score"])
+    bridge_eval = None
+    if matched_cand is None:
+        bridge_eval = invoke_bridge(ws, "evaluate", ["--title", title, "--sha", sha, "--note", args.note or ""], use_cache=False)
+
+    bridge_est = (bridge_eval or {}).get("estimate") or {}
+    est = (
+        (matched_cand or {}).get("estimated_score")
+        or (round(float(bridge_est["estimated_score"]), 2) if bridge_est.get("estimated_score") is not None else None)
+        or estimate_score_from_note(args.note or "", prob["current_score"], prob["best_score"])
+    )
     if est is None:
         est = prob["best_score"] if (prob["best_sha"] == sha and prob["best_score"] > 0) else round(prob["current_score"] + 3.0, 2)
 
     noise_floor = float(snap["scheduler"]["noise_floor_delta"])
     delta_exp = round(est - prob["current_score"], 2)
     is_restore_zero = prob["current_score"] == 0.0 and est > 0
-    noise_ok = is_restore_zero or prob["current_score"] == 0.0 or delta_exp >= noise_floor
+    explore_ok = bool(
+        ((matched_cand or {}).get("gates") or {}).get("explore_eligible")
+        or (matched_cand or {}).get("badge") == "EXPLORE"
+        or bridge_est.get("explore_eligible")
+        or (bridge_eval or {}).get("status_tag") == "EXPLORE"
+    )
+    noise_ok = is_restore_zero or prob["current_score"] == 0.0 or delta_exp >= noise_floor or explore_ok
     circuit_ok = is_restore_zero or not prob["circuit_open"]
     quota_ok = is_restore_zero or snap["scheduler"]["available_normal_shots"] > 0
 
@@ -57,8 +72,10 @@ def run_submit(args: argparse.Namespace) -> int:
         "current_score": prob["current_score"],
         "estimated_score": est,
         "delta_expected": delta_exp,
+        "explore_eligible": explore_ok,
+        "explore_reason": str(bridge_est.get("explore_reason") or ((matched_cand or {}).get("detail") if explore_ok else "")),
         "wspt_priority": round(prob["difficulty"] * max(0.0, delta_exp), 2),
-        "gates": {"safety_ok": safety_ok, "noise_ok": noise_ok, "circuit_ok": circuit_ok, "quota_ok": quota_ok},
+        "gates": {"safety_ok": safety_ok, "noise_ok": noise_ok, "circuit_ok": circuit_ok, "quota_ok": quota_ok, "explore_ok": explore_ok},
     }
 
     if not safety_ok and not args.force:

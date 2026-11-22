@@ -1,6 +1,6 @@
 {
   "problem": "LayerNormV3",
-  "version": "1.0",
+  "version": "2.0",
   "protocol": {
     "profiler": "profiler_single_session",
     "warmup": 2,
@@ -55,7 +55,7 @@
       "io_bytes": 2304,
       "roofline_us": 3.95,
       "torch_ref_us": 4.2,
-      "prior_w": 0.099999,
+      "prior_w": 0.091742,
       "max_w": 0.25,
       "description": "Sample 3D fp32 (4,6,8) tiny norm"
     },
@@ -66,7 +66,7 @@
       "io_bytes": 65536,
       "roofline_us": 4.1,
       "torch_ref_us": 5.2,
-      "prior_w": 0.1,
+      "prior_w": 0.091743,
       "max_w": 0.25,
       "description": "Small 2D fp32 (64,128) sub-40 rows"
     },
@@ -77,7 +77,7 @@
       "io_bytes": 131072,
       "roofline_us": 4.2,
       "torch_ref_us": 5.4,
-      "prior_w": 0.1,
+      "prior_w": 0.091743,
       "max_w": 0.25,
       "description": "Small 2D fp16 (128,256)"
     },
@@ -88,7 +88,7 @@
       "io_bytes": 1048576,
       "roofline_us": 5.5,
       "torch_ref_us": 6.94,
-      "prior_w": 0.0875,
+      "prior_w": 0.080275,
       "max_w": 0.25,
       "description": "Mid 2D fp32 (256,512) 1MB"
     },
@@ -99,7 +99,7 @@
       "io_bytes": 1048576,
       "roofline_us": 5.5,
       "torch_ref_us": 7.36,
-      "prior_w": 0.0875,
+      "prior_w": 0.080275,
       "max_w": 0.25,
       "description": "Mid 2D fp16 (512,512) 1MB"
     },
@@ -110,7 +110,7 @@
       "io_bytes": 8388608,
       "roofline_us": 15.0,
       "torch_ref_us": 16.58,
-      "prior_w": 0.0875,
+      "prior_w": 0.080275,
       "max_w": 0.25,
       "description": "Mid-Large fp32 (1024,1024)"
     },
@@ -121,7 +121,7 @@
       "io_bytes": 4194304,
       "roofline_us": 9.8,
       "torch_ref_us": 14.2,
-      "prior_w": 0.0875,
+      "prior_w": 0.080275,
       "max_w": 0.25,
       "description": "Mid-Large bf16 (1024,1024) cast+norm"
     },
@@ -132,7 +132,7 @@
       "io_bytes": 4194304,
       "roofline_us": 10.2,
       "torch_ref_us": 11.5,
-      "prior_w": 0.066667,
+      "prior_w": 0.061162,
       "max_w": 0.25,
       "description": "Wide hidden D=8192 fp32"
     },
@@ -143,7 +143,7 @@
       "io_bytes": 16777216,
       "roofline_us": 26.523,
       "torch_ref_us": 52.56,
-      "prior_w": 0.066667,
+      "prior_w": 0.061162,
       "max_w": 0.25,
       "description": "Transformer batch 4096x1024 fp16"
     },
@@ -154,7 +154,7 @@
       "io_bytes": 16777216,
       "roofline_us": 27.5,
       "torch_ref_us": 54.0,
-      "prior_w": 0.066667,
+      "prior_w": 0.061162,
       "max_w": 0.25,
       "description": "Transformer batch 4096x1024 bf16"
     },
@@ -165,7 +165,7 @@
       "io_bytes": 320000,
       "roofline_us": 8.5,
       "torch_ref_us": 14.5,
-      "prior_w": 0.0375,
+      "prior_w": 0.034404,
       "max_w": 0.04,
       "description": "2-row multi-tile D=20000 two-pass"
     },
@@ -176,7 +176,7 @@
       "io_bytes": 262144,
       "roofline_us": 12.0,
       "torch_ref_us": 24.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.034404,
       "max_w": 0.04,
       "description": "Single-row D=65536 UB spill"
     },
@@ -187,7 +187,7 @@
       "io_bytes": 4198400,
       "roofline_us": 11.5,
       "torch_ref_us": 19.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.034404,
       "max_w": 0.04,
       "description": "Unaligned odd D=513 tail norm"
     },
@@ -198,9 +198,36 @@
       "io_bytes": 2097152,
       "roofline_us": 8.0,
       "torch_ref_us": 15.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.034404,
       "max_w": 0.04,
       "description": "begin_norm_axis != begin_params_axis"
+    },
+    {
+      "id": "f32_256x1000",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 5.869,
+      "torch_ref_us": 10.19,
+      "prior_w": 0.041284,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.92, pairs=12, float32, M_MID_UB)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:14.491613+00:00"
+    },
+    {
+      "id": "f32_256x300",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 5.036,
+      "torch_ref_us": 8.742,
+      "prior_w": 0.041284,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.65, pairs=7, float32, M_MID_UB)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:14.491616+00:00"
     }
-  ]
+  ],
+  "evolved_at": "2026-11-22T16:39:14.491623+00:00"
 }

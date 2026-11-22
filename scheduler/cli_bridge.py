@@ -23,8 +23,9 @@ import sys
 import time
 from typing import Any
 
-from .calibration import BenchmarkCalibrator
 from .backfill import BackfillScheduler, offline_npu_sentinel
+from .bench_evolution import compute_spearman
+from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
@@ -436,8 +437,14 @@ class SchedulerEngine:
             cdoc = self.calibrator.load_or_calibrate(title)
             cal_docs[title] = cdoc
             cal_summaries[title] = {
+                "model_version": cdoc.get("model_version"),
                 "mae_pts": cdoc.get("mae_pts"),
                 "rmse_pts": cdoc.get("rmse_pts"),
+                "loocv_mae_pts": cdoc.get("loocv_mae_pts"),
+                "loocv_spearman": cdoc.get("loocv_spearman"),
+                "loocv_dir_acc": cdoc.get("loocv_dir_acc"),
+                "calibration_trust": cdoc.get("calibration_trust"),
+                "transfer_gamma": cdoc.get("transfer_gamma"),
                 "beta_tightness": cdoc.get("beta_tightness"),
                 "observations_m": cdoc.get("observations_m"),
                 "paired_observations_m": cdoc.get("paired_observations_m"),
@@ -447,6 +454,8 @@ class SchedulerEngine:
                 "escape_lock": bool(cdoc.get("escape_lock", False)),
                 "escape_sha": cdoc.get("escape_sha"),
                 "unpaired_bucket_count": int(cdoc.get("unpaired_bucket_count") or 0),
+                "extra_discovered_count": len(cdoc.get("extra_discovered_buckets") or []),
+                "high_residual_count": len(cdoc.get("high_residual_events") or []),
                 "diagnostics": cdoc.get("diagnostics") or [],
                 "strata": cdoc.get("strata") or [],
                 "coverage_grid": cdoc.get("coverage_grid") or {},
@@ -966,12 +975,51 @@ class SchedulerEngine:
             "problems": out[title] if title else out,
         }
 
-    def diagnose(self, title: str) -> dict[str, Any]:
-        """Return residual diagnostics, phantom-weight adjustments, unpaired buckets, and ROI ranking."""
+    def diagnose(self, title: str | None = None) -> dict[str, Any]:
+        """Return residual diagnostics, bucket correlations, blind spots, and ROI ranking for 1 or all 10 ops."""
         self.refresh_models()
-        if title not in self.estimator.problems_meta:
-            raise ValueError(f"Unknown problem title: {title}")
-        return self.calibrator.diagnose_problem(title)
+        if title:
+            if title not in self.estimator.problems_meta:
+                raise ValueError(f"Unknown problem title: {title}")
+            return self.calibrator.diagnose_problem(title)
+        problems_out: dict[str, Any] = {}
+        for t in sorted(self.estimator.problems_meta):
+            problems_out[t] = self.calibrator.diagnose_problem(t)
+        return {
+            "action": "diagnose",
+            "generated_at": _utc_now(),
+            "problem_count": len(problems_out),
+            "problems": problems_out,
+        }
+
+    def evolve(
+        self,
+        title: str | None = None,
+        dry_run: bool = False,
+        min_pairs: int = 2,
+        min_corr: float = 0.15,
+    ) -> dict[str, Any]:
+        """Online-feedback-driven append-only bench evolution (`opsb bench evolve [Title]`)."""
+        self.refresh_models()
+        apply = not dry_run
+        if title:
+            if title not in self.estimator.problems_meta:
+                raise ValueError(f"Unknown problem title: {title}")
+            return self.calibrator.evolve_bench(title, apply=apply, min_pairs=min_pairs, min_corr=min_corr)
+        results: dict[str, Any] = {}
+        total_appended = 0
+        for t in sorted(self.estimator.problems_meta):
+            res = self.calibrator.evolve_bench(t, apply=apply, min_pairs=min_pairs, min_corr=min_corr)
+            results[t] = res
+            total_appended += int(res.get("appended_count") or 0)
+        return {
+            "action": "evolve",
+            "applied": apply,
+            "generated_at": _utc_now(),
+            "problem_count": len(results),
+            "total_appended_buckets": total_appended,
+            "problems": results,
+        }
 
     # -- B0 backfill lane (`opsb bench backfill` button + automatic tick) ---------
     def backfill(
@@ -1104,8 +1152,12 @@ class SchedulerEngine:
         saved_by_stage = {"SAFETY": 0, "NOISE_FLOOR": 0, "CIRCUIT_BREAKER": 0, "QUOTA_RESERVE": 0}
         kept_positive_gains = 0
         missed_large_gains = 0
+        explore_approved = 0
+        explore_gains_saved = 0
         abs_errors: list[float] = []
         sq_errors: list[float] = []
+        act_deltas: list[float] = []
+        pred_deltas: list[float] = []
 
         for idx, rec in enumerate(outcomes, 1):
             t = rec.get("title", "")
@@ -1153,6 +1205,16 @@ class SchedulerEngine:
                     err = verdict.estimate.estimated_score - sc
                     abs_errors.append(abs(err))
                     sq_errors.append(err * err)
+                    act_deltas.append(float(actual_delta))
+                    pred_deltas.append(float(verdict.estimate.delta_expected))
+
+                is_explore = verdict.status_tag == "EXPLORE" or any(
+                    s.code == "EXPLORE_HIGH_UPSIDE" for s in verdict.stages
+                )
+                if verdict.approved and is_explore:
+                    explore_approved += 1
+                    if actual_delta is not None and actual_delta >= self.config.noise_floor_pts:
+                        explore_gains_saved += 1
 
                 if not verdict.approved:
                     slots_saved += 1
@@ -1204,6 +1266,26 @@ class SchedulerEngine:
 
         mae = round(sum(abs_errors) / len(abs_errors), 2) if abs_errors else None
         rmse = round(math.sqrt(sum(sq_errors) / len(sq_errors)), 2) if sq_errors else None
+        sp_rho = compute_spearman(act_deltas, pred_deltas)
+        dir_all = (
+            round(
+                sum(
+                    1
+                    for a, p in zip(act_deltas, pred_deltas)
+                    if (a > 0 and p > 0) or (a < 0 and p < 0) or (a == 0 and abs(p) < 0.5)
+                )
+                / len(act_deltas),
+                3,
+            )
+            if act_deltas
+            else None
+        )
+        sig_pairs = [(a, p) for a, p in zip(act_deltas, pred_deltas) if abs(a) >= 2.0]
+        dir_sig = (
+            round(sum(1 for a, p in sig_pairs if (a > 0 and p > 0) or (a < 0 and p < 0)) / len(sig_pairs), 3)
+            if sig_pairs
+            else None
+        )
 
         return {
             "total_records": len(outcomes),
@@ -1217,11 +1299,16 @@ class SchedulerEngine:
             "prevented_regressions": prevented_regressions,
             "kept_positive_gains": kept_positive_gains,
             "missed_gains_above_floor": missed_large_gains,
+            "explore_approved_count": explore_approved,
+            "explore_gains_saved": explore_gains_saved,
             "daily_cap_exhaustion_prevented": slots_saved >= 5,
             "estimator_accuracy": {
                 "evaluated_pass_pairs": len(abs_errors),
                 "mae_pts": mae,
                 "rmse_pts": rmse,
+                "spearman_rho": round(sp_rho, 3) if sp_rho is not None else None,
+                "direction_hit_rate": dir_all,
+                "direction_hit_rate_sig2": dir_sig,
                 "platform_intrinsic_jitter_sigma_pts": 2.70,
             },
             "records": rows_report,
@@ -1318,8 +1405,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_bst = sub.add_parser("bench-status", parents=[common], help="Inspect stratified calibration & 6x5 coverage grid")
     p_bst.add_argument("--title", default=None, help="Optional single problem title")
 
-    p_dia = sub.add_parser("diagnose", parents=[common], help="Inspect residual diagnostics, phantom weights, and bucket ROI")
-    p_dia.add_argument("--title", required=True, help="Operator problem title")
+    p_dia = sub.add_parser("diagnose", parents=[common], help="Inspect residual diagnostics, bucket correlations, and blind spots")
+    p_dia.add_argument("--title", default=None, help="Optional operator problem title (defaults to all 10)")
+
+    p_evo = sub.add_parser("evolve", parents=[common], help="Append-only bench evolution from online residual feedback")
+    p_evo.add_argument("--title", default=None, help="Optional operator problem title (defaults to all 10)")
+    p_evo.add_argument("--dry-run", action="store_true", help="Preview bucket promotions without mutating cases_perf.json")
+    p_evo.add_argument("--min-pairs", type=int, default=2, help="Min paired transitions required for correlation promotion")
+    p_evo.add_argument("--min-corr", type=float, default=0.15, help="Min positive correlation r for promotion")
 
     p_ves = sub.add_parser("verify-escape", parents=[common], help="Verify escape regression test & clear ESCAPE_LOCK")
     p_ves.add_argument("--title", required=True, help="Operator problem title")
@@ -1415,6 +1508,13 @@ def main(argv: list[str] | None = None) -> int:
             payload = engine.bench_status(title=args.title)
         elif args.command == "diagnose":
             payload = engine.diagnose(title=args.title)
+        elif args.command == "evolve":
+            payload = engine.evolve(
+                title=args.title,
+                dry_run=args.dry_run,
+                min_pairs=args.min_pairs,
+                min_corr=args.min_corr,
+            )
         elif args.command == "verify-escape":
             payload = engine.verify_escape(title=args.title, bad_sha=args.bad_sha, good_sha=args.good_sha)
             if not payload.get("ok", True):

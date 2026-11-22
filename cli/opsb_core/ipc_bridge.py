@@ -110,6 +110,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     existing = {(it["title"], it["sha"]) for it in payload["submission_queue"]}
     prob_diff = {p["title"]: p["difficulty"] for p in payload["problems"]}
     badge_norm = {
+        "EXPLORE": "EXPLORE",
         "HOLD_NOISE": "HOLD: NOISE",
         "CIRCUIT_OPEN": "CIRCUIT OPEN",
         "RATE_WAIT": "RATE WAIT",
@@ -152,6 +153,9 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             "quota_ok": st_map.get("QUOTA_RESERVE", True),
             "all_pass": bool(uc.get("approved", False)),
             "delta_expected": round(float(est_obj.get("delta_expected") or 0.0), 2),
+            "ucb_delta": round(float(est_obj.get("ucb_delta") or 0.0), 2),
+            "calibration_trust": round(float(est_obj.get("calibration_trust") or 0.5), 3),
+            "explore_eligible": bool(est_obj.get("explore_eligible", False)),
             "wspt_score": round(float(uc.get("priority_score") or 0.0), 2),
         }
         raw_tag = uc.get("status_tag") or "READY"

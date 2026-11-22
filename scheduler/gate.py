@@ -43,6 +43,7 @@ from .estimator import (
 
 STATUS_TAGS: tuple[str, ...] = (
     "READY",
+    "EXPLORE",
     "CRITICAL_RESTORE",
     "RATE_WAIT",
     "JUDGING",
@@ -802,7 +803,8 @@ class SubmissionGate:
         # Stage 1: SAFETY
         s1 = self.evaluate_safety(title, canonical_sha, as_of=as_of)
 
-        # Stage 2: NOISE_FLOOR
+        # Stage 2: NOISE_FLOOR (Uncertainty-Aware with `EXPLORE` Anti-Burial Channel)
+        is_explore_pass = False
         if is_critical_restore:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
@@ -835,6 +837,40 @@ class SubmissionGate:
                 reason=f"Explicit force/override approved (contemp delta={estimate.delta_expected:+.2f} pts)",
                 metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
             )
+        elif estimate.delta_expected >= self.config.noise_floor_pts:
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=True,
+                code="ABOVE_NOISE_FLOOR",
+                reason=(
+                    f"Expected gain {estimate.delta_expected:+.2f} pts >= +{self.config.noise_floor_pts:.2f} pts "
+                    f"(sigma={estimate.confidence_sigma:.2f}, UCB={estimate.ucb_delta:+.2f}, "
+                    f"P(gain>0)={estimate.prob_positive * 100:.0f}%)"
+                ),
+                metrics={
+                    "delta_expected": estimate.delta_expected,
+                    "ucb_delta": estimate.ucb_delta,
+                    "sigma": estimate.confidence_sigma,
+                    "calibration_trust": estimate.calibration_trust,
+                    "threshold": self.config.noise_floor_pts,
+                },
+            )
+        elif estimate.explore_eligible and not (ov_action == "skip"):
+            is_explore_pass = True
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=True,
+                code="EXPLORE_HIGH_UPSIDE",
+                reason=f"EXPLORE [HIGH-UNCERTAINTY UPSIDE]: {estimate.explore_reason}",
+                metrics={
+                    "delta_expected": estimate.delta_expected,
+                    "ucb_delta": estimate.ucb_delta,
+                    "sigma": estimate.confidence_sigma,
+                    "calibration_trust": estimate.calibration_trust,
+                    "threshold": self.config.noise_floor_pts,
+                    "explore_evidence": estimate.explore_evidence,
+                },
+            )
         elif effective_force and estimate.delta_expected < 0.0:
             if ov_action == "approve":
                 s2 = StageResult(
@@ -852,21 +888,17 @@ class SubmissionGate:
                     reason=(
                         f"Decay-adjusted delta {estimate.delta_expected:+.2f} pts is negative "
                         f"(contemp {estimate.estimated_score:.2f} < board {estimate.current_score:.2f}, "
+                        f"UCB={estimate.ucb_delta:+.2f}, trust={estimate.calibration_trust:.2f}, "
                         f"gamma={estimate.decay_factor_gamma:.4f})"
                     ),
-                    metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                    metrics={
+                        "delta_expected": estimate.delta_expected,
+                        "ucb_delta": estimate.ucb_delta,
+                        "sigma": estimate.confidence_sigma,
+                        "calibration_trust": estimate.calibration_trust,
+                        "threshold": self.config.noise_floor_pts,
+                    },
                 )
-        elif estimate.delta_expected >= self.config.noise_floor_pts:
-            s2 = StageResult(
-                stage="NOISE_FLOOR",
-                passed=True,
-                code="ABOVE_NOISE_FLOOR",
-                reason=(
-                    f"Expected gain {estimate.delta_expected:+.2f} pts >= +{self.config.noise_floor_pts:.2f} pts "
-                    f"(~{estimate.delta_expected / 2.70:.2f} sigma, P(gain>0)={estimate.prob_positive * 100:.0f}%)"
-                ),
-                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
-            )
         else:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
@@ -874,9 +906,16 @@ class SubmissionGate:
                 code="BELOW_NOISE_FLOOR",
                 reason=(
                     f"Expected gain {estimate.delta_expected:+.2f} pts < +{self.config.noise_floor_pts:.2f} pts "
-                    f"noise floor (sigma=2.70 pts, gamma={estimate.decay_factor_gamma:.4f}); holding to preserve daily quota"
+                    f"noise floor (sigma={estimate.confidence_sigma:.2f}, UCB={estimate.ucb_delta:+.2f}, "
+                    f"trust={estimate.calibration_trust:.2f}); holding to preserve daily quota"
                 ),
-                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                metrics={
+                    "delta_expected": estimate.delta_expected,
+                    "ucb_delta": estimate.ucb_delta,
+                    "sigma": estimate.confidence_sigma,
+                    "calibration_trust": estimate.calibration_trust,
+                    "threshold": self.config.noise_floor_pts,
+                },
             )
 
         # Stage 3: CIRCUIT_BREAKER
@@ -994,6 +1033,13 @@ class SubmissionGate:
             if is_critical_restore:
                 status_tag = "CRITICAL_RESTORE"
                 gate_reason = f"CRITICAL_RESTORE approved: {s2.reason}"
+            elif is_explore_pass:
+                if quota.rate_wait_sec > 0 and as_of is None:
+                    status_tag = "RATE_WAIT"
+                    gate_reason = f"EXPLORE approved (pacing {quota.rate_wait_sec}s): {s2.reason}"
+                else:
+                    status_tag = "EXPLORE"
+                    gate_reason = s2.reason
             elif quota.rate_wait_sec > 0 and as_of is None:
                 status_tag = "RATE_WAIT"
                 gate_reason = f"All 4 stages passed; pacing {quota.rate_wait_sec}s for 190s rate limit"
@@ -1001,10 +1047,13 @@ class SubmissionGate:
                 status_tag = "READY"
                 gate_reason = f"All 4 stages passed (weighted E[delta]={estimate.weighted_delta:+.2f} pts)"
 
-        priority_score = round(
-            (1000.0 if (approved and is_critical_restore) else 0.0) + estimate.weighted_delta,
-            2,
-        )
+        if approved and is_critical_restore:
+            priority_score = round(1000.0 + estimate.weighted_delta, 2)
+        elif approved and is_explore_pass:
+            # Ordered below high-confidence READY gains while still actionable
+            priority_score = round(estimate.difficulty * max(0.5, 0.5 * estimate.ucb_delta), 2)
+        else:
+            priority_score = round(estimate.weighted_delta, 2)
 
         return GateVerdict(
             title=title,

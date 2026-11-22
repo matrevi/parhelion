@@ -1,0 +1,206 @@
+{
+  "schema_version": "2.0",
+  "title": "ConfusionTransposeD",
+  "updated_at": "2026-11-22T16:47:36.211184+00:00",
+  "model_version": "2.0",
+  "health": {
+    "loocv_mae_pts": 3.85,
+    "loocv_rmse_pts": 6.13,
+    "loocv_spearman": 0.794,
+    "loocv_dir_acc": 0.846,
+    "calibration_trust": 0.914,
+    "transfer_gamma": 0.8903,
+    "alpha_cold": 0.0,
+    "spec_buckets": 36,
+    "effective_buckets": 36,
+    "unpaired_spec_buckets": 1,
+    "high_residual_event_count": 6
+  },
+  "high_residual_events": [
+    {
+      "base_sha": "fa81ef9",
+      "cand_sha": "7b15ba5",
+      "cand_full_sha": "7b15ba5a8730ae84e23d5b6f48e67ccf4a790f09",
+      "actual_delta": -0.71,
+      "pred_delta": 3.12,
+      "residual_eps": -3.84,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNPAIRED_PROXY"
+      ]
+    },
+    {
+      "base_sha": "ccdc5cb",
+      "cand_sha": "4b4303f",
+      "cand_full_sha": "4b4303f9df1bc40a45e49cbb7a521cbed5b97df3",
+      "actual_delta": -15.81,
+      "pred_delta": 0.18,
+      "residual_eps": -15.99,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "4b4303f",
+      "cand_sha": "d8eb6da",
+      "cand_full_sha": "d8eb6daa1044f11d49ccfe93c4209d501b32f221",
+      "actual_delta": 22.35,
+      "pred_delta": 6.07,
+      "residual_eps": 16.29,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "31affc6",
+      "cand_sha": "3938863",
+      "cand_full_sha": "39388639a651675c7a956740b166a739fa5f1433",
+      "actual_delta": 8.4,
+      "pred_delta": 2.31,
+      "residual_eps": 6.09,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "3938863",
+      "cand_sha": "7bd3efe",
+      "cand_full_sha": "7bd3efeb208ce1a292ca939ded2eb42bc8d8755e",
+      "actual_delta": -2.76,
+      "pred_delta": -6.76,
+      "residual_eps": 4.01,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "7bd3efe",
+      "cand_sha": "c17a4bc",
+      "cand_full_sha": "c17a4bc4913a31bf2fa58e09f031c8ad5609e749",
+      "actual_delta": 3.9,
+      "pred_delta": 8.95,
+      "residual_eps": -5.05,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    }
+  ],
+  "strong_positive_buckets": [
+    {
+      "bucket": "ref_2x2x2",
+      "corr": 0.977,
+      "pairs": 77,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.01044,
+      "tau_active_us": 1.102
+    },
+    {
+      "bucket": "rev_3d_16",
+      "corr": 0.938,
+      "pairs": 67,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.22,
+      "tau_active_us": 1.914
+    },
+    {
+      "bucket": "ref_4d_t",
+      "corr": 0.871,
+      "pairs": 77,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.19067,
+      "tau_active_us": 1.102
+    },
+    {
+      "bucket": "cyclic_3d_a",
+      "corr": 0.78,
+      "pairs": 67,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.16371,
+      "tau_active_us": 1.062
+    },
+    {
+      "bucket": "perm_5d",
+      "corr": 0.773,
+      "pairs": 67,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.22,
+      "tau_active_us": 1.555
+    },
+    {
+      "bucket": "f32_128x128",
+      "corr": 0.752,
+      "pairs": 67,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.00415,
+      "tau_active_us": 1.724
+    },
+    {
+      "bucket": "f32_256x256",
+      "corr": 0.743,
+      "pairs": 73,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.00693,
+      "tau_active_us": 2.285
+    },
+    {
+      "bucket": "copy_1m",
+      "corr": 0.706,
+      "pairs": 67,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": 2.164
+    },
+    {
+      "bucket": "bf16_256x256_proxy",
+      "corr": 0.695,
+      "pairs": 20,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.002,
+      "tau_active_us": 2.051
+    },
+    {
+      "bucket": "rank6_perm_proxy",
+      "corr": 0.692,
+      "pairs": 20,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.002,
+      "tau_active_us": 1.673
+    }
+  ],
+  "misleading_anti_corr_buckets": [
+    {
+      "bucket": "floor",
+      "corr": -0.628,
+      "pairs": 10,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": null
+    }
+  ],
+  "untracked_promote_candidates": [],
+  "unexplained_residual_dimensions": [],
+  "suggested_new_cases": [],
+  "agent_guidance": "Prioritize optimizing ['ref_2x2x2', 'rev_3d_16', 'ref_4d_t', 'cyclic_3d_a']; avoid sacrificing hot paths for anti-correlated ['floor']."
+}

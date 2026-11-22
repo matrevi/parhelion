@@ -1,6 +1,6 @@
 {
   "problem": "ConcatD",
-  "version": "1.0",
+  "version": "2.0",
   "protocol": {
     "profiler": "profiler_single_session",
     "warmup": 2,
@@ -55,7 +55,7 @@
       "io_bytes": 64,
       "roofline_us": 3.45,
       "torch_ref_us": 4.8,
-      "prior_w": 0.075002,
+      "prior_w": 0.062202,
       "max_w": 0.25,
       "description": "1D (3,)+(5,) axis=0 32B launch floor"
     },
@@ -66,7 +66,7 @@
       "io_bytes": 256,
       "roofline_us": 3.45,
       "torch_ref_us": 5.1,
-      "prior_w": 0.075,
+      "prior_w": 0.062201,
       "max_w": 0.25,
       "description": "2D (8,2)+(8,2) axis=1 128B"
     },
@@ -77,7 +77,7 @@
       "io_bytes": 2048,
       "roofline_us": 3.45,
       "torch_ref_us": 4.9,
-      "prior_w": 0.075,
+      "prior_w": 0.062201,
       "max_w": 0.25,
       "description": "2D fp16 (16,16)x2 axis=1"
     },
@@ -88,7 +88,7 @@
       "io_bytes": 51200,
       "roofline_us": 3.55,
       "torch_ref_us": 5.4,
-      "prior_w": 0.075,
+      "prior_w": 0.062201,
       "max_w": 0.25,
       "description": "2D fp32 (33,128)+(17,128) axis=0"
     },
@@ -99,7 +99,7 @@
       "io_bytes": 16384,
       "roofline_us": 3.6,
       "torch_ref_us": 6.2,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "2D bf16 (128,15)+(128,17) axis=1"
     },
@@ -110,7 +110,7 @@
       "io_bytes": 1048576,
       "roofline_us": 4.95,
       "torch_ref_us": 7.1,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "2D int32 (128,512)x2 axis=0"
     },
@@ -121,7 +121,7 @@
       "io_bytes": 18432,
       "roofline_us": 3.55,
       "torch_ref_us": 6.5,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "3D int64 (2,3,129)+(2,3,63) axis=-1"
     },
@@ -132,7 +132,7 @@
       "io_bytes": 2097152,
       "roofline_us": 6.4,
       "torch_ref_us": 9.2,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "3D fp32 (64,32/24/8,128) axis=1"
     },
@@ -143,7 +143,7 @@
       "io_bytes": 933888,
       "roofline_us": 4.8,
       "torch_ref_us": 9.8,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "2D fp16 (2048,64)+(2048,50) axis=1"
     },
@@ -154,7 +154,7 @@
       "io_bytes": 1048576,
       "roofline_us": 4.95,
       "torch_ref_us": 8.9,
-      "prior_w": 0.058333,
+      "prior_w": 0.048378,
       "max_w": 0.25,
       "description": "16-way fp32 (512,16)x16 axis=1"
     },
@@ -165,7 +165,7 @@
       "io_bytes": 8388608,
       "roofline_us": 14.936,
       "torch_ref_us": 11.9,
-      "prior_w": 0.05,
+      "prior_w": 0.041467,
       "max_w": 0.25,
       "description": "2D fp32 (512,1024)x2 axis=-1 8MB"
     },
@@ -176,7 +176,7 @@
       "io_bytes": 8388608,
       "roofline_us": 14.936,
       "torch_ref_us": 11.8,
-      "prior_w": 0.05,
+      "prior_w": 0.041467,
       "max_w": 0.25,
       "description": "2D fp16 (512,2048)x2 axis=-1 8MB"
     },
@@ -187,7 +187,7 @@
       "io_bytes": 16777216,
       "roofline_us": 26.523,
       "torch_ref_us": 23.8,
-      "prior_w": 0.05,
+      "prior_w": 0.041467,
       "max_w": 0.25,
       "description": "2D fp32 (1024,1024)x2 axis=0 16MB"
     },
@@ -198,7 +198,7 @@
       "io_bytes": 33554432,
       "roofline_us": 49.696,
       "torch_ref_us": 48.0,
-      "prior_w": 0.05,
+      "prior_w": 0.041467,
       "max_w": 0.25,
       "description": "2D fp32 32MB HBM streaming ceiling"
     },
@@ -209,7 +209,7 @@
       "io_bytes": 262144,
       "roofline_us": 4.2,
       "torch_ref_us": 14.5,
-      "prior_w": 0.0375,
+      "prior_w": 0.031101,
       "max_w": 0.04,
       "description": "64-way TensorList descriptor stress"
     },
@@ -220,7 +220,7 @@
       "io_bytes": 524288,
       "roofline_us": 4.5,
       "torch_ref_us": 16.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.031101,
       "max_w": 0.04,
       "description": "32-way unaligned 16B inner rows"
     },
@@ -231,7 +231,7 @@
       "io_bytes": 524288,
       "roofline_us": 6.5,
       "torch_ref_us": 28.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.031101,
       "max_w": 0.04,
       "description": "Tall-narrow 4B inner (32768,1)x2"
     },
@@ -242,9 +242,75 @@
       "io_bytes": 262144,
       "roofline_us": 6.5,
       "torch_ref_us": 29.0,
-      "prior_w": 0.0375,
+      "prior_w": 0.031101,
       "max_w": 0.04,
       "description": "Tall-narrow 3B+5B uint8 (16384,3/5)"
+    },
+    {
+      "id": "small_4k_axis0",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 2.2,
+      "torch_ref_us": 3.08,
+      "prior_w": 0.029027,
+      "max_w": 0.05,
+      "description": "Promoted by bench evolve (r=+0.40, pairs=22, float32, X_EXTREME)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:12.829351+00:00"
+    },
+    {
+      "id": "few_outer_2m",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 2.735,
+      "torch_ref_us": 4.749,
+      "prior_w": 0.041467,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.35, pairs=22, float32, S_SMALL_CORE)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:12.829356+00:00"
+    },
+    {
+      "id": "many64_axis0_4m",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 3.289,
+      "torch_ref_us": 5.71,
+      "prior_w": 0.029027,
+      "max_w": 0.05,
+      "description": "Promoted by bench evolve (r=+0.22, pairs=22, float32, X_EXTREME)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:12.829359+00:00"
+    },
+    {
+      "id": "wide_row_4m",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 3.671,
+      "torch_ref_us": 6.374,
+      "prior_w": 0.037321,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.15, pairs=22, float32, M_MID_UB)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:39:12.829361+00:00"
+    },
+    {
+      "id": "unalign_mid_400",
+      "stratum": "X_EXTREME",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 3.38,
+      "torch_ref_us": 5.869,
+      "prior_w": 0.033816,
+      "max_w": 0.05,
+      "description": "Promoted by bench evolve (r=+0.19, pairs=29, float32, X_EXTREME)",
+      "source": "auto_evolved_v2",
+      "added_at": "2026-11-22T16:47:33.951134+00:00"
     }
-  ]
+  ],
+  "evolved_at": "2026-11-22T16:47:33.951149+00:00"
 }

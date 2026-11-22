@@ -1,0 +1,263 @@
+{
+  "schema_version": "2.0",
+  "title": "ConcatD",
+  "updated_at": "2026-11-22T16:49:21.948547+00:00",
+  "model_version": "2.0",
+  "health": {
+    "loocv_mae_pts": 4.61,
+    "loocv_rmse_pts": 7.16,
+    "loocv_spearman": 0.22,
+    "loocv_dir_acc": 0.75,
+    "calibration_trust": 0.585,
+    "transfer_gamma": 0.9314,
+    "alpha_cold": 0.0,
+    "spec_buckets": 23,
+    "effective_buckets": 32,
+    "unpaired_spec_buckets": 0,
+    "high_residual_event_count": 7
+  },
+  "high_residual_events": [
+    {
+      "base_sha": "3c15ca9",
+      "cand_sha": "2dd9acd",
+      "cand_full_sha": "2dd9acde69bdeb7cc412708b5ef7bad21e592e05",
+      "actual_delta": 1.41,
+      "pred_delta": 7.65,
+      "residual_eps": -6.24,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNTRACKED_BUCKETS"
+      ]
+    },
+    {
+      "base_sha": "2dd9acd",
+      "cand_sha": "7919dcb",
+      "cand_full_sha": "7919dcbfac7b250a3628d8d8167dfa33b8eaf478",
+      "actual_delta": 9.43,
+      "pred_delta": 4.17,
+      "residual_eps": 5.26,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNTRACKED_BUCKETS"
+      ]
+    },
+    {
+      "base_sha": "0d6ea06",
+      "cand_sha": "576811a",
+      "cand_full_sha": "576811a649db7c002a5060b83a1a78f69b247b1f",
+      "actual_delta": -1.81,
+      "pred_delta": 2.2,
+      "residual_eps": -4.0,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "576811a",
+      "cand_sha": "5a8d07f",
+      "cand_full_sha": "5a8d07f9a1e609cda04165b177ab9c8dc74506ed",
+      "actual_delta": 1.85,
+      "pred_delta": 9.32,
+      "residual_eps": -7.47,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "5a8d07f",
+      "cand_sha": "c8b5521",
+      "cand_full_sha": "c8b55211e9e55be59c4ba8688903a091708c0196",
+      "actual_delta": 7.16,
+      "pred_delta": 0.61,
+      "residual_eps": 6.55,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "c8b5521",
+      "cand_sha": "aa74f56",
+      "cand_full_sha": "aa74f5696992a01b55031622e5b5442bcfee0b7d",
+      "actual_delta": 6.7,
+      "pred_delta": 2.78,
+      "residual_eps": 3.92,
+      "sign_flip": false,
+      "thermal_drift_us": 0.0,
+      "causes": [
+        "UNEXPLAINED_RESIDUAL"
+      ]
+    },
+    {
+      "base_sha": "474dc59",
+      "cand_sha": "fd545f5",
+      "cand_full_sha": "fd545f562c0d190e571b97d78d9489627234a9e0",
+      "actual_delta": -14.9,
+      "pred_delta": 6.67,
+      "residual_eps": -21.57,
+      "sign_flip": true,
+      "thermal_drift_us": 0.33,
+      "causes": [
+        "UNTRACKED_BUCKETS",
+        "ANTI_CORR_DOMINANCE"
+      ]
+    }
+  ],
+  "strong_positive_buckets": [
+    {
+      "bucket": "axismid",
+      "corr": 0.741,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.22,
+      "tau_active_us": 3.905
+    },
+    {
+      "bucket": "small_4k_axis0",
+      "corr": 0.69,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.00742,
+      "tau_active_us": 1.126
+    },
+    {
+      "bucket": "tiny32",
+      "corr": 0.668,
+      "pairs": 42,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.16966,
+      "tau_active_us": 1.541
+    },
+    {
+      "bucket": "huge_32m_axislast",
+      "corr": 0.638,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "L_HBM_TILED",
+      "learned_w": 0.002,
+      "tau_active_us": 15.152
+    },
+    {
+      "bucket": "small_2d",
+      "corr": 0.636,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.00468,
+      "tau_active_us": 1.326
+    },
+    {
+      "bucket": "odd_tails",
+      "corr": 0.63,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.01013,
+      "tau_active_us": 1.866
+    },
+    {
+      "bucket": "small_8k_unalign",
+      "corr": 0.614,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.1955,
+      "tau_active_us": 1.788
+    },
+    {
+      "bucket": "many64",
+      "corr": 0.61,
+      "pairs": 42,
+      "in_spec": true,
+      "stratum": "X_EXTREME",
+      "learned_w": 0.14752,
+      "tau_active_us": 1.715
+    },
+    {
+      "bucket": "wide_row_4m",
+      "corr": 0.564,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "M_MID_UB",
+      "learned_w": 0.00245,
+      "tau_active_us": 5.519
+    },
+    {
+      "bucket": "small_1k_align",
+      "corr": 0.544,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.01351,
+      "tau_active_us": 1.199
+    }
+  ],
+  "misleading_anti_corr_buckets": [
+    {
+      "bucket": "small_128b_rows",
+      "corr": -0.414,
+      "pairs": 37,
+      "in_spec": true,
+      "stratum": "S_SMALL_CORE",
+      "learned_w": 0.002,
+      "tau_active_us": 1.206
+    }
+  ],
+  "untracked_promote_candidates": [
+    {
+      "id": "tall_strided",
+      "stratum": "M_MID_UB",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 3.177,
+      "torch_ref_us": 5.516,
+      "prior_w": 0.045,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.28, pairs=42, float32, M_MID_UB)",
+      "source": "auto_evolved_v2",
+      "empirical_corr": 0.283,
+      "empirical_pairs": 42
+    },
+    {
+      "id": "many8",
+      "stratum": "S_SMALL_CORE",
+      "dtype": "float32",
+      "io_bytes": 0,
+      "roofline_us": 2.2,
+      "torch_ref_us": 3.08,
+      "prior_w": 0.05,
+      "max_w": 0.22,
+      "description": "Promoted by bench evolve (r=+0.21, pairs=42, float32, S_SMALL_CORE)",
+      "source": "auto_evolved_v2",
+      "empirical_corr": 0.212,
+      "empirical_pairs": 42
+    },
+    {
+      "id": "unalign_bf16_w16",
+      "stratum": "X_EXTREME",
+      "dtype": "bfloat16",
+      "io_bytes": 0,
+      "roofline_us": 2.691,
+      "torch_ref_us": 4.673,
+      "prior_w": 0.035,
+      "max_w": 0.05,
+      "description": "Promoted by bench evolve (r=+0.19, pairs=37, bfloat16, X_EXTREME)",
+      "source": "auto_evolved_v2",
+      "empirical_corr": 0.188,
+      "empirical_pairs": 37
+    }
+  ],
+  "unexplained_residual_dimensions": [],
+  "suggested_new_cases": [],
+  "agent_guidance": "Prioritize optimizing ['axismid', 'small_4k_axis0', 'tiny32', 'huge_32m_axislast']; avoid sacrificing hot paths for anti-correlated ['small_128b_rows']."
+}

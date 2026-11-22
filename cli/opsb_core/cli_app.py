@@ -190,12 +190,21 @@ def build_parser() -> argparse.ArgumentParser:
     bn_ca.add_argument("--json", action="store_true")
     bn_ca.set_defaults(func=run_bench)
 
-    bn_dg = bn_sub.add_parser("diagnose", help="Diagnose score-gap residuals & uncovered slow branches")
-    bn_dg.add_argument("problem")
+    bn_dg = bn_sub.add_parser("diagnose", help="Diagnose residual gaps, bucket correlations, and bench blind spots")
+    bn_dg.add_argument("problem", nargs="?")
     bn_dg.add_argument("--sha", default=None)
     bn_dg.add_argument("--workspace", "-w")
     bn_dg.add_argument("--json", action="store_true")
     bn_dg.set_defaults(func=run_bench)
+
+    bn_ev = bn_sub.add_parser("evolve", help="Append-only bench evolution driven by online residual feedback")
+    bn_ev.add_argument("problem", nargs="?")
+    bn_ev.add_argument("--dry-run", action="store_true", help="Preview promotions without editing cases_perf.json")
+    bn_ev.add_argument("--min-pairs", type=int, default=2)
+    bn_ev.add_argument("--min-corr", type=float, default=0.15)
+    bn_ev.add_argument("--workspace", "-w")
+    bn_ev.add_argument("--json", action="store_true")
+    bn_ev.set_defaults(func=run_bench)
 
     bn_rb = bn_sub.add_parser("refresh-board", help="Refresh live tbest(t), frontier & board scores (auto when >=24h stale) and recalibrate")
     bn_rb.add_argument("--force", action="store_true", help="Refresh even if <24h old")

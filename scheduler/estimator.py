@@ -161,6 +161,13 @@ class ScoreEstimate:
     improved_cases: int
     regressed_cases: list[str]
     detail: str
+    ucb_delta: float = 0.0
+    calibration_trust: float = 0.5
+    explore_eligible: bool = False
+    explore_reason: str = ""
+    explore_evidence: dict[str, Any] = dataclasses.field(default_factory=dict)
+    thermal_drift_us: float = 0.0
+    binary_delta_pct: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -325,6 +332,12 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
          AND `runtime_soc` matches between candidate and baseline.
     """
     profiler_cases: dict[str, float] = {}
+    profiler_min_cases: dict[str, float] = {}
+    profiler_max_cases: dict[str, float] = {}
+    profiler_first_iter_cases: dict[str, float] = {}
+    profiler_block_dims: dict[str, int] = {}
+    kernel_binary_stats: dict[str, Any] = {}
+    cold_start_stats: dict[str, Any] = {}
     torch_cases: dict[str, float] = {}
     same_soc_exec_cases: dict[str, float] = {}
     exec_cases: dict[str, float] = {}
@@ -338,6 +351,9 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
     runtime_soc: str | None = None
     source_kind: str = "none"
 
+    def _is_valid_case_id(name: str) -> bool:
+        return bool(name) and ":" not in name and not name.startswith("__")
+
     for raw_line in log_text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -350,8 +366,14 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
 
         m_ms = _MS_PROF_RE.match(line)
         if m_ms:
-            profiler_cases[m_ms.group("case")] = float(m_ms.group("med"))
-            source_kind = "profiler_spectrum"
+            cname = m_ms.group("case")
+            if _is_valid_case_id(cname):
+                profiler_cases[cname] = float(m_ms.group("med"))
+                profiler_min_cases[cname] = float(m_ms.group("min"))
+                m_mx = re.search(r"\bmax=([\d.]+)", line)
+                if m_mx:
+                    profiler_max_cases[cname] = float(m_mx.group(1))
+                source_kind = "profiler_spectrum"
             continue
 
         m_sp = _SPECTRUM_RE.match(line)
@@ -361,9 +383,15 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
 
         m_kp = _KPERF_TXT_RE.match(line)
         if m_kp:
-            profiler_cases[m_kp.group("case")] = float(m_kp.group("med"))
-            if source_kind == "none":
-                source_kind = "kperf_table"
+            cname = m_kp.group("case")
+            if _is_valid_case_id(cname):
+                profiler_cases[cname] = float(m_kp.group("med"))
+                profiler_min_cases[cname] = float(m_kp.group("min"))
+                m_mx = re.search(r"\bmax=\s*([\d.]+)us", line)
+                if m_mx:
+                    profiler_max_cases[cname] = float(m_mx.group(1))
+                if source_kind == "none":
+                    source_kind = "kperf_table"
             continue
 
         for prefix, tag in (
@@ -373,6 +401,8 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
             ("PERF ", "perf_ops"),
             ("PROF_SUMMARY ", "prof_summary"),
             ("PERF_JSON ", "perf_json"),
+            ("KERNEL_BINARY_STATS ", "kernel_binary_stats"),
+            ("COLD_START_STATS ", "cold_start_stats"),
         ):
             if line.startswith(prefix):
                 payload_str = line[len(prefix):].strip()
@@ -381,40 +411,75 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                 except ValueError:
                     break
 
-                if tag == "kperf_json" and isinstance(payload, list):
+                if tag == "kernel_binary_stats" and isinstance(payload, dict):
+                    kernel_binary_stats = dict(payload)
+                elif tag == "cold_start_stats" and isinstance(payload, dict):
+                    cold_start_stats = dict(payload)
+                elif tag == "kperf_json" and isinstance(payload, list):
                     for item in payload:
                         if not isinstance(item, dict):
                             continue
                         cname = str(item.get("case") or item.get("label") or "")
                         med = item.get("median_us")
-                        if cname and isinstance(med, (int, float)) and med > 0:
+                        if _is_valid_case_id(cname) and isinstance(med, (int, float)) and med > 0:
                             if item.get("mode") == "torch":
                                 torch_cases[cname] = float(med)
                             else:
                                 profiler_cases[cname] = float(med)
+                                if isinstance(item.get("min_us"), (int, float)) and item["min_us"] > 0:
+                                    profiler_min_cases[cname] = float(item["min_us"])
+                                if isinstance(item.get("max_us"), (int, float)) and item["max_us"] > 0:
+                                    profiler_max_cases[cname] = float(item["max_us"])
+                                fi = item.get("first_iter_us") or item.get("cold_us")
+                                if isinstance(fi, (int, float)) and fi > 0:
+                                    profiler_first_iter_cases[cname] = float(fi)
+                                if isinstance(item.get("block_dim"), int) and item["block_dim"] > 0:
+                                    profiler_block_dims[cname] = int(item["block_dim"])
                                 source_kind = tag
                 elif tag == "kernel_json" and isinstance(payload, dict):
                     cname = str(payload.get("case") or payload.get("label") or "")
                     med = payload.get("median_us")
-                    if cname and isinstance(med, (int, float)) and med > 0:
+                    if _is_valid_case_id(cname) and isinstance(med, (int, float)) and med > 0:
                         if payload.get("mode") == "torch":
                             torch_cases[cname] = float(med)
                         else:
                             profiler_cases[cname] = float(med)
+                            if isinstance(payload.get("min_us"), (int, float)) and payload["min_us"] > 0:
+                                profiler_min_cases[cname] = float(payload["min_us"])
+                            if isinstance(payload.get("max_us"), (int, float)) and payload["max_us"] > 0:
+                                profiler_max_cases[cname] = float(payload["max_us"])
+                            fi = payload.get("first_iter_us") or payload.get("cold_us")
+                            if isinstance(fi, (int, float)) and fi > 0:
+                                profiler_first_iter_cases[cname] = float(fi)
+                            if isinstance(payload.get("block_dim"), int) and payload["block_dim"] > 0:
+                                profiler_block_dims[cname] = int(payload["block_dim"])
                             source_kind = tag
                 elif tag == "kernel_perf" and isinstance(payload, dict):
                     cname = str(payload.get("case") or "")
                     med = payload.get("kernel_median_us")
-                    if cname and isinstance(med, (int, float)) and med > 0:
+                    if _is_valid_case_id(cname) and isinstance(med, (int, float)) and med > 0:
                         if payload.get("source") == "torch":
                             torch_cases[cname] = float(med)
                         else:
                             profiler_cases[cname] = float(med)
+                            for mk in ("kernel_min_us", "min_us"):
+                                if isinstance(payload.get(mk), (int, float)) and payload[mk] > 0:
+                                    profiler_min_cases[cname] = float(payload[mk])
+                                    break
+                            for xk in ("kernel_max_us", "max_us"):
+                                if isinstance(payload.get(xk), (int, float)) and payload[xk] > 0:
+                                    profiler_max_cases[cname] = float(payload[xk])
+                                    break
+                            fi = payload.get("first_iter_us") or payload.get("cold_us")
+                            if isinstance(fi, (int, float)) and fi > 0:
+                                profiler_first_iter_cases[cname] = float(fi)
+                            if isinstance(payload.get("block_dim"), int) and payload["block_dim"] > 0:
+                                profiler_block_dims[cname] = int(payload["block_dim"])
                             source_kind = tag
                 elif tag == "perf_ops" and isinstance(payload, dict):
                     cname = str(payload.get("case") or "")
                     ops = payload.get("ops") or {}
-                    if cname and isinstance(ops, dict) and ops:
+                    if _is_valid_case_id(cname) and isinstance(ops, dict) and ops:
                         first_op = next(iter(ops.values()))
                         med = first_op.get("median_us") if isinstance(first_op, dict) else None
                         if isinstance(med, (int, float)) and med > 0:
@@ -422,6 +487,13 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                                 torch_cases[cname] = float(med)
                             else:
                                 profiler_cases[cname] = float(med)
+                                if isinstance(first_op.get("min_us"), (int, float)) and first_op["min_us"] > 0:
+                                    profiler_min_cases[cname] = float(first_op["min_us"])
+                                if isinstance(first_op.get("max_us"), (int, float)) and first_op["max_us"] > 0:
+                                    profiler_max_cases[cname] = float(first_op["max_us"])
+                                fi = first_op.get("first_iter_us") or first_op.get("cold_us")
+                                if isinstance(fi, (int, float)) and fi > 0:
+                                    profiler_first_iter_cases[cname] = float(fi)
                                 source_kind = tag
                 elif tag == "prof_summary" and isinstance(payload, dict):
                     # Hardware profiler Task Duration, but *aggregated over kernels*: these are not
@@ -457,9 +529,9 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                         cname = str(item.get("case") or item.get("label") or "")
                         dev_us = item.get("dev_us")
                         ex_us = item.get("exec_us")
-                        if cname and isinstance(dev_us, (int, float)) and dev_us > 0:
+                        if _is_valid_case_id(cname) and isinstance(dev_us, (int, float)) and dev_us > 0:
                             dev_event_cases[cname] = float(dev_us)
-                        elif cname and isinstance(ex_us, (int, float)) and ex_us > 0:
+                        elif _is_valid_case_id(cname) and isinstance(ex_us, (int, float)) and ex_us > 0:
                             same_soc_exec_cases[cname] = float(ex_us)
                             if ex_us >= 150.0:
                                 exec_cases[cname] = float(ex_us)
@@ -469,12 +541,16 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
                 try:
                     item = json.loads(line)
                     cname = str(item.get("case") or item.get("label") or "")
-                    if cname:
+                    if _is_valid_case_id(cname):
                         if isinstance(item.get("median_us"), (int, float)) and item["median_us"] > 0:
                             if item.get("mode") == "torch":
                                 torch_cases[cname] = float(item["median_us"])
                             else:
                                 profiler_cases.setdefault(cname, float(item["median_us"]))
+                                if isinstance(item.get("min_us"), (int, float)) and item["min_us"] > 0:
+                                    profiler_min_cases.setdefault(cname, float(item["min_us"]))
+                                if isinstance(item.get("max_us"), (int, float)) and item["max_us"] > 0:
+                                    profiler_max_cases.setdefault(cname, float(item["max_us"]))
                                 if source_kind == "none":
                                     source_kind = "inline_json"
                         elif isinstance(item.get("dev_us"), (int, float)) and item["dev_us"] > 0:
@@ -498,6 +574,12 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
     return {
         "cases": chosen,
         "profiler_cases": profiler_cases,
+        "profiler_min_cases": profiler_min_cases,
+        "profiler_max_cases": profiler_max_cases,
+        "profiler_first_iter_cases": profiler_first_iter_cases,
+        "profiler_block_dims": profiler_block_dims,
+        "kernel_binary_stats": kernel_binary_stats,
+        "cold_start_stats": cold_start_stats,
         "same_soc_exec_cases": same_soc_exec_cases,
         "dev_event_cases": dev_event_cases,
         "torch_cases": torch_cases,
@@ -561,9 +643,11 @@ def _extract_note_speedup(note: str) -> tuple[float | None, int, str]:
         return None, 0, ""
 
     geo = math.exp(sum(math.log(r) for r in ratios) / len(ratios))
-    coverage = min(0.75, 0.28 + 0.10 * len(ratios))
-    k_eff = 1.0 + coverage * (geo - 1.0)
-    return round(k_eff, 4), len(ratios), f"note_parsed({len(ratios)} signals, raw_geo={geo:.2f}x, shrunk={k_eff:.3f}x)"
+    # Commit/queue notes report cherry-picked microbenchmarks, not 50-case harmonic means:
+    # shrink conservatively to avoid +20..+31 pt over-prediction hallucinations.
+    coverage = min(0.26, 0.10 + 0.03 * len(ratios))
+    k_eff = max(0.80, min(1.16, 1.0 + coverage * (geo - 1.0)))
+    return round(k_eff, 4), len(ratios), f"note_parsed({len(ratios)} signals, raw_geo={geo:.2f}x, damped={k_eff:.3f}x)"
 
 
 def _project_score_from_speedup(
@@ -1030,12 +1114,21 @@ class ScoreEstimator:
         )
 
     def _load_perf_for_sha(self, title: str, sha: str | None) -> dict[str, Any]:
-        empty = {
+        empty: dict[str, Any] = {
             "cases": {},
             "profiler_cases": {},
+            "profiler_min_cases": {},
+            "profiler_max_cases": {},
+            "profiler_first_iter_cases": {},
+            "profiler_block_dims": {},
+            "kernel_binary_stats": {},
+            "cold_start_stats": {},
             "same_soc_exec_cases": {},
             "dev_event_cases": {},
             "torch_cases": {},
+            "prof_kernel_stats": {},
+            "prof_summary": {},
+            "has_hw_evidence": False,
             "vs_torch_pct": None,
             "runtime_soc": None,
             "source": "none",
@@ -1066,17 +1159,11 @@ class ScoreEstimator:
           3. Earliest passing `cand_soc` baseline validation finished prior to `cand_sha`
              (e.g. `af5b55a` for `PReluGradUpdate`, `cca8ba3` for `Multilabel`, `4eee530` for `ConcatD`)
         """
-        base_perf = self._load_perf_for_sha(title, default_base_sha) if default_base_sha and default_base_sha != cand_sha else {
-            "cases": {},
-            "profiler_cases": {},
-            "same_soc_exec_cases": {},
-            "dev_event_cases": {},
-            "torch_cases": {},
-            "vs_torch_pct": None,
-            "runtime_soc": None,
-            "source": "none",
-            "is_profiler": False,
-        }
+        base_perf = (
+            self._load_perf_for_sha(title, default_base_sha)
+            if default_base_sha and default_base_sha != cand_sha
+            else self._load_perf_for_sha(title, None)
+        )
         cand_soc = cand_perf.get("runtime_soc")
         if not cand_soc or not default_base_sha or default_base_sha == cand_sha:
             return default_base_sha, base_perf
@@ -1235,6 +1322,13 @@ class ScoreEstimator:
         effective_speedup = 1.0
         method = "baseline_prior"
         detail = ""
+        cal_trust = 0.5
+        explore_eligible = False
+        explore_reason = ""
+        explore_evidence: dict[str, Any] = {}
+        thermal_drift_us = 0.0
+        binary_delta_pct: float | None = None
+        ucb_delta_override: float | None = None
 
         # Reference anchor when current board is 0 / no-submission
         anchor_score = ledger.current_score
@@ -1311,8 +1405,8 @@ class ScoreEstimator:
                 f"(gamma={ledger.decay_factor_gamma:.4f}) => est={estimated_score:.2f}"
             )
 
-        # 3. Calibrated Simplex-MAP Bucket Model -> Paired A/B Fallback
-        elif pair_cand_cases and pair_base_cases:
+        # 3. Calibrated Pairwise Simplex-MAP Bucket Model -> Paired A/B Fallback
+        elif (pair_cand_cases and pair_base_cases) or (cand_perf.get("profiler_cases") and base_sha):
             cal_pred = self.get_calibrator().predict_candidate(
                 title=title,
                 cand_sha=canonical_sha,
@@ -1331,6 +1425,14 @@ class ScoreEstimator:
                 regressed_cases = cal_pred["regressed_cases"]
                 method = cal_pred["method"]
                 detail = cal_pred["detail"]
+                cal_trust = float(cal_pred.get("calibration_trust", 0.5))
+                explore_eligible = bool(cal_pred.get("explore_eligible", False))
+                explore_reason = str(cal_pred.get("explore_reason", ""))
+                explore_evidence = dict(cal_pred.get("explore_evidence") or {})
+                thermal_drift_us = float(cal_pred.get("thermal_drift_us", 0.0))
+                binary_delta_pct = cal_pred.get("binary_delta_pct")
+                if cal_pred.get("ucb_delta") is not None:
+                    ucb_delta_override = float(cal_pred["ucb_delta"])
             elif common:
                 matched_cases = len(common)
                 log_ratios: list[float] = []
@@ -1348,13 +1450,13 @@ class ScoreEstimator:
 
                 raw_geo = math.exp(sum(log_ratios) / len(log_ratios)) if log_ratios else 1.0
                 # PROF_SUMMARY aggregates multi-iteration hardware profiler Task Duration directly
-                coverage = 0.85 if pair_kind == "prof_summary" else min(1.0, matched_cases / 8.0)
+                coverage = 0.72 if pair_kind == "prof_summary" else min(0.85, matched_cases / 10.0)
                 reg_penalty = 0.03 * len(regressed_cases)
-                effective_speedup = max(0.30, 1.0 + coverage * (raw_geo - 1.0) - reg_penalty)
+                effective_speedup = max(0.35, min(1.80, 1.0 + coverage * (raw_geo - 1.0) - reg_penalty))
                 estimated_score = _project_score_from_speedup(
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
-                model_err = 1.5 if (cand_perf["is_profiler"] and (matched_cases >= 10 or pair_kind == "prof_summary")) else 2.5
+                model_err = 1.8 if (cand_perf["is_profiler"] and (matched_cases >= 10 or pair_kind == "prof_summary")) else 2.8
                 sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + model_err ** 2), 2)
                 method = f"paired_{pair_kind}"
                 soc_tag = f" [{cand_perf.get('runtime_soc')}]" if cand_perf.get("runtime_soc") else ""
@@ -1370,7 +1472,11 @@ class ScoreEstimator:
                 estimated_score = _project_score_from_speedup(
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 3.5 ** 2), 2)
+                if matched_cases:
+                    # Clamp unverified note-heuristic delta conservatively
+                    estimated_score = round(max(anchor_score - 5.0, min(anchor_score + 6.0, estimated_score)), 2)
+                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 5.0 ** 2), 2)
+                cal_trust = 0.25
                 method = "note_heuristic" if matched_cases else "unmatched_neutral"
 
         # 4. Torch reference spectrum ratio or commit/queue note heuristic
@@ -1382,7 +1488,9 @@ class ScoreEstimator:
                 estimated_score = _project_score_from_speedup(
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 3.5 ** 2), 2)
+                estimated_score = round(max(anchor_score - 5.0, min(anchor_score + 6.0, estimated_score)), 2)
+                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 5.0 ** 2), 2)
+                cal_trust = 0.25
                 method = "note_heuristic"
                 detail = note_det
             elif cand_perf["torch_cases"] and cand_perf["cases"]:
@@ -1418,6 +1526,11 @@ class ScoreEstimator:
         delta_expected = round(estimated_score - ledger.current_score, 2)
         weighted_delta = round(ledger.difficulty * delta_expected, 2)
         prob_pos = round(_normal_cdf(delta_expected / sigma), 4) if sigma > 0 else (1.0 if delta_expected > 0 else 0.0)
+        ucb_val = (
+            round(ucb_delta_override, 2)
+            if ucb_delta_override is not None
+            else round(delta_expected + (0.85 + 0.55 * (1.0 - cal_trust)) * sigma, 2)
+        )
 
         return ScoreEstimate(
             title=title,
@@ -1443,4 +1556,11 @@ class ScoreEstimator:
             improved_cases=improved_cases,
             regressed_cases=regressed_cases,
             detail=detail,
+            ucb_delta=ucb_val,
+            calibration_trust=round(cal_trust, 3),
+            explore_eligible=explore_eligible,
+            explore_reason=explore_reason,
+            explore_evidence=explore_evidence,
+            thermal_drift_us=round(thermal_drift_us, 3),
+            binary_delta_pct=round(binary_delta_pct, 2) if binary_delta_pct is not None else None,
         )

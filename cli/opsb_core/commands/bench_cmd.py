@@ -45,6 +45,99 @@ def _call_bridge_subcmd(ws: Path, subcmd: str, extra: list[str], timeout: float 
     return proc.returncode, parsed, (proc.stdout + proc.stderr).strip()
 
 
+def _format_diagnose_report(doc: dict[str, Any]) -> str:
+    if "problems" in doc and isinstance(doc["problems"], dict):
+        lines = [f"=== Parhelion Bench Diagnostics ({doc.get('problem_count', len(doc['problems']))} operators) ==="]
+        for t, d in sorted(doc["problems"].items()):
+            mae = f"{d['loocv_mae_pts']:.2f}" if isinstance(d.get("loocv_mae_pts"), (int, float)) else "—"
+            rho = f"{d['loocv_spearman']:+.2f}" if isinstance(d.get("loocv_spearman"), (int, float)) else "—"
+            tr = f"{d['calibration_trust']:.2f}" if isinstance(d.get("calibration_trust"), (int, float)) else "—"
+            gam = f"{d['transfer_gamma']:.2f}" if isinstance(d.get("transfer_gamma"), (int, float)) else "—"
+            evs = len(d.get("high_residual_events") or [])
+            promo = len(d.get("untracked_promote_candidates") or [])
+            pos = [x["bucket"] for x in (d.get("strong_positive_buckets") or [])[:2]]
+            anti = [x["bucket"] for x in (d.get("misleading_anti_corr_buckets") or [])[:2]]
+            lines.append(
+                f"  {t:<25} LOOCV_MAE={mae:>5}  rho={rho:>5}  trust={tr}  gamma={gam}  "
+                f"spec={d.get('spec_bucket_count', 0):2d}->eff={d.get('effective_bucket_count', 0):2d}  "
+                f"hiRes={evs}  evolve+={promo}"
+            )
+            if pos or anti:
+                lines.append(f"    +corr: {pos or ['—']}   -corr(suppressed): {anti or ['—']}")
+        return "\n".join(lines)
+
+    lines = [
+        f"=== Bench Diagnose: {doc.get('title')} (v{doc.get('model_version', '2.0')}) ===",
+        f"  LOOCV MAE={doc.get('loocv_mae_pts')}  Spearman={doc.get('loocv_spearman')}  "
+        f"DirAcc={doc.get('loocv_dir_acc')}  Trust={doc.get('calibration_trust')}  "
+        f"TransferGamma={doc.get('transfer_gamma')}  AlphaCold={doc.get('alpha_cold')}",
+        f"  Buckets: spec={doc.get('spec_bucket_count')}  effective={doc.get('effective_bucket_count')}  "
+        f"unpaired_spec={doc.get('unpaired_bucket_count')}  extra_discovered={len(doc.get('extra_discovered_buckets') or [])}",
+    ]
+    if doc.get("strong_positive_buckets"):
+        lines.append("  Strong +Corr Buckets (prioritize):")
+        for b in doc["strong_positive_buckets"][:6]:
+            tag = "SPEC" if b.get("in_spec") else "EXTR"
+            lines.append(f"    [{tag}] {b['bucket']:<28} r={b['corr']:+.2f} (n={b['pairs']}) w={b.get('learned_w')} tau={b.get('tau_active_us')}us")
+    if doc.get("misleading_anti_corr_buckets"):
+        lines.append("  Anti-Corr / Misleading Buckets (suppressed):")
+        for b in doc["misleading_anti_corr_buckets"][:5]:
+            tag = "SPEC" if b.get("in_spec") else "EXTR"
+            lines.append(f"    [{tag}] {b['bucket']:<28} r={b['corr']:+.2f} (n={b['pairs']}) w={b.get('learned_w')}")
+    if doc.get("high_residual_events"):
+        lines.append("  High-Residual / Sign-Flip Events (|eps|>=3.0):")
+        for ev in doc["high_residual_events"][-5:]:
+            sf = " [SIGN_FLIP]" if ev.get("sign_flip") else ""
+            lines.append(
+                f"    {ev['base_sha']}->{ev['cand_sha']}: act={ev['actual_delta']:+.2f} cv_pred={ev['pred_delta']:+.2f} "
+                f"eps={ev['residual_eps']:+.2f}{sf} causes={ev.get('causes')}"
+            )
+    if doc.get("unexplained_residual_dimensions"):
+        lines.append("  Unexplained Blind-Spot Dimensions:")
+        for u in doc["unexplained_residual_dimensions"]:
+            lines.append(f"    - {u}")
+    if doc.get("untracked_promote_candidates"):
+        ids = [x["id"] for x in doc["untracked_promote_candidates"][:8]]
+        lines.append(f"  Evolve Candidates (append-only ready): {', '.join(ids)}")
+    if doc.get("agent_guidance"):
+        lines.append(f"  Guidance: {doc['agent_guidance']}")
+    if doc.get("feedback_file"):
+        lines.append(f"  Feedback persisted: {doc['feedback_file']}")
+    return "\n".join(lines)
+
+
+def _format_evolve_report(doc: dict[str, Any]) -> str:
+    if "problems" in doc and isinstance(doc["problems"], dict):
+        mode = "APPLIED" if doc.get("applied") else "DRY-RUN"
+        lines = [f"=== Parhelion Bench Evolve [{mode}] (total appended: +{doc.get('total_appended_buckets', 0)} buckets) ==="]
+        for t, r in sorted(doc["problems"].items()):
+            ids = r.get("appended_ids") or []
+            lines.append(
+                f"  {t:<25} spec: {r.get('spec_buckets_before')} -> {r.get('spec_buckets_after')} (+{len(ids)})  "
+                f"LOOCV_MAE: {r.get('loocv_mae_before')} -> {r.get('loocv_mae_after')}  "
+                f"rho={r.get('loocv_spearman_after')}  trust={r.get('calibration_trust_after')}"
+            )
+            if ids:
+                lines.append(f"    promoted: {', '.join(ids[:8])}" + (f" (+{len(ids)-8} more)" if len(ids) > 8 else ""))
+        return "\n".join(lines)
+
+    mode = "APPLIED" if doc.get("applied") else "DRY-RUN"
+    ids = doc.get("appended_ids") or []
+    lines = [
+        f"=== Bench Evolve [{mode}]: {doc.get('title')} ===",
+        f"  Spec buckets: {doc.get('spec_buckets_before')} -> {doc.get('spec_buckets_after')} (+{len(ids)}, append-only)",
+        f"  LOOCV MAE: {doc.get('loocv_mae_before')} -> {doc.get('loocv_mae_after')}  "
+        f"Spearman={doc.get('loocv_spearman_after')}  Trust={doc.get('calibration_trust_after')}",
+    ]
+    if ids:
+        lines.append(f"  Promoted IDs: {', '.join(ids)}")
+    if doc.get("skipped_anti_corr"):
+        lines.append("  Skipped anti-corr: " + ", ".join(f"{x['id']}({x['corr']:+.2f})" for x in doc["skipped_anti_corr"][:6]))
+    if doc.get("feedback_file"):
+        lines.append(f"  Feedback file: {doc['feedback_file']}")
+    return "\n".join(lines)
+
+
 def run_bench(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
@@ -154,8 +247,28 @@ def run_bench(args: argparse.Namespace) -> int:
         print(json.dumps(out, ensure_ascii=False, indent=2) if args.json else f"Updated calibration for {len(saved_list)} operator(s).")
         return 0
 
+    if sub == "evolve":
+        extra: list[str] = []
+        if getattr(args, "problem", None):
+            extra += ["--title", args.problem]
+        if getattr(args, "dry_run", False):
+            extra.append("--dry-run")
+        if getattr(args, "min_pairs", None) is not None:
+            extra += ["--min-pairs", str(args.min_pairs)]
+        if getattr(args, "min_corr", None) is not None:
+            extra += ["--min-corr", str(args.min_corr)]
+        rc, parsed, raw_out = _call_bridge_subcmd(ws, "evolve", extra, timeout=180.0)
+        invalidate_ttl_cache("scheduler_bridge")
+        if args.json and parsed is not None:
+            print(json.dumps(parsed, ensure_ascii=False, indent=2))
+        elif parsed is not None:
+            print(_format_evolve_report(parsed))
+        else:
+            print(raw_out or json.dumps({"ok": rc == 0}, ensure_ascii=False))
+        return rc
+
     if sub in ("diagnose", "backfill", "verify-escape"):
-        extra = ["--title", args.problem]
+        extra = ["--title", args.problem] if getattr(args, "problem", None) else []
         if sub == "verify-escape":
             extra += ["--bad", args.bad, "--good", args.good]
         elif getattr(args, "sha", None):
@@ -165,6 +278,8 @@ def run_bench(args: argparse.Namespace) -> int:
         if rc != 127:
             if args.json and parsed is not None:
                 print(json.dumps(parsed, ensure_ascii=False, indent=2))
+            elif sub == "diagnose" and parsed is not None:
+                print(_format_diagnose_report(parsed))
             else:
                 print(raw_out or json.dumps(parsed or {"ok": rc == 0}, ensure_ascii=False))
             return rc

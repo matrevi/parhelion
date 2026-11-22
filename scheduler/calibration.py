@@ -28,8 +28,23 @@ import json
 import math
 import pathlib
 import re
+import statistics
 from typing import Any
 
+from .bench_evolution import (
+    MODEL_VERSION,
+    append_buckets_to_spec,
+    apply_proxy_aliases,
+    build_evolution_plan,
+    build_pairwise_phi_delta,
+    classify_residual_causes,
+    compute_loso_cv,
+    compute_robust_timings,
+    detect_thermal_drift,
+    evaluate_explore_eligibility,
+    fit_pairwise_simplex_map,
+    infer_bucket_metadata,
+)
 from .estimator import (
     SIGMA_HIDDEN_JITTER,
     ProblemLedger,
@@ -166,6 +181,7 @@ class BenchmarkCalibrator:
         self.backfill: Any = None
         self._perf_spec_cache: dict[str, dict[str, Any]] = {}
         self._timings_cache: dict[tuple[str, str, str | None], tuple[dict[str, float], dict[str, float], str | None, str]] = {}
+        self._full_tel_cache: dict[tuple[str, str, str | None, bool], dict[str, Any]] = {}
         self._regime_cache: dict[tuple[str, str, str | None], str] = {}
         self._cal_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._esc_cache: dict[tuple[str, str], dict[str, Any]] = {}
@@ -500,6 +516,206 @@ class BenchmarkCalibrator:
         self._timings_cache[t_key] = res_tup
         return res_tup
 
+    def _extract_full_telemetry(
+        self,
+        title: str,
+        sha: str,
+        target_soc: str | None = "soc-a",
+        allow_future_siblings: bool = True,
+    ) -> dict[str, Any]:
+        """Extract ALL logged `profiler` buckets (spec + extra), spike-immune `robust_cases`,
+        `min_cases`/`max_cases`, `block_dims`, compiled `.o` `kernel_binary_stats`,
+        `cold_start_stats`, `regime`, `soc`, and `modality`.
+        """
+        cache_key = (title, sha, target_soc if allow_future_siblings else None, allow_future_siblings)
+        if cache_key in self._full_tel_cache:
+            return self._full_tel_cache[cache_key]
+
+        repo = self.workspace / "bench" / title
+        res_dir = self.workspace / "results" / title
+        vlog = res_dir / sha / "validation.log"
+        rj_path = res_dir / sha / "result.json"
+        backfill = self._backfill_pairings(title, sha)
+
+        rj_data: dict[str, Any] = {}
+        if rj_path.is_file():
+            try:
+                rj_data = json.loads(rj_path.read_text())
+            except Exception:
+                rj_data = {}
+
+        vlog_text = vlog.read_text(errors="replace") if vlog.is_file() else ""
+        best_perf = parse_validation_perf(vlog_text) if vlog_text else None
+        best_regime = self._detect_profiler_regime(rj_path, vlog_text) if best_perf is not None else "none"
+        best_rj = rj_data
+
+        needs_sibling = allow_future_siblings and (
+            best_perf is None
+            or best_regime != "fast_single_session_l0"
+            or (best_perf.get("runtime_soc") != target_soc and not best_perf["profiler_cases"])
+            or (title == "ConcatD" and len(best_perf["profiler_cases"]) < 12)
+        )
+        if needs_sibling and res_dir.is_dir():
+            fp = _code_fingerprint(repo, sha)
+            if fp:
+                best_key = (
+                    1 if (best_perf and best_perf["profiler_cases"] and best_regime == "fast_single_session_l0") else 0,
+                    1 if (best_perf and best_perf["profiler_cases"]) else 0,
+                    1 if (best_perf and best_perf.get("runtime_soc") == target_soc) else 0,
+                    len(best_perf["profiler_cases"]) if best_perf else 0,
+                )
+                for cand_rj in sorted(res_dir.glob("*/result.json"), reverse=True):
+                    c_sha = cand_rj.parent.name.lower()
+                    cvlog = cand_rj.parent / "validation.log"
+                    if c_sha == sha or len(c_sha) != 40 or not cvlog.is_file():
+                        continue
+                    try:
+                        c_rj_d = json.loads(cand_rj.read_text())
+                        if c_rj_d.get("exit_code") != 0:
+                            continue
+                    except Exception:
+                        continue
+                    if _code_fingerprint(repo, c_sha) != fp:
+                        continue
+                    ctxt = cvlog.read_text(errors="replace")
+                    if target_soc and f"RUNTIME_SOC={target_soc}" not in ctxt:
+                        continue
+                    cp = parse_validation_perf(ctxt)
+                    c_reg = self._detect_profiler_regime(cand_rj, ctxt)
+                    cand_key = (
+                        1 if (cp["profiler_cases"] and c_reg == "fast_single_session_l0") else 0,
+                        1 if cp["profiler_cases"] else 0,
+                        1 if cp.get("runtime_soc") == target_soc else 0,
+                        len(cp["profiler_cases"]),
+                    )
+                    if best_perf is None or cand_key > best_key:
+                        best_perf = cp
+                        best_regime = c_reg
+                        best_rj = c_rj_d
+                        best_key = cand_key
+
+        bf_regime = self._backfill_regime(backfill)
+        spec_ids = [b["id"] for b in (self.load_perf_spec(title).get("hidden_buckets") or []) if isinstance(b, dict) and b.get("id")]
+
+        # Prefer newer fast_single_session_l0 backfill when live validation log is still legacy
+        if (
+            allow_future_siblings
+            and backfill
+            and backfill.get("cases")
+            and bf_regime == "fast_single_session_l0"
+            and best_regime != "fast_single_session_l0"
+        ):
+            bf_cases = {
+                k: float(v)
+                for k, v in (backfill["cases"] or {}).items()
+                if isinstance(v, (int, float)) and v > 0 and ":" not in k and not k.startswith("__")
+            }
+            bf_cases = apply_proxy_aliases(bf_cases, spec_ids)
+            if bf_cases:
+                tel = {
+                    "raw_cases": bf_cases,
+                    "min_cases": {},
+                    "max_cases": {},
+                    "robust_cases": dict(bf_cases),
+                    "torch_cases": dict(best_perf.get("torch_cases") or {}) if best_perf else {},
+                    "block_dims": {},
+                    "kernel_binary_stats": {},
+                    "cold_start_stats": {},
+                    "soc": backfill.get("runtime_soc") or target_soc,
+                    "modality": "profiler",
+                    "regime": bf_regime,
+                }
+                self._full_tel_cache[cache_key] = tel
+                return tel
+
+        raw_pool: dict[str, float] = {}
+        min_pool: dict[str, float] = {}
+        max_pool: dict[str, float] = {}
+        blk_pool: dict[str, int] = {}
+        torch_pool: dict[str, float] = {}
+        bin_stats: dict[str, Any] = {}
+        cold_stats: dict[str, Any] = {}
+        soc: str | None = None
+        modality = "none"
+
+        if best_perf is not None:
+            soc = best_perf.get("runtime_soc")
+            torch_pool = dict(best_perf.get("torch_cases") or {})
+            bin_stats = dict(best_perf.get("kernel_binary_stats") or {})
+            cold_stats = dict(best_perf.get("cold_start_stats") or {})
+            blk_pool = dict(best_perf.get("profiler_block_dims") or {})
+            if best_perf["profiler_cases"]:
+                raw_pool.update(best_perf["profiler_cases"])
+                min_pool.update(best_perf.get("profiler_min_cases") or {})
+                max_pool.update(best_perf.get("profiler_max_cases") or {})
+                modality = "profiler"
+            elif best_perf.get("has_hw_evidence"):
+                modality = "profiler"
+            elif best_perf["same_soc_exec_cases"]:
+                host_ovh = 7.2 if soc == "soc-a" else 3.2
+                for k, v in best_perf["same_soc_exec_cases"].items():
+                    raw_pool[k] = max(3.6, v - host_ovh)
+                modality = "exec"
+            elif best_perf["dev_event_cases"]:
+                dev_ovh = 5.2 if soc == "soc-a" else 1.8
+                for k, v in best_perf["dev_event_cases"].items():
+                    raw_pool[k] = max(3.6, v - dev_ovh)
+                modality = "dev_us"
+
+        # Backfill fills holes only
+        if backfill and backfill.get("cases"):
+            bf_cases = backfill["cases"] or {}
+            bf_soc = backfill.get("runtime_soc")
+            bf_mod = backfill.get("modality") or "profiler"
+            epoch_ok = (bf_mod == "profiler") or not bf_soc or not soc or bf_soc == soc
+            if epoch_ok:
+                for k, v in bf_cases.items():
+                    if k in raw_pool or not isinstance(v, (int, float)) or v <= 0 or ":" in k or k.startswith("__"):
+                        continue
+                    raw_pool[k] = float(v)
+                    if modality == "none":
+                        modality = "profiler" if bf_mod == "profiler" else bf_mod
+                        soc = soc or bf_soc
+                        if best_regime == "none":
+                            best_regime = bf_regime
+
+        # Supplement binary/cold stats from result.json if absent from log
+        if not bin_stats.get("max_bytes") and isinstance(best_rj.get("kernel_o_max_bytes"), (int, float)) and best_rj["kernel_o_max_bytes"] > 0:
+            bin_stats = {
+                "count": int(best_rj.get("kernel_o_count") or 1),
+                "max_bytes": int(best_rj["kernel_o_max_bytes"]),
+                "sum_bytes": int(best_rj.get("kernel_o_sum_bytes") or best_rj["kernel_o_max_bytes"]),
+                "max_text_bytes": int(best_rj.get("kernel_o_max_text_bytes") or 0),
+            }
+        if not cold_stats.get("first_iter_us") and isinstance(best_rj.get("first_iter_us"), (int, float)):
+            cold_stats["first_iter_us"] = float(best_rj["first_iter_us"])
+        if not cold_stats.get("cold_spread_median_us") and isinstance(best_rj.get("cold_spread_median_us"), (int, float)):
+            cold_stats["cold_spread_median_us"] = float(best_rj["cold_spread_median_us"])
+        elif not cold_stats.get("cold_spread_median_us") and max_pool and min_pool:
+            spreads = [max_pool[k] - min_pool[k] for k in max_pool if k in min_pool and max_pool[k] >= min_pool[k]]
+            if spreads:
+                cold_stats["cold_spread_median_us"] = round(statistics.median(spreads), 3)
+
+        raw_aliased = apply_proxy_aliases(raw_pool, spec_ids)
+        min_aliased = apply_proxy_aliases(min_pool, spec_ids)
+        robust = compute_robust_timings(raw_aliased, min_aliased)
+
+        tel = {
+            "raw_cases": raw_aliased,
+            "min_cases": min_aliased,
+            "max_cases": max_pool,
+            "robust_cases": robust,
+            "torch_cases": torch_pool,
+            "block_dims": blk_pool,
+            "kernel_binary_stats": bin_stats,
+            "cold_start_stats": cold_stats,
+            "soc": soc,
+            "modality": modality,
+            "regime": best_regime,
+        }
+        self._full_tel_cache[cache_key] = tel
+        return tel
+
     def _compute_theta0(
         self,
         title: str,
@@ -715,10 +931,12 @@ class BenchmarkCalibrator:
         persist: bool = True,
         as_of: datetime.datetime | None = None,
     ) -> dict[str, Any]:
-        """Fit full Simplex MAP calibration for `title` and optionally write `results/<title>/calibration.json`."""
+        """Fit Pairwise Correlation-Adaptive Simplex-MAP v2.0 calibration & LOSO-CV reliability."""
         ledger = self.estimator.get_problem_ledger(title, as_of=as_of)
         perf_spec = self.load_perf_spec(title)
-        buckets = list(perf_spec.get("hidden_buckets") or [])
+        spec_buckets = list(perf_spec.get("hidden_buckets") or [])
+        spec_ids = [b["id"] for b in spec_buckets if isinstance(b, dict) and b.get("id")]
+        spec_id_set = set(spec_ids)
         cov_grid = self.build_coverage_grid(title)
         esc_info = self.inspect_escape_state(title, as_of=as_of)
 
@@ -728,7 +946,6 @@ class BenchmarkCalibrator:
             anchor_ts = ref_now
 
         rows = self.estimator._filtered_outcomes(title, as_of=as_of)
-        # Aggregate contemporary-equivalent scores per distinct passing SHA
         sha_draws: dict[str, list[float]] = {}
         sha_raw: dict[str, list[float]] = {}
         sha_order: list[str] = []
@@ -754,32 +971,61 @@ class BenchmarkCalibrator:
             sha_draws[ledger.active_board_sha] = [ledger.current_score]
             sha_raw[ledger.active_board_sha] = [ledger.current_score]
 
-        # Collect timings, modalities, min_tau, earliest_tau, & torch refs across passing SHAs + active SHA
+        sha_scores: dict[str, float] = {
+            s: float(statistics.median(sha_draws[s])) for s in sha_order
+        }
+
+        # Collect FULL telemetry (spec + auto-discovered extra profiler buckets + binary/cold stats)
         pooled_torch: dict[str, float] = {}
         observed_min_tau: dict[str, float] = {}
-        earliest_tau: dict[str, float] = {}
-        timings_by_sha: dict[str, dict[str, float]] = {}
+        observed_samples: dict[str, list[float]] = {}
+        tel_by_sha: dict[str, dict[str, Any]] = {}
+        robust_by_sha: dict[str, dict[str, float]] = {}
         modality_by_sha: dict[str, str] = {}
         soc_by_sha: dict[str, str | None] = {}
+        regime_by_sha: dict[str, str] = {}
+        bin_bytes_by_sha: dict[str, int | None] = {}
+
         all_shas_to_scan = list(dict.fromkeys(sha_order + ([ledger.active_board_sha] if ledger.active_board_sha else [])))
         for csha in all_shas_to_scan:
             if not csha:
                 continue
-            b_tim, t_tim, soc_v, mod = self._extract_bucket_timings(
-                title, csha, buckets, allow_future_siblings=(as_of is None)
-            )
-            timings_by_sha[csha] = b_tim
-            modality_by_sha[csha] = mod
-            soc_by_sha[csha] = soc_v
-            pooled_torch.update(t_tim)
-            for bk, tv in b_tim.items():
+            tel = self._extract_full_telemetry(title, csha, allow_future_siblings=(as_of is None))
+            tel_by_sha[csha] = tel
+            rob = tel["robust_cases"]
+            robust_by_sha[csha] = rob
+            modality_by_sha[csha] = tel["modality"]
+            soc_by_sha[csha] = tel["soc"]
+            regime_by_sha[csha] = tel["regime"]
+            b_max = (tel.get("kernel_binary_stats") or {}).get("max_bytes")
+            bin_bytes_by_sha[csha] = int(b_max) if isinstance(b_max, (int, float)) and b_max > 0 else None
+            pooled_torch.update(tel["torch_cases"])
+            for bk, tv in rob.items():
                 if tv > 0:
-                    earliest_tau.setdefault(bk, tv)
+                    observed_samples.setdefault(bk, []).append(tv)
                     if bk not in observed_min_tau or tv < observed_min_tau[bk]:
                         observed_min_tau[bk] = tv
 
+        # Build unified bucket list: all spec buckets first (append-only order), then auto-discovered extras
+        extra_ids = sorted(
+            bk for bk in observed_samples
+            if bk not in spec_id_set and ":" not in bk and not bk.startswith("__")
+        )
+        effective_buckets: list[dict[str, Any]] = list(spec_buckets)
+        for eid in extra_ids:
+            med_v = float(statistics.median(observed_samples[eid]))
+            effective_buckets.append(infer_bucket_metadata(eid, med_v))
+
+        bucket_ids = [b["id"] for b in effective_buckets]
+        strata_map = {b["id"]: str(b.get("stratum") or "M_MID_UB") for b in effective_buckets}
+        spec_priors = {
+            b["id"]: float(b.get("prior_w") or (1.0 / max(1, len(effective_buckets))))
+            for b in effective_buckets
+        }
+
         active_sha = ledger.active_board_sha or (sha_order[-1] if sha_order else None)
-        active_timings = timings_by_sha.get(active_sha or "", {})
+        active_tel = tel_by_sha.get(active_sha or "", {})
+        active_timings = robust_by_sha.get(active_sha or "", {})
         preferred_mod = modality_by_sha.get(active_sha or "", "none")
         if preferred_mod == "none":
             preferred_mod = (
@@ -788,107 +1034,146 @@ class BenchmarkCalibrator:
                 else next((m for m in modality_by_sha.values() if m != "none"), "none")
             )
         preferred_soc = soc_by_sha.get(active_sha or "")
+        preferred_regime = regime_by_sha.get(active_sha or "", "none")
+        if preferred_regime == "none":
+            preferred_regime = (
+                "fast_single_session_l0"
+                if any(r == "fast_single_session_l0" for r in regime_by_sha.values())
+                else next((r for r in regime_by_sha.values() if r != "none"), "none")
+            )
 
-        def _is_compatible_obs(csha: str) -> bool:
-            if modality_by_sha.get(csha) != preferred_mod or not timings_by_sha.get(csha):
-                return False
-            # Host-enqueue / aclrtRecordEvent modalities (`exec`, `dev_us`) have different floors across SoCs!
-            if preferred_mod in ("exec", "dev_us") and preferred_soc and soc_by_sha.get(csha) != preferred_soc:
-                return False
-            return True
-
-        # Backfill buckets added in later benchmark revisions with their earliest observed baseline tau
-        completed_timings_by_sha: dict[str, dict[str, float]] = {}
-        for csha, t_map in timings_by_sha.items():
-            if _is_compatible_obs(csha):
-                merged_t = dict(earliest_tau)
-                merged_t.update(t_map)
-                completed_timings_by_sha[csha] = merged_t
-            else:
-                completed_timings_by_sha[csha] = dict(t_map)
-
-        theta0 = self._compute_theta0(title, buckets, pooled_torch, observed_min_tau, ledger)
-        w0 = [float(b.get("prior_w") or (1.0 / max(1, len(buckets)))) for b in buckets]
-        caps = [float(b.get("max_w") or (0.04 if b.get("stratum") == "X_EXTREME" else 0.25)) for b in buckets]
-        pub_ratio = (ledger.public_score / ledger.current_score) if ledger.current_score > 0 else 0.13
-
-        def _solve_beta_for_weights(cur_w: list[float]) -> float:
-            act_comp = completed_timings_by_sha.get(active_sha or "", {})
-            if active_sha and act_comp and ledger.hidden_score > 0 and _is_compatible_obs(active_sha):
-                return self._fit_beta_scalar(buckets, theta0, cur_w, act_comp, ledger.hidden_score)
-            paired_betas: list[float] = []
-            for csha in sha_order:
-                if _is_compatible_obs(csha):
-                    s_med = sorted(sha_draws[csha])[len(sha_draws[csha]) // 2]
-                    y_h = max(0.0, s_med * (1.0 - pub_ratio))
-                    paired_betas.append(self._fit_beta_scalar(buckets, theta0, cur_w, completed_timings_by_sha[csha], y_h))
-            return round(sum(paired_betas) / len(paired_betas), 5) if paired_betas else 1.0
-
-        # Joint 3-pass Block-Coordinate MAP update for `(beta_p, w_hat)` under homogeneous modality
-        w_cur = project_capped_simplex(w0, caps) if w0 else []
-        beta_p = _solve_beta_for_weights(w_cur)
-        phi_rows: list[list[float]] = []
-        y_targets: list[float] = []
-        s_weights: list[float] = []
-        paired_shas: list[str] = []
-        diag_var = [0.0025] * len(w0)
-
-        for _alt in range(3):
-            phi_rows = []
-            y_targets = []
-            s_weights = []
-            paired_shas = []
-            for csha in sha_order:
-                if not _is_compatible_obs(csha):
+        # Build strictly same-(modality, soc, regime) pairwise observations (i < j)
+        pairs: list[dict[str, Any]] = []
+        paired_shas_set: set[str] = set()
+        for i in range(len(sha_order)):
+            for j in range(i + 1, len(sha_order)):
+                sa, sb = sha_order[i], sha_order[j]
+                if modality_by_sha.get(sa) != preferred_mod or modality_by_sha.get(sb) != preferred_mod:
                     continue
-                t_map = completed_timings_by_sha[csha]
-                draws = sorted(sha_draws[csha])
-                s_cnt = draws[len(draws) // 2]
-                s_pub_est = ledger.public_score if csha == ledger.active_board_sha else min(9.5, round(s_cnt * pub_ratio, 2))
-                y_hid = max(0.0, min(90.0, s_cnt - s_pub_est))
-                phi_m = self._build_phi_vector(buckets, theta0, t_map, beta_p, ledger.implied_hidden_r or (y_hid / 90.0))
-                phi_rows.append(phi_m)
-                y_targets.append(y_hid)
-                sw = min(3.0, float(len(draws))) * (1.8 if csha == active_sha else 1.0)
-                s_weights.append(sw)
-                paired_shas.append(csha)
-            if len(phi_rows) >= 2:
-                w_cur, diag_var = self._fit_simplex_map(w0, caps, phi_rows, y_targets, s_weights)
-                beta_p = _solve_beta_for_weights(w_cur)
-            else:
-                break
+                if regime_by_sha.get(sa) != regime_by_sha.get(sb) or regime_by_sha.get(sa) == "none":
+                    continue
+                if soc_by_sha.get(sa) and soc_by_sha.get(sb) and soc_by_sha[sa] != soc_by_sha[sb]:
+                    continue
+                ta, tb = robust_by_sha.get(sa, {}), robust_by_sha.get(sb, {})
+                if len(set(ta) & set(tb)) < 3:
+                    continue
+                ra = max(0.20, min(0.88, (sha_scores[sa] * 0.87) / 90.0))
+                sw = (1.5 if regime_by_sha[sa] == preferred_regime else 0.5) * (1.4 if j == i + 1 else 0.7)
+                ba, bb = bin_bytes_by_sha.get(sa), bin_bytes_by_sha.get(sb)
+                dlb = math.log(bb / ba) if (ba and bb and ba > 0 and bb > 0) else None
+                pairs.append({
+                    "sa": sa,
+                    "sb": sb,
+                    "t_a": ta,
+                    "t_b": tb,
+                    "dy": sha_scores[sb] - sha_scores[sa],
+                    "r_a": ra,
+                    "sw": sw,
+                    "d_log_bytes": dlb,
+                })
+                paired_shas_set.add(sa)
+                paired_shas_set.add(sb)
 
-        w_hat = w_cur
+        paired_shas = [s for s in sha_order if s in paired_shas_set]
 
-        # Evaluate historical observation ledger & residuals
+        # Fit v2 Pairwise Correlation-Adaptive Simplex-MAP + Transfer Gain + Cold-Start slope
+        fit = fit_pairwise_simplex_map(
+            bucket_ids=bucket_ids,
+            strata=strata_map,
+            spec_priors=spec_priors,
+            pairs=pairs,
+            min_tau=observed_min_tau,
+        )
+        w0 = fit["w0"]
+        w_hat = fit["w_hat"]
+        diag_var = fit["diag_var"]
+        transfer_gamma = float(fit["transfer_gamma"])
+        alpha_cold = float(fit["alpha_cold"])
+        b_corr = fit["bucket_correlations"]
+        b_npairs = fit["bucket_pair_counts"]
+
+        # True Leave-One-SHA-Out Cross-Validation for honest out-of-sample reliability
+        cv = compute_loso_cv(
+            bucket_ids=bucket_ids,
+            strata=strata_map,
+            spec_priors=spec_priors,
+            sha_order=sha_order,
+            sha_scores=sha_scores,
+            sha_timings=robust_by_sha,
+            sha_regimes=regime_by_sha,
+            sha_socs=soc_by_sha,
+            sha_bin_bytes=bin_bytes_by_sha,
+            min_tau=observed_min_tau,
+        )
+
+        # Anchor-calibrated `theta0` & sane bounded `beta_p` (for display & backward compatibility)
+        theta0 = self._compute_theta0(title, effective_buckets, pooled_torch, observed_min_tau, ledger)
+        # Keep beta_p bounded strictly away from dead-zone saturation!
+        raw_beta = (
+            self._fit_beta_scalar(effective_buckets, theta0, w_hat, active_timings, ledger.hidden_score)
+            if (active_timings and ledger.hidden_score > 0 and w_hat)
+            else 1.0
+        )
+        beta_p = round(max(0.30, min(1.35, raw_beta)), 5)
+
+        # Build observation ledger + High-Residual & Sign-Flip event audit across consecutive Pass SHAs
         obs_ledger: list[dict[str, Any]] = []
+        high_residual_events: list[dict[str, Any]] = []
+        cv_by_cand = {row["cand_sha"]: row for row in (cv.get("cv_transitions") or [])}
         abs_errs: list[float] = []
         sq_errs: list[float] = []
         last_pred: float | None = None
         last_actual: float | None = None
         last_res: float | None = None
 
-        for csha in sha_order:
-            raw_t_map = timings_by_sha.get(csha, {})
-            comp_t_map = completed_timings_by_sha.get(csha, {})
-            same_mod = _is_compatible_obs(csha)
-            draws = sorted(sha_draws[csha])
-            s_cnt = round(draws[len(draws) // 2], 2)
-            s_raw = round(sorted(sha_raw[csha])[len(sha_raw[csha]) // 2], 2)
-            s_pub_est = ledger.public_score if csha == ledger.active_board_sha else min(9.5, round(s_cnt * pub_ratio, 2))
-            if raw_t_map and same_mod and w_hat:
-                phi_m = self._build_phi_vector(buckets, theta0, comp_t_map, beta_p, ledger.implied_hidden_r or 0.5)
-                pred_sc = round(s_pub_est + sum(wk * pk for wk, pk in zip(w_hat, phi_m)), 2)
+        for idx_s, csha in enumerate(sha_order):
+            raw_t_map = robust_by_sha.get(csha, {})
+            s_cnt = round(sha_scores[csha], 2)
+            s_raw = round(float(statistics.median(sha_raw[csha])), 2)
+            cv_row = cv_by_cand.get(csha)
+            pred_sc: float | None = None
+            res_pts: float | None = None
+
+            if cv_row is not None and idx_s > 0:
+                prev_sha = cv_row["base_sha"]
+                prev_sc = round(sha_scores[prev_sha], 2)
+                pred_d = float(cv_row["cv_pred_delta"])
+                act_d = float(cv_row["actual_delta"])
+                pred_sc = round(max(0.0, min(98.0, prev_sc + pred_d)), 2)
                 res_pts = round(s_cnt - pred_sc, 2)
                 abs_errs.append(abs(res_pts))
                 sq_errs.append(res_pts * res_pts)
                 last_pred = pred_sc
                 last_actual = s_cnt
                 last_res = res_pts
-            else:
-                pred_sc = s_cnt if (csha == ledger.active_board_sha and not raw_t_map) else None
-                res_pts = 0.0 if pred_sc is not None else None
-                if pred_sc is not None:
+
+                is_sign_flip = (act_d >= 2.0 and pred_d <= -1.0) or (act_d <= -2.0 and pred_d >= 1.0)
+                if abs(res_pts) >= 3.0 or is_sign_flip:
+                    causes = classify_residual_causes(
+                        title=title,
+                        base_tel=tel_by_sha.get(prev_sha, {}),
+                        cand_tel=tel_by_sha.get(csha, {}),
+                        spec_bucket_ids=spec_ids,
+                        bucket_correlations=b_corr,
+                        actual_delta=act_d,
+                        pred_delta=pred_d,
+                        thermal_drift_us=float(cv_row.get("thermal_drift_us", 0.0)),
+                    )
+                    high_residual_events.append({
+                        "base_sha": prev_sha[:7],
+                        "cand_sha": csha[:7],
+                        "cand_full_sha": csha,
+                        "actual_delta": round(act_d, 2),
+                        "pred_delta": round(pred_d, 2),
+                        "residual_eps": round(res_pts, 2),
+                        "sign_flip": is_sign_flip,
+                        "thermal_drift_us": cv_row.get("thermal_drift_us", 0.0),
+                        "causes": causes,
+                    })
+            elif csha == active_sha:
+                pred_sc = s_cnt
+                res_pts = 0.0
+                if last_pred is None:
                     last_pred = pred_sc
                     last_actual = s_cnt
                     last_res = 0.0
@@ -897,39 +1182,51 @@ class BenchmarkCalibrator:
                 "sha": csha,
                 "short_sha": csha[:7],
                 "modality": modality_by_sha.get(csha, "none"),
+                "regime": regime_by_sha.get(csha, "none"),
                 "raw_score": s_raw,
                 "contemporary_score": s_cnt,
                 "predicted_score": pred_sc,
                 "residual_pts": res_pts,
                 "paired_buckets": len(raw_t_map),
-                "total_buckets": len(buckets),
+                "total_buckets": len(effective_buckets),
+                "kernel_o_max_bytes": bin_bytes_by_sha.get(csha),
             })
 
-        mae_pts = round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else (0.0 if last_pred is not None else None)
-        rmse_pts = round(math.sqrt(sum(sq_errs) / len(sq_errs)), 2) if sq_errs else mae_pts
+        mae_pts = cv["loocv_mae_pts"] if cv["loocv_mae_pts"] is not None else (
+            round(sum(abs_errs) / len(abs_errs), 2) if abs_errs else (0.0 if last_pred is not None else None)
+        )
+        rmse_pts = cv["loocv_rmse_pts"] if cv["loocv_rmse_pts"] is not None else (
+            round(math.sqrt(sum(sq_errs) / len(sq_errs)), 2) if sq_errs else mae_pts
+        )
 
-        # Active bucket ROI & 5-stratum summary (`PUBLIC` + 4 hidden strata on 100-pt scale)
+        # Spec-level unpaired census (preserves exact B0 backfill contract!)
+        exact_active_timings: dict[str, float] = {}
+        if active_sha and spec_buckets:
+            exact_active_timings, _, _, _ = self._extract_bucket_timings(
+                title, active_sha, spec_buckets, allow_future_siblings=(as_of is None)
+            )
+        unpaired_buckets = [b["id"] for b in spec_buckets if b["id"] not in exact_active_timings]
+
+        # Active bucket ROI & 5-stratum summary
         active_phi = (
-            self._build_phi_vector(buckets, theta0, active_timings, beta_p, ledger.implied_hidden_r)
-            if buckets
+            self._build_phi_vector(effective_buckets, theta0, active_timings, beta_p, ledger.implied_hidden_r)
+            if effective_buckets
             else []
         )
-        unpaired_buckets = [b["id"] for b in buckets if b["id"] not in active_timings]
-
         buckets_out: list[dict[str, Any]] = []
         strat_prior_hid: dict[str, float] = {k: 0.0 for k in HIDDEN_STRATA_PRIORS}
         strat_learn_hid: dict[str, float] = {k: 0.0 for k in HIDDEN_STRATA_PRIORS}
         strat_pts_raw: dict[str, float] = {k: 0.0 for k in HIDDEN_STRATA_PRIORS}
 
-        for idx, b in enumerate(buckets):
-            st_name = b["stratum"]
-            pw = w0[idx]
-            lw = w_hat[idx]
+        for idx, b in enumerate(effective_buckets):
+            bid = b["id"]
+            st_name = str(b.get("stratum") or "M_MID_UB")
+            pw = w0[idx] if idx < len(w0) else 0.0
+            lw = w_hat[idx] if idx < len(w_hat) else 0.0
             r_k = round(active_phi[idx] / 90.0, 4) if active_phi else ledger.implied_hidden_r
             cur_b_pts = round(90.0 * lw * r_k, 3)
             max_b_pts = round(90.0 * lw, 3)
             hr_b_pts = round(max(0.0, max_b_pts - cur_b_pts), 3)
-            # Marginal gain from a 2.0x speedup on bucket k: 90 * lw * (min(1, 2*r_k) - r_k)
             gain_2x = round(90.0 * lw * max(0.0, min(1.0, 2.0 * r_k) - r_k), 3)
 
             strat_prior_hid[st_name] = strat_prior_hid.get(st_name, 0.0) + pw
@@ -937,16 +1234,20 @@ class BenchmarkCalibrator:
             strat_pts_raw[st_name] = strat_pts_raw.get(st_name, 0.0) + cur_b_pts
 
             buckets_out.append({
-                "id": b["id"],
+                "id": bid,
                 "stratum": st_name,
                 "dtype": b.get("dtype", "float32"),
                 "description": b.get("description", ""),
+                "source": b.get("source", "spec" if bid in spec_id_set else "auto_discovered"),
+                "in_spec": bid in spec_id_set,
                 "theta0_us": theta0[idx],
-                "tau_active_us": round(active_timings[b["id"]], 3) if b["id"] in active_timings else None,
-                "observed": b["id"] in active_timings,
+                "tau_active_us": round(active_timings[bid], 3) if bid in active_timings else None,
+                "observed": bid in active_timings,
                 "prior_w": round(pw, 5),
                 "learned_w": round(lw, 5),
-                "posterior_std_w": round(math.sqrt(diag_var[idx]), 5),
+                "posterior_std_w": round(math.sqrt(diag_var[idx]), 5) if idx < len(diag_var) else 0.05,
+                "empirical_corr": b_corr.get(bid),
+                "empirical_pairs": b_npairs.get(bid, 0),
                 "efficiency_r": round(r_k, 3),
                 "current_pts": round(cur_b_pts, 2),
                 "max_pts": round(max_b_pts, 2),
@@ -954,12 +1255,15 @@ class BenchmarkCalibrator:
                 "marginal_pts_per_2x": round(gain_2x, 2),
             })
 
-        # Scale hidden stratum current_pts gently if board is live so sum(strata.current_pts) == ledger.current_score
         sum_hid_model = sum(strat_pts_raw.values())
-        hid_scale = (ledger.hidden_score / sum_hid_model) if (ledger.current_score > 0 and sum_hid_model > 1e-6) else (0.0 if ledger.current_score <= 0 else 1.0)
+        hid_scale = (
+            (ledger.hidden_score / sum_hid_model)
+            if (ledger.current_score > 0 and sum_hid_model > 1e-6)
+            else (0.0 if ledger.current_score <= 0 else 1.0)
+        )
 
         strata_summary: list[dict[str, Any]] = []
-        for s_key, s_label, default_pw100 in STRATA_ORDER:
+        for s_key, s_label, _default_pw100 in STRATA_ORDER:
             if s_key == "PUBLIC":
                 pub_eff = round(min(1.0, ledger.public_score / 10.0), 3) if ledger.public_score > 0 else 0.0
                 strata_summary.append({
@@ -993,53 +1297,70 @@ class BenchmarkCalibrator:
                     "headroom_pts": round(max(0.0, max_s_pts - cur_s_pts), 2),
                 })
 
-        # Three Closed-Loop Residual Diagnostic Triggers
+        # Closed-loop diagnostic triggers (v2 upgraded!)
         diagnostics: list[dict[str, Any]] = []
         if unpaired_buckets:
             missing_dtypes = sorted({
-                b["dtype"] for b in buckets if b["id"] in unpaired_buckets and b["stratum"] == "M_MID_UB"
+                b["dtype"] for b in spec_buckets if b["id"] in unpaired_buckets and b["stratum"] == "M_MID_UB"
             })
             diagnostics.append({
                 "code": "UNPAIRED_BUCKETS",
                 "severity": "warning" if len(unpaired_buckets) >= 4 else "info",
                 "message": (
-                    f"{len(unpaired_buckets)}/{len(buckets)} hidden proxy buckets lack local timings "
+                    f"{len(unpaired_buckets)}/{len(spec_buckets)} spec buckets lack direct timings "
                     f"(examples: {', '.join(unpaired_buckets[:4])})"
                     + (f"; missing M_MID_UB dtypes={missing_dtypes}" if missing_dtypes else "")
                 ),
             })
 
-        ext_pw = strat_prior_hid.get("X_EXTREME", 0.15)
-        ext_lw = strat_learn_hid.get("X_EXTREME", 0.15)
-        if ext_pw - ext_lw >= 0.015:
+        if extra_ids:
+            high_sig_extra = [eid for eid in extra_ids if (b_corr.get(eid) or 0.0) >= 0.35]
             diagnostics.append({
-                "code": "PRUNE_PHANTOM_WEIGHT",
-                "severity": "high",
+                "code": "UNTRACKED_EXTRA_BUCKETS",
+                "severity": "high" if (len(high_sig_extra) >= 2 or len(unpaired_buckets) >= len(spec_buckets)) else "info",
                 "message": (
-                    f"Simplex MAP pruned X_EXTREME weight {ext_pw:.3f} -> {ext_lw:.3f} "
-                    f"after online score gap showed synthetic tail speedups over-predicted hidden gains"
+                    f"{len(extra_ids)} logged profiler bucket(s) outside cases_perf.json auto-included in v2 model"
+                    + (f" ({len(high_sig_extra)} high-corr >= +0.35: {', '.join(high_sig_extra[:4])}); run `opsb bench evolve {title}`" if high_sig_extra else f"; run `opsb bench evolve {title}` to promote")
                 ),
             })
 
-        # Detect prologue/small-core regression across consecutive commits (e.g. ConcatD 899a2dc -> 2dd9acd)
-        if len(paired_shas) >= 2:
-            s_prev, s_last = paired_shas[-2], paired_shas[-1]
-            t_prev, t_last = timings_by_sha[s_prev], timings_by_sha[s_last]
-            small_regs = [
-                b["id"]
-                for b in buckets
-                if b["stratum"] == "S_SMALL_CORE"
-                and b["id"] in t_prev
-                and b["id"] in t_last
-                and t_last[b["id"]] > t_prev[b["id"]] * 1.06
-            ]
-            if small_regs and sha_draws[s_last][-1] < sha_draws[s_prev][-1] - 2.0:
+        anti_corr_buckets = sorted(
+            [(k, c) for k, c in b_corr.items() if b_npairs.get(k, 0) >= 4 and c <= -0.25],
+            key=lambda x: x[1],
+        )
+        if anti_corr_buckets:
+            diagnostics.append({
+                "code": "ANTI_CORR_SUPPRESSED",
+                "severity": "warning",
+                "message": (
+                    f"Pairwise v2 suppressed {len(anti_corr_buckets)} anti-correlated bucket(s): "
+                    + ", ".join(f"{k}(r={c:+.2f})" for k, c in anti_corr_buckets[:4])
+                ),
+            })
+
+        if high_residual_events:
+            latest_ev = high_residual_events[-1]
+            diagnostics.append({
+                "code": "HIGH_RESIDUAL_EVENT",
+                "severity": "high" if latest_ev["sign_flip"] or abs(latest_ev["residual_eps"]) >= 5.0 else "warning",
+                "message": (
+                    f"{len(high_residual_events)} high-residual/sign-flip event(s); latest "
+                    f"{latest_ev['base_sha']}->{latest_ev['cand_sha']}: actual={latest_ev['actual_delta']:+.2f} vs "
+                    f"cv_pred={latest_ev['pred_delta']:+.2f} (eps={latest_ev['residual_eps']:+.2f}, causes={latest_ev['causes']})"
+                ),
+            })
+
+        # Binary cold-start bloat check on latest two observations with `.o` stats
+        bin_obs = [s for s in sha_order if bin_bytes_by_sha.get(s)]
+        if len(bin_obs) >= 2:
+            b_prev, b_cur = bin_bytes_by_sha[bin_obs[-2]], bin_bytes_by_sha[bin_obs[-1]]
+            if b_prev and b_cur and b_cur > 131072 and b_cur > b_prev * 1.20:
                 diagnostics.append({
-                    "code": "PROLOGUE_TAX_ALERT",
+                    "code": "BINARY_BLOAT_ALERT",
                     "severity": "high",
                     "message": (
-                        f"S_SMALL_CORE latency regressed on {small_regs} ({s_prev[:7]} -> {s_last[:7]}), "
-                        f"driving {sha_draws[s_last][-1] - sha_draws[s_prev][-1]:+.2f} pt online drop via high-r harmonic derivative"
+                        f"Compiled kernel .o grew {b_prev/1024:.1f}KB -> {b_cur/1024:.1f}KB "
+                        f"({100*(b_cur-b_prev)/b_prev:+.1f}%) on {bin_obs[-1][:7]}; risk of 3-run cold-start penalty"
                     ),
                 })
 
@@ -1063,23 +1384,28 @@ class BenchmarkCalibrator:
             })
 
         buckets_ranked = sorted(buckets_out, key=lambda x: (x["headroom_pts"], x["marginal_pts_per_2x"]), reverse=True)
+        active_regime = regime_by_sha.get(active_sha or "", "none")
 
-        active_regime = (
-            self._regime_cache.get((title, active_sha, "soc-a" if as_of is None else None), "none")
-            if active_sha
-            else "none"
-        )
         cal_doc = {
+            "model_version": MODEL_VERSION,
             "title": title,
             "updated_at": _utc_now(),
             "active_board_sha": active_sha,
             "active_profiler_regime": active_regime,
             "observations_m": len(sha_order),
-            "paired_observations_m": len(phi_rows),
+            "paired_observations_m": len(paired_shas),
+            "pairwise_count": len(pairs),
             "beta_tightness": beta_p,
+            "transfer_gamma": transfer_gamma,
+            "alpha_cold": alpha_cold,
             "decay_factor_gamma": ledger.decay_factor_gamma,
             "mae_pts": mae_pts,
             "rmse_pts": rmse_pts,
+            "loocv_mae_pts": cv["loocv_mae_pts"],
+            "loocv_rmse_pts": cv["loocv_rmse_pts"],
+            "loocv_spearman": cv["loocv_spearman"],
+            "loocv_dir_acc": cv["loocv_dir_acc"],
+            "calibration_trust": cv["calibration_trust"],
             "last_predicted_score": last_pred,
             "last_actual_score": last_actual,
             "last_residual_pts": last_res,
@@ -1088,15 +1414,27 @@ class BenchmarkCalibrator:
             "escape_full_sha": esc_info["escape_sha"],
             "escape_status": esc_info["escape_status"],
             "escaped_commits": esc_info["escaped_commits"],
+            "spec_bucket_count": len(spec_buckets),
+            "effective_bucket_count": len(effective_buckets),
+            "extra_discovered_buckets": extra_ids,
             "unpaired_bucket_count": len(unpaired_buckets),
             "unpaired_buckets": unpaired_buckets,
+            "high_residual_events": high_residual_events,
             "diagnostics": diagnostics,
             "strata": strata_summary,
             "buckets": buckets_ranked,
-            "posterior_diag_var": [round(v, 6) for v in diag_var],
+            "posterior_diag_var": diag_var,
             "theta0_us": theta0,
-            "bucket_order": [b["id"] for b in buckets],
+            "observed_min_tau": {k: round(v, 4) for k, v in observed_min_tau.items()},
+            "bucket_order": bucket_ids,
+            "bucket_strata_order": [strata_map[bid] for bid in bucket_ids],
             "learned_weights_order": w_hat,
+            "bucket_correlations": b_corr,
+            "bucket_pair_counts": b_npairs,
+            "cold_start_telemetry": {
+                "active_kernel_o_max_bytes": bin_bytes_by_sha.get(active_sha or ""),
+                "active_cold_start_stats": active_tel.get("cold_start_stats") or {},
+            },
             "coverage_grid": cov_grid,
             "observation_ledger": obs_ledger,
         }
@@ -1107,6 +1445,12 @@ class BenchmarkCalibrator:
             tmp = out_file.with_suffix(".tmp")
             tmp.write_text(json.dumps(cal_doc, indent=2, ensure_ascii=False) + "\n")
             tmp.replace(out_file)
+            # Auto-persist structured bench feedback whenever high-residual events are detected
+            if high_residual_events:
+                try:
+                    self._write_feedback_from_cal(title, cal_doc, perf_spec, observed_samples)
+                except Exception:
+                    pass
 
         return cal_doc
 
@@ -1115,7 +1459,6 @@ class BenchmarkCalibrator:
         if c_key in self._cal_cache:
             return self._cal_cache[c_key]
         if as_of is not None:
-            # Causal key: depends only on number of outcomes strictly before `as_of`!
             n_prior = len(self.estimator._filtered_outcomes(title, as_of=as_of))
             n_key = (title, f"N={n_prior}")
             if n_key in self._cal_cache:
@@ -1129,14 +1472,15 @@ class BenchmarkCalibrator:
         if cal_file.is_file():
             try:
                 doc = json.loads(cal_file.read_text())
-                esc = self.inspect_escape_state(title)
-                doc["escape_lock"] = esc["escape_lock"]
-                doc["escape_sha"] = esc["escape_short_sha"]
-                doc["escape_full_sha"] = esc["escape_sha"]
-                doc["escape_status"] = esc["escape_status"]
-                doc["escaped_commits"] = esc["escaped_commits"]
-                self._cal_cache[c_key] = doc
-                return doc
+                if doc.get("model_version") == MODEL_VERSION:
+                    esc = self.inspect_escape_state(title)
+                    doc["escape_lock"] = esc["escape_lock"]
+                    doc["escape_sha"] = esc["escape_short_sha"]
+                    doc["escape_full_sha"] = esc["escape_sha"]
+                    doc["escape_status"] = esc["escape_status"]
+                    doc["escaped_commits"] = esc["escaped_commits"]
+                    self._cal_cache[c_key] = doc
+                    return doc
             except Exception:
                 pass
         doc = self.calibrate_problem(title, persist=True)
@@ -1151,143 +1495,378 @@ class BenchmarkCalibrator:
         ledger: ProblemLedger,
         as_of: datetime.datetime | None = None,
         fast_cached_cal: bool = False,
+        noise_floor_pts: float = 2.5,
     ) -> dict[str, Any] | None:
-        """Predict candidate score & delta using calibrated Simplex MAP weights when bucket timings exist.
-
-        Uses anchored differential prediction:
-            S_hat(cand) = S_anchor + sum_k w_hat_k * (Phi_k(cand) - Phi_k(base)) + dS_pub
-        so zero-change commits evaluate to `delta = 0.0` and harmonic saturation `min(1, beta*theta0/tau)`
-        naturally bounds extreme-tail speedups while penalizing small-core regressions!
-        """
-        perf_spec = self.load_perf_spec(title)
-        buckets = list(perf_spec.get("hidden_buckets") or [])
-        if not buckets:
+        """Predict candidate score, uncertainty sigma, and `EXPLORE` upside using Pairwise v2.0 model."""
+        if not cand_sha or not base_sha:
             return None
 
-        cand_timings, cand_torch, cand_soc, cand_mod = self._extract_bucket_timings(
-            title, cand_sha, buckets, allow_future_siblings=(as_of is None)
+        cand_tel = self._extract_full_telemetry(title, cand_sha, allow_future_siblings=(as_of is None))
+        if not cand_tel["robust_cases"] or cand_tel["modality"] != "profiler":
+            return None
+
+        base_tel = self._extract_full_telemetry(
+            title, base_sha, target_soc=cand_tel["soc"], allow_future_siblings=(as_of is None)
         )
-        cand_regime = self._regime_cache.get((title, cand_sha, "soc-a" if as_of is None else None), "none")
-        # Simplex-MAP bucket model operates strictly on hardware `profiler` Task Duration buckets!
-        if not cand_timings or cand_mod != "profiler":
+        if not base_tel["robust_cases"] or base_tel["modality"] != "profiler":
             return None
 
-        base_timings: dict[str, float] = {}
-        base_regime = "none"
-        if base_sha:
-            base_timings, base_torch, _, base_mod = self._extract_bucket_timings(
-                title, base_sha, buckets, target_soc=cand_soc, allow_future_siblings=(as_of is None)
-            )
-            base_regime = self._regime_cache.get((title, base_sha, cand_soc if as_of is None else None), "none")
-            if base_mod != "profiler":
-                return None
-        else:
-            base_torch = {}
+        cand_rob = cand_tel["robust_cases"]
+        base_rob = base_tel["robust_cases"]
+        common_all = sorted(set(cand_rob) & set(base_rob))
+        if len(common_all) < 3:
+            return None
 
+        cand_regime = cand_tel["regime"]
+        base_regime = base_tel["regime"]
+        # Regime mismatch guard is ALWAYS active (both live and causal replay!)
         regime_mismatch = bool(
-            as_of is None
-            and base_sha
-            and cand_regime != "none"
-            and base_regime != "none"
-            and cand_regime != base_regime
+            cand_regime != "none" and base_regime != "none" and cand_regime != base_regime
         )
-
-        common_buckets = [b["id"] for b in buckets if b["id"] in cand_timings and b["id"] in base_timings]
-        if len(common_buckets) < 3:
-            return None
 
         cal = self.load_or_calibrate(title, as_of=None if fast_cached_cal else as_of)
-        beta_p = float(cal.get("beta_tightness") or 1.0)
-        obs_min = {k: min(cand_timings[k], base_timings[k]) for k in common_buckets}
-        theta0 = list(cal.get("theta0_us") or self._compute_theta0(title, buckets, {**base_torch, **cand_torch}, obs_min, ledger))
-        w_hat = list(cal.get("learned_weights_order") or [float(b.get("prior_w", 1.0 / len(buckets))) for b in buckets])
-        diag_var = list(cal.get("posterior_diag_var") or [0.0025] * len(buckets))
+        perf_spec = self.load_perf_spec(title)
+        spec_ids = [b["id"] for b in (perf_spec.get("hidden_buckets") or []) if isinstance(b, dict) and b.get("id")]
 
-        if len(w_hat) != len(buckets) or len(theta0) != len(buckets):
-            return None
+        # Merge calibrated bucket order + any newly observed candidate/baseline buckets
+        cal_ids = list(cal.get("bucket_order") or [])
+        cal_strata_list = list(cal.get("bucket_strata_order") or [])
+        cal_w = list(cal.get("learned_weights_order") or [])
+        cal_var = list(cal.get("posterior_diag_var") or [])
+        b_corr = dict(cal.get("bucket_correlations") or {})
+        b_npairs = dict(cal.get("bucket_pair_counts") or {})
+        min_tau = dict(cal.get("observed_min_tau") or {})
+        transfer_gamma = float(cal.get("transfer_gamma") or 0.75)
+        alpha_cold = float(cal.get("alpha_cold") or 0.0)
+        cal_trust = float(cal.get("calibration_trust") or 0.35)
+        loocv_mae = cal.get("loocv_mae_pts")
+        last_res = cal.get("last_residual_pts")
+
+        w_map = {bid: float(cal_w[i]) for i, bid in enumerate(cal_ids) if i < len(cal_w)}
+        var_map = {bid: float(cal_var[i]) for i, bid in enumerate(cal_ids) if i < len(cal_var)}
+        strata_map = {bid: str(cal_strata_list[i]) for i, bid in enumerate(cal_ids) if i < len(cal_strata_list)}
+
+        all_bucket_ids = list(dict.fromkeys(cal_ids + common_all))
+        for bid in all_bucket_ids:
+            if bid in cand_rob and bid in base_rob:
+                mv = min(cand_rob[bid], base_rob[bid])
+                if bid not in min_tau or mv < min_tau[bid]:
+                    min_tau[bid] = mv
+            if bid not in strata_map:
+                strata_map[bid] = infer_bucket_metadata(bid, min_tau.get(bid, 8.0))["stratum"]
+            if bid not in w_map:
+                w_map[bid] = 1.0 / max(1, len(all_bucket_ids))
+            if bid not in var_map:
+                var_map[bid] = 0.003
+
+        # Thermal / clock flat-floor drift cancellation (same-regime only)
+        thermal_drift_us = 0.0
+        cand_eff = cand_rob
+        if not regime_mismatch:
+            thermal_drift_us, cand_eff = detect_thermal_drift(base_rob, cand_rob)
 
         anchor_sc = ledger.current_score if ledger.current_score > 0 else (ledger.contemporary_best_score or 45.0)
-        fallback_r = ledger.implied_hidden_r if ledger.implied_hidden_r > 0 else max(0.1, (anchor_sc * 0.87) / 90.0)
+        r_anchor = ledger.implied_hidden_r if ledger.implied_hidden_r > 0 else max(0.20, min(0.88, (anchor_sc * 0.87) / 90.0))
 
-        phi_base = self._build_phi_vector(buckets, theta0, base_timings, beta_p, fallback_r)
-        phi_cand = self._build_phi_vector(buckets, theta0, cand_timings, beta_p, fallback_r)
+        dphi = build_pairwise_phi_delta(all_bucket_ids, base_rob, cand_eff, min_tau, r_anchor)
+        common_mask = [(bid in base_rob and bid in cand_eff) for bid in all_bucket_ids]
+        obs_w = sum(w_map[bid] for bid, fl in zip(all_bucket_ids, common_mask) if fl) or 1.0
 
-        delta_hid = 0.0
-        epistemic_var = 0.0
+        raw_hid_weighted = sum((w_map[bid] / obs_w) * dp for bid, dp, fl in zip(all_bucket_ids, dphi, common_mask) if fl)
+        raw_delta = transfer_gamma * raw_hid_weighted
+
+        # Compiled `.o` binary-size cold-start adjustment (when recorded on both base & cand)
+        b_bytes = (base_tel.get("kernel_binary_stats") or {}).get("max_bytes")
+        c_bytes = (cand_tel.get("kernel_binary_stats") or {}).get("max_bytes")
+        binary_delta_pct: float | None = None
+        cold_adj = 0.0
+        if isinstance(b_bytes, (int, float)) and isinstance(c_bytes, (int, float)) and b_bytes > 0 and c_bytes > 0:
+            binary_delta_pct = round(100.0 * (c_bytes - b_bytes) / b_bytes, 2)
+            dlb = math.log(c_bytes / b_bytes)
+            if alpha_cold < -1e-4:
+                cold_adj = max(-5.0, min(3.0, alpha_cold * dlb))
+            elif c_bytes > 131072 and binary_delta_pct >= 25.0:
+                # Conservative prior cold-start penalty for severe `.o` bloat (>128KB & +25%)
+                cold_adj = -min(3.0, 2.5 * dlb)
+            raw_delta += cold_adj
+
+        # Regime mismatch handling: protect compute-bound (>=15us) gains, damp small-kernel floor shift
+        if regime_mismatch:
+            big_num = 0.0
+            big_den = 0.0
+            for bid, dp, fl in zip(all_bucket_ids, dphi, common_mask):
+                if fl and base_rob[bid] >= 15.0:
+                    big_num += w_map[bid] * dp
+                    big_den += w_map[bid]
+            if big_den >= 0.25 * obs_w:
+                raw_delta = 0.55 * transfer_gamma * (big_num / big_den)
+            else:
+                raw_delta = 0.30 * raw_delta
+            if raw_delta > 6.0:
+                raw_delta = 6.0 + 0.30 * (raw_delta - 6.0)
+
+        # Coverage shrinkage when a large fraction of spec buckets are unpaired (e.g., LayerNormV3 *_proxy)
+        matched_spec = sum(1 for sid in spec_ids if sid in base_rob and sid in cand_eff)
+        unpaired_spec_frac = max(0.0, 1.0 - matched_spec / max(1, len(spec_ids))) if spec_ids else 0.0
+        if unpaired_spec_frac >= 0.35 and len(common_all) < 12 and raw_delta > 0:
+            raw_delta *= max(0.65, 1.0 - 0.35 * unpaired_spec_frac)
+
+        # Small-sample extrapolation damping
+        n_pairs = int(cal.get("pairwise_count") or 0)
+        if n_pairs < 4 and abs(raw_delta) > 7.5:
+            sgn = 1.0 if raw_delta > 0 else -1.0
+            raw_delta = sgn * (7.5 + 0.35 * (abs(raw_delta) - 7.5))
+
+        hard_cap = min(98.0, max(ledger.frontier_top1 + 3.0, anchor_sc + 25.0))
+        est_score = max(0.0, min(hard_cap, anchor_sc + max(-25.0, raw_delta)))
+        delta_pred = round(est_score - anchor_sc, 2)
+
+        # Split telemetry counters
         improved = 0
         regressed: list[str] = []
+        epistemic_var = 0.0
+        for bid, dp, fl in zip(all_bucket_ids, dphi, common_mask):
+            if not fl:
+                continue
+            epistemic_var += ((transfer_gamma * dp / obs_w) ** 2) * var_map[bid]
+            ratio = base_rob[bid] / max(1e-6, cand_eff[bid])
+            if ratio > 1.03:
+                improved += 1
+            elif ratio < 0.95:
+                regressed.append(f"{bid}({ratio:.2f}x)")
 
-        for idx, b in enumerate(buckets):
-            bid = b["id"]
-            if bid in cand_timings and bid in base_timings:
-                d_phi = phi_cand[idx] - phi_base[idx]
-                delta_hid += w_hat[idx] * d_phi
-                epistemic_var += (d_phi ** 2) * diag_var[idx]
-                ratio = base_timings[bid] / max(1e-6, cand_timings[bid])
-                if ratio > 1.03:
-                    improved += 1
-                elif ratio < 0.95:
-                    regressed.append(f"{bid}({ratio:.2f}x)")
-
-        # Public 10-pt shift tracks S_SMALL_CORE + M_MID_UB efficiency change (damped by 0.45)
-        small_mid_idx = [
-            i for i, b in enumerate(buckets)
-            if b["stratum"] in ("S_SMALL_CORE", "M_MID_UB") and b["id"] in common_buckets
-        ]
-        if small_mid_idx:
-            sm_w = sum(w_hat[i] for i in small_mid_idx) or 1.0
-            sm_d_r = sum(w_hat[i] * (phi_cand[i] - phi_base[i]) / 90.0 for i in small_mid_idx) / sm_w
-            delta_pub = 10.0 * 0.45 * sm_d_r
-        else:
-            delta_pub = (10.0 / 90.0) * 0.40 * delta_hid
-
-        raw_delta = delta_hid + delta_pub
-        # Guard against phantom speedups when comparing fast_single_session_l0 vs legacy_multiproc_pmu
-        if regime_mismatch and raw_delta > 0:
-            raw_delta *= 0.35
-        # Bayesian shrinkage on large extrapolations when M_paired < 2 (single-anchor regime)
-        m_paired = int(cal.get("paired_observations_m") or 0)
-        if m_paired < 2 and abs(raw_delta) > 6.0:
-            sign = 1.0 if raw_delta > 0 else -1.0
-            raw_delta = sign * (6.0 + 0.55 * (abs(raw_delta) - 6.0))
-        hard_cap = min(98.0, max(ledger.frontier_top1 + 3.0, anchor_sc + 30.0))
-        est_score = max(0.0, min(hard_cap, anchor_sc + raw_delta))
-        unpaired_frac = max(0.0, 1.0 - len(common_buckets) / max(1, len(buckets)))
-        unpaired_sigma = 2.6 * unpaired_frac
-        regime_sigma = 5.0 if regime_mismatch else 0.0
-        total_sigma = math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + epistemic_var + unpaired_sigma ** 2 + regime_sigma ** 2)
-        eff_speedup = round(est_score / anchor_sc, 4) if anchor_sc > 0 else 1.0
-        regime_note = (
-            f" · [REGIME_MISMATCH: base={base_regime} vs cand={cand_regime}; run opsb bench backfill]"
-            if regime_mismatch
-            else ""
+        loocv_extra = max(0.0, (float(loocv_mae) if isinstance(loocv_mae, (int, float)) else 4.8) - SIGMA_HIDDEN_JITTER) * 1.15
+        unpaired_sigma = 2.4 * unpaired_spec_frac if len(common_all) < max(12, len(spec_ids)) else 0.0
+        regime_sigma = 4.5 if regime_mismatch else 0.0
+        total_sigma = round(
+            math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + epistemic_var + loocv_extra ** 2 + unpaired_sigma ** 2 + regime_sigma ** 2),
+            2,
         )
+
+        # Uncertainty-aware EXPLORE channel evaluation
+        explore_ok, ucb_delta, explore_reason, explore_evidence = evaluate_explore_eligibility(
+            delta_pred=delta_pred,
+            sigma_pred=total_sigma,
+            calibration_trust=cal_trust,
+            noise_floor_pts=noise_floor_pts,
+            bucket_ids=all_bucket_ids,
+            strata=strata_map,
+            base_timings=base_rob,
+            cand_timings=cand_eff,
+            bucket_correlations=b_corr,
+            bucket_pair_counts=b_npairs,
+            binary_delta_pct=binary_delta_pct,
+            last_residual_pts=float(last_res) if isinstance(last_res, (int, float)) else None,
+        )
+
+        eff_speedup = round(est_score / anchor_sc, 4) if anchor_sc > 0 else 1.0
+        notes: list[str] = []
+        if thermal_drift_us > 0:
+            notes.append(f"drift=-{thermal_drift_us:.2f}us")
+        if binary_delta_pct is not None:
+            notes.append(f".o={binary_delta_pct:+.1f}%")
+        if regime_mismatch:
+            notes.append(f"REGIME_MISMATCH({base_regime}->{cand_regime})")
+        extra_note = (" · " + ", ".join(notes)) if notes else ""
 
         return {
             "estimated_score": round(est_score, 2),
-            "sigma": round(total_sigma, 2),
+            "sigma": total_sigma,
+            "ucb_delta": ucb_delta,
+            "calibration_trust": round(cal_trust, 3),
+            "explore_eligible": explore_ok,
+            "explore_reason": explore_reason,
+            "explore_evidence": explore_evidence,
+            "thermal_drift_us": round(thermal_drift_us, 3),
+            "binary_delta_pct": binary_delta_pct,
             "effective_speedup": eff_speedup,
-            "matched_cases": len(common_buckets),
+            "matched_cases": len(common_all),
+            "matched_spec_cases": matched_spec,
             "improved_cases": improved,
             "regressed_cases": regressed,
             "regime_mismatch": regime_mismatch,
             "base_regime": base_regime,
             "cand_regime": cand_regime,
-            "method": "simplex_map_calibrated",
+            "method": "pairwise_simplex_v2",
             "detail": (
-                f"Simplex-MAP ({len(common_buckets)}/{len(buckets)} buckets vs {(base_sha or '')[:7]}, "
-                f"beta={beta_p:.3f}, d_hid={delta_hid:+.2f}, d_pub={delta_pub:+.2f}, "
-                f"improved={improved}, regressed={len(regressed)}){regime_note}"
+                f"Pairwise-v2 ({len(common_all)} buckets [{matched_spec}/{len(spec_ids)} spec] vs {(base_sha or '')[:7]}, "
+                f"gamma={transfer_gamma:.2f}, trust={cal_trust:.2f}, UCB={ucb_delta:+.2f}, "
+                f"improved={improved}, regressed={len(regressed)}){extra_note}"
             ),
         }
 
+    def _build_feedback_payload(
+        self,
+        title: str,
+        cal: dict[str, Any],
+        perf_spec: dict[str, Any],
+        observed_samples: dict[str, list[float]] | None = None,
+    ) -> dict[str, Any]:
+        """Build structured bench health & evolution feedback payload for `bench_feedback.json`."""
+        b_corr: dict[str, float] = dict(cal.get("bucket_correlations") or {})
+        b_npairs: dict[str, int] = dict(cal.get("bucket_pair_counts") or {})
+        buckets = list(cal.get("buckets") or [])
+        by_id = {b["id"]: b for b in buckets}
+
+        strong_positive = sorted(
+            [
+                {
+                    "bucket": k,
+                    "corr": round(c, 3),
+                    "pairs": b_npairs.get(k, 0),
+                    "in_spec": bool((by_id.get(k) or {}).get("in_spec", False)),
+                    "stratum": (by_id.get(k) or {}).get("stratum"),
+                    "learned_w": (by_id.get(k) or {}).get("learned_w"),
+                    "tau_active_us": (by_id.get(k) or {}).get("tau_active_us"),
+                }
+                for k, c in b_corr.items()
+                if c >= 0.35 and b_npairs.get(k, 0) >= 3
+            ],
+            key=lambda x: (x["corr"], x["pairs"]),
+            reverse=True,
+        )
+
+        misleading_anti = sorted(
+            [
+                {
+                    "bucket": k,
+                    "corr": round(c, 3),
+                    "pairs": b_npairs.get(k, 0),
+                    "in_spec": bool((by_id.get(k) or {}).get("in_spec", False)),
+                    "stratum": (by_id.get(k) or {}).get("stratum"),
+                    "learned_w": (by_id.get(k) or {}).get("learned_w"),
+                    "tau_active_us": (by_id.get(k) or {}).get("tau_active_us"),
+                }
+                for k, c in b_corr.items()
+                if c <= -0.20 and b_npairs.get(k, 0) >= 3
+            ],
+            key=lambda x: x["corr"],
+        )
+
+        all_discovered: dict[str, float] = {}
+        if observed_samples:
+            for bk, vals in observed_samples.items():
+                if vals:
+                    all_discovered[bk] = float(statistics.median(vals))
+        else:
+            for b in buckets:
+                tv = b.get("tau_active_us") or (cal.get("observed_min_tau") or {}).get(b["id"])
+                if isinstance(tv, (int, float)) and tv > 0:
+                    all_discovered[b["id"]] = float(tv)
+
+        evo_plan = build_evolution_plan(
+            title=title,
+            spec_doc=perf_spec,
+            all_discovered=all_discovered,
+            bucket_correlations=b_corr,
+            bucket_pair_counts=b_npairs,
+        )
+
+        # Identify unexplained residual dimensions & actionable new-case recommendations
+        unexplained_dims: list[str] = []
+        suggested_new_cases: list[dict[str, Any]] = []
+        unpaired = list(cal.get("unpaired_buckets") or [])
+        if unpaired:
+            proxy_unpaired = [u for u in unpaired if u.endswith("_proxy")]
+            if proxy_unpaired:
+                unexplained_dims.append(f"Unmeasured *_proxy buckets ({len(proxy_unpaired)}): {', '.join(proxy_unpaired[:5])}")
+                for pu in proxy_unpaired[:4]:
+                    suggested_new_cases.append({
+                        "id": pu,
+                        "action": "add_to_validation_profiler",
+                        "reason": "Spec proxy bucket has no direct local profiler measurement",
+                    })
+
+        present_dtypes = {str(b.get("dtype") or "float32") for b in buckets if b.get("observed")}
+        for need_dt in ("float16", "bfloat16"):
+            if need_dt not in present_dtypes and title not in ("MultilabelMarginLoss",):
+                unexplained_dims.append(f"No observed local profiler bucket with dtype={need_dt}")
+                suggested_new_cases.append({
+                    "id": f"auto_{need_dt}_mid_case",
+                    "dtype": need_dt,
+                    "action": "add_new_validation_case",
+                    "reason": f"Missing {need_dt} coverage in active profiler spectrum",
+                })
+
+        events = list(cal.get("high_residual_events") or [])
+        all_causes = sorted({c for ev in events for c in (ev.get("causes") or [])})
+        if "SOC_CORE_MISMATCH" in all_causes or title == "QuantUpdateScatter":
+            unexplained_dims.append("Local soc-a (40 AIV) vs online judge core-count / block_dim sensitivity")
+        if "COLD_START_BINARY_BLOAT" in all_causes or title in ("PadV3Grad", "StridedSliceGrad"):
+            unexplained_dims.append("3-run cold-start sensitivity to compiled kernel `.o` ELF size / .text bloat")
+        if "MISSING_LARGE_N_DIM" in all_causes or title == "SyncBatchNormGatherStats":
+            unexplained_dims.append("Missing large world_size / large-N reduction dimension (current logs vary C only)")
+            suggested_new_cases.append({
+                "id": "sbn_w64_c2048_largeN_f32",
+                "dtype": "float32",
+                "action": "add_new_validation_case",
+                "reason": "Cover large world_size/N axis alongside large C",
+            })
+        if not (cal.get("cold_start_telemetry") or {}).get("active_kernel_o_max_bytes"):
+            unexplained_dims.append("Active commit lacks `.o` binary size telemetry (will auto-populate on next `opsb test`)")
+
+        return {
+            "schema_version": "2.0",
+            "title": title,
+            "updated_at": _utc_now(),
+            "model_version": cal.get("model_version", MODEL_VERSION),
+            "health": {
+                "loocv_mae_pts": cal.get("loocv_mae_pts"),
+                "loocv_rmse_pts": cal.get("loocv_rmse_pts"),
+                "loocv_spearman": cal.get("loocv_spearman"),
+                "loocv_dir_acc": cal.get("loocv_dir_acc"),
+                "calibration_trust": cal.get("calibration_trust"),
+                "transfer_gamma": cal.get("transfer_gamma"),
+                "alpha_cold": cal.get("alpha_cold"),
+                "spec_buckets": cal.get("spec_bucket_count"),
+                "effective_buckets": cal.get("effective_bucket_count"),
+                "unpaired_spec_buckets": cal.get("unpaired_bucket_count"),
+                "high_residual_event_count": len(events),
+            },
+            "high_residual_events": events[-8:],
+            "strong_positive_buckets": strong_positive[:10],
+            "misleading_anti_corr_buckets": misleading_anti[:10],
+            "untracked_promote_candidates": evo_plan["promote_buckets"][:15],
+            "unexplained_residual_dimensions": unexplained_dims,
+            "suggested_new_cases": suggested_new_cases,
+            "agent_guidance": (
+                f"Prioritize optimizing {[x['bucket'] for x in strong_positive[:4]]}; "
+                f"avoid sacrificing hot paths for anti-correlated {[x['bucket'] for x in misleading_anti[:3]]}."
+                if (strong_positive or misleading_anti)
+                else "Insufficient same-regime pairs yet; keep expanding balanced S/M/L/X profiler coverage."
+            ),
+        }
+
+    def _write_feedback_from_cal(
+        self,
+        title: str,
+        cal: dict[str, Any],
+        perf_spec: dict[str, Any],
+        observed_samples: dict[str, list[float]] | None = None,
+    ) -> pathlib.Path:
+        payload = self._build_feedback_payload(title, cal, perf_spec, observed_samples=observed_samples)
+        fb_path = self.specs_root / title / "bench_feedback.json"
+        fb_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fb_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(fb_path)
+        return fb_path
+
     def diagnose_problem(self, title: str) -> dict[str, Any]:
-        """Detailed ROI, phantom-weight, C++ slow-path scan, and escape report for `opsb bench diagnose`."""
+        """Full bench health check, bucket correlation attribution, residual forensics, and `bench_feedback.json` write."""
         self._esc_cache.clear()
         self._cal_cache.clear()
+        self._perf_spec_cache.pop(title, None)
         cal = self.calibrate_problem(title, persist=True)
+        perf_spec = self.load_perf_spec(title)
+        fb_payload = self._build_feedback_payload(title, cal, perf_spec)
+        fb_path = self.specs_root / title / "bench_feedback.json"
+        fb_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fb_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(fb_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(fb_path)
 
-        # Static scan of C++ kernel/tiling for uncovered slow/fallback branches
+        # Static scan of C++ kernel/tiling for uncovered slow/fallback branches (read-only)
         repo = self.workspace / "bench" / title
         fallback_branches: list[str] = []
         for sub in ("op_host", "op_kernel"):
@@ -1310,7 +1889,10 @@ class BenchmarkCalibrator:
                 "bucket": b["id"],
                 "stratum": b["stratum"],
                 "dtype": b["dtype"],
+                "in_spec": b.get("in_spec", True),
                 "learned_w": b["learned_w"],
+                "empirical_corr": b.get("empirical_corr"),
+                "empirical_pairs": b.get("empirical_pairs", 0),
                 "efficiency_r": b["efficiency_r"],
                 "tau_active_us": b["tau_active_us"],
                 "theta0_us": b["theta0_us"],
@@ -1318,24 +1900,116 @@ class BenchmarkCalibrator:
                 "marginal_pts_per_2x": b["marginal_pts_per_2x"],
                 "observed": b["observed"],
             }
-            for b in cal["buckets"][:8]
+            for b in cal["buckets"][:10]
         ]
 
         return {
             "title": title,
+            "model_version": cal.get("model_version", MODEL_VERSION),
             "updated_at": cal["updated_at"],
             "beta_tightness": cal["beta_tightness"],
+            "transfer_gamma": cal.get("transfer_gamma"),
+            "alpha_cold": cal.get("alpha_cold"),
             "mae_pts": cal["mae_pts"],
             "rmse_pts": cal["rmse_pts"],
+            "loocv_mae_pts": cal.get("loocv_mae_pts"),
+            "loocv_spearman": cal.get("loocv_spearman"),
+            "loocv_dir_acc": cal.get("loocv_dir_acc"),
+            "calibration_trust": cal.get("calibration_trust"),
             "escape_lock": cal["escape_lock"],
             "escape_sha": cal["escape_sha"],
+            "spec_bucket_count": cal.get("spec_bucket_count"),
+            "effective_bucket_count": cal.get("effective_bucket_count"),
+            "extra_discovered_buckets": cal.get("extra_discovered_buckets", []),
             "unpaired_bucket_count": cal["unpaired_bucket_count"],
             "unpaired_buckets": cal["unpaired_buckets"],
+            "high_residual_events": fb_payload["high_residual_events"],
+            "strong_positive_buckets": fb_payload["strong_positive_buckets"],
+            "misleading_anti_corr_buckets": fb_payload["misleading_anti_corr_buckets"],
+            "untracked_promote_candidates": fb_payload["untracked_promote_candidates"],
+            "unexplained_residual_dimensions": fb_payload["unexplained_residual_dimensions"],
+            "suggested_new_cases": fb_payload["suggested_new_cases"],
+            "agent_guidance": fb_payload["agent_guidance"],
+            "feedback_file": str(fb_path),
             "diagnostics": cal["diagnostics"],
             "strata": cal["strata"],
             "top_roi_buckets": top_roi,
             "detected_cpp_branch_guards": fallback_branches[:10],
             "observation_ledger": cal["observation_ledger"],
+        }
+
+    def evolve_bench(
+        self,
+        title: str,
+        apply: bool = True,
+        min_pairs: int = 2,
+        min_corr: float = 0.15,
+    ) -> dict[str, Any]:
+        """Online-feedback-driven append-only bench evolution (`opsb bench evolve [Title]`).
+
+        Promotes high-signal logged `profiler` buckets into `ops-supervisor/bench-specs/<Title>/cases_perf.json`
+        (strictly append-only, NEVER deleting old buckets!), persists `bench_feedback.json`,
+        and re-calibrates to report Before vs After coverage & LOOCV MAE.
+        """
+        self._esc_cache.clear()
+        self._cal_cache.clear()
+        self._perf_spec_cache.pop(title, None)
+
+        cal_before = self.calibrate_problem(title, persist=False)
+        spec_path = self.specs_root / title / "cases_perf.json"
+        spec_doc = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {
+            "problem": title, "public_anchors": [], "hidden_buckets": []
+        }
+
+        all_discovered: dict[str, float] = {}
+        for b in cal_before.get("buckets") or []:
+            tv = b.get("tau_active_us") or (cal_before.get("observed_min_tau") or {}).get(b["id"])
+            if isinstance(tv, (int, float)) and tv > 0:
+                all_discovered[b["id"]] = float(tv)
+
+        plan = build_evolution_plan(
+            title=title,
+            spec_doc=spec_doc,
+            all_discovered=all_discovered,
+            bucket_correlations=dict(cal_before.get("bucket_correlations") or {}),
+            bucket_pair_counts=dict(cal_before.get("bucket_pair_counts") or {}),
+            min_pairs=min_pairs,
+            min_corr=min_corr,
+        )
+
+        append_res = {
+            "spec_path": str(spec_path),
+            "appended_count": 0,
+            "appended_ids": [],
+            "total_buckets_after": plan["existing_bucket_count"],
+        }
+        if apply and plan["promote_buckets"] and spec_path.is_file():
+            append_res = append_buckets_to_spec(spec_path, plan["promote_buckets"])
+            self._perf_spec_cache.pop(title, None)
+            self._cal_cache.clear()
+
+        cal_after = self.calibrate_problem(title, persist=apply) if apply else cal_before
+        fb_path = None
+        if apply:
+            fb_path = str(self._write_feedback_from_cal(title, cal_after, self.load_perf_spec(title)))
+
+        return {
+            "title": title,
+            "applied": apply,
+            "spec_path": str(spec_path),
+            "feedback_file": fb_path,
+            "severe_spec_blindness": plan["severe_spec_blindness"],
+            "spec_buckets_before": plan["existing_bucket_count"],
+            "spec_buckets_after": append_res["total_buckets_after"],
+            "matched_existing_before": plan["matched_existing_count"],
+            "appended_count": append_res["appended_count"],
+            "appended_ids": append_res["appended_ids"] if apply else [b["id"] for b in plan["promote_buckets"]],
+            "skipped_anti_corr": plan["skipped_anti_corr"],
+            "loocv_mae_before": cal_before.get("loocv_mae_pts"),
+            "loocv_mae_after": cal_after.get("loocv_mae_pts"),
+            "loocv_spearman_after": cal_after.get("loocv_spearman"),
+            "calibration_trust_after": cal_after.get("calibration_trust"),
+            "effective_bucket_count": cal_after.get("effective_bucket_count"),
         }
 
     def verify_escape(
