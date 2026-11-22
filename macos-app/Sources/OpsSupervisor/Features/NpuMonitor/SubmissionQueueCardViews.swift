@@ -197,7 +197,7 @@ struct CandidateSubmissionCardView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(isCrit ? .red : .accentColor)
                     .controlSize(.small)
-                    .disabled(isLocalUploading)
+                    .disabled(isLocalUploading || item.badge.uppercased().contains("ESCAPE"))
                 }
             }
         }
@@ -205,6 +205,7 @@ struct CandidateSubmissionCardView: View {
 
     private func readableCandidateBadge(_ badge: String) -> String {
         let u = badge.uppercased()
+        if u.contains("ESCAPE") { return lang.tr("逃逸硬锁 · 禁止提交", "ESCAPE LOCK") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
         if u.contains("HOLD") || u.contains("LOW") { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
         if u.contains("CIRCUIT") { return lang.tr("触发频控保护", "CIRCUIT OPEN") }
@@ -212,6 +213,12 @@ struct CandidateSubmissionCardView: View {
     }
 
     private func gateSummaryText(_ item: SubmissionQueueItem) -> String {
+        if item.badge.uppercased().contains("ESCAPE") {
+            return lang.tr(
+                "🔒 逃逸硬锁激活：需先复现线上 WA/TLE 并通过 verify-escape 解锁",
+                "🔒 ESCAPE LOCK: add reproducer & pass verify-escape before submitting"
+            )
+        }
         if !item.gates.safetyOk { return lang.tr("⚠ 缺少完整服务端精度测试记录", "⚠ Missing NPU extended validation") }
         if item.badge.contains("CRITICAL") { return lang.tr("✓ 历史高分验证通过，可立即恢复", "✓ Validated best SHA ready to restore") }
         if !item.gates.noiseOk { return lang.tr("✓ 精度通过 · 预计涨幅低于自动阈值 (可手动插队)", "✓ Precision OK · Below noise floor (Jump Queue allowed)") }

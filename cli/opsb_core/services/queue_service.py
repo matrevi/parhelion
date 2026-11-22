@@ -151,6 +151,44 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     }
                 )
 
+    # Compute per-operator ESCAPE_LOCK state (rollback/restore of an old Pass SHA does NOT disarm it)
+    verified_escapes: dict[str, Any] = {}
+    ve_path = results_dir / "verified-escapes.json"
+    if ve_path.is_file():
+        ve_doc = read_json(ve_path, {})
+        if isinstance(ve_doc, dict):
+            verified_escapes = ve_doc.get("verified") if isinstance(ve_doc.get("verified"), dict) else ve_doc
+    escape_lock_info: dict[str, tuple[str, str]] = {}
+    outcomes_by_title: dict[str, list[dict[str, Any]]] = {}
+    for o in outcome_rows:
+        st_o = str(o.get("status", ""))
+        if st_o not in ("rejected", "skipped", "duplicate"):
+            outcomes_by_title.setdefault(str(o.get("title", "")), []).append(o)
+    for t_name, t_rows in outcomes_by_title.items():
+        prior_passes: list[set[str]] = []
+        acc_p: set[str] = set()
+        for r in t_rows:
+            prior_passes.append(set(acc_p))
+            r_sha = str(r.get("sha") or "")
+            if r.get("status") == "Pass" and r_sha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+                acc_p.add(r_sha[:7])
+        for idx_r in range(len(t_rows) - 1, -1, -1):
+            r = t_rows[idx_r]
+            st_r = str(r.get("status", ""))
+            r_sha = str(r.get("sha") or "")
+            n_low = str(r.get("note") or "").strip().lower()
+            is_rest_r = (r_sha[:7] in prior_passes[idx_r]) or any(
+                n_low.startswith(pfx) for pfx in ("restore", "rollback", "board is 0", "closing restore")
+            )
+            if st_r == "Pass":
+                if is_rest_r:
+                    continue
+                break
+            if st_r in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
+                if not (verified_escapes.get(f"{t_name}:{r_sha}") or verified_escapes.get(f"{t_name}:{r_sha[:7]}")):
+                    escape_lock_info[t_name] = (r_sha[:7], st_r)
+                break
+
     prior_board: dict[str, float] = {}
     last_pass_score: dict[str, float] = {}
     last_pass_sha: dict[str, str] = {}
@@ -181,19 +219,30 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             # Skip putting in waiting list if this exact (title, sha) is currently the active in-flight judge item
             if pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").startswith(sha[:7]):
                 continue
-            is_rest = forced and (cur_sc == 0.0 or "restore" in note.lower())
-            gates = eval_gates(t, est, is_restore_zero=is_rest)
-            if is_rest and cur_sc == 0.0:
+            is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
+            is_rest = is_known_pass and (cur_sc == 0.0 or "restore" in note.lower())
+            esc_hit = escape_lock_info.get(t)
+            esc_blocked = bool(esc_hit and not is_known_pass)
+            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked)
+            if esc_blocked:
+                badge = "ESCAPE LOCK"
+                esc_s7, esc_st = esc_hit  # type: ignore[misc]
+                esc_detail = f"ESCAPE_LOCK active ({esc_s7} {esc_st}); add reproducer & verify-escape before submitting new SHA"
+            elif is_rest and cur_sc == 0.0:
                 badge = "CRITICAL RESTORE"
+                esc_detail = ""
             elif not gates["circuit_ok"] and not forced:
                 badge = "CIRCUIT OPEN"
+                esc_detail = ""
             elif not gates["noise_ok"] and not forced:
                 badge = "HOLD: NOISE"
+                esc_detail = ""
             else:
                 badge = "READY"
+                esc_detail = ""
             cand_bt_delta = (
                 round((est or cur_sc) - cur_sc, 2)
-                if (cur_sc > 0 and not is_rest and (t, sha[:7]) not in seen_pass_shas and "restore" not in note.lower())
+                if (cur_sc > 0 and not is_rest and not esc_blocked and (t, sha[:7]) not in seen_pass_shas and "restore" not in note.lower())
                 else None
             )
             chron_items.append(
@@ -205,7 +254,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "sha": sha,
                     "short_sha": sha[:7],
                     "note": note,
-                    "detail": "",
+                    "detail": esc_detail,
                     "submission_id": None,
                     "queued_at": q_at,
                     "finished_at": None,
@@ -220,7 +269,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "is_breakthrough": bool(cand_bt_delta is not None and cand_bt_delta >= bt_threshold),
                     "experience_id": exp_map.get((t, sha[:7])),
                     "baseline_pass_sha": last_pass_sha.get(t),
-                    "wspt_priority": gates["wspt_score"],
+                    "wspt_priority": 0.0 if esc_blocked else gates["wspt_score"],
                     "gates": gates,
                     "can_approve": badge in ("HOLD: NOISE", "CIRCUIT OPEN"),
                     "can_skip": True,
@@ -242,8 +291,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     prev_p = last_pass_score.get(t)
                     peak_p = peak_pass_score.get(t, 0.0)
                     is_repeat = (t, sha[:7]) in seen_pass_shas
-                    if (not is_repeat) and (not is_restore_note) and (prev_p is not None and prev_p > 0) and (actual >= peak_p - 0.5):
-                        bt_delta = round(actual - prev_p, 2)
+                    if (not is_repeat) and (not is_restore_note) and (peak_p > 0) and (actual > peak_p):
+                        bt_delta = round(actual - peak_p, 2)
                     seen_pass_shas.add((t, sha[:7]))
                     last_pass_score[t] = actual
                     last_pass_sha[t] = sha[:7]

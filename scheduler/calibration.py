@@ -663,20 +663,41 @@ class BenchmarkCalibrator:
                         "verified_good_sha": ver_rec.get("good_sha") if ver_rec else None,
                     })
 
-        # Escape lock is active ONLY when the latest online evaluation was an unverified escape!
+        # Escape lock stays active after an unverified online WA/TLE/RE even if an OLD
+        # already-passing SHA is rolled back / restored to recover board score. Only a
+        # `verify-escape` entry OR a genuinely NEW non-restore passing SHA disarms it!
+        prior_pass_before: list[set[str]] = []
+        acc_pass: set[str] = set()
+        for r in live_rows:
+            prior_pass_before.append(set(acc_pass))
+            st = str(r.get("status", ""))
+            csha = str(r.get("canonical_sha") or r.get("sha") or "")
+            if st == "Pass" and csha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+                acc_pass.add(csha)
+
         escape_lock = False
         escape_sha = None
         escape_status = None
-        if live_rows:
-            last = live_rows[-1]
-            last_st = str(last.get("status", ""))
-            last_sha = str(last.get("canonical_sha") or last.get("sha") or "")
-            if last_st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
-                ver_rec = self.verified_escapes.get(f"{title}:{last_sha}") or self.verified_escapes.get(f"{title}:{last_sha[:7]}")
+        for idx in range(len(live_rows) - 1, -1, -1):
+            r = live_rows[idx]
+            st = str(r.get("status", ""))
+            csha = str(r.get("canonical_sha") or r.get("sha") or "")
+            note_low = str(r.get("note") or "").strip().lower()
+            is_restore_row = (csha in prior_pass_before[idx]) or any(
+                note_low.startswith(pfx) for pfx in ("restore", "rollback", "board is 0", "closing restore")
+            )
+            if st == "Pass":
+                if is_restore_row:
+                    # Restoring a historical passing SHA recovers board score, NOT the escaped bug!
+                    continue
+                break
+            if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
+                ver_rec = self.verified_escapes.get(f"{title}:{csha}") or self.verified_escapes.get(f"{title}:{csha[:7]}")
                 if not ver_rec:
                     escape_lock = True
-                    escape_sha = last_sha
-                    escape_status = last_st
+                    escape_sha = csha
+                    escape_status = st
+                break
 
         esc_out = {
             "escape_lock": escape_lock,

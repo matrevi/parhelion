@@ -89,11 +89,14 @@ final class ContestStore: ObservableObject {
               cdRem == 0,
               !isLaunchingSubmit else { return }
 
+        // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` items:
+        // rollbacks are user-triggered (or closing-time), and escaped ops must pass verify-escape first.
         guard let top = snap.submissionQueue.first(where: { item in
-            item.kind != "completed"
+            item.kind == "pending"
+                && !item.badge.contains("ESCAPE")
                 && !item.badge.contains("HOLD")
                 && !item.badge.contains("CIRCUIT")
-                && (item.gates.allPass || item.badge == "CRITICAL RESTORE")
+                && item.gates.allPass
         }) else { return }
 
         await jumpSubmitNow(problem: top.title, sha: top.sha, note: top.note)

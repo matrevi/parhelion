@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -120,14 +122,23 @@ def _infer_category_and_tags(text: str) -> tuple[str, list[str]]:
         ("double-buffer", "double-buffer"),
         ("ring", "ring-buffer"),
         ("gather", "Gather"),
+        ("vgather", "vgather"),
         ("datacopypad", "DataCopyPad"),
         ("pipebarrier", "PipeBarrier"),
         ("sentinel", "sentinel-handshake"),
         ("reducesum", "ReduceSum"),
+        ("brcb", "Brcb"),
         ("separable", "separable-tensor"),
         ("sort32", "Sort32"),
+        ("schmode", "schMode-isolation"),
+        ("zero-tpipe", "zero-TPipe"),
+        ("tpipe", "zero-TPipe"),
+        ("multi-core", "multi-core"),
+        ("even/odd", "even-odd-split"),
+        ("sorting-network", "sorting-network"),
+        ("pipe_v", "pure-PIPE_V"),
     ):
-        if kw in low:
+        if kw in low and label not in tags:
             tags.append(label)
     if "transdata" in low or "transpose" in low:
         cat = "simd-transpose"
@@ -137,18 +148,113 @@ def _infer_category_and_tags(text: str) -> tuple[str, list[str]]:
         cat = "separable-folding"
     elif "sentinel" in low or "handshake" in low or "atomic" in low:
         cat = "deterministic-sync"
-    elif "dma" in low or "prologue" in low:
+    elif "dma" in low or "prologue" in low or "datacopypad" in low:
         cat = "dma-coalescing"
-    elif "vector" in low or "16bit" in low or "simd" in low:
+    elif "vector" in low or "16bit" in low or "simd" in low or "pipe_v" in low or "brcb" in low or "vgather" in low:
         cat = "vectorization"
     else:
         cat = "tiling-regime"
     return cat, (tags or [cat])
 
 
+def _read_commit_body(repo_dir: Path, sha: str) -> str:
+    if not repo_dir.is_dir() or not sha:
+        return ""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(repo_dir), "log", "-1", "--format=%B", sha],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        return res.stdout.strip() if res.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _read_kernel_diff_stat(repo_dir: Path, base_sha: str | None, sha: str) -> list[str]:
+    if not repo_dir.is_dir() or not sha:
+        return []
+    args = ["git", "-C", str(repo_dir), "diff", "--stat"]
+    if base_sha:
+        args.append(f"{base_sha}..{sha}")
+    else:
+        args.append(f"{sha}~1..{sha}")
+    args.extend(["--", "op_host/", "op_kernel/"])
+    try:
+        res = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=4)
+        if res.returncode != 0:
+            return []
+        return [ln.strip() for ln in res.stdout.splitlines() if ln.strip()][:8]
+    except Exception:
+        return []
+
+
+def _extract_paired_speedups(
+    workspace: Path,
+    problem: str,
+    base_sha: str | None,
+    sha: str,
+) -> tuple[list[tuple[str, float, float, float]], str | None]:
+    """Return `(top_speedups[(bucket, base_us, new_us, ratio)], extended_summary)` from validation logs."""
+    res_dir = workspace / "results" / problem
+    cand_dir = next((p for p in res_dir.glob(f"{sha[:7]}*") if p.is_dir()), None) if res_dir.is_dir() else None
+    base_dir = (
+        next((p for p in res_dir.glob(f"{base_sha[:7]}*") if p.is_dir()), None)
+        if (base_sha and res_dir.is_dir())
+        else None
+    )
+    ext_summary: str | None = None
+    if not cand_dir or not (cand_dir / "validation.log").is_file():
+        return [], None
+    cand_txt = (cand_dir / "validation.log").read_text(encoding="utf-8", errors="replace")
+    m_ext = re.search(r"EXTENDED_PASSED\s+(\d+)\s+cases", cand_txt)
+    if m_ext:
+        ext_summary = f"EXTENDED_PASSED {m_ext.group(1)} cases"
+    elif "EXTENDED_PASSED" in cand_txt:
+        ext_summary = "EXTENDED_PASSED"
+    if not base_dir or not (base_dir / "validation.log").is_file():
+        return [], ext_summary
+    try:
+        if str(SUPERVISOR_ROOT) not in sys.path:
+            sys.path.insert(0, str(SUPERVISOR_ROOT))
+        from scheduler.estimator import parse_validation_perf  # type: ignore
+
+        c_perf = parse_validation_perf(cand_txt).get("profiler_cases") or {}
+        b_perf = parse_validation_perf((base_dir / "validation.log").read_text(encoding="utf-8", errors="replace")).get("profiler_cases") or {}
+        pairs: list[tuple[str, float, float, float]] = []
+        for k, nv in c_perf.items():
+            bv = b_perf.get(k)
+            if bv and nv and bv > 0 and nv > 0:
+                pairs.append((k, float(bv), float(nv), float(bv) / float(nv)))
+        pairs.sort(key=lambda x: x[3], reverse=True)
+        return pairs[:8], ext_summary
+    except Exception:
+        return [], ext_summary
+
+
 def _render_entry_markdown(entry: dict[str, Any]) -> str:
     tags_s = ", ".join(entry.get("tags") or [])
     mechs = "\n".join(f"{i+1}. {m}" for i, m in enumerate(entry.get("mechanisms") or []))
+    diff_lines = entry.get("diff_stat") or []
+    speedups = entry.get("paired_speedups") or []
+
+    extra_blocks = ""
+    if speedups:
+        rows = "\n".join(
+            f"| `{b}` | {bu:.2f} | **{nu:.2f}** | **{r:.2f}x** |"
+            for b, bu, nu, r in speedups
+        )
+        extra_blocks += (
+            "\n## 5. Measured Hardware Speedups (`profiler`)\n"
+            "| Bucket | Baseline (µs) | Optimized (µs) | Speedup |\n"
+            "|---|---:|---:|---:|\n"
+            f"{rows}\n"
+        )
+    if diff_lines:
+        extra_blocks += "\n## 6. Touched Kernel & Host Files\n```text\n" + "\n".join(diff_lines) + "\n```\n"
+
     return (
         f"---\n"
         f"id: {entry['id']}\n"
@@ -171,6 +277,7 @@ def _render_entry_markdown(entry: dict[str, Any]) -> str:
         f"## 2. Core Breakthrough Mechanisms\n{mechs}\n\n"
         f"## 3. Precision & Synchronization Invariants\n{entry['precision_guard']}\n\n"
         f"## 4. Reusable KernelC Pattern\n> **Rule (`{entry['category']}`)**: {entry['transferable_rule']}\n"
+        f"{extra_blocks}"
     )
 
 
@@ -224,47 +331,90 @@ def sync_breakthroughs_from_items(
         if item.get("kind") != "completed" or item.get("raw_status") != "Pass":
             continue
         bt_delta = item.get("breakthrough_delta")
-        if bt_delta is None or float(bt_delta) < min_delta:
+        if bt_delta is None:
             continue
         prob = item["title"]
+        diff = int(item.get("difficulty") or DEFAULT_DIFFICULTIES.get(prob, 2))
+        bt_raw = float(bt_delta)
+        bt_weighted = diff * bt_raw
+        # Trigger if raw jump meets threshold OR weighted contribution >= 1.6*threshold (e.g. +8.0 weighted with raw >= 3.0)
+        if not (bt_raw >= min_delta or (bt_raw >= 3.0 and bt_weighted >= min_delta * 1.6)):
+            continue
         sha = item["sha"]
         if (prob, sha[:7]) in exp_map:
             continue
 
         p_meta = problems_by_title.get(prob, {})
-        repo_dir = workspace / p_meta.get("path", prob)
+        repo_dir = workspace / p_meta.get("path", f"bench/{prob}")
+        if not repo_dir.is_dir():
+            repo_dir = workspace / "bench" / prob
         subj = read_commit_subject(repo_dir, sha) if repo_dir.is_dir() else ""
+        body = _read_commit_body(repo_dir, sha)
         note = str(item.get("note") or "")
-        combined = f"{subj} {note}".strip()
+        combined = f"{subj}\n{body}\n{note}".strip()
         cat, tags = _infer_category_and_tags(combined)
+        base_sha = item.get("baseline_pass_sha")
+        diff_stat = _read_kernel_diff_stat(repo_dir, base_sha, sha)
+        speedups, ext_summary = _extract_paired_speedups(workspace, prob, base_sha, sha)
 
         ts = str(item.get("finished_at") or item.get("queued_at") or utc_now().isoformat())
         day = re.sub(r"[^0-9]", "", ts[:10]) or utc_now().strftime("%Y%m%d")
         entry_id = f"BT-{day[:8]}-{prob}-{sha[:7]}"
         after_sc = float(item.get("actual_score") or 0.0)
-        before_sc = round(after_sc - float(bt_delta), 2)
-        diff = int(item.get("difficulty") or DEFAULT_DIFFICULTIES.get(prob, 2))
-        clauses = [c.strip() for c in re.split(r"[+;·]", note or subj) if c.strip()]
+        before_sc = round(after_sc - bt_raw, 2)
+
+        # Extract concrete mechanism bullets from commit body lines first, then clean note/subject clauses
+        body_bullets = [
+            re.sub(r"^[-*•\d.)\s]+", "", ln).strip()
+            for ln in body.splitlines()[1:]
+            if ln.strip() and len(ln.strip()) > 12 and not ln.strip().lower().startswith(("signed-off-by", "co-authored-by"))
+        ]
+        clean_src = note if (note and not note.lstrip().startswith(("Simplex-MAP", "same-SHA", "All 4 stages"))) else subj
+        note_clauses = [
+            c.strip()
+            for c in re.split(r"(?:\s+\+\s+|[;·])", clean_src or subj)
+            if c.strip() and len(c.strip()) > 6 and not c.strip().startswith(("Simplex-MAP", "All 4 stages"))
+        ]
+        mechanisms = (body_bullets[:5] if body_bullets else note_clauses[:5]) or [subj or "Kernel & tiling optimization"]
+
+        top_sp_txt = (
+            ", ".join(f"{b} {bu:.1f}->{nu:.1f}us ({r:.2f}x)" for b, bu, nu, r in speedups[:3])
+            if speedups
+            else ""
+        )
+        bottleneck_txt = (
+            f"Prior baseline `{base_sha or 'prev'}` plateaued at {before_sc:.2f} pts; "
+            f"`{sha[:7]}` lifted online score to {after_sc:.2f} pts ({bt_raw:+.2f} raw / {bt_weighted:+.2f} weighted)."
+            + (f" Top paired hardware speedups: {top_sp_txt}." if top_sp_txt else "")
+        )
+        prec_txt = (
+            f"Verified locally ({ext_summary or 'EXTENDED_PASSED'}, exit_code=0) and passed online 50-case Judge evaluation at {after_sc:.2f} pts."
+        )
+        rule_txt = (
+            f"When optimizing `{cat}` bottlenecks ({', '.join(tags[:4])}), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata."
+        )
 
         entry = {
             "id": entry_id,
             "problem": prob,
             "difficulty": diff,
             "sha": sha,
-            "baseline_sha": item.get("baseline_pass_sha"),
+            "baseline_sha": base_sha,
             "timestamp": ts,
             "score_before": before_sc,
             "score_after": round(after_sc, 2),
-            "delta_raw": round(float(bt_delta), 2),
-            "delta_weighted": round(diff * float(bt_delta), 2),
+            "delta_raw": round(bt_raw, 2),
+            "delta_weighted": round(bt_weighted, 2),
             "status": "verified",
             "category": cat,
             "tags": tags,
-            "title": (subj or note or f"{prob} +{bt_delta:.2f} breakthrough")[:110],
-            "bottleneck": f"Prior validated baseline plateaued at {before_sc:.2f} pts before {sha[:7]}.",
-            "mechanisms": clauses[:4] or [note or subj or "Kernel & tiling optimization"],
-            "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
-            "transferable_rule": f"Apply {cat} optimization ({', '.join(tags[:3])}) with paired NPU verification.",
+            "title": (subj or note or f"{prob} +{bt_raw:.2f} breakthrough")[:110],
+            "bottleneck": bottleneck_txt,
+            "mechanisms": mechanisms,
+            "precision_guard": prec_txt,
+            "transferable_rule": rule_txt,
+            "diff_stat": diff_stat,
+            "paired_speedups": speedups,
             "doc_path": f"entries/{entry_id}.md",
         }
         save_catalog_entry(workspace, entry, overwrite_doc=False)

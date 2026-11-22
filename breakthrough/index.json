@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-22T10:40:00+00:00",
+  "updated_at": "2026-11-22T12:30:12.799657+00:00",
   "entries": [
     {
       "id": "BT-20261110-SyncBatchNormGatherStats-ecd5aa8",
@@ -68,6 +68,34 @@
       "precision_guard": "Bit-identical to sequential numpy bf16 saturation (2080 == 2080 on (5, 4097)) + exact IEEE-754 RNE scalar RoundHalf & 64-bit Tuckerman SqrtRNE; 75/75 extended cases 3-run SHA-256 deterministic. Avoid 2-step WholeReduceSum (regressed 64c85cf 6-11% on 512/1024-col shapes) and never call SyncAll() in pure AIV kernels (ACL 507035).",
       "transferable_rule": "When a golden reference requires non-associative sequential rounding along a reduction axis, transpose 16-32 independent rows via TransDataTo5HD and step vertically with SIMD vector instructions; keep horizontal vadd folding + single WholeReduceSum and gate statBlock=1 strictly to low-row shapes.",
       "doc_path": "entries/BT-20261118-LayerNormV3-af0807c.md"
+    },
+    {
+      "id": "BT-20261122-LayerNormV3-ec0867d",
+      "problem": "LayerNormV3",
+      "difficulty": 2,
+      "sha": "ec0867dd795ba4e3d45cf135413ec771c8bcdbf1",
+      "baseline_sha": "e21fdce",
+      "timestamp": "2026-11-22T12:30:12.166267+00:00",
+      "score_before": 49.49,
+      "score_after": 65.45,
+      "delta_raw": 15.96,
+      "delta_weighted": 31.92,
+      "status": "verified",
+      "category": "tiling-regime",
+      "tags": [
+        "ReduceSum"
+      ],
+      "title": "v5.1: fix BlockReduceSum (repeatTime, mask) parameter order",
+      "bottleneck": "Prior validated baseline plateaued at 49.49 pts before ec0867d.",
+      "mechanisms": [
+        "Simplex-MAP (8/14 buckets vs e21fdce, beta=1.104, d_hid=",
+        "7.42, d_pub=",
+        "0.67, improved=7, regressed=1)",
+        "All 4 stages passed"
+      ],
+      "precision_guard": "Passed extended NPU precision & determinism gates + online 50-case evaluation.",
+      "transferable_rule": "Apply tiling-regime optimization (ReduceSum) with paired NPU verification.",
+      "doc_path": "entries/BT-20261122-LayerNormV3-ec0867d.md"
     },
     {
       "id": "BT-20261118-CTCLossV2-0d5125c",
@@ -236,6 +264,93 @@
       "doc_path": "entries/BT-20261118-ConcatD-7919dcb.md"
     },
     {
+      "id": "BT-20261122-LayerNormV3-e21fdce",
+      "problem": "LayerNormV3",
+      "difficulty": 2,
+      "sha": "e21fdced97de88ee371858c22847641773c17134",
+      "baseline_sha": "64c85cf",
+      "timestamp": "2026-11-22T12:13:52.015241+00:00",
+      "score_before": 42.04,
+      "score_after": 49.49,
+      "delta_raw": 7.45,
+      "delta_weighted": 14.9,
+      "status": "verified",
+      "category": "async-pipeline",
+      "tags": [
+        "Brcb",
+        "pure-PIPE_V"
+      ],
+      "title": "v4: pure-PIPE_V zero-scalar stats + Brcb stride-0 broadcast + binary-tree Add reduce + async g/b overlap + SCH",
+      "bottleneck": "Prior baseline `64c85cf` plateaued at 42.04 pts; `e21fdce` lifted online score to 49.49 pts (+7.45 raw / +14.90 weighted). Top paired hardware speedups: f16_4096x1024 56.5->32.6us (1.73x), f32_1024x1024 18.7->15.9us (1.17x), f32_256x512 11.9->10.5us (1.14x).",
+      "mechanisms": [
+        "Simplex-MAP (8/14 buckets vs 64c85cf, beta=1.170, d_hid=",
+        "2.93, d_pub=",
+        "0.14, improved=7, regressed=0)",
+        "All 4 stages passed (weighted E[delta]=",
+        "6.14 pts)"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 79 cases, exit_code=0) and passed online 50-case Judge evaluation at 49.49 pts.",
+      "transferable_rule": "When optimizing `async-pipeline` bottlenecks (Brcb, pure-PIPE_V), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/layer_norm_v3_tiling.cpp      |   40 +-",
+        "op_kernel/layer_norm_v3.cpp           |    2 +-",
+        "op_kernel/layer_norm_v3.h             | 1271 +++++++++++++++++++++++----------",
+        "op_kernel/layer_norm_v3_tiling_data.h |    3 +-",
+        "4 files changed, 917 insertions(+), 399 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "f16_4096x1024",
+          56.5,
+          32.64,
+          1.7310049019607843
+        ],
+        [
+          "f32_1024x1024",
+          18.66,
+          15.94,
+          1.1706398996235885
+        ],
+        [
+          "f32_256x512",
+          11.9,
+          10.48,
+          1.1354961832061068
+        ],
+        [
+          "f32_2x20000",
+          19.02,
+          16.96,
+          1.1214622641509433
+        ],
+        [
+          "bf16_1024x1024",
+          105.0,
+          98.8,
+          1.062753036437247
+        ],
+        [
+          "f32_64x8192",
+          12.54,
+          12.12,
+          1.0346534653465347
+        ],
+        [
+          "f16_512x512",
+          14.18,
+          14.66,
+          0.9672578444747613
+        ],
+        [
+          "f32_4x6x8",
+          6.38,
+          6.88,
+          0.9273255813953488
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-LayerNormV3-e21fdce.md"
+    },
+    {
       "id": "BT-20261118-PReluGradUpdate-7efadf8",
       "problem": "PReluGradUpdate",
       "difficulty": 1,
@@ -336,6 +451,98 @@
       "precision_guard": "Bit-exact across all 11 dtypes (160/160 extended, 556-1356 plan checks, 29,667 offset-doubling combinations). srcRowsAlloc guards partial tail Gather reads; hasGathered gates V_S before offset rebuild. Anti-pattern (52f8066, 48.83 -> 47.56): moving <=128B broadcast headers from scalar GetValue() to all-core MTE2 DataCopy caused +2.13us cacheline contention.",
       "transferable_rule": "Coalesce all adjacent source-contiguous axes without UB-chunk truncation, replace fixed-latency TransDataTo5HD with single-descriptor 2D double-buffered Normal-mode Level-0 Gather<u32|u16> (widening 1B dtypes via Cast<half,u8>->Gather<u16>->Cast<u8,half>), build periodic offset tables via O(log2) Level-0 Adds, and keep <=128B broadcast headers on scalar GetValue().",
       "doc_path": "entries/BT-20261118-ConfusionTransposeD-d4d090f.md"
+    },
+    {
+      "id": "BT-20261122-CTCLossV2-1af7003",
+      "problem": "CTCLossV2",
+      "difficulty": 2,
+      "sha": "1af7003e755c06c96d29b0341be8fd1299758c2f",
+      "baseline_sha": "2b9d49d",
+      "timestamp": "2026-11-22T12:03:29.808788+00:00",
+      "score_before": 56.21,
+      "score_after": 60.63,
+      "delta_raw": 4.42,
+      "delta_weighted": 8.84,
+      "status": "verified",
+      "category": "async-pipeline",
+      "tags": [
+        "double-buffer",
+        "Gather",
+        "vgather",
+        "schMode-isolation",
+        "multi-core",
+        "even-odd-split"
+      ],
+      "title": "perf(CTCLossV2): V6 4-schMode isolation (TinySingle + templated dense/sparse MidEvenOdd + WideInterleaved H=4/",
+      "bottleneck": "Prior baseline `2b9d49d` plateaued at 56.21 pts; `1af7003` lifted online score to 60.63 pts (+4.42 raw / +8.84 weighted). Top paired hardware speedups: t4_c5_s1 7.8->4.1us (1.92x), t25_c16_s10 11.3->7.9us (1.43x), t100_c512_s40 31.8->23.8us (1.33x).",
+      "mechanisms": [
+        "V6 4-schMode Even/Odd split",
+        "direct vgather",
+        "multi-core batch",
+        "double-buffered lpSparse",
+        "WideInterleaved H=4/2: 9/9 buckets improved (t4 5.66->4.08us, t10 8.66->7.04/5.12us, t25 9.56->7.90us, t50 16.22->14.04us, t100 27.44->22.64us, t100_c512 25.24->23.82us, t50_c5000 32.34->21.00us, t200 53.28->51.32us, t650 151.20->145.68us)"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 39 cases, exit_code=0) and passed online 50-case Judge evaluation at 60.63 pts.",
+      "transferable_rule": "When optimizing `async-pipeline` bottlenecks (double-buffer, Gather, vgather, schMode-isolation), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/ctc_loss_v2_tiling.cpp      |  200 +++-",
+        "op_kernel/ctc_loss_v2.cpp           |   21 +-",
+        "op_kernel/ctc_loss_v2.h             | 2222 ++++++++++++++++++++++++++++-------",
+        "op_kernel/ctc_loss_v2_tiling_data.h |   15 +-",
+        "op_kernel/ctc_loss_v2_tiling_key.h  |   12 +-",
+        "5 files changed, 1967 insertions(+), 503 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "t4_c5_s1",
+          7.84,
+          4.08,
+          1.9215686274509802
+        ],
+        [
+          "t25_c16_s10",
+          11.3,
+          7.9,
+          1.4303797468354431
+        ],
+        [
+          "t100_c512_s40",
+          31.76,
+          23.82,
+          1.3333333333333335
+        ],
+        [
+          "t100_c32_s40",
+          29.28,
+          22.64,
+          1.2932862190812722
+        ],
+        [
+          "t650_c64_s600",
+          158.64,
+          145.68,
+          1.088962108731466
+        ],
+        [
+          "t200_c64_s80",
+          55.7,
+          51.32,
+          1.0853468433359315
+        ],
+        [
+          "t50_c32_s20",
+          15.0,
+          14.04,
+          1.0683760683760684
+        ],
+        [
+          "t10_c5_s8",
+          7.32,
+          7.04,
+          1.0397727272727273
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-CTCLossV2-1af7003.md"
     },
     {
       "id": "BT-20261118-CTCLossV2-2b9d49d",
