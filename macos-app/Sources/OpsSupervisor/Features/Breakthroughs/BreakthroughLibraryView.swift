@@ -5,6 +5,7 @@ struct BreakthroughLibraryView: View {
     @EnvironmentObject var store: ContestStore
     @UIState private var selectedEntryId: String? = nil
     @UIState private var selectedCategory: String = "ALL"
+    @UIState private var sortByTime: Bool = false
 
     private var lang: AppLanguage { store.lang }
 
@@ -14,10 +15,19 @@ struct BreakthroughLibraryView: View {
     }
 
     private var filteredEntries: [BreakthroughEntry] {
-        store.breakthroughEntries.filter { entry in
-            entry.deltaRaw >= store.breakthroughThreshold
-                && (selectedCategory == "ALL" || entry.category == selectedCategory)
-        }
+        store.breakthroughEntries
+            .filter { entry in
+                entry.deltaRaw >= store.breakthroughThreshold
+                    && (selectedCategory == "ALL" || entry.category == selectedCategory)
+            }
+            .sorted { a, b in
+                if sortByTime {
+                    if a.timestamp != b.timestamp { return a.timestamp > b.timestamp }
+                    return a.deltaRaw > b.deltaRaw
+                }
+                if a.deltaRaw != b.deltaRaw { return a.deltaRaw > b.deltaRaw }
+                return a.timestamp > b.timestamp
+            }
     }
 
     private var activeEntry: BreakthroughEntry? {
@@ -88,7 +98,15 @@ struct BreakthroughLibraryView: View {
             }
             .pickerStyle(.menu)
             .controlSize(.small)
-            .frame(width: 155)
+            .frame(width: 145)
+
+            Picker("", selection: $sortByTime) {
+                Text(lang.tr("按突破分", "By Δ Score")).tag(false)
+                Text(lang.tr("按最新时间", "Newest First")).tag(true)
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.small)
+            .frame(width: 162)
 
             Spacer()
 

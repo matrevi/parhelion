@@ -88,7 +88,8 @@ struct CandidateSubmissionCardView: View {
 
     private var lang: AppLanguage { store.lang }
     private var pipeline: LivePipelineState? { store.snapshot?.scheduler.pipeline }
-    private var isLocalUploading: Bool { (pipeline?.isLocalBusy ?? false) || store.isLaunchingSubmit }
+    private var isWaitingCooldown: Bool { pipeline?.phase == "waiting_cooldown" }
+    private var isLocalUploading: Bool { ((pipeline?.isLocalBusy ?? false) && !isWaitingCooldown) || store.isLaunchingSubmit }
 
     var body: some View {
         let isCrit = item.badge == "CRITICAL RESTORE"
@@ -176,6 +177,14 @@ struct CandidateSubmissionCardView: View {
                         if isLocalUploading {
                             Label(lang.tr("打包上传中，请稍候", "Uploading, please wait"), systemImage: "hourglass")
                                 .font(.system(size: 11.5, weight: .semibold))
+                        } else if isWaitingCooldown {
+                            Label(
+                                cdRem > 0
+                                    ? lang.tr("替换预约 (\(cdRem)s)", "Replace (\(cdRem)s)")
+                                    : lang.tr("替换并提交", "Replace & Submit"),
+                                systemImage: "arrow.triangle.2.circlepath"
+                            )
+                            .font(.system(size: 11.5, weight: .semibold))
                         } else if rankIndex == 1 {
                             Label(
                                 cdRem > 0

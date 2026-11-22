@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-11-22T12:30:12.799657+00:00",
+  "updated_at": "2026-11-22T12:37:24.920404+00:00",
   "entries": [
     {
       "id": "BT-20261110-SyncBatchNormGatherStats-ecd5aa8",
@@ -451,6 +451,94 @@
       "precision_guard": "Bit-exact across all 11 dtypes (160/160 extended, 556-1356 plan checks, 29,667 offset-doubling combinations). srcRowsAlloc guards partial tail Gather reads; hasGathered gates V_S before offset rebuild. Anti-pattern (52f8066, 48.83 -> 47.56): moving <=128B broadcast headers from scalar GetValue() to all-core MTE2 DataCopy caused +2.13us cacheline contention.",
       "transferable_rule": "Coalesce all adjacent source-contiguous axes without UB-chunk truncation, replace fixed-latency TransDataTo5HD with single-descriptor 2D double-buffered Normal-mode Level-0 Gather<u32|u16> (widening 1B dtypes via Cast<half,u8>->Gather<u16>->Cast<u8,half>), build periodic offset tables via O(log2) Level-0 Adds, and keep <=128B broadcast headers on scalar GetValue().",
       "doc_path": "entries/BT-20261118-ConfusionTransposeD-d4d090f.md"
+    },
+    {
+      "id": "BT-20261122-MultilabelMarginLoss-9f92b0a",
+      "problem": "MultilabelMarginLoss",
+      "difficulty": 2,
+      "sha": "9f92b0a4702b9130ff5f01eb827e888363990330",
+      "baseline_sha": "f1d06c8",
+      "timestamp": "2026-11-22T12:36:25.771504+00:00",
+      "score_before": 56.64,
+      "score_after": 61.93,
+      "delta_raw": 5.29,
+      "delta_weighted": 10.58,
+      "status": "verified",
+      "category": "vectorization",
+      "tags": [
+        "ReduceSum",
+        "Brcb"
+      ],
+      "title": "fix: harden KernelTiny MTE3_S EVENT_ID1, KernelMid2D fallback stage bounds & -FLT_MAX mask",
+      "bottleneck": "Prior baseline `f1d06c8` plateaued at 56.64 pts; `9f92b0a` lifted online score to 61.93 pts (+5.29 raw / +10.58 weighted). Top paired hardware speedups: k_bf16_64x128_none 20.6->10.8us (1.91x), k_64x64_none 13.5->7.1us (1.90x), k_256x32_mean 21.8->12.1us (1.80x).",
+      "mechanisms": [
+        "4-TILING_KEY isolation",
+        "dual-row 64b histogram",
+        "-FLT_MAX masked 2D Brcb/WholeReduceSum",
+        "cost-aware core partition",
+        "hardened sync/bounds: 4x6 7.74->4.62us, 32x10 7.06->4.92us, 97x9 10.46->6.42us, 64x64 15.66->7.14us, 64x128 25.86->10.80us, 256x32 27.78->12.12us, 32x1024 108->31.9us, 8192 3805->158.7us"
+      ],
+      "precision_guard": "Verified locally (EXTENDED_PASSED 132 cases, exit_code=0) and passed online 50-case Judge evaluation at 61.93 pts.",
+      "transferable_rule": "When optimizing `vectorization` bottlenecks (ReduceSum, Brcb), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata.",
+      "diff_stat": [
+        "op_host/multilabel_margin_loss_tiling.cpp      |  171 ++-",
+        "op_kernel/multilabel_margin_loss.cpp           |   10 +-",
+        "op_kernel/multilabel_margin_loss.h             | 1578 +++++++++++++++---------",
+        "op_kernel/multilabel_margin_loss_tiling_data.h |   20 +-",
+        "op_kernel/multilabel_margin_loss_tiling_key.h  |   14 +-",
+        "5 files changed, 1108 insertions(+), 685 deletions(-)"
+      ],
+      "paired_speedups": [
+        [
+          "k_bf16_64x128_none",
+          20.58,
+          10.8,
+          1.9055555555555552
+        ],
+        [
+          "k_64x64_none",
+          13.54,
+          7.14,
+          1.8963585434173669
+        ],
+        [
+          "k_256x32_mean",
+          21.84,
+          12.12,
+          1.801980198019802
+        ],
+        [
+          "k_4x6_mean",
+          7.6,
+          4.62,
+          1.6450216450216448
+        ],
+        [
+          "k_64x64_mean",
+          14.46,
+          9.12,
+          1.585526315789474
+        ],
+        [
+          "k_fp16_64x64_mean",
+          14.64,
+          9.26,
+          1.5809935205183587
+        ],
+        [
+          "k_32x10_none",
+          5.72,
+          4.02,
+          1.4228855721393037
+        ],
+        [
+          "k_bf16_97x9_mean",
+          8.5,
+          6.42,
+          1.32398753894081
+        ]
+      ],
+      "doc_path": "entries/BT-20261122-MultilabelMarginLoss-9f92b0a.md"
     },
     {
       "id": "BT-20261122-CTCLossV2-1af7003",

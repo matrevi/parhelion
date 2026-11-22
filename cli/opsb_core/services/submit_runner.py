@@ -5,11 +5,16 @@ import fcntl
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+
+class _CooldownReservationCancelled(BaseException):
+    """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
 from ..config import CONFIG_DIR, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .judge_sync import INFLIGHT_FILE
@@ -93,6 +98,21 @@ def detect_inflight_submission(
 
 def spawn_jump_submit(opsb_bin: Path, workspace: Path, title: str, sha: str, note: str) -> dict[str, Any]:
     lock_file = workspace / "results" / ".submit-queue.lock"
+    # If a previous worker is ONLY sleeping in `waiting_cooldown` (not yet packaging/uploading),
+    # allow seamlessly replacing that cooldown reservation with the newly clicked candidate!
+    if INFLIGHT_FILE.is_file():
+        inf = read_json(INFLIGHT_FILE, {})
+        old_pid = int(inf.get("pid") or 0)
+        if inf.get("phase") == "waiting_cooldown" and old_pid > 0 and old_pid != os.getpid() and _pid_alive(old_pid):
+            try:
+                os.kill(old_pid, signal.SIGTERM)
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and _pid_alive(old_pid):
+                    time.sleep(0.05)
+                INFLIGHT_FILE.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     if lock_file.exists():
         try:
             with lock_file.open("r") as lf:
@@ -100,7 +120,7 @@ def spawn_jump_submit(opsb_bin: Path, workspace: Path, title: str, sha: str, not
                     fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(lf, fcntl.LOCK_UN)
                 except BlockingIOError:
-                    return {"ok": False, "busy": True, "error": "上一发正在提交评测中，请等待完成后再试"}
+                    return {"ok": False, "busy": True, "error": "上一发正在打包上传中，请等待数秒后再试"}
         except Exception:
             pass
 
@@ -235,7 +255,16 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
                 wait_s = MIN_RATE_GAP_SEC - (utc_now().timestamp() - last_epoch)
                 if wait_s > 0:
                     _write_inflight_phase(title, sha, workspace, started_iso, "waiting_cooldown")
-                    time.sleep(wait_s)
+                    prev_handler = signal.getsignal(signal.SIGTERM)
+
+                    def _on_cancel_wait(_sig: int, _frame: Any) -> None:
+                        raise _CooldownReservationCancelled()
+
+                    signal.signal(signal.SIGTERM, _on_cancel_wait)
+                    try:
+                        time.sleep(wait_s)
+                    finally:
+                        signal.signal(signal.SIGTERM, prev_handler)
 
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading")
             receipt = _submit_via_worktree(workspace, title, sha)
@@ -251,6 +280,10 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
                 with outcome_path.open("a", encoding="utf-8") as of:
                     of.write(json.dumps(early_out_rec, ensure_ascii=False) + "\n")
                 invalidate_ttl_cache("scheduler_bridge")
+        except _CooldownReservationCancelled:
+            # Replaced cleanly by a newer jump-submit while sleeping; do not write a rejected outcome!
+            early_out_rec = {"cancelled": True}
+            invalidate_ttl_cache("scheduler_bridge")
         except Exception as exc:
             base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
             early_out_rec = {

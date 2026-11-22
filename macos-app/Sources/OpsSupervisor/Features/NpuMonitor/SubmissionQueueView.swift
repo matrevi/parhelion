@@ -15,6 +15,7 @@ struct SubmissionQueueView: View {
 
     @StateObject private var clock = WallClockTicker()
     @UIState private var selectedTab: QueueViewTab = .waiting
+    @UIState private var btSortByTime: Bool = false
     @UIState private var inspectedExperience: BreakthroughEntry? = nil
 
     private var lang: AppLanguage { store.lang }
@@ -37,6 +38,12 @@ struct SubmissionQueueView: View {
         items
             .filter { ($0.breakthroughDelta ?? -999.0) >= btThreshold }
             .sorted { a, b in
+                if btSortByTime {
+                    let ta = a.finishedAt ?? a.queuedAt
+                    let tb = b.finishedAt ?? b.queuedAt
+                    if ta != tb { return ta > tb }
+                    return (a.breakthroughDelta ?? 0) > (b.breakthroughDelta ?? 0)
+                }
                 let aPend = a.kind != "completed"
                 let bPend = b.kind != "completed"
                 if aPend != bPend { return aPend && !bPend }
@@ -193,6 +200,14 @@ struct SubmissionQueueView: View {
             }
 
             Spacer()
+
+            Picker("", selection: $btSortByTime) {
+                Text(lang.tr("按突破分", "By Δ Score")).tag(false)
+                Text(lang.tr("按最新时间", "Newest First")).tag(true)
+            }
+            .pickerStyle(.segmented)
+            .controlSize(.mini)
+            .frame(width: 150)
 
             Button {
                 Task { await store.syncBreakthroughs() }
