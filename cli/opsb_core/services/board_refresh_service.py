@@ -57,6 +57,39 @@ def _session_info() -> tuple[str, str, str]:
     return base, "; ".join(jar), user_id
 
 
+def _all_team_sessions() -> list[tuple[str, str, str]]:
+    """Return all connected teammate sessions (base_url, cookie_header, user_id)."""
+    out: list[tuple[str, str, str]] = []
+    seen_uids: set[str] = set()
+    candidates: list[Path] = []
+    env_p = os.environ.get("JUDGE_SESSION_FILE")
+    if env_p:
+        candidates.append(Path(env_p))
+    candidates.append(Path.home() / ".judge" / "session.json")
+    sdir = Path.home() / ".judge" / "sessions"
+    if sdir.is_dir():
+        candidates.extend(sorted(sdir.glob("*.json")))
+    for p in candidates:
+        if not p.is_file():
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+        uid = str(data.get("user_id") or "")
+        jar = "; ".join(
+            f"{rec['name']}={rec['value']}"
+            for rec in (data.get("cookies") or [])
+            if rec.get("name") and rec.get("value") is not None
+        )
+        if jar and (not uid or uid not in seen_uids):
+            if uid:
+                seen_uids.add(uid)
+            out.append((base, jar, uid))
+    return out
+
+
 def _get_json(base: str, cookie: str, path: str) -> Any:
     req = urllib.request.Request(
         base + path,
@@ -178,6 +211,10 @@ def refresh_board_and_recalibrate(
                     pass
 
             base, cookie, user_id = _session_info()
+            team_sessions = _all_team_sessions() or [(base, cookie, user_id)]
+            team_user_ids = {uid for _, _, uid in team_sessions if uid}
+            if user_id:
+                team_user_ids.add(user_id)
             probs_path = workspace / "bench" / "problems.json"
             problems = read_json(probs_path, [])
             if not isinstance(problems, list) or not problems:
@@ -217,9 +254,10 @@ def refresh_board_and_recalibrate(
                             frontier_top5 = round(float(rows1[min(4, len(rows1) - 1)].get("score") or 0.0), 2)
                     rows = d.get("rows") or []
                     for r in rows:
-                        if user_id and str(r.get("user_id") or "") == user_id:
-                            our_row = r
-                            break
+                        if team_user_ids and str(r.get("user_id") or "") in team_user_ids:
+                            # Prefer highest-scoring / lowest-rank team row across all teammate accounts
+                            if our_row is None or float(r.get("score") or 0.0) > float(our_row.get("score") or 0.0):
+                                our_row = r
                     if our_row is not None or page >= int(d.get("pages") or 1):
                         break
 
@@ -241,6 +279,22 @@ def refresh_board_and_recalibrate(
                         ][:5]
                     elif isinstance(our_row.get("times"), list):
                         our_times = [float(x) for x in our_row["times"][:5] if x is not None]
+                    # Fallback: query /api/submissions/{sid} using whichever teammate session owns it
+                    sub_id = str(our_row.get("submission_id") or "")
+                    if not our_times and sub_id:
+                        for s_base, s_cookie, _ in team_sessions:
+                            try:
+                                sd = _get_json(s_base, s_cookie, f"/api/submissions/{sub_id}")
+                                s_body = sd.get("data") if isinstance(sd, dict) and isinstance(sd.get("data"), dict) else sd
+                                s_res = s_body.get("result") or [] if isinstance(s_body, dict) else []
+                                times_from_sub = [float(x["time"]) for x in s_res if isinstance(x, dict) and x.get("time") is not None][:5]
+                                if times_from_sub:
+                                    our_times = times_from_sub
+                                    if not tbest_list:
+                                        tbest_list = [float(x["best_time"]) for x in s_res if isinstance(x, dict) and x.get("best_time") is not None][:5]
+                                    break
+                            except Exception:
+                                continue
 
                     prev_snap = snap.get(title) if isinstance(snap.get(title), dict) else {}
                     prev_score = prev_snap.get("score")
