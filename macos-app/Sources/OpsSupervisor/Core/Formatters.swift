@@ -63,6 +63,11 @@ enum Formatters {
         }
         return cleaned
     }
+
+    static func shortTimestamp(epoch: Double?) -> String {
+        guard let epoch, epoch > 0 else { return "—" }
+        return shanghaiShortFormatter.string(from: Date(timeIntervalSince1970: epoch))
+    }
 }
 
 enum SystemNavigator {

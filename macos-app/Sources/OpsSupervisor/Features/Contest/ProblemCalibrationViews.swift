@@ -32,8 +32,28 @@ struct EscapeAndBackfillBannerView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.red.opacity(0.11)))
             }
 
-            if let missing = cal?.unpairedBucketCount, missing > 0 {
-                unpairedBanner(missing: missing)
+            let rawMissing = cal?.unpairedBucketCount ?? 0
+            let realMissing = compact.map { $0.unpairedByOperator[problem.title] ?? 0 } ?? rawMissing
+            let placeholderCount = compact?.specPlaceholderByOperator[problem.title] ?? max(0, rawMissing - realMissing)
+            if realMissing > 0 {
+                unpairedBanner(missing: realMissing)
+            } else if placeholderCount > 0 {
+                HStack(spacing: 7) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.teal)
+                    Text(lang.tr(
+                        "实测性能桶基线已全量配对（另有 \(placeholderCount) 个 _proxy/非实测占位桶，无需补测）",
+                        "All measurable buckets paired (\(placeholderCount) _proxy / non-harness placeholder(s) skipped)"
+                    ))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.03)))
             }
         }
     }

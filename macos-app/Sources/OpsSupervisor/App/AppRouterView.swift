@@ -83,11 +83,13 @@ struct AppRouterView: View {
                 .help(lang.tr("切换界面语言 (中文 / English)", "Switch UI Language (中文 / English)"))
 
                 Picker(lang.tr("轮询", "Poll"), selection: $store.pollIntervalSec) {
-                    Text("2s").tag(2)
-                    Text("5s").tag(5)
-                    Text("10s").tag(10)
-                    Text("30s").tag(30)
-                    Text(lang.tr("手动", "Manual")).tag(0)
+                    Text("0.5s").tag(0.5)
+                    Text("1s").tag(1.0)
+                    Text("2s").tag(2.0)
+                    Text("5s").tag(5.0)
+                    Text("10s").tag(10.0)
+                    Text("30s").tag(30.0)
+                    Text(lang.tr("手动", "Manual")).tag(0.0)
                 }
                 .pickerStyle(.menu)
                 .frame(width: 92)

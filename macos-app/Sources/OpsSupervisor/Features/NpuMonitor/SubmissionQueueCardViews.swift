@@ -27,6 +27,11 @@ struct InflightJudgeCardView: View {
                             .font(.system(size: 11, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.blue)
                     }
+                    if let st = pipe.judgeStartedEpoch, st > 0 {
+                        Text("· \(Formatters.shortTimestamp(epoch: st))")
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
                     SemanticPill(text: phaseLabel(pipe.phase, remoteStatus: pipe.remoteStatus))
                 }
@@ -103,6 +108,9 @@ struct CandidateSubmissionCardView: View {
                     DifficultyBadge(difficulty: item.difficulty)
                     Text(item.title).font(.system(size: 13, weight: .bold))
                     Text(item.shortSha).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    Text("· \(Formatters.shortTimestamp(item.queuedAt))")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
                     Spacer()
                     if let btd = item.breakthroughDelta, btd >= store.breakthroughThreshold {
                         SemanticPill(

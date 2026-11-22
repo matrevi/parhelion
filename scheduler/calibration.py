@@ -166,6 +166,7 @@ class BenchmarkCalibrator:
         self.backfill: Any = None
         self._perf_spec_cache: dict[str, dict[str, Any]] = {}
         self._timings_cache: dict[tuple[str, str, str | None], tuple[dict[str, float], dict[str, float], str | None, str]] = {}
+        self._regime_cache: dict[tuple[str, str, str | None], str] = {}
         self._cal_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._esc_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -308,6 +309,34 @@ class BenchmarkCalibrator:
             "observed_us": {k: round(float(v), 3) for k, v in timings.items()},
         }
 
+    @staticmethod
+    def _detect_profiler_regime(res_json_path: pathlib.Path, log_text: str) -> str:
+        """Identify measurement regime so fast single-session l0 timings never mix blindly with legacy PMU runs."""
+        if res_json_path.is_file():
+            try:
+                rd = json.loads(res_json_path.read_text())
+                reg = rd.get("profiler_regime")
+                if isinstance(reg, str) and reg:
+                    return reg
+                if rd.get("phase_c_cpu_sec") is not None:
+                    return "fast_single_session_l0"
+            except Exception:
+                pass
+        if "[PHASE-C] Lock-free verify + profiler parse" in log_text or "fast_profiler" in log_text:
+            return "fast_single_session_l0"
+        return "legacy_multiproc_pmu"
+
+    @staticmethod
+    def _backfill_regime(backfill: dict[str, Any] | None) -> str:
+        if not isinstance(backfill, dict):
+            return "legacy_multiproc_pmu"
+        if backfill.get("profiler_regime") == "fast_single_session_l0":
+            return "fast_single_session_l0"
+        mat = str(backfill.get("updated_at") or backfill.get("measured_at") or "")
+        if mat >= "2026-11-22T10:50:00":
+            return "fast_single_session_l0"
+        return "legacy_multiproc_pmu"
+
     def _extract_bucket_timings(
         self,
         title: str,
@@ -323,13 +352,17 @@ class BenchmarkCalibrator:
         repo = self.workspace / "bench" / title
         res_dir = self.workspace / "results" / title
         vlog = res_dir / sha / "validation.log"
+        rj_path = res_dir / sha / "result.json"
         backfill = self._backfill_pairings(title, sha)
 
-
-        # Only scan sibling commits via C++ fingerprint when `allow_future_siblings` is True (live mode)
-        best_perf = parse_validation_perf(vlog.read_text(errors="replace")) if vlog.is_file() else None
+        vlog_text = vlog.read_text(errors="replace") if vlog.is_file() else ""
+        best_perf = parse_validation_perf(vlog_text) if vlog_text else None
+        best_regime = self._detect_profiler_regime(rj_path, vlog_text) if best_perf is not None else "none"
+        # Scan C++-identical sibling commits in live mode whenever the direct log is missing,
+        # incomplete, on a different SoC, OR measured under the legacy multi-proc PMU regime!
         needs_sibling_search = allow_future_siblings and (
             best_perf is None
+            or best_regime != "fast_single_session_l0"
             or (best_perf.get("runtime_soc") != target_soc and not best_perf["profiler_cases"])
             or (title == "ConcatD" and len(best_perf["profiler_cases"]) < 12)
         )
@@ -337,18 +370,16 @@ class BenchmarkCalibrator:
             fp = _code_fingerprint(repo, sha)
             if fp:
                 best_score_key = (
+                    1 if (best_perf and best_perf["profiler_cases"] and best_regime == "fast_single_session_l0") else 0,
                     1 if (best_perf and best_perf["profiler_cases"]) else 0,
                     1 if (best_perf and best_perf.get("runtime_soc") == target_soc) else 0,
                     len(best_perf["profiler_cases"]) if best_perf else 0,
                 )
-                # Only inspect passing `soc-a` logs (fast header check BEFORE calling git!)
+                # Only inspect passing `soc-a` logs (check tiny result.json first!)
                 for cand_rj in sorted(res_dir.glob("*/result.json"), reverse=True):
                     c_sha = cand_rj.parent.name.lower()
                     cvlog = cand_rj.parent / "validation.log"
                     if c_sha == sha or len(c_sha) != 40 or not cvlog.is_file():
-                        continue
-                    head_txt = cvlog.read_text(errors="replace")[:1200]
-                    if target_soc and f"RUNTIME_SOC={target_soc}" not in head_txt:
                         continue
                     try:
                         if json.loads(cand_rj.read_text()).get("exit_code") != 0:
@@ -357,15 +388,48 @@ class BenchmarkCalibrator:
                         continue
                     if _code_fingerprint(repo, c_sha) != fp:
                         continue
-                    cp = parse_validation_perf(cvlog.read_text(errors="replace"))
+                    ctxt = cvlog.read_text(errors="replace")
+                    if target_soc and f"RUNTIME_SOC={target_soc}" not in ctxt:
+                        continue
+                    cp = parse_validation_perf(ctxt)
+                    c_reg = self._detect_profiler_regime(cand_rj, ctxt)
                     cand_key = (
+                        1 if (cp["profiler_cases"] and c_reg == "fast_single_session_l0") else 0,
                         1 if cp["profiler_cases"] else 0,
                         1 if cp.get("runtime_soc") == target_soc else 0,
                         len(cp["profiler_cases"]),
                     )
                     if best_perf is None or cand_key > best_score_key:
                         best_perf = cp
+                        best_regime = c_reg
                         best_score_key = cand_key
+
+        # If a newer fast_single_session_l0 B0 backfill exists for this baseline SHA and our
+        # validation log is still legacy, prefer the fresh backfill timings so comparisons match regime!
+        bf_regime = self._backfill_regime(backfill)
+        if (
+            allow_future_siblings
+            and backfill
+            and backfill.get("cases")
+            and bf_regime == "fast_single_session_l0"
+            and best_regime != "fast_single_session_l0"
+        ):
+            bf_raw = backfill["cases"] or {}
+            bf_matched = (
+                {b["id"]: float(bf_raw[b["id"]]) for b in buckets if b["id"] in bf_raw and bf_raw[b["id"]] and bf_raw[b["id"]] > 0}
+                if buckets
+                else {k: float(v) for k, v in bf_raw.items() if v and v > 0}
+            )
+            if bf_matched:
+                bf_res: tuple[dict[str, float], dict[str, float], str | None, str] = (
+                    bf_matched,
+                    dict(best_perf.get("torch_cases") or {}) if best_perf else {},
+                    backfill.get("runtime_soc") or target_soc,
+                    "profiler",
+                )
+                self._timings_cache[t_key] = bf_res
+                self._regime_cache[t_key] = bf_regime
+                return bf_res
 
         if best_perf is None:
             # B0 backfill may have paired the baseline even when no `validation.log` exists at all
@@ -377,10 +441,14 @@ class BenchmarkCalibrator:
                     "profiler",
                 )
                 self._timings_cache[t_key] = solo_res
+                self._regime_cache[t_key] = bf_regime
                 return solo_res
             empty_res: tuple[dict[str, float], dict[str, float], str | None, str] = ({}, {}, None, "none")
             self._timings_cache[t_key] = empty_res
+            self._regime_cache[t_key] = "none"
             return empty_res
+
+        self._regime_cache[t_key] = best_regime
 
         soc = best_perf.get("runtime_soc")
         raw_pool: dict[str, float] = {}
@@ -975,9 +1043,16 @@ class BenchmarkCalibrator:
 
         buckets_ranked = sorted(buckets_out, key=lambda x: (x["headroom_pts"], x["marginal_pts_per_2x"]), reverse=True)
 
+        active_regime = (
+            self._regime_cache.get((title, active_sha, "soc-a" if as_of is None else None), "none")
+            if active_sha
+            else "none"
+        )
         cal_doc = {
             "title": title,
             "updated_at": _utc_now(),
+            "active_board_sha": active_sha,
+            "active_profiler_regime": active_regime,
             "observations_m": len(sha_order),
             "paired_observations_m": len(phi_rows),
             "beta_tightness": beta_p,
@@ -1071,19 +1146,30 @@ class BenchmarkCalibrator:
         cand_timings, cand_torch, cand_soc, cand_mod = self._extract_bucket_timings(
             title, cand_sha, buckets, allow_future_siblings=(as_of is None)
         )
+        cand_regime = self._regime_cache.get((title, cand_sha, "soc-a" if as_of is None else None), "none")
         # Simplex-MAP bucket model operates strictly on hardware `profiler` Task Duration buckets!
         if not cand_timings or cand_mod != "profiler":
             return None
 
         base_timings: dict[str, float] = {}
+        base_regime = "none"
         if base_sha:
             base_timings, base_torch, _, base_mod = self._extract_bucket_timings(
                 title, base_sha, buckets, target_soc=cand_soc, allow_future_siblings=(as_of is None)
             )
+            base_regime = self._regime_cache.get((title, base_sha, cand_soc if as_of is None else None), "none")
             if base_mod != "profiler":
                 return None
         else:
             base_torch = {}
+
+        regime_mismatch = bool(
+            as_of is None
+            and base_sha
+            and cand_regime != "none"
+            and base_regime != "none"
+            and cand_regime != base_regime
+        )
 
         common_buckets = [b["id"] for b in buckets if b["id"] in cand_timings and b["id"] in base_timings]
         if len(common_buckets) < 3:
@@ -1135,6 +1221,9 @@ class BenchmarkCalibrator:
             delta_pub = (10.0 / 90.0) * 0.40 * delta_hid
 
         raw_delta = delta_hid + delta_pub
+        # Guard against phantom speedups when comparing fast_single_session_l0 vs legacy_multiproc_pmu
+        if regime_mismatch and raw_delta > 0:
+            raw_delta *= 0.35
         # Bayesian shrinkage on large extrapolations when M_paired < 2 (single-anchor regime)
         m_paired = int(cal.get("paired_observations_m") or 0)
         if m_paired < 2 and abs(raw_delta) > 6.0:
@@ -1144,8 +1233,14 @@ class BenchmarkCalibrator:
         est_score = max(0.0, min(hard_cap, anchor_sc + raw_delta))
         unpaired_frac = max(0.0, 1.0 - len(common_buckets) / max(1, len(buckets)))
         unpaired_sigma = 2.6 * unpaired_frac
-        total_sigma = math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + epistemic_var + unpaired_sigma ** 2)
+        regime_sigma = 5.0 if regime_mismatch else 0.0
+        total_sigma = math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + epistemic_var + unpaired_sigma ** 2 + regime_sigma ** 2)
         eff_speedup = round(est_score / anchor_sc, 4) if anchor_sc > 0 else 1.0
+        regime_note = (
+            f" · [REGIME_MISMATCH: base={base_regime} vs cand={cand_regime}; run opsb bench backfill]"
+            if regime_mismatch
+            else ""
+        )
 
         return {
             "estimated_score": round(est_score, 2),
@@ -1154,11 +1249,14 @@ class BenchmarkCalibrator:
             "matched_cases": len(common_buckets),
             "improved_cases": improved,
             "regressed_cases": regressed,
+            "regime_mismatch": regime_mismatch,
+            "base_regime": base_regime,
+            "cand_regime": cand_regime,
             "method": "simplex_map_calibrated",
             "detail": (
                 f"Simplex-MAP ({len(common_buckets)}/{len(buckets)} buckets vs {(base_sha or '')[:7]}, "
                 f"beta={beta_p:.3f}, d_hid={delta_hid:+.2f}, d_pub={delta_pub:+.2f}, "
-                f"improved={improved}, regressed={len(regressed)})"
+                f"improved={improved}, regressed={len(regressed)}){regime_note}"
             ),
         }
 

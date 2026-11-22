@@ -1,7 +1,31 @@
 import AppKit
 import SwiftUI
 
+private func activateExistingInstanceAndExitIfDuplicate() -> Bool {
+    let myPid = ProcessInfo.processInfo.processIdentifier
+    let myBundleId = Bundle.main.bundleIdentifier
+    let others = NSWorkspace.shared.runningApplications.filter { app in
+        guard app.processIdentifier != myPid, !app.isTerminated else { return false }
+        if let bid = myBundleId, !bid.isEmpty, app.bundleIdentifier == bid {
+            return true
+        }
+        return app.executableURL?.lastPathComponent == "OpsSupervisor"
+    }
+    if let existing = others.first {
+        existing.unhide()
+        existing.activate(options: [.activateAllWindows])
+        return true
+    }
+    return false
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        if activateExistingInstanceAndExitIfDuplicate() {
+            NSApp.terminate(nil)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         setenv("TZ", "Asia/Shanghai", 1)
         tzset()
@@ -21,6 +45,9 @@ struct OpsSupervisorApp: App {
     @StateObject private var store = ContestStore()
 
     init() {
+        if activateExistingInstanceAndExitIfDuplicate() {
+            exit(0)
+        }
         setenv("TZ", "Asia/Shanghai", 1)
         tzset()
         NSTimeZone.default = Formatters.shanghaiTimeZone

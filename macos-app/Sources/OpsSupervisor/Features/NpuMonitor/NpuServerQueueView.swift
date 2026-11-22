@@ -164,6 +164,9 @@ struct NpuServerQueueView: View {
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
+                    Text("· \(Formatters.shortTimestamp(epoch: Date().timeIntervalSince1970 - Double(max(0, task.elapsedSec))))")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
                     if let die = task.die {
                         Text(lang.tr("\(die)号卡 (Die \(die))", "Die \(die)"))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))

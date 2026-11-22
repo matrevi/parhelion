@@ -54,6 +54,8 @@ struct BackfillPassthrough: Codable, Hashable {
     let autoEnabled: Bool
     let unpairedTotal: Int
     let unpairedByOperator: [String: Int]
+    let specPlaceholderTotal: Int
+    let specPlaceholderByOperator: [String: Int]
     let running: Bool
     let runningTitle: String?
     let estSessionSec: Double?
@@ -71,6 +73,8 @@ struct BackfillPassthrough: Codable, Hashable {
         autoEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .autoEnabled)).flatMap { $0 } ?? false
         unpairedTotal = (try? c.decodeIfPresent(Int.self, forKey: .unpairedTotal)).flatMap { $0 } ?? 0
         unpairedByOperator = (try? c.decodeIfPresent([String: Int].self, forKey: .unpairedByOperator)).flatMap { $0 } ?? [:]
+        specPlaceholderTotal = (try? c.decodeIfPresent(Int.self, forKey: .specPlaceholderTotal)).flatMap { $0 } ?? 0
+        specPlaceholderByOperator = (try? c.decodeIfPresent([String: Int].self, forKey: .specPlaceholderByOperator)).flatMap { $0 } ?? [:]
         running = (try? c.decodeIfPresent(Bool.self, forKey: .running)).flatMap { $0 } ?? false
         runningTitle = (try? c.decodeIfPresent(String.self, forKey: .runningTitle)).flatMap { $0 }
         estSessionSec = (try? c.decodeIfPresent(Double.self, forKey: .estSessionSec)).flatMap { $0 }
@@ -87,6 +91,8 @@ struct BackfillPassthrough: Codable, Hashable {
         case autoEnabled = "auto_enabled"
         case unpairedTotal = "unpaired_total"
         case unpairedByOperator = "unpaired_by_operator"
+        case specPlaceholderTotal = "spec_placeholder_total"
+        case specPlaceholderByOperator = "spec_placeholder_by_operator"
         case runningTitle = "running_title"
         case estSessionSec = "est_session_sec"
         case ledgerSha = "ledger_sha"

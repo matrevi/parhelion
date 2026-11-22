@@ -70,6 +70,9 @@ struct BreakthroughDetailView: View {
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.tertiary)
                     }
+                    Text("· \(Formatters.shortTimestamp(entry.timestamp))")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
                     Spacer()
                     SemanticPill(text: lang.categoryName(entry.category), icon: "tag.fill", compact: true)
                     SemanticPill(text: String(format: "%@ %+.2f", lang.tr("突破", "BREAKTHROUGH"), entry.deltaRaw), icon: "flame.fill")

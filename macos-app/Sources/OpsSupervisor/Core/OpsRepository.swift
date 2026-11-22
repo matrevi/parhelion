@@ -98,8 +98,15 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(["bench", "calibrate", problem, "--workspace", workspace, "--json"], timeout: 25.0)
     }
 
-    func backfillProblemBench(workspace: String, problem: String) async throws {
-        _ = try await client.execute(["bench", "backfill", problem, "--workspace", workspace, "--json"], timeout: 120.0)
+    func backfillProblemBench(workspace: String, problem: String) async throws -> (dispatched: Bool, result: String, measuredCount: Int) {
+        let data = try await client.execute(["bench", "backfill", problem, "--workspace", workspace, "--json"], timeout: 120.0)
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let dispatched = (obj["dispatched"] as? Bool) ?? false
+            let result = (obj["result"] as? String) ?? (obj["reason"] as? String) ?? (obj["action"] as? String) ?? "unknown"
+            let measured = (obj["measured"] as? [String: Any])?.count ?? 0
+            return (dispatched, result, measured)
+        }
+        return (false, "unknown", 0)
     }
 
     func jumpSubmitNow(workspace: String, problem: String, sha: String, note: String) async throws -> (Bool, String) {

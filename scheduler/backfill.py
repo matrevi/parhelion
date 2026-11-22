@@ -1042,6 +1042,7 @@ class BackfillScheduler:
         runtime_soc: str | None = None,
         modality: str = "profiler",
         source: str = "backfill",
+        profiler_regime: str | None = None,
     ) -> dict[str, Any]:
         """Merge measured bucket timings into `<state>/backfill_timings.json` (idempotent)."""
         doc = self._load_timings_doc()
@@ -1055,17 +1056,18 @@ class BackfillScheduler:
             if bid not in merged:
                 added += 1
             merged[bid] = round(float(us), 4)
-        entry.update(
-            {
-                "title": title,
-                "sha": sha,
-                "cases": merged,
-                "source": source,
-                "modality": modality,
-                "runtime_soc": runtime_soc or entry.get("runtime_soc"),
-                "updated_at": _utc_now(),
-            }
-        )
+        upd = {
+            "title": title,
+            "sha": sha,
+            "cases": merged,
+            "source": source,
+            "modality": modality,
+            "runtime_soc": runtime_soc or entry.get("runtime_soc"),
+            "updated_at": _utc_now(),
+        }
+        if profiler_regime:
+            upd["profiler_regime"] = profiler_regime
+        entry.update(upd)
         doc["entries"][key] = entry
         self.state_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.timings_path.with_suffix(".tmp")
@@ -1084,6 +1086,8 @@ class BackfillScheduler:
             "cases": dict(entry["cases"]),
             "runtime_soc": entry.get("runtime_soc"),
             "modality": entry.get("modality") or "profiler",
+            "profiler_regime": entry.get("profiler_regime"),
+            "updated_at": entry.get("updated_at"),
         }
 
     # -- detection ---------------------------------------------------------------
@@ -1497,12 +1501,24 @@ class BackfillScheduler:
         measured = {b: pool[b] for b in job["buckets"] if b in pool and pool[b] > 0}
 
         if measured:
+            raw_timing_blob = "\n".join(res.get("timing_lines") or [])
+            bf_profiler_regime: str | None = None
+            if modality == "profiler":
+                if (
+                    "KPERF_JSON" in raw_timing_blob
+                    or "fast_profiler" in raw_timing_blob
+                    or "profiler_bench" in str((runner_plan or {}).get("tool") or "")
+                ):
+                    bf_profiler_regime = "fast_single_session_l0"
+                else:
+                    bf_profiler_regime = "legacy_multiproc_pmu"
             self.store_timings(
                 job["title"],
                 str(job["baseline_sha"]),
                 measured,
                 runtime_soc=soc,
                 modality=modality,
+                profiler_regime=bf_profiler_regime,
             )
             # Re-fit the affected operator so `results/<Title>/calibration.json` (and thus the
             # app banner via `status.backfill`) reflects the fresh pairings immediately.

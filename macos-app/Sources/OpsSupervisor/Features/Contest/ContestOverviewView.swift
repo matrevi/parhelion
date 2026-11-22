@@ -119,7 +119,7 @@ struct ContestOverviewView: View {
                     return "—"
                 }()
                 let rankDetail: String = {
-                    if let r = teamRank {
+                    if teamRank != nil {
                         let score = snap.contest.teamRankScore.map { String(format: "%.2f 分 · ", $0) } ?? ""
                         return lang.tr("\(score)全队总榜", "\(score)team board")
                     }

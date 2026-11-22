@@ -26,7 +26,7 @@ final class ContestStore: ObservableObject {
     @Published var isRefreshingLocal: Bool = false
     @Published var isRefreshingNpu: Bool = false
     @Published var isLaunchingSubmit: Bool = false
-    @Published var pollIntervalSec: Int = 5
+    @Published var pollIntervalSec: Double = 1.0
     @Published var bannerMessage: String?
     @Published var errorMessage: String?
 
@@ -129,11 +129,12 @@ final class ContestStore: ObservableObject {
     func reschedulePolling() {
         pollTimer?.invalidate()
         guard pollIntervalSec > 0 else { return }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(pollIntervalSec), repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: pollIntervalSec, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                await self.refreshLocal()
-                await self.refreshNpu(silent: true)
+                async let localLoad: () = self.refreshLocal()
+                async let npuLoad: () = self.refreshNpu(silent: true)
+                _ = await (localLoad, npuLoad)
             }
         }
     }
@@ -339,8 +340,28 @@ final class ContestStore: ObservableObject {
         bannerMessage = tr("正在补测 \(problem) 缺失性能桶…", "Backfilling missing perf buckets for \(problem)…")
         defer { isBackfilling = false }
         do {
-            try await repository.backfillProblemBench(workspace: selectedWorkspace, problem: problem)
-            bannerMessage = tr("已完成 \(problem) 性能桶补测与校准", "Completed perf bucket backfill for \(problem)")
+            let res = try await repository.backfillProblemBench(workspace: selectedWorkspace, problem: problem)
+            if res.measuredCount > 0 {
+                bannerMessage = tr(
+                    "已完成 \(problem) 性能桶补测（新增配对 \(res.measuredCount) 桶）",
+                    "Backfilled \(res.measuredCount) bucket(s) for \(problem)"
+                )
+            } else if res.result == "die_busy" {
+                bannerMessage = tr(
+                    "\(problem) 补测因 Die 0 正忙被让行（die_busy），空卡后将自动补测",
+                    "\(problem) backfill deferred (die_busy); B0 will retry when Die 0 is free"
+                )
+            } else if !res.dispatched {
+                bannerMessage = tr(
+                    "\(problem) 当前无可补测的实测性能桶（\(res.result)）",
+                    "\(problem) has no measurable unpaired buckets (\(res.result))"
+                )
+            } else {
+                bannerMessage = tr(
+                    "\(problem) 补测结束：\(res.result)（新增 0 桶）",
+                    "\(problem) backfill finished: \(res.result) (0 new buckets)"
+                )
+            }
             await refreshLocal()
             await reloadBackfillStatus(force: true)
         } catch {
