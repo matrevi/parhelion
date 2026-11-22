@@ -119,12 +119,24 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     pipeline = sched.get("pipeline") or {}
     inflight_title = pipeline.get("active_title")
     inflight_short = pipeline.get("active_short_sha") or ""
+    inflight_key_set = set(pipeline.get("inflight_keys") or [])
+    completed_short_pairs = {
+        (it["title"], str(it.get("sha") or "")[:7])
+        for it in payload["submission_queue"]
+        if it.get("kind") == "completed" and it.get("title") and it.get("sha")
+    }
 
     extra_cands: list[dict[str, Any]] = []
     bt_thresh = float(sched.get("breakthrough_threshold", 5.0))
     for uc in bridge.get("unsubmitted_candidates") or []:
         t, sha = uc.get("title", ""), uc.get("sha", "")
+        short_s = sha[:7]
+        if f"{t}|{short_s}" in inflight_key_set:
+            continue
         if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha.startswith(inflight_short):
+            continue
+        is_crit_rest_pre = bool(uc.get("is_critical_restore", False))
+        if (t, short_s) in completed_short_pairs and not is_crit_rest_pre:
             continue
         est_obj = uc.get("estimate") or {}
         est_sc = round(float(est_obj["estimated_score"]), 2) if est_obj.get("estimated_score") is not None else None

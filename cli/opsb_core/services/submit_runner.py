@@ -301,12 +301,28 @@ def spawn_jump_submit(
                     "error": f"{title} ({sha[:7]}) 已在 {s['label']} 通道中，禁止重复提交",
                 }
     results_dir = workspace / "results"
+    outcomes_all = read_jsonl(results_dir / "submit-queue-outcome.jsonl")
     outcome_sids = {
         str(o.get("submission_id"))
-        for o in read_jsonl(results_dir / "submit-queue-outcome.jsonl")
+        for o in outcomes_all
         if o.get("submission_id") and o.get("status") not in ("Running", "Queued", "Pending")
     }
     now_ep = utc_now().timestamp()
+    # Anti-re-submit race guard: if this exact (title, sha) ALREADY finished judging within the last 10 min
+    # (e.g., stale 15s bridge cache raced with Auto-Submit right as outcome wrote), block duplicate shot!
+    is_explicit_restore = "restore" in (note or "").lower()
+    if not is_explicit_restore:
+        for o in reversed(outcomes_all):
+            if o.get("title") == title and str(o.get("sha") or "").startswith(sha[:7]):
+                if o.get("status") in ("Pass", "Accepted", "Fail", "Wrong Answer", "Compile Error", "Runtime Error", "Time Limit Exceeded"):
+                    f_dt = parse_iso(o.get("finished_at") or o.get("submitted_at"))
+                    if f_dt and (now_ep - f_dt.timestamp()) < 600:
+                        return {
+                            "ok": False,
+                            "duplicate_recent_outcome": True,
+                            "error": f"{title} ({sha[:7]}) 刚评测完成 ({o.get('status')}, score={o.get('score')})，防抖拦截重复提交",
+                        }
+                break
     for r_file in (results_dir / title).glob(f"{sha[:7]}*/submission-receipt.json") if (results_dir / title).is_dir() else []:
         rd = read_json(r_file, {})
         sid = str(rd.get("submission_id") or "")
