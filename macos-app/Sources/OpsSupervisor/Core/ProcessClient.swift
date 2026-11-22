@@ -79,6 +79,8 @@ struct ProcessClient: Sendable {
                 let p = Pipe()
                 proc.standardInput = p
                 inPipe = p
+            } else {
+                proc.standardInput = FileHandle.nullDevice
             }
 
             let ioGroup = DispatchGroup()

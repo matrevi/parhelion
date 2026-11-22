@@ -700,9 +700,10 @@ class SchedulerEngine:
         """Invoke `tools/submit-validated.py` from a clean detached git worktree."""
         repo = self.workspace / "bench" / title
         worktree = pathlib.Path("/tmp") / f"opsb-submit-{title}"
-        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], stdin=subprocess.DEVNULL, capture_output=True)
         added = subprocess.run(
             ["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), sha],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
         )
@@ -720,12 +721,14 @@ class SchedulerEngine:
                     str(worktree),
                     "--force",
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
             )
         finally:
             subprocess.run(
                 ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
             )
         if res.returncode != 0:

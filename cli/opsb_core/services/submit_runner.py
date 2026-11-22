@@ -122,8 +122,10 @@ def spawn_jump_submit(opsb_bin: Path, workspace: Path, title: str, sha: str, not
                 str(workspace),
             ],
             start_new_session=True,
+            stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
+            close_fds=True,
         )
 
     INFLIGHT_FILE.write_text(
@@ -309,6 +311,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
             subprocess.run(
                 [py_exe, "-m", "scheduler.cli_bridge", "calibrate", "--workspace", str(workspace), "--title", title],
                 cwd=str(SUPERVISOR_ROOT),
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 timeout=15.0,
             )
@@ -348,19 +351,20 @@ def _submit_via_worktree(workspace: Path, title: str, sha: str) -> dict[str, Any
     venv_py = workspace / ".venv" / "bin" / "python"
     py_exe = str(venv_py) if venv_py.is_file() else sys.executable
 
-    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], capture_output=True)
-    added = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), sha], capture_output=True, text=True)
+    subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], stdin=subprocess.DEVNULL, capture_output=True)
+    added = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), sha], stdin=subprocess.DEVNULL, capture_output=True, text=True)
     if added.returncode != 0:
         raise RuntimeError(f"worktree add failed: {added.stderr.strip()}")
     try:
         res = subprocess.run(
             [py_exe, str(workspace / "tools" / "submit-validated.py"), title, "--sha", sha, "--project-dir", str(worktree), "--force"],
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=90,
         )
     finally:
-        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], stdin=subprocess.DEVNULL, capture_output=True)
     if res.returncode != 0:
         raise RuntimeError((res.stderr or res.stdout).strip())
     return json.loads(res.stdout.strip().splitlines()[-1])
@@ -404,7 +408,7 @@ def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str) -> tu
         "    snap_path.write_text(json.dumps(snap, indent=2) + '\\n')\n"
         "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0}))\n"
     )
-    proc = subprocess.run([py_exe, "-c", poll_code], capture_output=True, text=True, timeout=POLL_TIMEOUT_SEC + 60)
+    proc = subprocess.run([py_exe, "-c", poll_code], stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=POLL_TIMEOUT_SEC + 60)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout).strip())
     parsed = json.loads(proc.stdout.strip().splitlines()[-1])
