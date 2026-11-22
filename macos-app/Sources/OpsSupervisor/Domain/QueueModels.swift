@@ -19,6 +19,33 @@ struct PipelineAccountSlot: Codable, Identifiable, Hashable {
     }
 }
 
+struct ActiveSubmissionItem: Codable, Identifiable, Hashable {
+    let id: String
+    let title: String
+    let sha: String
+    let shortSha: String
+    let phase: String
+    let accountId: String
+    let accountLabel: String
+    let remoteSubmissionId: String?
+    let remoteJudgeId: Int?
+    let remoteStatus: String?
+    let startedEpoch: Double
+    let elapsedSec: Int
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, sha, phase
+        case shortSha = "short_sha"
+        case accountId = "account_id"
+        case accountLabel = "account_label"
+        case remoteSubmissionId = "remote_submission_id"
+        case remoteJudgeId = "remote_judge_id"
+        case remoteStatus = "remote_status"
+        case startedEpoch = "started_epoch"
+        case elapsedSec = "elapsed_sec"
+    }
+}
+
 struct LivePipelineState: Codable {
     let isBusy: Bool
     let localBusy: Bool?
@@ -37,6 +64,8 @@ struct LivePipelineState: Codable {
     let rateLimitGapSec: Int
     let serverClockOffsetSec: Double
     let accountSlots: [PipelineAccountSlot]?
+    let activeSubmissions: [ActiveSubmissionItem]?
+    let inflightKeys: [String]?
 
     /// True ONLY while a local worker is actively packaging, uploading, or waiting cooldown.
     /// Remote judging (`remote_queued`/`remote_compiling`/`remote_running`) does NOT block
@@ -64,6 +93,8 @@ struct LivePipelineState: Codable {
         case rateLimitGapSec = "rate_limit_gap_sec"
         case serverClockOffsetSec = "server_clock_offset_sec"
         case accountSlots = "account_slots"
+        case activeSubmissions = "active_submissions"
+        case inflightKeys = "inflight_keys"
     }
 }
 

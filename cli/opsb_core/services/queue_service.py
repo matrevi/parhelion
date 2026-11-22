@@ -229,8 +229,11 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 est = round(sum(priors) / len(priors), 2) if priors else (round(base_anchor + 2.5, 2) if base_anchor > 0 else 40.0)
 
         if out is None:
-            # Skip putting in waiting list if this exact (title, sha) is currently the active in-flight judge item
-            if pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").startswith(sha[:7]):
+            # Skip putting in waiting list if this (title, sha) is ALREADY inflight/running on ANY teammate account!
+            inflight_set = set(pipeline.get("inflight_keys") or [])
+            if f"{t}|{sha[:7]}" in inflight_set or (
+                pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").startswith(sha[:7])
+            ):
                 continue
             is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
             is_rest = is_known_pass and (cur_sc == 0.0 or "restore" in note.lower())

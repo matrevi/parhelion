@@ -187,6 +187,34 @@ def spawn_jump_submit(
     account_id: str | None = None,
 ) -> dict[str, Any]:
     slots = compute_account_slots(workspace)
+    # Global anti-collision guard: NEVER let two teammate accounts submit the exact same (title, sha)
+    # while it is already packaging/uploading/waiting OR already submitted & still running remotely!
+    for s in slots:
+        if s["phase"] in ("waiting_cooldown", "packaging", "uploading"):
+            if s.get("active_title") == title and str(s.get("active_sha") or "").startswith(sha[:7]):
+                return {
+                    "ok": False,
+                    "duplicate_inflight": True,
+                    "error": f"{title} ({sha[:7]}) 已在 {s['label']} 通道中，禁止重复提交",
+                }
+    results_dir = workspace / "results"
+    outcome_sids = {
+        str(o.get("submission_id"))
+        for o in read_jsonl(results_dir / "submit-queue-outcome.jsonl")
+        if o.get("submission_id") and o.get("status") not in ("Running", "Queued", "Pending")
+    }
+    now_ep = utc_now().timestamp()
+    for r_file in (results_dir / title).glob(f"{sha[:7]}*/submission-receipt.json") if (results_dir / title).is_dir() else []:
+        rd = read_json(r_file, {})
+        sid = str(rd.get("submission_id") or "")
+        dt = parse_iso(rd.get("submitted_at"))
+        if sid and sid not in outcome_sids and dt and (now_ep - dt.timestamp()) < 2100:
+            return {
+                "ok": False,
+                "duplicate_inflight": True,
+                "error": f"{title} ({sha[:7]}) 已在远程判题中 (sid={sid[:8]})，禁止重复碰撞提交",
+            }
+
     eligible = [s for s in slots if s["enabled"] and s["logged_in"]]
     if not eligible:
         eligible = [s for s in slots if s["id"] == "primary"]

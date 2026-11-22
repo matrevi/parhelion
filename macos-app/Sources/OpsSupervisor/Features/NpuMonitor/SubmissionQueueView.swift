@@ -77,8 +77,14 @@ struct SubmissionQueueView: View {
 
             ScrollView {
                 LazyVStack(spacing: 9) {
-                    if selectedTab == .waiting, let pipe = pipeline, pipe.isBusy {
-                        InflightJudgeCardView(pipe: pipe, clock: clock)
+                    if selectedTab == .waiting, let pipe = pipeline {
+                        if let actives = pipe.activeSubmissions, !actives.isEmpty {
+                            ForEach(actives) { active in
+                                ActiveSubmissionCardView(active: active, pipe: pipe, clock: clock)
+                            }
+                        } else if pipe.isBusy {
+                            InflightJudgeCardView(pipe: pipe, clock: clock)
+                        }
                     }
 
                     switch selectedTab {

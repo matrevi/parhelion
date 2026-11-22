@@ -72,6 +72,8 @@ def _scan_all_receipts(workspace: Path) -> list[dict[str, Any]]:
                         "title": r_path.parents[1].name,
                         "sha": data.get("validated_commit") or r_path.parent.name,
                         "submission_id": str(data["submission_id"]),
+                        "account_id": str(data.get("account_id") or "primary"),
+                        "user_id": str(data.get("user_id") or ""),
                         "submitted_dt": dt,
                     }
                 )
@@ -79,18 +81,22 @@ def _scan_all_receipts(workspace: Path) -> list[dict[str, Any]]:
     return receipts
 
 
-def _query_remote_submission_cached(workspace: Path, submission_id: str) -> dict[str, Any] | None:
-    cached = read_ttl_cache("remote_judge", ttl_sec=3.0, fingerprint=submission_id)
+def _query_remote_submission_cached(workspace: Path, submission_id: str, session_file: str = "") -> dict[str, Any] | None:
+    cache_key = f"remote_judge_{submission_id[:12]}"
+    cached = read_ttl_cache(cache_key, ttl_sec=3.0, fingerprint=submission_id)
     if isinstance(cached, dict):
         return cached
 
     py_exe = resolve_python_exe(workspace)
+    env = dict(os.environ)
+    if session_file:
+        env["JUDGE_SESSION_FILE"] = session_file
     probe = (
-        "import datetime, email.utils, json, pathlib, sys\n"
+        "import datetime, email.utils, json, os, pathlib, sys\n"
         f"root = pathlib.Path({str(workspace)!r})\n"
         "sys.path.insert(0, str(root / 'skills/problem-submit/scripts'))\n"
         "from ict_cli import ICTClient\n"
-        "c = ICTClient()\n"
+        "c = ICTClient(session_file=os.environ.get('JUDGE_SESSION_FILE') or None)\n"
         "if not c.load_session():\n"
         "    print('{}'); sys.exit(0)\n"
         f"resp = c.session.get(c.BASE_URL + '/api/submissions/' + {submission_id!r}, timeout=6)\n"
@@ -115,11 +121,11 @@ def _query_remote_submission_cached(workspace: Path, submission_id: str) -> dict
         "}))\n"
     )
     try:
-        proc = subprocess.run([py_exe, "-c", probe], capture_output=True, text=True, timeout=7.5)
+        proc = subprocess.run([py_exe, "-c", probe], stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True, timeout=7.5)
         if proc.returncode == 0 and proc.stdout.strip():
             parsed = json.loads(proc.stdout.strip().splitlines()[-1])
             if parsed.get("ok"):
-                write_ttl_cache("remote_judge", parsed, fingerprint=submission_id)
+                write_ttl_cache(cache_key, parsed, fingerprint=submission_id)
                 return parsed
     except Exception:
         pass
@@ -193,53 +199,6 @@ def compute_synchronized_pipeline(
             if dt:
                 latest_sub_epoch = max(latest_sub_epoch, dt.timestamp())
 
-    # 2. Check recent receipts (< 35 min) not yet written to outcome_rows
-    outcome_sids = {str(o.get("submission_id")) for o in outcome_rows if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES}
-    active_remote: dict[str, Any] | None = None
-    finishing_score_sync: dict[str, Any] | None = None
-    server_offset_sec = 0.0
-
-    for r in receipts[:3]:
-        age_sec = now_epoch - r["submitted_dt"].timestamp()
-        if age_sec > 2100:
-            break
-        if r["submission_id"] not in outcome_sids:
-            remote_info = _query_remote_submission_cached(workspace, r["submission_id"])
-            if remote_info:
-                server_offset_sec = float(remote_info.get("server_offset_sec") or 0.0)
-                srv_create_dt = parse_iso(remote_info.get("create_time"))
-                adj_create_epoch = (srv_create_dt.timestamp() - server_offset_sec) if srv_create_dt else r["submitted_dt"].timestamp()
-                latest_sub_epoch = max(latest_sub_epoch, adj_create_epoch)
-
-                r_status = str(remote_info.get("status") or "Running")
-                if r_status not in TERMINAL_JUDGE_STATUSES:
-                    active_remote = {
-                        "title": r["title"],
-                        "sha": r["sha"],
-                        "submission_id": r["submission_id"],
-                        "judge_id": remote_info.get("judge_id"),
-                        "remote_status": r_status,
-                        "phase": _classify_remote_phase(r_status),
-                        "started_epoch": adj_create_epoch,
-                        "vis_pass": remote_info.get("vis_pass", 0),
-                    }
-                    break
-                elif queue_lock_held and age_sec < 300:
-                    # Remote judge JUST finished, and local consumer still holds lock fetching ranking score!
-                    finishing_score_sync = {
-                        "title": r["title"],
-                        "sha": r["sha"],
-                        "submission_id": r["submission_id"],
-                        "judge_id": remote_info.get("judge_id"),
-                        "remote_status": r_status,
-                        "phase": "fetching_score",
-                        "started_epoch": adj_create_epoch,
-                    }
-                    break
-
-    cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
-    cooldown_rem = max(0, int(round(cooldown_ends_epoch - now_epoch)))
-
     # Multi-teammate submitter slots: each enabled logged-in account obeys its OWN 190s cooldown!
     account_slots: list[dict[str, Any]] = []
     try:
@@ -248,6 +207,70 @@ def compute_synchronized_pipeline(
         account_slots = compute_account_slots(workspace, outcome_rows=outcome_rows, gap_sec=gap_sec)
     except Exception:
         account_slots = []
+    slot_by_id = {str(s["id"]): s for s in account_slots}
+    slot_by_uid = {str(s.get("user_id")): s for s in account_slots if s.get("user_id")}
+
+    # 2. Check ALL recent receipts (< 35 min) not yet written to outcome_rows (supports N concurrent remote runs!)
+    outcome_sids = {str(o.get("submission_id")) for o in outcome_rows if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES}
+    active_remotes: list[dict[str, Any]] = []
+    finishing_score_sync: dict[str, Any] | None = None
+    server_offset_sec = 0.0
+
+    for r in receipts[:max(10, len(account_slots) * 4)]:
+        age_sec = now_epoch - r["submitted_dt"].timestamp()
+        if age_sec > 2100:
+            break
+        if r["submission_id"] not in outcome_sids:
+            r_slot = slot_by_id.get(r.get("account_id") or "") or slot_by_uid.get(r.get("user_id") or "") or slot_by_id.get("primary") or {}
+            r_sf = str(r_slot.get("session_file") or "")
+            r_aid = str(r_slot.get("id") or r.get("account_id") or "primary")
+            r_lbl = str(r_slot.get("label") or ("主账号" if r_aid == "primary" else r_aid))
+            remote_info = _query_remote_submission_cached(workspace, r["submission_id"], session_file=r_sf)
+            if remote_info:
+                server_offset_sec = float(remote_info.get("server_offset_sec") or 0.0)
+                srv_create_dt = parse_iso(remote_info.get("create_time"))
+                adj_create_epoch = (srv_create_dt.timestamp() - server_offset_sec) if srv_create_dt else r["submitted_dt"].timestamp()
+                latest_sub_epoch = max(latest_sub_epoch, adj_create_epoch)
+
+                r_status = str(remote_info.get("status") or "Running")
+                if r_status not in TERMINAL_JUDGE_STATUSES:
+                    active_remotes.append(
+                        {
+                            "id": f"remote-{r['submission_id']}",
+                            "title": r["title"],
+                            "sha": r["sha"],
+                            "short_sha": r["sha"][:7],
+                            "submission_id": r["submission_id"],
+                            "judge_id": remote_info.get("judge_id"),
+                            "remote_status": r_status,
+                            "phase": _classify_remote_phase(r_status),
+                            "started_epoch": round(adj_create_epoch, 2),
+                            "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
+                            "account_id": r_aid,
+                            "account_label": r_lbl,
+                            "vis_pass": remote_info.get("vis_pass", 0),
+                        }
+                    )
+                elif age_sec < 300 and finishing_score_sync is None:
+                    finishing_score_sync = {
+                        "id": f"sync-{r['submission_id']}",
+                        "title": r["title"],
+                        "sha": r["sha"],
+                        "short_sha": r["sha"][:7],
+                        "submission_id": r["submission_id"],
+                        "judge_id": remote_info.get("judge_id"),
+                        "remote_status": r_status,
+                        "phase": "fetching_score",
+                        "started_epoch": round(adj_create_epoch, 2),
+                        "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
+                        "account_id": r_aid,
+                        "account_label": r_lbl,
+                    }
+
+    active_remote = active_remotes[0] if active_remotes else None
+
+    cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
+    cooldown_rem = max(0, int(round(cooldown_ends_epoch - now_epoch)))
 
     eligible_slots = [s for s in account_slots if s.get("enabled") and s.get("logged_in")]
     if len(eligible_slots) >= 2:
@@ -258,6 +281,72 @@ def compute_synchronized_pipeline(
         cooldown_ends_epoch = float(best_slot.get("cooldown_ends_epoch") or 0.0)
 
     local_worker = _inspect_local_worker(queue_lock_held)
+    active_submissions: list[dict[str, Any]] = []
+    seen_active_pairs: set[tuple[str, str, str]] = set()
+    # Include all local workers across ALL teammate slots first
+    for s in account_slots:
+        if s.get("phase") in ("waiting_cooldown", "packaging", "uploading") and s.get("active_title"):
+            a_sha = str(s.get("active_sha") or "")
+            k = (str(s["active_title"]), a_sha[:7], str(s["id"]))
+            if k not in seen_active_pairs:
+                seen_active_pairs.add(k)
+                st_ep = float(local_worker["started_epoch"]) if (local_worker and s["id"] == "primary") else now_epoch
+                active_submissions.append(
+                    {
+                        "id": f"local-{s['id']}-{s['active_title']}-{a_sha[:7]}",
+                        "title": str(s["active_title"]),
+                        "sha": a_sha,
+                        "short_sha": a_sha[:7],
+                        "phase": str(s["phase"]),
+                        "account_id": str(s["id"]),
+                        "account_label": str(s["label"]),
+                        "remote_submission_id": None,
+                        "remote_judge_id": None,
+                        "remote_status": None,
+                        "started_epoch": round(st_ep, 2),
+                        "elapsed_sec": max(0, int(now_epoch - st_ep)),
+                    }
+                )
+    for ar in active_remotes:
+        k = (ar["title"], ar["short_sha"], ar["account_id"])
+        if k not in seen_active_pairs:
+            seen_active_pairs.add(k)
+            active_submissions.append(
+                {
+                    "id": ar["id"],
+                    "title": ar["title"],
+                    "sha": ar["sha"],
+                    "short_sha": ar["short_sha"],
+                    "phase": ar["phase"],
+                    "account_id": ar["account_id"],
+                    "account_label": ar["account_label"],
+                    "remote_submission_id": ar["submission_id"],
+                    "remote_judge_id": ar["judge_id"],
+                    "remote_status": ar["remote_status"],
+                    "started_epoch": ar["started_epoch"],
+                    "elapsed_sec": ar["elapsed_sec"],
+                }
+            )
+    if finishing_score_sync is not None:
+        k = (finishing_score_sync["title"], finishing_score_sync["short_sha"], finishing_score_sync["account_id"])
+        if k not in seen_active_pairs:
+            active_submissions.append(
+                {
+                    "id": finishing_score_sync["id"],
+                    "title": finishing_score_sync["title"],
+                    "sha": finishing_score_sync["sha"],
+                    "short_sha": finishing_score_sync["short_sha"],
+                    "phase": "fetching_score",
+                    "account_id": finishing_score_sync["account_id"],
+                    "account_label": finishing_score_sync["account_label"],
+                    "remote_submission_id": finishing_score_sync["submission_id"],
+                    "remote_judge_id": finishing_score_sync["judge_id"],
+                    "remote_status": finishing_score_sync["remote_status"],
+                    "started_epoch": finishing_score_sync["started_epoch"],
+                    "elapsed_sec": finishing_score_sync["elapsed_sec"],
+                }
+            )
+    inflight_keys = sorted({f"{x['title']}|{x['short_sha']}" for x in active_submissions if x.get("title") and x.get("short_sha")})
     if local_worker is None:
         # Also detect an active worker running on a secondary teammate slot
         for s in eligible_slots:
@@ -328,6 +417,8 @@ def compute_synchronized_pipeline(
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
             "account_slots": public_slots,
+            "active_submissions": active_submissions,
+            "inflight_keys": inflight_keys,
         }
 
     # Priority B: Active non-terminal submission on Remote Judge (does NOT block next submit once cooldown clears!)
@@ -350,6 +441,8 @@ def compute_synchronized_pipeline(
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
             "account_slots": public_slots,
+            "active_submissions": active_submissions,
+            "inflight_keys": inflight_keys,
         }
 
     # Priority C: Remote judge finished, local consumer fetching ranking score before writing outcome
@@ -372,6 +465,8 @@ def compute_synchronized_pipeline(
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
             "account_slots": public_slots,
+            "active_submissions": active_submissions,
+            "inflight_keys": inflight_keys,
         }
 
     # Priority D: Fallback local lock holder (e.g. legacy external consumer)
@@ -402,6 +497,8 @@ def compute_synchronized_pipeline(
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
             "account_slots": public_slots,
+            "active_submissions": active_submissions,
+            "inflight_keys": inflight_keys,
         }
 
     return {
@@ -422,4 +519,6 @@ def compute_synchronized_pipeline(
         "rate_limit_gap_sec": gap_sec,
         "server_clock_offset_sec": server_offset_sec,
         "account_slots": public_slots,
+        "active_submissions": active_submissions,
+        "inflight_keys": inflight_keys,
     }
