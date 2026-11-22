@@ -604,7 +604,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
     # Phase 2 (lock-free): poll remote Judge to terminal status using the submitting account's session
     sub_id = receipt["submission_id"]
     try:
-        status, score = _wait_and_fetch_score(workspace, title, sub_id, session_file=session_file)
+        status, score, pub_times, pub_tbest = _wait_and_fetch_score(workspace, title, sub_id, session_file=session_file)
         out_rec = {
             **record,
             "finished_at": utc_now().isoformat(),
@@ -614,15 +614,18 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             "account_id": aid,
             "account_label": acc_label,
             "submitted_at": receipt.get("submitted_at") or utc_now().isoformat(),
+            **({"public_times_us": pub_times} if pub_times else {}),
+            **({"public_tbest_us": pub_tbest} if pub_tbest else {}),
         }
     except Exception as exc:
         out_rec = {
             **record,
             "finished_at": utc_now().isoformat(),
-            "status": "rejected",
+            "status": "sync_error",
             "submission_id": sub_id,
             "account_id": aid,
             "account_label": acc_label,
+            "submitted_at": receipt.get("submitted_at") or utc_now().isoformat(),
             "detail": f"poll error: {str(exc)[:360]}",
         }
 
@@ -638,7 +641,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             fcntl.flock(iolf, fcntl.LOCK_UN)
 
     # Closed-loop calibration + auto-archive into `breakthrough/` on terminal evaluation
-    if out_rec.get("status") not in ("rejected", "skipped", "duplicate"):
+    if out_rec.get("status") not in ("rejected", "skipped", "duplicate", "sync_error"):
         try:
             from ..config import SUPERVISOR_ROOT
 
@@ -718,7 +721,12 @@ def _submit_via_worktree(
     return json.loads(res.stdout.strip().splitlines()[-1])
 
 
-def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str, session_file: str = "") -> tuple[str, float | None]:
+def _wait_and_fetch_score(
+    workspace: Path,
+    title: str,
+    submission_id: str,
+    session_file: str = "",
+) -> tuple[str, float | None, list[float], list[float]]:
     py_exe = resolve_python_exe(workspace)
     env = dict(os.environ)
     if session_file:
@@ -733,11 +741,23 @@ def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str, sessi
         f"deadline = time.monotonic() + {POLL_TIMEOUT_SEC}\n"
         "status = 'Running'\n"
         "sub_detail = {}\n"
+        "consec_errs = 0\n"
+        "NON_TERM = ('Running', 'Queued', 'Pending', 'Waiting', 'Compiling', 'Building', 'Judging', 'Testing')\n"
         "while time.monotonic() < deadline:\n"
-        f"    sub_detail = client.get_submission({submission_id!r}) or {{}}\n"
+        "    try:\n"
+        f"        sub_detail = client.get_submission({submission_id!r}) or {{}}\n"
+        "        consec_errs = 0\n"
+        "    except Exception as e:\n"
+        "        consec_errs += 1\n"
+        "        if consec_errs >= 15:\n"
+        "            raise RuntimeError(f'get_submission failed {consec_errs}x consecutively: {e}') from e\n"
+        "        time.sleep(min(20, 5 + consec_errs))\n"
+        "        continue\n"
         "    status = sub_detail.get('status', 'Running')\n"
-        "    if status not in ('Running', 'Queued', 'Pending'): break\n"
+        "    if status not in NON_TERM: break\n"
         "    time.sleep(10)\n"
+        "if status in NON_TERM:\n"
+        "    raise RuntimeError(f'poll timeout after {POLL_TIMEOUT_SEC}s (last status={status})')\n"
         "sub_res = sub_detail.get('result') or []\n"
         "pub_times = [float(r['time']) for r in sub_res if isinstance(r, dict) and r.get('time') is not None][:5]\n"
         "pub_tbest = [float(r['best_time']) for r in sub_res if isinstance(r, dict) and r.get('best_time') is not None][:5]\n"
@@ -746,8 +766,15 @@ def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str, sessi
         "score = None\n"
         "rank_row = None\n"
         "for page in range(1, 8):\n"
-        "    payload = client.session.get(client.BASE_URL + f\"/api/problems/{prob['problem_id']}/ranking\", params={'page': page, 'size': 100}, timeout=30).json()\n"
-        "    row = next((e for e in payload.get('rows', []) if e.get('user_id') == client.user_id), None)\n"
+        "    payload = None\n"
+        "    for attempt in range(4):\n"
+        "        try:\n"
+        "            payload = client.session.get(client.BASE_URL + f\"/api/problems/{prob['problem_id']}/ranking\", params={'page': page, 'size': 100}, timeout=20).json()\n"
+        "            break\n"
+        "        except Exception:\n"
+        "            if attempt == 3: payload = {}\n"
+        "            else: time.sleep(2 * (attempt + 1))\n"
+        "    row = next((e for e in (payload or {}).get('rows', []) if e.get('user_id') == client.user_id), None)\n"
         "    if row: score = row.get('score'); rank_row = row; break\n"
         "if not pub_times and rank_row is not None:\n"
         "    rr_res = rank_row.get('result') or []\n"
@@ -769,10 +796,15 @@ def _wait_and_fetch_score(workspace: Path, title: str, submission_id: str, sessi
         "        **({'public_tbest_us': pub_tbest} if pub_tbest else {}),\n"
         "    }\n"
         "    snap_path.write_text(json.dumps(snap, indent=2) + '\\n')\n"
-        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0}))\n"
+        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"
     )
     proc = subprocess.run([py_exe, "-c", poll_code], stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True, timeout=POLL_TIMEOUT_SEC + 60)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout).strip())
     parsed = json.loads(proc.stdout.strip().splitlines()[-1])
-    return parsed["status"], parsed.get("score")
+    return (
+        parsed["status"],
+        parsed.get("score"),
+        list(parsed.get("public_times_us") or []),
+        list(parsed.get("public_tbest_us") or []),
+    )

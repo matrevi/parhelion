@@ -303,6 +303,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             )
         else:
             st = out.get("status", "done")
+            raw_detail = str(out.get("detail") or "")
+            if st == "rejected" and (raw_detail.lower().startswith("poll error:") or bool(out.get("submission_id"))):
+                st = "sync_error"
             actual = float(out["score"]) if out.get("score") is not None else None
             delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
             bt_delta: float | None = None
@@ -325,6 +328,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     prior_board[t] = actual
             elif st == "skipped":
                 badge = "HOLD: NOISE"
+            elif st == "sync_error":
+                badge = "SYNC ERROR"
             elif st in ("Running", "Queued", "Pending"):
                 badge = "JUDGING"
             else:

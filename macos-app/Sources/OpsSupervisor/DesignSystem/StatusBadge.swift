@@ -30,6 +30,9 @@ struct SemanticPill: View {
         if u.contains("PASS ↑") || u == "PASS" || u == "通过" || u.contains("稳定在榜") || u.contains("STEADY") || u.contains("READY") || u.contains("就绪") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
             return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }
+        if u.contains("SYNC ERROR") || u.contains("SYNC ERR") || u.contains("同步中断") {
+            return (Color(red: 0.86, green: 0.48, blue: 0.06), Color(red: 0.94, green: 0.62, blue: 0.14).opacity(0.18))
+        }
         if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("可恢复") || u.contains("排队等卡") || u.contains("WAITING-DIE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") {
             return (Color(red: 0.90, green: 0.56, blue: 0.10), Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15))
         }

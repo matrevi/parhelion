@@ -105,6 +105,7 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
         case "Compile Error": return "编译失败"
         case "no-submission": return "未提交"
         case "rejected": return "本地拦截"
+        case "sync_error": return "同步中断"
         case "skipped": return "已跳过"
         case "Running": return "评测中"
         case "Queued", "Pending": return "排队中"

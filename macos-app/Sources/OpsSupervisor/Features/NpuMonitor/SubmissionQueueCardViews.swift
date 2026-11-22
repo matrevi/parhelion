@@ -439,6 +439,7 @@ struct CompletedSubmissionCardView: View {
                 : lang.tr("PASS ↓ 波动", "PASS ↓")
         }
         if item.rawStatus == "skipped" { return lang.tr("已忽略", "SKIPPED") }
+        if item.rawStatus == "sync_error" { return lang.tr("已上传 · 同步中断", "SUBMITTED · SYNC ERR") }
         return "\(lang.tr("未通过", "FAILED")) · \(readableRawStatus(item.rawStatus))"
     }
 
@@ -449,6 +450,7 @@ struct CompletedSubmissionCardView: View {
         case "Runtime Error": return lang.tr("运行报错 (RE)", "Runtime Error")
         case "Compile Error": return lang.tr("编译失败 (CE)", "Compile Error")
         case "rejected": return lang.tr("本地拦截", "Rejected")
+        case "sync_error": return lang.tr("同步中断", "Sync Error")
         case "skipped": return lang.tr("已跳过", "Skipped")
         default: return raw
         }

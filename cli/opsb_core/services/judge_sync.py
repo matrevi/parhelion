@@ -44,7 +44,7 @@ TERMINAL_JUDGE_STATUSES = {
     "System Error",
 }
 
-TERMINAL_OUTCOME_STATUSES = TERMINAL_JUDGE_STATUSES | {"rejected", "skipped", "duplicate"}
+TERMINAL_OUTCOME_STATUSES = TERMINAL_JUDGE_STATUSES | {"rejected", "skipped", "duplicate", "sync_error"}
 
 
 def _pid_alive(pid: int) -> bool:
