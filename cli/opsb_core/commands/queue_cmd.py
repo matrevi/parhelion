@@ -281,7 +281,11 @@ def run_test(args: argparse.Namespace) -> int:
                     f"set -e; source /opt/toolchain/latest/set_env.sh; "
                     f"cd /srv/work/{prob['title']}; "
                     f"git fetch origin --prune && git checkout --detach --force {sha}; "
-                    f"sed 's/COMPUTE_UNIT=.*/COMPUTE_UNIT=\"soc-a\"/' build.sh | bash -s -- -j4"
+                    f"NCPU=$(nproc 2>/dev/null || echo 16); "
+                    f"LIVE=$(ls ~/.opsb/cpu_builds/*.json 2>/dev/null | wc -l); [ \"$LIVE\" -lt 1 ] && LIVE=1; "
+                    f"USABLE=$(( NCPU - (NCPU / 10 > 2 ? NCPU / 10 : 2) )); "
+                    f"JOBS=$(( USABLE / LIVE )); [ \"$JOBS\" -lt 4 ] && JOBS=4; [ \"$JOBS\" -gt 16 ] && JOBS=16; "
+                    f"sed 's/COMPUTE_UNIT=.*/COMPUTE_UNIT=\"soc-a\"/' build.sh | bash -s -- -j\"$JOBS\""
                 )
                 return subprocess.call(["ssh", *SSH_CONTROL_OPTS, host, remote_sh])
         return subprocess.call(b_cmd, cwd=str(CLI_DIR.parent))
