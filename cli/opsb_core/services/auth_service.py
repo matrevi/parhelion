@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import DEFAULT_BENCH_ROOT, invalidate_ttl_cache, parse_iso, read_ttl_cache, utc_now, write_ttl_cache
+from ..config import CONFIG_DIR, DEFAULT_BENCH_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_ttl_cache, utc_now, write_ttl_cache
+
+SESSIONS_DIR = Path.home() / ".judge" / "sessions"
+ACCOUNTS_REGISTRY = CONFIG_DIR / "cj_accounts.json"
 
 GC_CANDIDATES = [
     Path.home() / ".local" / "share" / "pnpm" / "bin" / "gc",
@@ -26,8 +29,7 @@ def find_gc_bin() -> str:
     return shutil.which("gc") or str(GC_CANDIDATES[0])
 
 
-def read_judge_status() -> dict[str, Any]:
-    cj_path = Path.home() / ".judge" / "session.json"
+def _read_session_file_status(cj_path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {
         "logged_in": False,
         "session_file": str(cj_path),
@@ -63,6 +65,130 @@ def read_judge_status() -> dict[str, Any]:
     return info
 
 
+def read_judge_status() -> dict[str, Any]:
+    return _read_session_file_status(Path.home() / ".judge" / "session.json")
+
+
+def _load_accounts_registry() -> list[dict[str, Any]]:
+    raw = read_json(ACCOUNTS_REGISTRY, {"accounts": []})
+    items = raw.get("accounts") if isinstance(raw, dict) else []
+    return [x for x in (items or []) if isinstance(x, dict) and x.get("id")]
+
+
+def _save_accounts_registry(items: list[dict[str, Any]]) -> None:
+    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = ACCOUNTS_REGISTRY.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"accounts": items}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, ACCOUNTS_REGISTRY)
+
+
+def list_judge_accounts() -> list[dict[str, Any]]:
+    """Return all configured Judge team submitter slots (primary + extra teammate sessions)."""
+    reg = _load_accounts_registry()
+    primary_meta = next((x for x in reg if x.get("id") == "primary"), None)
+    prim_st = read_judge_status()
+    out: list[dict[str, Any]] = [
+        {
+            "id": "primary",
+            "label": (primary_meta or {}).get("label") or "主账号",
+            "account_hint": (primary_meta or {}).get("account_hint") or "",
+            "enabled": bool((primary_meta or {}).get("enabled", True)),
+            "is_primary": True,
+            **prim_st,
+        }
+    ]
+    for item in reg:
+        aid = str(item.get("id") or "")
+        if not aid or aid == "primary":
+            continue
+        sf = Path(str(item.get("session_file") or (SESSIONS_DIR / f"{aid}.json"))).expanduser()
+        st = _read_session_file_status(sf)
+        out.append(
+            {
+                "id": aid,
+                "label": str(item.get("label") or aid),
+                "account_hint": str(item.get("account_hint") or ""),
+                "enabled": bool(item.get("enabled", True)),
+                "is_primary": False,
+                **st,
+            }
+        )
+    return out
+
+
+def set_judge_account_enabled(account_id: str, enabled: bool) -> dict[str, Any]:
+    reg = _load_accounts_registry()
+    found = False
+    for item in reg:
+        if item.get("id") == account_id:
+            item["enabled"] = bool(enabled)
+            found = True
+            break
+    if not found and account_id == "primary":
+        reg.insert(0, {"id": "primary", "label": "主账号", "enabled": bool(enabled), "session_file": str(Path.home() / ".judge" / "session.json")})
+        found = True
+    if not found:
+        return {"ok": False, "error": f"Unknown account slot: {account_id}"}
+    _save_accounts_registry(reg)
+    return {"ok": True, "accounts": list_judge_accounts()}
+
+
+def remove_judge_account(account_id: str) -> dict[str, Any]:
+    if account_id == "primary":
+        return {"ok": False, "error": "Cannot remove primary slot (use logout instead)"}
+    reg = _load_accounts_registry()
+    kept = []
+    removed = None
+    for item in reg:
+        if item.get("id") == account_id:
+            removed = item
+        else:
+            kept.append(item)
+    if removed is None:
+        return {"ok": False, "error": f"Unknown account slot: {account_id}"}
+    sf = Path(str(removed.get("session_file") or "")).expanduser()
+    if sf.is_file() and SESSIONS_DIR in sf.parents:
+        sf.unlink(missing_ok=True)
+    _save_accounts_registry(kept)
+    return {"ok": True, "accounts": list_judge_accounts()}
+
+
+def import_judge_session(src_path: str, label: str = "") -> dict[str, Any]:
+    src = Path(src_path).expanduser()
+    if not src.is_file():
+        return {"ok": False, "error": f"Session file not found: {src}"}
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+        uid = data.get("user_id")
+        if not uid or not data.get("cookies"):
+            return {"ok": False, "error": "Invalid session.json (missing user_id or cookies)"}
+    except Exception as exc:
+        return {"ok": False, "error": f"Failed to parse session.json: {exc}"}
+
+    reg = _load_accounts_registry()
+    existing_ids = {str(x.get("id")) for x in reg} | {"primary"}
+    n = 2
+    while f"teammate-{n}" in existing_ids:
+        n += 1
+    aid = f"teammate-{n}"
+    SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dst = SESSIONS_DIR / f"{aid}.json"
+    dst.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.chmod(dst, 0o600)
+    reg.append(
+        {
+            "id": aid,
+            "label": label.strip() or f"队员{n}",
+            "account_hint": str(uid)[:12],
+            "session_file": str(dst),
+            "enabled": True,
+        }
+    )
+    _save_accounts_registry(reg)
+    return {"ok": True, "account_id": aid, "user_id": uid, "accounts": list_judge_accounts()}
+
+
 def read_gitcode_status(use_cache: bool = True) -> dict[str, Any]:
     if use_cache:
         cached = read_ttl_cache("gc_auth", ttl_sec=120.0)
@@ -89,7 +215,11 @@ def read_gitcode_status(use_cache: bool = True) -> dict[str, Any]:
 
 
 def get_auth_status(use_cache: bool = True) -> dict[str, Any]:
-    return {"judge": read_judge_status(), "gitcode": read_gitcode_status(use_cache=use_cache)}
+    return {
+        "judge": read_judge_status(),
+        "judge_accounts": list_judge_accounts(),
+        "gitcode": read_gitcode_status(use_cache=use_cache),
+    }
 
 
 def fetch_judge_captcha() -> dict[str, Any]:
@@ -115,16 +245,39 @@ def fetch_judge_captcha() -> dict[str, Any]:
     return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
-def login_judge(account: str, password: str, login_type: str = "auto", captcha_id: str = "", captcha_code: str = "") -> dict[str, Any]:
+def login_judge(
+    account: str,
+    password: str,
+    login_type: str = "auto",
+    captcha_id: str = "",
+    captcha_code: str = "",
+    account_id: str | None = None,
+    label: str = "",
+) -> dict[str, Any]:
     judge_dir = DEFAULT_BENCH_ROOT / "skills" / "judge-submit"
     venv_py = DEFAULT_BENCH_ROOT / ".venv" / "bin" / "python"
     py_exe = str(venv_py) if venv_py.is_file() else sys.executable
+
+    target_slot = (account_id or "primary").strip() or "primary"
+    session_file: Path | None = None
+    if target_slot != "primary":
+        reg = _load_accounts_registry()
+        if target_slot == "new":
+            existing_ids = {str(x.get("id")) for x in reg} | {"primary"}
+            n = 2
+            while f"teammate-{n}" in existing_ids:
+                n += 1
+            target_slot = f"teammate-{n}"
+        SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        session_file = SESSIONS_DIR / f"{target_slot}.json"
+
     script = (
         "import json, os, sys\n"
         f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from judge_cli import JudgeClient\n"
         "pw = sys.stdin.read().rstrip('\\r\\n')\n"
-        "c = JudgeClient()\n"
+        "sf = os.environ.get('OPSB_CJ_SESSION_FILE') or None\n"
+        "c = JudgeClient(session_file=sf)\n"
         "try:\n"
         "    kw = {}\n"
         "    lt = os.environ.get('OPSB_CJ_LTYPE')\n"
@@ -137,9 +290,46 @@ def login_judge(account: str, password: str, login_type: str = "auto", captcha_i
         "except Exception as e:\n"
         "    print(json.dumps({'ok': False, 'error': str(e)[:240]})); sys.exit(1)\n"
     )
-    env = {**os.environ, "OPSB_CJ_ACCOUNT": account, "OPSB_CJ_LTYPE": login_type, "OPSB_CJ_CID": captcha_id, "OPSB_CJ_CCODE": captcha_code}
+    env = {
+        **os.environ,
+        "OPSB_CJ_ACCOUNT": account,
+        "OPSB_CJ_LTYPE": login_type,
+        "OPSB_CJ_CID": captcha_id,
+        "OPSB_CJ_CCODE": captcha_code,
+        "OPSB_CJ_SESSION_FILE": str(session_file) if session_file else "",
+    }
     proc = subprocess.run([py_exe, "-c", script], input=password, env=env, capture_output=True, text=True, timeout=25)
-    return json.loads((proc.stdout.strip().splitlines() or ["{}"])[-1])
+    parsed = json.loads((proc.stdout.strip().splitlines() or ["{}"])[-1])
+    if parsed.get("ok") and target_slot != "primary" and session_file is not None:
+        try:
+            os.chmod(session_file, 0o600)
+        except OSError:
+            pass
+        reg = _load_accounts_registry()
+        hint = account.split("@")[0] if "@" in account else account
+        updated = False
+        for item in reg:
+            if item.get("id") == target_slot:
+                item["label"] = label.strip() or item.get("label") or target_slot
+                item["account_hint"] = hint
+                item["session_file"] = str(session_file)
+                item["enabled"] = True
+                updated = True
+                break
+        if not updated:
+            reg.append(
+                {
+                    "id": target_slot,
+                    "label": label.strip() or target_slot.replace("teammate-", "队员"),
+                    "account_hint": hint,
+                    "session_file": str(session_file),
+                    "enabled": True,
+                }
+            )
+        _save_accounts_registry(reg)
+        parsed["account_id"] = target_slot
+        parsed["accounts"] = list_judge_accounts()
+    return parsed
 
 
 def login_gitcode_with_token(token: str) -> dict[str, Any]:

@@ -1,5 +1,24 @@
 import Foundation
 
+struct PipelineAccountSlot: Codable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    let loggedIn: Bool
+    let enabled: Bool
+    let cooldownRemainingSec: Int
+    let cooldownEndsEpoch: Double
+    let phase: String
+    let activeTitle: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, enabled, phase
+        case loggedIn = "logged_in"
+        case cooldownRemainingSec = "cooldown_remaining_sec"
+        case cooldownEndsEpoch = "cooldown_ends_epoch"
+        case activeTitle = "active_title"
+    }
+}
+
 struct LivePipelineState: Codable {
     let isBusy: Bool
     let localBusy: Bool?
@@ -17,6 +36,7 @@ struct LivePipelineState: Codable {
     let cooldownRemainingSec: Int
     let rateLimitGapSec: Int
     let serverClockOffsetSec: Double
+    let accountSlots: [PipelineAccountSlot]?
 
     /// True ONLY while a local worker is actively packaging, uploading, or waiting cooldown.
     /// Remote judging (`remote_queued`/`remote_compiling`/`remote_running`) does NOT block
@@ -43,6 +63,7 @@ struct LivePipelineState: Codable {
         case cooldownRemainingSec = "cooldown_remaining_sec"
         case rateLimitGapSec = "rate_limit_gap_sec"
         case serverClockOffsetSec = "server_clock_offset_sec"
+        case accountSlots = "account_slots"
     }
 }
 

@@ -2,7 +2,35 @@ import Foundation
 
 struct AuthStatus: Codable {
     let judge: JudgeAuth
+    let judgeAccounts: [JudgeAccountSlot]?
     let gitcode: GitCodeAuth
+
+    enum CodingKeys: String, CodingKey {
+        case judge, gitcode
+        case judgeAccounts = "judge_accounts"
+    }
+}
+
+struct JudgeAccountSlot: Codable, Identifiable, Hashable {
+    let id: String
+    let label: String
+    let accountHint: String?
+    let enabled: Bool
+    let isPrimary: Bool
+    let loggedIn: Bool
+    let sessionFile: String
+    let userId: String?
+    let remainingHours: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, enabled
+        case accountHint = "account_hint"
+        case isPrimary = "is_primary"
+        case loggedIn = "logged_in"
+        case sessionFile = "session_file"
+        case userId = "user_id"
+        case remainingHours = "remaining_hours"
+    }
 }
 
 struct JudgeAuth: Codable {

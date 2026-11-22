@@ -32,6 +32,20 @@ struct SchedulerBarView: View {
                 compact: false
             )
 
+            if let slots = pipeline?.accountSlots?.filter({ $0.enabled && $0.loggedIn }), slots.count > 1 {
+                HStack(spacing: 5) {
+                    ForEach(slots) { slot in
+                        let sRem = clock.cooldownRemaining(endsAt: slot.cooldownEndsEpoch)
+                        Text(sRem == 0 ? "\(slot.label):\(lang.tr("就绪", "OK"))" : "\(slot.label):\(sRem)s")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(sRem == 0 ? .green : .orange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2.5)
+                            .background(Capsule().fill((sRem == 0 ? Color.green : Color.orange).opacity(0.13)))
+                    }
+                }
+            }
+
             Button {
                 NSWorkspace.shared.open(Self.judgeMeURL)
             } label: {

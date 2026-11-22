@@ -239,11 +239,67 @@ def compute_synchronized_pipeline(
 
     cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
     cooldown_rem = max(0, int(round(cooldown_ends_epoch - now_epoch)))
+
+    # Multi-teammate submitter slots: each enabled logged-in account obeys its OWN 190s cooldown!
+    account_slots: list[dict[str, Any]] = []
+    try:
+        from .submit_runner import compute_account_slots
+
+        account_slots = compute_account_slots(workspace, outcome_rows=outcome_rows, gap_sec=gap_sec)
+    except Exception:
+        account_slots = []
+
+    eligible_slots = [s for s in account_slots if s.get("enabled") and s.get("logged_in")]
+    if len(eligible_slots) >= 2:
+        # Effective submitter cooldown = minimum cooldown across enabled logged-in accounts not uploading
+        avail_slots = [s for s in eligible_slots if s.get("phase") not in ("packaging", "uploading")] or eligible_slots
+        best_slot = min(avail_slots, key=lambda x: int(x.get("cooldown_remaining_sec") or 0))
+        cooldown_rem = int(best_slot.get("cooldown_remaining_sec") or 0)
+        cooldown_ends_epoch = float(best_slot.get("cooldown_ends_epoch") or 0.0)
+
     local_worker = _inspect_local_worker(queue_lock_held)
-    local_busy = bool(local_worker is not None and local_worker.get("phase") in (
-        "waiting_cooldown", "packaging", "preparing", "uploading", "consumer_locked"
-    )) or bool(queue_lock_held and active_remote is None and finishing_score_sync is None)
+    if local_worker is None:
+        # Also detect an active worker running on a secondary teammate slot
+        for s in eligible_slots:
+            if s.get("phase") in ("waiting_cooldown", "packaging", "uploading"):
+                local_worker = {
+                    "title": s.get("active_title") or "",
+                    "sha": s.get("active_sha") or "",
+                    "phase": s.get("phase") or "packaging",
+                    "started_epoch": now_epoch,
+                }
+                break
+    # If >= 2 teammate accounts are enabled and at least one OTHER account is idle & ready,
+    # the overall submit channel is NOT locally blocked by a sleeping/uploading primary slot!
+    has_other_idle_ready = any(
+        s.get("phase") == "idle" and int(s.get("cooldown_remaining_sec") or 0) == 0
+        for s in eligible_slots
+    )
+    local_busy = (
+        False
+        if (len(eligible_slots) >= 2 and has_other_idle_ready)
+        else (
+            bool(local_worker is not None and local_worker.get("phase") in (
+                "waiting_cooldown", "packaging", "preparing", "uploading", "consumer_locked"
+            ))
+            or bool(queue_lock_held and active_remote is None and finishing_score_sync is None)
+        )
+    )
     can_submit = (not local_busy) and (cooldown_rem == 0)
+
+    public_slots = [
+        {
+            "id": s["id"],
+            "label": s["label"],
+            "logged_in": s["logged_in"],
+            "enabled": s["enabled"],
+            "cooldown_remaining_sec": s["cooldown_remaining_sec"],
+            "cooldown_ends_epoch": s["cooldown_ends_epoch"],
+            "phase": s["phase"],
+            "active_title": s["active_title"],
+        }
+        for s in account_slots
+    ]
 
     # Priority A: Local uploader actively waiting cooldown / packaging / uploading a new submission
     if local_worker is not None and local_worker.get("phase") in (
@@ -256,8 +312,8 @@ def compute_synchronized_pipeline(
         st_ep = float(local_worker["started_epoch"])
         return {
             "is_busy": True,
-            "local_busy": True,
-            "can_submit": False,
+            "local_busy": local_busy,
+            "can_submit": can_submit,
             "phase": mapped_phase,
             "active_title": w_title,
             "active_sha": w_sha,
@@ -271,6 +327,7 @@ def compute_synchronized_pipeline(
             "cooldown_remaining_sec": cooldown_rem,
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
+            "account_slots": public_slots,
         }
 
     # Priority B: Active non-terminal submission on Remote Judge (does NOT block next submit once cooldown clears!)
@@ -292,6 +349,7 @@ def compute_synchronized_pipeline(
             "cooldown_remaining_sec": cooldown_rem,
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
+            "account_slots": public_slots,
         }
 
     # Priority C: Remote judge finished, local consumer fetching ranking score before writing outcome
@@ -313,6 +371,7 @@ def compute_synchronized_pipeline(
             "cooldown_remaining_sec": cooldown_rem,
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
+            "account_slots": public_slots,
         }
 
     # Priority D: Fallback local lock holder (e.g. legacy external consumer)
@@ -327,8 +386,8 @@ def compute_synchronized_pipeline(
         st_ep = float(local_worker["started_epoch"])
         return {
             "is_busy": True,
-            "local_busy": True,
-            "can_submit": False,
+            "local_busy": local_busy,
+            "can_submit": can_submit,
             "phase": mapped_phase,
             "active_title": w_title,
             "active_sha": w_sha,
@@ -342,6 +401,7 @@ def compute_synchronized_pipeline(
             "cooldown_remaining_sec": cooldown_rem,
             "rate_limit_gap_sec": gap_sec,
             "server_clock_offset_sec": server_offset_sec,
+            "account_slots": public_slots,
         }
 
     return {
@@ -361,4 +421,5 @@ def compute_synchronized_pipeline(
         "cooldown_remaining_sec": cooldown_rem,
         "rate_limit_gap_sec": gap_sec,
         "server_clock_offset_sec": server_offset_sec,
+        "account_slots": public_slots,
     }

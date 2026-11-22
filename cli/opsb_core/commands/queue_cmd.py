@@ -185,12 +185,19 @@ def run_queue(args: argparse.Namespace) -> int:
         if not prob:
             raise SystemExit(f"Unknown problem: {args.problem}")
         sha = resolve_commit_sha(ws / prob["path"], args.sha) or args.sha
-        res = spawn_jump_submit(CLI_DIR / "opsb", ws, prob["title"], sha, args.note or "jump-queue submit via Parhelion")
+        res = spawn_jump_submit(
+            CLI_DIR / "opsb",
+            ws,
+            prob["title"],
+            sha,
+            args.note or "jump-queue submit via Parhelion",
+            account_id=getattr(args, "account_id", None),
+        )
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res.get("ok") else 2
 
     if args.q_cmd == "_worker-submit-one":
-        return run_worker_submit_one(ws, args.problem, args.sha, args.note or "")
+        return run_worker_submit_one(ws, args.problem, args.sha, args.note or "", account_id=getattr(args, "account_id", "primary") or "primary")
 
     if args.q_cmd == "drain":
         bridge_res = invoke_bridge(ws, "drain")

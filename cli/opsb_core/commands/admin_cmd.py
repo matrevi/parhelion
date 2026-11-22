@@ -11,8 +11,12 @@ from ..services.auth_service import (
     batch_invite_collaborator,
     fetch_judge_captcha,
     get_auth_status,
+    import_judge_session,
+    list_judge_accounts,
     login_judge,
     login_gitcode_with_token,
+    remove_judge_account,
+    set_judge_account_enabled,
 )
 from ..services.contest_service import resolve_workspace_meta
 from ..services.scaffold_service import scaffold_workspace
@@ -120,7 +124,31 @@ def run_auth(args: argparse.Namespace) -> int:
         if not pw:
             print(json.dumps({"ok": False, "error": "Password required on stdin"}))
             return 1
-        out = login_judge(args.account, pw, args.login_type or "auto", args.captcha_id or "", args.captcha_code or "")
+        out = login_judge(
+            args.account,
+            pw,
+            args.login_type or "auto",
+            args.captcha_id or "",
+            args.captcha_code or "",
+            account_id=getattr(args, "account_id", "primary"),
+            label=getattr(args, "label", "") or "",
+        )
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if out.get("ok") else 1
+    if args.auth_cmd == "judge-accounts":
+        print(json.dumps({"ok": True, "accounts": list_judge_accounts()}, ensure_ascii=False))
+        return 0
+    if args.auth_cmd == "judge-import":
+        out = import_judge_session(args.session_file, label=args.label or "")
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if out.get("ok") else 1
+    if args.auth_cmd == "judge-toggle":
+        en = str(args.enabled).strip().lower() in ("1", "true", "on", "yes")
+        out = set_judge_account_enabled(args.account_id, en)
+        print(json.dumps(out, ensure_ascii=False))
+        return 0 if out.get("ok") else 1
+    if args.auth_cmd == "judge-remove":
+        out = remove_judge_account(args.account_id)
         print(json.dumps(out, ensure_ascii=False))
         return 0 if out.get("ok") else 1
     if args.auth_cmd == "judge-logout":

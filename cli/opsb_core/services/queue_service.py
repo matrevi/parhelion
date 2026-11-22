@@ -151,43 +151,56 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     }
                 )
 
-    # Compute per-operator ESCAPE_LOCK state (rollback/restore of an old Pass SHA does NOT disarm it)
+    # Compute per-operator ESCAPE_LOCK state (prefer calibration.json single source of truth; fallback to outcome scan)
     verified_escapes: dict[str, Any] = {}
-    ve_path = results_dir / "verified-escapes.json"
-    if ve_path.is_file():
-        ve_doc = read_json(ve_path, {})
-        if isinstance(ve_doc, dict):
-            verified_escapes = ve_doc.get("verified") if isinstance(ve_doc.get("verified"), dict) else ve_doc
+    for ve_cand in (
+        results_dir / "verified-escapes.json",
+        results_dir / "escape-verifications.json",
+        workspace / "ops-supervisor" / "scheduler" / ".state" / "verified_escapes.json",
+    ):
+        if ve_cand.is_file():
+            ve_doc = read_json(ve_cand, {})
+            if isinstance(ve_doc, dict):
+                sub = ve_doc.get("verified") if isinstance(ve_doc.get("verified"), dict) else ve_doc
+                verified_escapes.update(sub)
     escape_lock_info: dict[str, tuple[str, str]] = {}
-    outcomes_by_title: dict[str, list[dict[str, Any]]] = {}
-    for o in outcome_rows:
-        st_o = str(o.get("status", ""))
-        if st_o not in ("rejected", "skipped", "duplicate"):
-            outcomes_by_title.setdefault(str(o.get("title", "")), []).append(o)
-    for t_name, t_rows in outcomes_by_title.items():
-        prior_passes: list[set[str]] = []
-        acc_p: set[str] = set()
-        for r in t_rows:
-            prior_passes.append(set(acc_p))
-            r_sha = str(r.get("sha") or "")
-            if r.get("status") == "Pass" and r_sha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
-                acc_p.add(r_sha[:7])
-        for idx_r in range(len(t_rows) - 1, -1, -1):
-            r = t_rows[idx_r]
-            st_r = str(r.get("status", ""))
-            r_sha = str(r.get("sha") or "")
-            n_low = str(r.get("note") or "").strip().lower()
-            is_rest_r = (r_sha[:7] in prior_passes[idx_r]) or any(
-                n_low.startswith(pfx) for pfx in ("restore", "rollback", "board is 0", "closing restore")
-            )
-            if st_r == "Pass":
-                if is_rest_r:
-                    continue
-                break
-            if st_r in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
-                if not (verified_escapes.get(f"{t_name}:{r_sha}") or verified_escapes.get(f"{t_name}:{r_sha[:7]}")):
-                    escape_lock_info[t_name] = (r_sha[:7], st_r)
-                break
+    for t_name in prob_map:
+        cal_p = results_dir / t_name / "calibration.json"
+        if cal_p.is_file():
+            cd = read_json(cal_p, {})
+            if cd.get("escape_lock"):
+                escape_lock_info[t_name] = (str(cd.get("escape_sha") or "")[:7], str(cd.get("escape_status") or "Escape"))
+            else:
+                # Explicitly unlocked (e.g. verified via `opsb bench verify-escape`)
+                continue
+        else:
+            outcomes_by_title_rows = [
+                o for o in outcome_rows
+                if o.get("title") == t_name and str(o.get("status", "")) not in ("rejected", "skipped", "duplicate")
+            ]
+            prior_passes: list[set[str]] = []
+            acc_p: set[str] = set()
+            for r in outcomes_by_title_rows:
+                prior_passes.append(set(acc_p))
+                r_sha = str(r.get("sha") or "")
+                if r.get("status") == "Pass" and r_sha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+                    acc_p.add(r_sha[:7])
+            for idx_r in range(len(outcomes_by_title_rows) - 1, -1, -1):
+                r = outcomes_by_title_rows[idx_r]
+                st_r = str(r.get("status", ""))
+                r_sha = str(r.get("sha") or "")
+                n_low = str(r.get("note") or "").strip().lower()
+                is_rest_r = (r_sha[:7] in prior_passes[idx_r]) or any(
+                    n_low.startswith(pfx) for pfx in ("restore", "rollback", "board is 0", "closing restore")
+                )
+                if st_r == "Pass":
+                    if is_rest_r:
+                        continue
+                    break
+                if st_r in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
+                    if not (verified_escapes.get(f"{t_name}:{r_sha}") or verified_escapes.get(f"{t_name}:{r_sha[:7]}")):
+                        escape_lock_info[t_name] = (r_sha[:7], st_r)
+                    break
 
     prior_board: dict[str, float] = {}
     last_pass_score: dict[str, float] = {}

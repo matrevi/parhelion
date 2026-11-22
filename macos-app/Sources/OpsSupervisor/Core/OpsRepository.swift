@@ -193,8 +193,18 @@ struct OpsRepository: Sendable {
         return (cid, path)
     }
 
-    func loginJudge(account: String, password: String, captchaId: String, captchaCode: String) async throws -> (Bool, String) {
-        var args = ["auth", "judge-login", "--account", account, "--json"]
+    func loginJudge(
+        account: String,
+        password: String,
+        captchaId: String,
+        captchaCode: String,
+        accountId: String = "primary",
+        label: String = ""
+    ) async throws -> (Bool, String) {
+        var args = ["auth", "judge-login", "--account", account, "--account-id", accountId, "--json"]
+        if !label.isEmpty {
+            args += ["--label", label]
+        }
         if !captchaId.isEmpty && !captchaCode.isEmpty {
             args += ["--captcha-id", captchaId, "--captcha-code", captchaCode]
         }
@@ -204,6 +214,25 @@ struct OpsRepository: Sendable {
             return (ok, ok ? "Signed in (\(obj["user_id"] as? String ?? "OK"))" : (obj["error"] as? String ?? "Login failed"))
         }
         return (false, "Invalid response")
+    }
+
+    func importJudgeSession(filePath: String, label: String) async throws -> (Bool, String) {
+        var args = ["auth", "judge-import", filePath, "--json"]
+        if !label.isEmpty { args += ["--label", label] }
+        let data = try await client.execute(args, timeout: 10.0, allowNonZeroExit: true)
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let ok = (obj["ok"] as? Bool) ?? false
+            return (ok, ok ? "Imported (\(obj["user_id"] as? String ?? "OK"))" : (obj["error"] as? String ?? "Import failed"))
+        }
+        return (false, "Invalid response")
+    }
+
+    func toggleJudgeAccount(id: String, enabled: Bool) async throws {
+        _ = try await client.execute(["auth", "judge-toggle", id, "--enabled", enabled ? "1" : "0", "--json"])
+    }
+
+    func removeJudgeAccount(id: String) async throws {
+        _ = try await client.execute(["auth", "judge-remove", id, "--json"])
     }
 
     func logoutJudge() async throws {
