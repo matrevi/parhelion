@@ -55,14 +55,28 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     b_cfg = bridge.get("config") or {}
     sched = payload["scheduler"]
 
-    if "used_today" in b_quota:
-        sched["used_today_24h"] = int(b_quota["used_today"])
-    if "daily_limit" in b_quota:
-        sched["daily_quota_limit"] = int(b_quota["daily_limit"])
+    active_slots = [
+        s for s in ((sched.get("pipeline") or {}).get("account_slots") or [])
+        if s.get("enabled") and s.get("logged_in")
+    ]
     if "reserved_for_closing" in b_quota:
         sched["closing_reserve"] = int(b_quota["reserved_for_closing"])
-    if "discretionary_remaining" in b_quota:
-        sched["available_normal_shots"] = int(b_quota["discretionary_remaining"])
+    if len(active_slots) >= 2:
+        # Preserve multi-account team totals (e.g. 2x50=100, 3x50=150) instead of overwriting with single-account 50
+        per_acc_lim = int(b_quota.get("daily_limit") or 50)
+        team_limit = sum(int(s.get("daily_limit") or per_acc_lim) for s in active_slots)
+        team_used = sum(int(s.get("used_today") or 0) for s in active_slots)
+        team_rem = sum(max(0, int(s.get("daily_limit") or per_acc_lim) - int(s.get("used_today") or 0)) for s in active_slots)
+        sched["daily_quota_limit"] = team_limit
+        sched["used_today_24h"] = team_used
+        sched["available_normal_shots"] = max(0, team_rem - int(sched.get("closing_reserve") or 0))
+    else:
+        if "used_today" in b_quota:
+            sched["used_today_24h"] = int(b_quota["used_today"])
+        if "daily_limit" in b_quota:
+            sched["daily_quota_limit"] = int(b_quota["daily_limit"])
+        if "discretionary_remaining" in b_quota:
+            sched["available_normal_shots"] = int(b_quota["discretionary_remaining"])
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
 
