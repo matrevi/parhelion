@@ -9,6 +9,7 @@ from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
 from .commands.status_cmd import run_history, run_status
+from .daemon.server import run_daemon
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -343,6 +344,24 @@ def build_parser() -> argparse.ArgumentParser:
     sk_in.add_argument("--targets", default="dsh,codex")
     sk_in.add_argument("--json", action="store_true")
     sk_in.set_defaults(func=run_skills)
+
+    s_dm = sub.add_parser("daemon", help="Local persistent HTTP/SSE telemetry & state cache daemon")
+    dm_sub = s_dm.add_subparsers(dest="daemon_cmd", required=True)
+    dm_start = dm_sub.add_parser("start", help="Start the local Parhelion daemon")
+    dm_start.add_argument("--background", action="store_true")
+    dm_start.add_argument("--port", type=int, default=18910)
+    dm_start.add_argument("--workspace", "-w")
+    dm_start.add_argument("--host")
+    dm_start.add_argument("--json", action="store_true")
+    dm_start.set_defaults(func=run_daemon)
+
+    dm_stop = dm_sub.add_parser("stop", help="Stop the running Parhelion daemon")
+    dm_stop.add_argument("--json", action="store_true")
+    dm_stop.set_defaults(func=run_daemon)
+
+    dm_st = dm_sub.add_parser("status", help="Inspect running Parhelion daemon health")
+    dm_st.add_argument("--json", action="store_true")
+    dm_st.set_defaults(func=run_daemon)
 
     return p
 

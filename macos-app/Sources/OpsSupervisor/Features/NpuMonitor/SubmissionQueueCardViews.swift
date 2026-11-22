@@ -176,19 +176,20 @@ struct InflightJudgeCardView: View {
 
 struct CandidateSubmissionCardView: View {
     @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
     let item: SubmissionQueueItem
     let rankIndex: Int
     @ObservedObject var clock: WallClockTicker
 
     private var lang: AppLanguage { store.lang }
-    private var pipeline: LivePipelineState? { store.snapshot?.scheduler.pipeline }
+    private var pipeline: LivePipelineState? { hotStore.pipeline ?? store.snapshot?.scheduler.pipeline }
     private var isWaitingCooldown: Bool { pipeline?.phase == "waiting_cooldown" }
     private var isLocalUploading: Bool { ((pipeline?.isLocalBusy ?? false) && !isWaitingCooldown) || store.isLaunchingSubmit }
 
     var body: some View {
         let isCrit = item.badge == "CRITICAL RESTORE"
         let expDelta = (item.estimatedScore ?? item.currentScore) - item.currentScore
-        let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? store.snapshot?.scheduler.cooldownEndsEpoch)
+        let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? hotStore.schedulerHot?.cooldownEndsEpoch ?? store.snapshot?.scheduler.cooldownEndsEpoch)
 
         SurfaceCard(highlighted: rankIndex == 1 || isCrit, highlightColor: isCrit ? .red : .accentColor, padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
@@ -311,7 +312,7 @@ struct CandidateSubmissionCardView: View {
         if u.contains("ESCAPE") { return lang.tr("逃逸硬锁 · 禁止提交", "ESCAPE LOCK") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
         if u.contains("HOLD") || u.contains("LOW") { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
-        if u.contains("CIRCUIT") { return lang.tr("触发频控保护", "CIRCUIT OPEN") }
+        if u.contains("CIRCUIT") { return lang.tr("连6发无突破", "CIRCUIT OPEN") }
         return lang.tr("待提交 · READY", "READY")
     }
 

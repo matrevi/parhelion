@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 PROBE_PATH = Path(__file__).resolve().parents[1] / "probe" / "npu_probe.py"
+STREAM_PROBE_PATH = Path(__file__).resolve().parents[1] / "probe" / "npu_stream_probe.py"
 SSH_CONTROL_OPTS = [
     "-o", "BatchMode=yes",
     "-o", "ConnectTimeout=4",
@@ -60,46 +61,29 @@ def read_mac_npu_waiters() -> list[dict[str, Any]]:
     return waiters
 
 
-def poll_npu_telemetry(host: str, problems_by_title: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
-    remote_cmd = "if [ -f ~/.opsb/npu_probe.py ]; then python3 ~/.opsb/npu_probe.py; else python3 -; fi"
-    t0 = time.monotonic()
-    try:
-        proc = subprocess.run(
-            ["ssh", *SSH_CONTROL_OPTS, host, remote_cmd],
-            input=PROBE_PATH.read_text(encoding="utf-8"),
-            capture_output=True,
-            text=True,
-            timeout=6.5,
-        )
-        rtt_ms = round((time.monotonic() - t0) * 1000, 1)
-        if proc.returncode != 0:
-            return {
-                "online": False,
-                "ssh_host": host,
-                "rtt_ms": rtt_ms,
-                "error": (proc.stderr or proc.stdout).strip()[:220] or f"SSH exit {proc.returncode}",
-                "die_locks": [],
-                "tasks": [],
-            }
-        data = json.loads(proc.stdout.strip().splitlines()[-1])
-        data["online"] = True
-        data["ssh_host"] = host
-        data["rtt_ms"] = rtt_ms
-    except Exception as exc:
-        return {
-            "online": False,
-            "ssh_host": host,
-            "rtt_ms": round((time.monotonic() - t0) * 1000, 1),
-            "error": str(exc)[:220],
-            "die_locks": [],
-            "tasks": [],
-        }
-
+def enrich_npu_payload(
+    data: dict[str, Any],
+    host: str,
+    problems_by_title: dict[str, dict[str, Any]] | None = None,
+    mac_waiters: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Correlate Mac-side waiting processes and attach problem metadata to tasks/locks."""
+    data["online"] = True
+    data["ssh_host"] = host
     p_lookup = problems_by_title or {}
-    mac_waiters = read_mac_npu_waiters()
+    waiters = read_mac_npu_waiters() if mac_waiters is None else mac_waiters
+
     active_probs = {t.get("problem") for t in data.get("tasks", []) if t.get("problem")}
-    unmatched_mac = sorted([w for w in mac_waiters if w["problem"] not in active_probs], key=lambda x: x["elapsed_sec"], reverse=True)
-    unassigned = sorted([t for t in data.get("tasks", []) if not t.get("problem") and t.get("stage") == "WAITING-DIE"], key=lambda x: x.get("elapsed_sec", 0), reverse=True)
+    unmatched_mac = sorted(
+        [w for w in waiters if w["problem"] not in active_probs],
+        key=lambda x: x["elapsed_sec"],
+        reverse=True,
+    )
+    unassigned = sorted(
+        [t for t in data.get("tasks", []) if not t.get("problem") and t.get("stage") == "WAITING-DIE"],
+        key=lambda x: x.get("elapsed_sec", 0),
+        reverse=True,
+    )
 
     used_idx: set[int] = set()
     for wt in unassigned:
@@ -133,19 +117,76 @@ def poll_npu_telemetry(host: str, problems_by_title: dict[str, dict[str, Any]] |
     return data
 
 
+def poll_npu_telemetry(host: str, problems_by_title: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+    remote_cmd = (
+        "if [ -f ~/.opsb/npu_stream_probe.py ]; then python3 ~/.opsb/npu_stream_probe.py --once; "
+        "elif [ -f ~/.opsb/npu_probe.py ]; then python3 ~/.opsb/npu_probe.py; "
+        "else python3 -; fi"
+    )
+    t0 = time.monotonic()
+    try:
+        proc = subprocess.run(
+            ["ssh", *SSH_CONTROL_OPTS, host, remote_cmd],
+            input=PROBE_PATH.read_text(encoding="utf-8"),
+            capture_output=True,
+            text=True,
+            timeout=6.5,
+        )
+        rtt_ms = round((time.monotonic() - t0) * 1000, 1)
+        if proc.returncode != 0:
+            return {
+                "online": False,
+                "ssh_host": host,
+                "rtt_ms": rtt_ms,
+                "error": (proc.stderr or proc.stdout).strip()[:220] or f"SSH exit {proc.returncode}",
+                "die_locks": [],
+                "tasks": [],
+            }
+        data = json.loads(proc.stdout.strip().splitlines()[-1])
+        data["rtt_ms"] = rtt_ms
+    except Exception as exc:
+        return {
+            "online": False,
+            "ssh_host": host,
+            "rtt_ms": round((time.monotonic() - t0) * 1000, 1),
+            "error": str(exc)[:220],
+            "die_locks": [],
+            "tasks": [],
+        }
+
+    return enrich_npu_payload(data, host, problems_by_title=problems_by_title)
+
+
 def deploy_probe(host: str) -> dict[str, Any]:
-    install_sh = "mkdir -p ~/.opsb && cat > ~/.opsb/npu_probe.py && chmod 755 ~/.opsb/npu_probe.py && python3 ~/.opsb/npu_probe.py"
+    import base64
+
+    p_b64 = base64.b64encode(PROBE_PATH.read_bytes()).decode("ascii")
+    s_b64 = base64.b64encode(STREAM_PROBE_PATH.read_bytes()).decode("ascii")
+    remote_py = (
+        "import base64, os, pathlib\n"
+        "d = pathlib.Path.home() / '.opsb'\n"
+        "d.mkdir(parents=True, exist_ok=True)\n"
+        f"p = d / 'npu_probe.py'; p.write_bytes(base64.b64decode({p_b64!r})); os.chmod(p, 0o755)\n"
+        f"s = d / 'npu_stream_probe.py'; s.write_bytes(base64.b64decode({s_b64!r})); os.chmod(s, 0o755)\n"
+    )
+    install_sh = "python3 - && python3 ~/.opsb/npu_stream_probe.py --once"
     proc = subprocess.run(
         ["ssh", *SSH_CONTROL_OPTS, host, install_sh],
-        input=PROBE_PATH.read_text(encoding="utf-8"),
+        input=remote_py,
         capture_output=True,
         text=True,
-        timeout=12.0,
+        timeout=14.0,
     )
     if proc.returncode != 0:
         return {"ok": False, "host": host, "error": (proc.stderr or proc.stdout).strip()[:240]}
     snap = json.loads(proc.stdout.strip().splitlines()[-1])
-    return {"ok": True, "host": host, "installed_path": "~/.opsb/npu_probe.py", "probe": snap}
+    return {
+        "ok": True,
+        "host": host,
+        "installed_path": "~/.opsb/npu_stream_probe.py",
+        "installed_paths": ["~/.opsb/npu_probe.py", "~/.opsb/npu_stream_probe.py"],
+        "probe": snap,
+    }
 
 
 def test_ssh_connectivity(host: str) -> dict[str, Any]:

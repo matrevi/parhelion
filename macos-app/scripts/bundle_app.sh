@@ -43,7 +43,7 @@ for subdir in cli scheduler bench-specs breakthrough; do
     fi
 done
 rm -rf "$APP_BUNDLE/Contents/Resources/bridge"
-chmod +x "$APP_BUNDLE/Contents/Resources/cli/opsb" "$APP_BUNDLE/Contents/Resources/cli/opsb_core/probe/npu_probe.py"
+chmod +x "$APP_BUNDLE/Contents/Resources/cli/opsb" "$APP_BUNDLE/Contents/Resources/cli/opsb_core/probe/npu_probe.py" "$APP_BUNDLE/Contents/Resources/cli/opsb_core/probe/npu_stream_probe.py"
 mkdir -p "$HOME/.local/bin"
 ln -sf "$SUPERVISOR_ROOT/cli/opsb" "$HOME/.local/bin/opsb"
 

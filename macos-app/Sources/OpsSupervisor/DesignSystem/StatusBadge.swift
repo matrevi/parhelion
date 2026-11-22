@@ -48,7 +48,7 @@ struct SemanticPill: View {
         if u.contains("FAST-LANE") || u.contains("快速冒烟") {
             return (.teal, Color.teal.opacity(0.15))
         }
-        if u.contains("STRESS") || u.contains("并发压测") || u.contains("CIRCUIT") || u.contains("频控") {
+        if u.contains("STRESS") || u.contains("并发压测") || u.contains("CIRCUIT") || u.contains("频控") || u.contains("无突破") {
             return (.orange, Color.orange.opacity(0.16))
         }
         if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") || u.contains("精度未过") || u.contains("运行超时") || u.contains("运行报错") || u.contains("编译失败") || u.contains("本地拦截") {

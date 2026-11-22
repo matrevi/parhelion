@@ -42,7 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct OpsSupervisorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    @StateObject private var store = ContestStore()
+    @StateObject private var hotStore: HotTelemetryStore
+    @StateObject private var store: ContestStore
 
     init() {
         if activateExistingInstanceAndExitIfDuplicate() {
@@ -51,12 +52,17 @@ struct OpsSupervisorApp: App {
         setenv("TZ", "Asia/Shanghai", 1)
         tzset()
         NSTimeZone.default = Formatters.shanghaiTimeZone
+
+        let hs = HotTelemetryStore()
+        _hotStore = StateObject(wrappedValue: hs)
+        _store = StateObject(wrappedValue: ContestStore(hotStore: hs))
     }
 
     var body: some Scene {
         WindowGroup("Parhelion · Operator & NPU Supervisor") {
             AppRouterView()
                 .environmentObject(store)
+                .environmentObject(hotStore)
                 .environment(\.timeZone, Formatters.shanghaiTimeZone)
                 .frame(minWidth: 1120, minHeight: 720)
         }
@@ -83,6 +89,7 @@ struct OpsSupervisorApp: App {
         Settings {
             SettingsRootView()
                 .environmentObject(store)
+                .environmentObject(hotStore)
                 .frame(width: 680, height: 520)
         }
     }

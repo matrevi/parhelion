@@ -5,6 +5,7 @@ struct SchedulerBarView: View {
     private static let judgeMeURL = URL(string: "https://123.249.115.173/me")!
 
     @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
     let scheduler: SchedulerState
 
     @StateObject private var clock = WallClockTicker()
@@ -14,11 +15,16 @@ struct SchedulerBarView: View {
     @UIState private var initialized: Bool = false
 
     private var lang: AppLanguage { store.lang }
-    private var pipeline: LivePipelineState? { scheduler.pipeline }
+    private var pipeline: LivePipelineState? { hotStore.pipeline ?? scheduler.pipeline }
+    private var usedToday24h: Int { hotStore.schedulerHot?.usedToday24h ?? scheduler.usedToday24h }
+    private var dailyQuotaLimit: Int { hotStore.schedulerHot?.dailyQuotaLimit ?? scheduler.dailyQuotaLimit }
+    private var rateLimitGapSec: Int { hotStore.schedulerHot?.rateLimitGapSec ?? scheduler.rateLimitGapSec }
+    private var cooldownEndsEpoch: Double? { hotStore.schedulerHot?.cooldownEndsEpoch ?? scheduler.cooldownEndsEpoch }
+    private var autoConsumerEnabled: Bool { hotStore.schedulerHot?.autoConsumerEnabled ?? scheduler.autoConsumerEnabled }
 
     var body: some View {
-        let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? scheduler.cooldownEndsEpoch)
-        let gap = max(1, scheduler.rateLimitGapSec)
+        let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? cooldownEndsEpoch)
+        let gap = max(1, rateLimitGapSec)
         let judgeEl = clock.elapsedSince(startedAt: pipeline?.judgeStartedEpoch)
 
         HStack(spacing: 12) {
@@ -29,8 +35,8 @@ struct SchedulerBarView: View {
                 HStack(spacing: 6) {
                     ForEach(activeSlots) { slot in
                         let sRem = clock.cooldownRemaining(endsAt: slot.cooldownEndsEpoch)
-                        let used = slot.usedToday ?? scheduler.usedToday24h
-                        let lim = slot.dailyLimit ?? scheduler.dailyQuotaLimit
+                        let used = slot.usedToday ?? usedToday24h
+                        let lim = slot.dailyLimit ?? dailyQuotaLimit
                         let exhausted = slot.isExhausted || used >= lim
                         if exhausted {
                             SemanticPill(
@@ -74,8 +80,8 @@ struct SchedulerBarView: View {
             } else {
                 SemanticPill(
                     text: cdRem == 0
-                        ? lang.tr("冷却已就绪 · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)", "Ready · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)")
-                        : lang.tr("冷却 \(cdRem)s/\(gap)s · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)", "Cooldown \(cdRem)s/\(gap)s · \(scheduler.usedToday24h)/\(scheduler.dailyQuotaLimit)"),
+                        ? lang.tr("冷却已就绪 · \(usedToday24h)/\(dailyQuotaLimit)", "Ready · \(usedToday24h)/\(dailyQuotaLimit)")
+                        : lang.tr("冷却 \(cdRem)s/\(gap)s · \(usedToday24h)/\(dailyQuotaLimit)", "Cooldown \(cdRem)s/\(gap)s · \(usedToday24h)/\(dailyQuotaLimit)"),
                     icon: cdRem == 0 ? "checkmark.bolt.fill" : "timer",
                     compact: false
                 )
@@ -97,7 +103,7 @@ struct SchedulerBarView: View {
 
             Toggle(
                 isOn: Binding(
-                    get: { scheduler.autoConsumerEnabled },
+                    get: { autoConsumerEnabled },
                     set: { v in Task { await store.updateScheduler(autoConsumer: v) } }
                 )
             ) {

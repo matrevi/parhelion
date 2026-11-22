@@ -2,11 +2,16 @@ import SwiftUI
 
 struct BtopTelemetryDeckView: View {
     @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
     let npu: NpuTelemetry
 
+    private var liveNpu: NpuTelemetry {
+        hotStore.npu ?? npu
+    }
+
     private var samples: [TelemetrySample] {
-        if !store.telemetryHistory.isEmpty { return store.telemetryHistory }
-        return npu.history ?? []
+        if !hotStore.telemetryHistory.isEmpty { return hotStore.telemetryHistory }
+        return liveNpu.history ?? []
     }
 
     var body: some View {
@@ -45,38 +50,44 @@ struct BtopTelemetryDeckView: View {
     }
 
     private var topStatusBar: some View {
-        let dev = npu.primaryNpu
-        let die0 = npu.dieLocks.first
-        let slots = npu.slotsPerHr ?? 0
-        let avgHold = Int(npu.avgDieHoldSec ?? 0)
-        let wastePct = npu.dieDuty10m?.lockWastePct ?? 0
+        let curNpu = liveNpu
+        let dev = curNpu.primaryNpu
+        let die0 = curNpu.dieLocks.first
+        let slots = curNpu.slotsPerHr ?? 0
+        let avgHold = Int(curNpu.avgDieHoldSec ?? 0)
+        let wastePct = curNpu.dieDuty10m?.lockWastePct ?? 0
 
         return HStack(spacing: 8) {
             Circle()
-                .fill(npu.online ? BtopPalette.emerald : BtopPalette.amber)
+                .fill(curNpu.online ? BtopPalette.emerald : BtopPalette.amber)
                 .frame(width: 8, height: 8)
-                .shadow(color: (npu.online ? BtopPalette.emerald : BtopPalette.amber).opacity(0.8), radius: 4)
+                .shadow(color: (curNpu.online ? BtopPalette.emerald : BtopPalette.amber).opacity(0.8), radius: 4)
 
-            Text(npu.online ? "\(dev?.socName ?? "soc-a")" : "NPU (\(npu.sshHost))")
+            Text(curNpu.online ? "\(dev?.socName ?? "soc-a")" : "NPU (\(curNpu.sshHost))")
                 .font(.system(size: 13, weight: .heavy, design: .monospaced))
                 .foregroundStyle(BtopPalette.textPrimary)
 
-            Text("SDK \(npu.sdkVersion ?? "9.1.0")")
+            Text("SDK \(curNpu.sdkVersion ?? "9.1.0")")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundStyle(BtopPalette.cyan)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 1.5)
                 .background(Capsule().fill(BtopPalette.cyan.opacity(0.15)))
 
-            if let ms = npu.probeLatencyMs {
-                Text(String("· \(npu.sshHost) \(Int(ms))ms"))
+            if hotStore.streamConnected {
+                let latMs = hotStore.dcmiSampleMs > 0 ? hotStore.dcmiSampleMs : (curNpu.sampleMs ?? curNpu.probeLatencyMs ?? 0)
+                Text(String(format: "· %@ %@ %.1fms", curNpu.sshHost, hotStore.probeBackend.uppercased(), latMs))
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(BtopPalette.emerald)
+            } else if let ms = curNpu.sampleMs ?? curNpu.probeLatencyMs {
+                Text(String(format: "· %@ %.0fms", curNpu.sshHost, ms))
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(BtopPalette.textDim)
             }
 
             Spacer()
 
-            if npu.online && slots > 0 {
+            if curNpu.online && slots > 0 {
                 Text(store.tr(
                     String(format: "吞吐 %.1f 轮/h · 均持锁 %ds · 锁浪费 %.0f%%", slots, avgHold, wastePct),
                     String(format: "%.1f slots/h · Hold %ds · Waste %.0f%%", slots, avgHold, wastePct)
@@ -115,7 +126,7 @@ struct BtopTelemetryDeckView: View {
     // MARK: - Panel 1: NPU Vector/Core + HBM BW + Power + 10m Die Duty Bar
 
     private var npuWaveAndDutyPanel: some View {
-        let dev = npu.primaryNpu
+        let dev = liveNpu.primaryNpu
         let vecCoreVals = samples.map { max($0.aivectorPct ?? 0, $0.aicorePct) }
         let bwVals = samples.map { $0.hbmBwPct ?? 0 }
         let pwrScaled = samples.map { min(100.0, max(0.0, ($0.powerW / 220.0) * 100.0)) }
@@ -175,7 +186,7 @@ struct BtopTelemetryDeckView: View {
     }
 
     private var dieDuty10mBar: some View {
-        let duty = npu.dieDuty10m ?? DieDuty10m(npuExecPct: 0, aclHostPct: 0, lockWastePct: 0, freePct: 100)
+        let duty = liveNpu.dieDuty10m ?? DieDuty10m(npuExecPct: 0, aclHostPct: 0, lockWastePct: 0, freePct: 100)
         return VStack(alignment: .leading, spacing: 3) {
             GeometryReader { geo in
                 let w = max(1, geo.size.width)
@@ -207,11 +218,12 @@ struct BtopTelemetryDeckView: View {
     // MARK: - Panel 2: Host CPU % Waveform + Lock-Free Builds + 32-Core Matrix
 
     private var cpuPanel: some View {
-        let cpuPct = npu.cpu?.usagePct ?? (samples.last?.cpuPct ?? 0)
+        let curNpu = liveNpu
+        let cpuPct = curNpu.cpu?.usagePct ?? (samples.last?.cpuPct ?? 0)
         let cpuSeries = samples.map { $0.cpuPct }
-        let l1 = npu.cpu?.load1m ?? 0
-        let nCores = npu.cpu?.cores ?? 32
-        let lfCount = npu.parallelCpuBuilds?.count ?? npu.tasks.filter { $0.state == "CPU_BUILD" }.count
+        let l1 = curNpu.cpu?.load1m ?? 0
+        let nCores = curNpu.cpu?.cores ?? 32
+        let lfCount = curNpu.parallelCpuBuilds?.count ?? curNpu.tasks.filter { $0.state == "CPU_BUILD" }.count
 
         return BtopBox(keyIndex: "2", title: store.tr("主机 CPU · \(nCores) 核", "CPU · \(nCores) Cores"), accent: BtopPalette.emerald) {
             HStack(spacing: 6) {
@@ -238,7 +250,7 @@ struct BtopTelemetryDeckView: View {
                     timestamps: samples.map { $0.ts }
                 )
 
-                BtopCoreMatrixGrid(perCorePct: npu.cpu?.perCorePct ?? [])
+                BtopCoreMatrixGrid(perCorePct: curNpu.cpu?.perCorePct ?? [])
             }
         }
     }
@@ -246,14 +258,15 @@ struct BtopTelemetryDeckView: View {
     // MARK: - Panel 3: HBM2e & System RAM Segmented Meters
 
     private var memoryHierarchyPanel: some View {
-        let dev = npu.primaryNpu
+        let curNpu = liveNpu
+        let dev = curNpu.primaryNpu
         let hbmUsed = dev?.hbmUsedMib ?? 0
         let hbmTot = max(1, dev?.hbmTotalMib ?? 65536)
         let hbmFrac = Double(hbmUsed) / Double(hbmTot)
 
-        let ramTot = max(1.0, npu.memory?.totalGib ?? 245.6)
-        let ramUsed = npu.memory?.usedGib ?? 0
-        let ramCached = npu.memory?.cachedGib ?? 0
+        let ramTot = max(1.0, curNpu.memory?.totalGib ?? 245.6)
+        let ramUsed = curNpu.memory?.usedGib ?? 0
+        let ramCached = curNpu.memory?.cachedGib ?? 0
         let ramUsedFrac = ramUsed / ramTot
         let ramCacheFrac = ramCached / ramTot
 

@@ -1,11 +1,10 @@
 import Combine
 import Foundation
 
-/// Central @MainActor ViewModel coordinating decoupled fast-local (~60ms) and async-SSH NPU refreshes.
+/// Central @MainActor cold contest/leaderboard/queue ViewModel paired with `HotTelemetryStore` + native SSE.
 @MainActor
 final class ContestStore: ObservableObject {
     @Published var snapshot: SupervisorSnapshot?
-    @Published var telemetryHistory: [TelemetrySample] = []
     @Published var breakthroughEntries: [BreakthroughEntry] = []
     @Published var breakthroughDir: String = ""
     @Published var breakthroughThreshold: Double = 5.0
@@ -14,6 +13,7 @@ final class ContestStore: ObservableObject {
     @Published var backfillStatus: BackfillStatusReport?
     @Published var isBackfilling: Bool = false
     private var lastBackfillFetch: Date = .distantPast
+
     @Published var lang: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: "parhelion.lang") ?? "zh") ?? .zh
     private var didSetLangLocally: Bool = false
     @Published var workspaces: [WorkspaceEntry] = []
@@ -24,69 +24,121 @@ final class ContestStore: ObservableObject {
     @Published var selectedProblemTitle: String? = "ConcatD"
 
     @Published var isRefreshingLocal: Bool = false
-    @Published var isRefreshingNpu: Bool = false
     @Published var isLaunchingSubmit: Bool = false
     @Published var pollIntervalSec: Double = 1.0
     @Published var bannerMessage: String?
     @Published var errorMessage: String?
 
+    let hotStore: HotTelemetryStore
     let repository = OpsRepository()
-    private var pollTimer: Timer?
+    let daemonClient = DaemonClient()
 
-    init() {
-        reschedulePolling()
+    private var lastColdETag: String?
+    private var lastLoadedWorkspace: String?
+    private var streamTask: Task<Void, Never>?
+    private var fallbackTimer: Timer?
+    private var isFetchingColdFromETag = false
+
+    init(hotStore: HotTelemetryStore? = nil) {
+        self.hotStore = hotStore ?? HotTelemetryStore()
         Task { await bootstrap() }
     }
 
+    deinit {
+        streamTask?.cancel()
+        fallbackTimer?.invalidate()
+    }
+
     func bootstrap() async {
-        await refreshLocal()
+        await refreshLocal(force: true)
         async let wsLoad: () = reloadWorkspaces()
         async let sshLoad: () = reloadSSHHosts()
         async let btLoad: () = reloadBreakthroughs()
-        async let npuLoad: () = refreshNpu(silent: true)
-        _ = await (wsLoad, sshLoad, btLoad, npuLoad)
+        _ = await (wsLoad, sshLoad, btLoad)
+        startTelemetryStream()
     }
 
     func refreshAll() async {
-        await refreshLocal()
+        await daemonClient.invalidate(workspace: selectedWorkspace)
+        await refreshLocal(force: true)
         await reloadBreakthroughs()
         await refreshNpu(silent: false)
     }
 
-    func refreshLocal() async {
+    func refreshLocal(force: Bool = false) async {
         if isRefreshingLocal { return }
         isRefreshingLocal = true
         defer { isRefreshingLocal = false }
+
+        let targetWs = selectedWorkspace
+        let ifNoneMatch = (force || lastLoadedWorkspace != targetWs) ? nil : lastColdETag
+
         do {
-            let localSnap = try await repository.fetchLocalSnapshot(workspace: selectedWorkspace)
-            if let existingNpu = snapshot?.npu, existingNpu.online {
-                snapshot = localSnap.updatingNpu(existingNpu)
-            } else {
-                snapshot = localSnap
+            let result = try await daemonClient.fetchSnapshot(
+                workspace: targetWs,
+                host: activeSSHHost,
+                ifNoneMatch: ifNoneMatch
+            )
+            switch result {
+            case .notModified(let etag):
+                if !etag.isEmpty { lastColdETag = etag }
+                errorMessage = nil
+            case .updated(let snap, let etag):
+                lastLoadedWorkspace = targetWs
+                if !etag.isEmpty { lastColdETag = etag }
+                await applyColdSnapshot(snap)
             }
-            if let bt = localSnap.scheduler.breakthroughThreshold {
-                breakthroughThreshold = bt
-            }
-            if !didSetLangLocally, let rawLang = localSnap.language, let parsed = AppLanguage(rawValue: rawLang) {
-                lang = parsed
-                UserDefaults.standard.set(parsed.rawValue, forKey: "parhelion.lang")
-            }
-            if selectedProblemTitle == nil || !localSnap.problems.contains(where: { $0.title == selectedProblemTitle }) {
-                selectedProblemTitle = localSnap.problems.first?.title
-            }
-            errorMessage = nil
-            await maybeAutoConsumeTopCandidate(localSnap)
-            await reloadBackfillStatusIfNeeded(localSnap)
+            return
+        } catch {
+            // Fall back transparently to ProcessClient CLI if daemon is unreachable
+        }
+
+        do {
+            let localSnap = try await repository.fetchLocalSnapshot(workspace: targetWs)
+            lastLoadedWorkspace = targetWs
+            lastColdETag = nil
+            await applyColdSnapshot(localSnap)
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func maybeAutoConsumeTopCandidate(_ snap: SupervisorSnapshot) async {
-        let cdRem = snap.scheduler.pipeline?.cooldownRemainingSec ?? snap.scheduler.cooldownRemainingSec
-        guard snap.scheduler.autoConsumerEnabled,
-              (snap.scheduler.pipeline?.canSubmit ?? true),
-              !(snap.scheduler.pipeline?.isLocalBusy ?? false),
+    private func applyColdSnapshot(_ localSnap: SupervisorSnapshot) async {
+        snapshot = localSnap
+        hotStore.applyColdSeed(from: localSnap)
+        if let bt = localSnap.scheduler.breakthroughThreshold {
+            breakthroughThreshold = bt
+        }
+        if !didSetLangLocally, let rawLang = localSnap.language, let parsed = AppLanguage(rawValue: rawLang) {
+            lang = parsed
+            UserDefaults.standard.set(parsed.rawValue, forKey: "parhelion.lang")
+        }
+        if selectedProblemTitle == nil || !localSnap.problems.contains(where: { $0.title == selectedProblemTitle }) {
+            selectedProblemTitle = localSnap.problems.first?.title
+        }
+        errorMessage = nil
+        await maybeAutoConsumeTopCandidate(localSnap)
+        await reloadBackfillStatusIfNeeded(localSnap)
+    }
+
+    private func refreshColdSnapshotIfChanged(expectedEtag: String) async {
+        guard !isFetchingColdFromETag, expectedEtag != lastColdETag else { return }
+        isFetchingColdFromETag = true
+        defer { isFetchingColdFromETag = false }
+        await refreshLocal(force: false)
+    }
+
+    private func maybeAutoConsumeTopCandidate(
+        _ snap: SupervisorSnapshot,
+        livePipeline: LivePipelineState? = nil,
+        liveCooldownRem: Int? = nil
+    ) async {
+        let pipe = livePipeline ?? hotStore.pipeline ?? snap.scheduler.pipeline
+        let cdRem = liveCooldownRem ?? pipe?.cooldownRemainingSec ?? snap.scheduler.cooldownRemainingSec
+        let autoEnabled = hotStore.schedulerHot?.autoConsumerEnabled ?? snap.scheduler.autoConsumerEnabled
+        guard autoEnabled,
+              (pipe?.canSubmit ?? true),
+              !(pipe?.isLocalBusy ?? false),
               cdRem == 0,
               !isLaunchingSubmit else { return }
 
@@ -104,36 +156,95 @@ final class ContestStore: ObservableObject {
     }
 
     func refreshNpu(silent: Bool = false) async {
-        if isRefreshingNpu { return }
-        isRefreshingNpu = true
-        defer { isRefreshingNpu = false }
+        if hotStore.isRefreshingNpu { return }
+        hotStore.isRefreshingNpu = true
+        defer { hotStore.isRefreshingNpu = false }
+
+        do {
+            let frame = try await daemonClient.fetchHot(
+                workspace: selectedWorkspace,
+                host: activeSSHHost,
+                interval: max(0.5, pollIntervalSec > 0 ? pollIntervalSec : 1.0)
+            )
+            await handleHotFrame(frame, decodeMs: 0)
+            return
+        } catch {
+            // Fall back to ProcessClient if daemon unavailable
+        }
+
         do {
             let npu = try await repository.fetchNpuTelemetry(workspace: selectedWorkspace, host: activeSSHHost)
-            if let cur = snapshot {
-                snapshot = cur.updatingNpu(npu)
-            }
-            mergeTelemetryHistory(from: npu)
+            hotStore.applyFallbackNpu(npu)
         } catch {
             if !silent { errorMessage = error.localizedDescription }
         }
     }
 
-    private func mergeTelemetryHistory(from npu: NpuTelemetry) {
-        var byTs: [Int: TelemetrySample] = [:]
-        for pt in telemetryHistory {
-            byTs[Int(pt.ts)] = pt
+    private func handleHotFrame(_ frame: HotStreamFrame, decodeMs: Double) async {
+        hotStore.applyHotFrame(frame, decodeMs: decodeMs)
+        if !frame.coldEtag.isEmpty && (frame.coldEtag != lastColdETag || lastLoadedWorkspace != selectedWorkspace) {
+            await refreshColdSnapshotIfChanged(expectedEtag: frame.coldEtag)
         }
-        for pt in (npu.history ?? []) {
-            byTs[Int(pt.ts)] = pt
+        if let snap = snapshot, frame.schedulerHot.autoConsumerEnabled {
+            await maybeAutoConsumeTopCandidate(
+                snap,
+                livePipeline: frame.pipeline,
+                liveCooldownRem: frame.schedulerHot.cooldownRemainingSec
+            )
         }
-        let merged = byTs.values.sorted { $0.ts < $1.ts }
-        telemetryHistory = Array(merged.suffix(120))
     }
 
-    func reschedulePolling() {
-        pollTimer?.invalidate()
-        guard pollIntervalSec > 0 else { return }
-        pollTimer = Timer.scheduledTimer(withTimeInterval: pollIntervalSec, repeats: true) { [weak self] _ in
+    func startTelemetryStream() {
+        streamTask?.cancel()
+        streamTask = nil
+        stopFallbackPolling()
+
+        let interval = pollIntervalSec
+        guard interval > 0 else {
+            hotStore.markStreamDisconnected()
+            return
+        }
+
+        let ws = selectedWorkspace
+        let host = activeSSHHost
+        streamTask = Task { [weak self] in
+            var consecutiveErrors = 0
+            while !Task.isCancelled {
+                guard let self else { break }
+                do {
+                    let stream = await self.daemonClient.openHotStream(
+                        workspace: ws,
+                        host: host,
+                        interval: max(0.5, interval)
+                    )
+                    for try await (frame, decodeMs) in stream {
+                        if Task.isCancelled { break }
+                        consecutiveErrors = 0
+                        self.stopFallbackPolling()
+                        await self.handleHotFrame(frame, decodeMs: decodeMs)
+                    }
+                    if !Task.isCancelled {
+                        self.hotStore.markStreamDisconnected()
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                } catch {
+                    if Task.isCancelled { break }
+                    consecutiveErrors += 1
+                    self.hotStore.markStreamDisconnected()
+                    if consecutiveErrors >= 2 {
+                        self.hotStore.markDaemonOffline()
+                        self.startFallbackPolling(interval: max(2.0, interval))
+                    }
+                    let delayNs: UInt64 = consecutiveErrors >= 2 ? 6_000_000_000 : 1_500_000_000
+                    try? await Task.sleep(nanoseconds: delayNs)
+                }
+            }
+        }
+    }
+
+    private func startFallbackPolling(interval: Double) {
+        guard fallbackTimer == nil, interval > 0 else { return }
+        fallbackTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 async let localLoad: () = self.refreshLocal()
@@ -141,6 +252,15 @@ final class ContestStore: ObservableObject {
                 _ = await (localLoad, npuLoad)
             }
         }
+    }
+
+    private func stopFallbackPolling() {
+        fallbackTimer?.invalidate()
+        fallbackTimer = nil
+    }
+
+    func reschedulePolling() {
+        startTelemetryStream()
     }
 
     // MARK: - Workspaces & SSH
@@ -156,9 +276,13 @@ final class ContestStore: ObservableObject {
 
     func switchWorkspace(_ path: String) async {
         selectedWorkspace = path
+        lastColdETag = nil
+        lastLoadedWorkspace = nil
         try? await repository.selectWorkspace(path)
         await reloadWorkspaces()
+        await daemonClient.invalidate(workspace: path)
         await refreshAll()
+        startTelemetryStream()
     }
 
     func reloadSSHHosts() async {
@@ -170,9 +294,11 @@ final class ContestStore: ObservableObject {
 
     func selectSSHHost(_ alias: String) async {
         activeSSHHost = alias
+        hotStore.clearForHostSwitch()
         try? await repository.selectSSHHost(alias)
         await reloadSSHHosts()
-        await refreshNpu(silent: false)
+        await daemonClient.configure(host: alias, interval: nil)
+        startTelemetryStream()
     }
 
     func boostNpuTicket(pid: Int, problem: String, sha: String) async {
@@ -213,7 +339,8 @@ final class ContestStore: ObservableObject {
                 noiseFloor: noiseFloor,
                 breakthroughThreshold: breakthroughThreshold
             )
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -229,7 +356,6 @@ final class ContestStore: ObservableObject {
     // MARK: - Auto backfill status
 
     private func reloadBackfillStatusIfNeeded(_ snap: SupervisorSnapshot) async {
-        // The new CLI ships `scheduler.backfill` inside the poll payload: no extra probe needed.
         guard snap.scheduler.backfill == nil else { return }
         let cal = (snap.problems.first { $0.title == selectedProblemTitle } ?? snap.problems.first)?.calibration
         let unpaired = cal?.unpairedBucketCount ?? 0
@@ -260,6 +386,7 @@ final class ContestStore: ObservableObject {
         UserDefaults.standard.set(newLang.rawValue, forKey: "parhelion.lang")
         Task {
             try? await repository.updateQueueConfig(language: newLang.rawValue)
+            await daemonClient.invalidate(workspace: selectedWorkspace)
         }
     }
 
@@ -270,7 +397,8 @@ final class ContestStore: ObservableObject {
                 minDelta: breakthroughThreshold
             )
             await reloadBreakthroughs()
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
             if created > 0 {
                 bannerMessage = tr("已同步 \(created) 条新突破至经验库 (共 \(total) 条)", "Synced \(created) new breakthrough(s) (\(total) total)")
             } else {
@@ -292,7 +420,8 @@ final class ContestStore: ObservableObject {
             } else {
                 errorMessage = msg
             }
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -302,7 +431,8 @@ final class ContestStore: ObservableObject {
         do {
             try await repository.approveSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
             bannerMessage = tr("已批准入队 \(problem) \(String(sha.prefix(7)))", "Approved & enqueued \(problem) \(String(sha.prefix(7)))")
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -312,7 +442,8 @@ final class ContestStore: ObservableObject {
         do {
             try await repository.skipSubmission(workspace: selectedWorkspace, problem: problem, sha: sha, reason: "held via Parhelion")
             bannerMessage = tr("已忽略 \(problem) \(String(sha.prefix(7)))", "Skipped \(problem) \(String(sha.prefix(7)))")
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -322,7 +453,8 @@ final class ContestStore: ObservableObject {
         do {
             try await repository.restoreBestSubmission(workspace: selectedWorkspace, problem: problem)
             bannerMessage = tr("已将 \(problem) 历史最优版本加入恢复队列", "Queued historical best SHA restore for \(problem)")
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -332,7 +464,8 @@ final class ContestStore: ObservableObject {
         do {
             try await repository.calibrateProblemBench(workspace: selectedWorkspace, problem: problem)
             bannerMessage = tr("已完成 \(problem) 5层权重闭环校准", "Recalibrated 5-stratum weights for \(problem)")
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -366,7 +499,8 @@ final class ContestStore: ObservableObject {
                     "\(problem) backfill finished: \(res.result) (0 new buckets)"
                 )
             }
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
             await reloadBackfillStatus(force: true)
         } catch {
             errorMessage = error.localizedDescription
@@ -377,7 +511,8 @@ final class ContestStore: ObservableObject {
         bannerMessage = "Running rate-limited queue consumer…"
         do {
             bannerMessage = try await repository.drainQueueOnce(workspace: selectedWorkspace)
-            await refreshLocal()
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -2,20 +2,22 @@ import SwiftUI
 
 struct NpuServerQueueView: View {
     @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
     let npu: NpuTelemetry
 
     private var lang: AppLanguage { store.lang }
+    private var liveNpu: NpuTelemetry { hotStore.npu ?? npu }
 
     private var dieExecTasks: [NpuTaskItem] {
-        npu.tasks.filter { $0.state == "ACTIVE" }
+        liveNpu.tasks.filter { $0.state == "ACTIVE" }
     }
 
     private var cpuBuildTasks: [NpuTaskItem] {
-        npu.tasks.filter { $0.state == "CPU_BUILD" }
+        liveNpu.tasks.filter { $0.state == "CPU_BUILD" }
     }
 
     private var waitingTickets: [NpuTaskItem] {
-        npu.tasks.filter { $0.state == "WAITING" }
+        liveNpu.tasks.filter { $0.state == "WAITING" }
     }
 
     var body: some View {
@@ -37,7 +39,7 @@ struct NpuServerQueueView: View {
 
             Divider()
 
-            if !npu.online {
+            if !liveNpu.online {
                 emptyState(lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
             } else {
                 ScrollView {

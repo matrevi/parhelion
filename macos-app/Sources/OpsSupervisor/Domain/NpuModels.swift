@@ -59,6 +59,8 @@ struct NpuTelemetry: Codable {
     let sshHost: String
     let rttMs: Double?
     let probeLatencyMs: Double?
+    let probeBackend: String?
+    let sampleMs: Double?
     let hostname: String?
     let arch: String?
     let sdkVersion: String?
@@ -80,6 +82,8 @@ struct NpuTelemetry: Codable {
         case sshHost = "ssh_host"
         case rttMs = "rtt_ms"
         case probeLatencyMs = "probe_latency_ms"
+        case probeBackend = "probe_backend"
+        case sampleMs = "sample_ms"
         case sdkVersion = "sdk_version"
         case smiVersion = "smi_version"
         case primaryNpu = "primary_npu"
@@ -88,6 +92,96 @@ struct NpuTelemetry: Codable {
         case avgDieHoldSec = "avg_die_hold_sec"
         case parallelCpuBuilds = "parallel_cpu_builds"
         case dieLocks = "die_locks"
+    }
+}
+
+struct SchedulerHotState: Codable, Equatable {
+    let autoConsumerEnabled: Bool
+    let rateLimitGapSec: Int
+    let cooldownRemainingSec: Int
+    let cooldownEndsEpoch: Double
+    let rateReady: Bool
+    let dailyQuotaLimit: Int
+    let usedToday24h: Int
+    let closingReserve: Int
+    let availableNormalShots: Int
+    let noiseFloorDelta: Double
+    let breakthroughThreshold: Double
+    let queueLockHeld: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case autoConsumerEnabled = "auto_consumer_enabled"
+        case rateLimitGapSec = "rate_limit_gap_sec"
+        case cooldownRemainingSec = "cooldown_remaining_sec"
+        case cooldownEndsEpoch = "cooldown_ends_epoch"
+        case rateReady = "rate_ready"
+        case dailyQuotaLimit = "daily_quota_limit"
+        case usedToday24h = "used_today_24h"
+        case closingReserve = "closing_reserve"
+        case availableNormalShots = "available_normal_shots"
+        case noiseFloorDelta = "noise_floor_delta"
+        case breakthroughThreshold = "breakthrough_threshold"
+        case queueLockHeld = "queue_lock_held"
+    }
+}
+
+struct DaemonStats: Codable, Equatable {
+    let streamConnected: Bool
+    let probeBackend: String
+    let dcmiSampleMs: Double
+    let hotBuildMs: Double
+    let coldRecomputeMs: Double
+    let uptimeSec: Double
+
+    enum CodingKeys: String, CodingKey {
+        case streamConnected = "stream_connected"
+        case probeBackend = "probe_backend"
+        case dcmiSampleMs = "dcmi_sample_ms"
+        case hotBuildMs = "hot_build_ms"
+        case coldRecomputeMs = "cold_recompute_ms"
+        case uptimeSec = "uptime_sec"
+    }
+}
+
+struct HotStreamFrame: Codable {
+    let ts: Double
+    let workspace: String
+    let coldEtag: String
+    let npu: NpuTelemetry
+    let pipeline: LivePipelineState
+    let schedulerHot: SchedulerHotState
+    let daemonStats: DaemonStats
+
+    enum CodingKeys: String, CodingKey {
+        case ts, workspace, npu, pipeline
+        case coldEtag = "cold_etag"
+        case schedulerHot = "scheduler_hot"
+        case daemonStats = "daemon_stats"
+    }
+}
+
+struct DaemonHealthResponse: Codable {
+    let ok: Bool
+    let pid: Int
+    let port: Int
+    let uptimeSec: Double
+    let streamConnected: Bool
+    let probeBackend: String
+    let sshHost: String
+    let workspace: String
+    let coldEtag: String
+    let dcmiSampleMs: Double
+    let coldRecomputeMs: Double
+
+    enum CodingKeys: String, CodingKey {
+        case ok, pid, port, workspace
+        case uptimeSec = "uptime_sec"
+        case streamConnected = "stream_connected"
+        case probeBackend = "probe_backend"
+        case sshHost = "ssh_host"
+        case coldEtag = "cold_etag"
+        case dcmiSampleMs = "dcmi_sample_ms"
+        case coldRecomputeMs = "cold_recompute_ms"
     }
 }
 

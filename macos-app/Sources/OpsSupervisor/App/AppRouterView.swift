@@ -97,16 +97,9 @@ struct AppRouterView: View {
                     store.reschedulePolling()
                 }
 
-                Button {
+                ToolbarRefreshButton(lang: lang) {
                     Task { await store.refreshAll() }
-                } label: {
-                    if store.isRefreshingNpu || store.isRefreshingLocal {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label(lang.tr("刷新", "Refresh"), systemImage: "arrow.clockwise")
-                    }
                 }
-                .help(lang.tr("刷新本地状态与远程 NPU 遥测 (⌘R)", "Refresh local state & SSH NPU telemetry (⌘R)"))
 
                 Button {
                     showSettings = true
@@ -227,13 +220,7 @@ struct AppRouterView: View {
                     .padding(.vertical, 2)
                     .background(Capsule().fill(Color.accentColor.opacity(0.14)))
             case .npuMonitor:
-                if !snap.npu.tasks.isEmpty {
-                    Text("\(snap.npu.tasks.count)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.orange.opacity(0.16)))
-                }
+                NpuRouteBadgeView(fallbackCount: snap.npu.tasks.count)
             case .breakthroughs:
                 let cnt = store.breakthroughEntries.filter { $0.deltaRaw >= store.breakthroughThreshold }.count
                 if cnt > 0 {
@@ -253,49 +240,13 @@ struct AppRouterView: View {
     @ViewBuilder
     private var sidebarFooter: some View {
         if let snap = store.snapshot {
-            VStack(alignment: .leading, spacing: 8) {
-                Divider()
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(snap.npu.online ? Color.green : (store.isRefreshingNpu ? Color.blue : Color.orange))
-                        .frame(width: 7.5, height: 7.5)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(snap.npu.online
-                             ? "\(snap.npu.sshHost) · \(snap.npu.primaryNpu?.socName ?? "soc-a")"
-                             : (store.isRefreshingNpu
-                                ? lang.tr("正在探测 \(snap.npu.sshHost)…", "Probing \(snap.npu.sshHost)…")
-                                : "\(snap.npu.sshHost) · \(lang.tr("待机", "Standby"))"))
-                            .font(.system(size: 11, weight: .semibold))
-                        if let lk = snap.npu.dieLocks.first {
-                            Text(lk.state == "HELD"
-                                 ? "Die0: \(lk.problem ?? lang.tr("占用中", "Busy"))"
-                                 : lang.tr("Die0: 空闲", "Die0: Free"))
-                                .font(.system(size: 10, design: .monospaced))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    if let temp = snap.npu.primaryNpu?.tempC {
-                        Text("\(temp)°C")
-                            .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    SemanticPill(text: snap.auth.judge.loggedIn ? "SDK ✓" : "SDK !", compact: true)
-                    SemanticPill(text: snap.auth.gitcode.loggedIn ? "GitCode ✓" : "GitCode !", compact: true)
-                    Spacer()
-                    Button { showSettings = true } label: {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 12)
+            SidebarNpuFooterView(
+                lang: lang,
+                fallbackNpu: snap.npu,
+                judgeLoggedIn: snap.auth.judge.loggedIn,
+                gitcodeLoggedIn: snap.auth.gitcode.loggedIn,
+                onOpenSettings: { showSettings = true }
+            )
         }
     }
 
@@ -343,5 +294,102 @@ struct AppRouterView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 7)
         .background((isError ? Color.orange : Color.green).opacity(0.11))
+    }
+}
+
+private struct ToolbarRefreshButton: View {
+    @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
+    let lang: AppLanguage
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            if hotStore.isRefreshingNpu || store.isRefreshingLocal {
+                ProgressView().controlSize(.small)
+            } else {
+                HStack(spacing: 4) {
+                    if hotStore.streamConnected {
+                        Circle()
+                            .fill(Color.green)
+                            .frame(width: 6, height: 6)
+                    }
+                    Label(lang.tr("刷新", "Refresh"), systemImage: "arrow.clockwise")
+                }
+            }
+        }
+        .help(lang.tr("刷新本地状态与远程 NPU 遥测 (⌘R)", "Refresh local state & SSH NPU telemetry (⌘R)"))
+    }
+}
+
+private struct NpuRouteBadgeView: View {
+    @EnvironmentObject var hotStore: HotTelemetryStore
+    let fallbackCount: Int
+
+    var body: some View {
+        let count = hotStore.npu?.tasks.count ?? fallbackCount
+        if count > 0 {
+            Text("\(count)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.orange.opacity(0.16)))
+        }
+    }
+}
+
+private struct SidebarNpuFooterView: View {
+    @EnvironmentObject var hotStore: HotTelemetryStore
+    let lang: AppLanguage
+    let fallbackNpu: NpuTelemetry
+    let judgeLoggedIn: Bool
+    let gitcodeLoggedIn: Bool
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        let npu = hotStore.npu ?? fallbackNpu
+        VStack(alignment: .leading, spacing: 8) {
+            Divider()
+            HStack(spacing: 7) {
+                Circle()
+                    .fill(npu.online ? Color.green : (hotStore.isRefreshingNpu ? Color.blue : Color.orange))
+                    .frame(width: 7.5, height: 7.5)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(npu.online
+                         ? "\(npu.sshHost) · \(npu.primaryNpu?.socName ?? "soc-a")"
+                         : (hotStore.isRefreshingNpu
+                            ? lang.tr("正在探测 \(npu.sshHost)…", "Probing \(npu.sshHost)…")
+                            : "\(npu.sshHost) · \(lang.tr("待机", "Standby"))"))
+                        .font(.system(size: 11, weight: .semibold))
+                    if let lk = npu.dieLocks.first {
+                        Text(lk.state == "HELD"
+                             ? "Die0: \(lk.problem ?? lang.tr("占用中", "Busy"))"
+                             : lang.tr("Die0: 空闲", "Die0: Free"))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if let temp = npu.primaryNpu?.tempC {
+                    Text("\(temp)°C")
+                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 6) {
+                SemanticPill(text: judgeLoggedIn ? "SDK ✓" : "SDK !", compact: true)
+                SemanticPill(text: gitcodeLoggedIn ? "GitCode ✓" : "GitCode !", compact: true)
+                Spacer()
+                Button(action: onOpenSettings) {
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 12)
     }
 }

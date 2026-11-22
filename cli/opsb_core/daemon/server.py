@@ -1,0 +1,554 @@
+"""Localhost-only authenticated HTTP/SSE daemon server for Parhelion (`opsb daemon`)."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hmac
+import http.server
+import json
+import os
+import secrets
+import signal
+import socketserver
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from ..config import CLI_DIR, ConfigRepository, resolve_python_exe, utc_now
+from .npu_stream import NpuStreamManager
+from .state_cache import WorkspaceStateCache
+
+DAEMON_CONFIG_DIR = Path.home() / ".config" / "parhelion"
+DAEMON_STATE_PATH = DAEMON_CONFIG_DIR / "daemon.json"
+DAEMON_LOCK_PATH = DAEMON_CONFIG_DIR / "daemon.lock"
+DAEMON_LOG_PATH = DAEMON_CONFIG_DIR / "daemon.log"
+DEFAULT_PORT = 18910
+
+
+class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def read_daemon_state() -> dict[str, Any] | None:
+    if not DAEMON_STATE_PATH.is_file():
+        return None
+    try:
+        data = json.loads(DAEMON_STATE_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and data.get("port") and data.get("token"):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def probe_daemon_health(state: dict[str, Any] | None = None, timeout: float = 1.2) -> dict[str, Any] | None:
+    st = state or read_daemon_state()
+    if not st:
+        return None
+    pid = int(st.get("pid") or 0)
+    if pid and not _pid_alive(pid):
+        return None
+    port = int(st["port"])
+    token = str(st["token"])
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/v1/health",
+        headers={"X-Opsb-Token": token},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 200:
+                body = json.loads(resp.read().decode("utf-8"))
+                if isinstance(body, dict) and body.get("ok"):
+                    return body
+    except Exception:
+        return None
+    return None
+
+
+def _write_daemon_state(state: dict[str, Any]) -> None:
+    DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = DAEMON_STATE_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, DAEMON_STATE_PATH)
+
+
+def _remove_daemon_state(expected_pid: int | None = None) -> None:
+    try:
+        if expected_pid is not None:
+            cur = read_daemon_state()
+            if cur and int(cur.get("pid") or 0) != expected_pid:
+                return
+        DAEMON_STATE_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+class OpsbDaemonRuntime:
+    """Shared runtime state injected into HTTP/SSE request handlers."""
+
+    def __init__(self, workspace: Path, ssh_host: str, port: int, token: str) -> None:
+        self.workspace = workspace.expanduser().resolve()
+        self.ssh_host = ssh_host
+        self.port = port
+        self.token = token
+        self.started_monotonic = time.monotonic()
+        self.started_at = utc_now().isoformat()
+
+        self._sub_cond = threading.Condition()
+        self._notify_seq = 0
+
+        self.state_cache = WorkspaceStateCache(
+            default_workspace=self.workspace,
+            on_cold_updated=self.notify_subscribers,
+        )
+        self.stream_mgr = NpuStreamManager(
+            host=self.ssh_host,
+            interval=1.0,
+            on_frame=self.notify_subscribers,
+            problems_provider=lambda: self.state_cache.get_problems_by_title(self.workspace),
+        )
+
+    def notify_subscribers(self) -> None:
+        with self._sub_cond:
+            self._notify_seq += 1
+            self._sub_cond.notify_all()
+
+    def wait_for_update(self, last_seq: int, timeout: float) -> int:
+        with self._sub_cond:
+            if self._notify_seq == last_seq:
+                self._sub_cond.wait(timeout=max(0.1, timeout))
+            return self._notify_seq
+
+    def current_seq(self) -> int:
+        with self._sub_cond:
+            return self._notify_seq
+
+    def uptime_sec(self) -> float:
+        return round(time.monotonic() - self.started_monotonic, 1)
+
+    def resolve_ws(self, ws_param: str | None) -> Path:
+        if ws_param:
+            return Path(ws_param).expanduser().resolve()
+        return self.workspace
+
+
+def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
+    class DaemonHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def _check_auth(self) -> bool:
+            provided = self.headers.get("X-Opsb-Token") or ""
+            if not provided or not hmac.compare_digest(provided, runtime.token):
+                self._send_json(401, {"ok": False, "error": "unauthorized"})
+                return False
+            return True
+
+        def _send_json(self, code: int, obj: Any, extra_headers: dict[str, str] | None = None) -> None:
+            raw = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            self._send_bytes(code, "application/json; charset=utf-8", raw, extra_headers=extra_headers)
+
+        def _send_bytes(
+            self,
+            code: int,
+            content_type: str,
+            raw: bytes,
+            extra_headers: dict[str, str] | None = None,
+        ) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(raw)))
+            self.send_header("Cache-Control", "no-store" if code != 304 else "no-cache")
+            if extra_headers:
+                for k, v in extra_headers.items():
+                    self.send_header(k, v)
+            self.end_headers()
+            if raw:
+                self.wfile.write(raw)
+
+        def _parse_query(self) -> tuple[str, dict[str, str]]:
+            parsed = urllib.parse.urlsplit(self.path)
+            qs = urllib.parse.parse_qs(parsed.query, keep_blank_values=False)
+            flat = {k: v[0] for k, v in qs.items() if v}
+            return parsed.path, flat
+
+        def do_GET(self) -> None:
+            if not self._check_auth():
+                return
+            path, q = self._parse_query()
+            ws = runtime.resolve_ws(q.get("workspace"))
+
+            if path == "/v1/health":
+                st = runtime.stream_mgr.stats()
+                cold_etag, cold_ms = runtime.state_cache.get_cold_meta(ws)
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "pid": os.getpid(),
+                        "port": runtime.port,
+                        "uptime_sec": runtime.uptime_sec(),
+                        "stream_connected": st["stream_connected"],
+                        "probe_backend": st["probe_backend"],
+                        "ssh_host": st["ssh_host"],
+                        "workspace": str(ws),
+                        "cold_etag": cold_etag,
+                        "dcmi_sample_ms": round(float(st["dcmi_sample_ms"]), 2),
+                        "cold_recompute_ms": cold_ms,
+                    },
+                )
+                return
+
+            if path == "/v1/hot":
+                host_q = q.get("host")
+                interval_q = float(q["interval"]) if q.get("interval") else None
+                if host_q or interval_q:
+                    runtime.stream_mgr.configure(host=host_q, interval=interval_q)
+                full_hist = q.get("full") in ("1", "true", "yes")
+                frame = runtime.state_cache.build_hot_frame(
+                    workspace=ws,
+                    npu_payload=runtime.stream_mgr.snapshot(compact_history=not full_hist, history_tail=5),
+                    stream_stats=runtime.stream_mgr.stats(),
+                    uptime_sec=runtime.uptime_sec(),
+                )
+                self._send_json(200, frame)
+                return
+
+            if path == "/v1/snapshot":
+                inm = self.headers.get("If-None-Match")
+                code, etag, raw_bytes = runtime.state_cache.get_snapshot(ws, if_none_match=inm)
+                if code == 304:
+                    self.send_response(304)
+                    self.send_header("ETag", f'"{etag}"')
+                    self.send_header("Cache-Control", "no-cache")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                else:
+                    self._send_bytes(
+                        200,
+                        "application/json; charset=utf-8",
+                        raw_bytes,
+                        extra_headers={"ETag": f'"{etag}"', "Cache-Control": "no-cache"},
+                    )
+                return
+
+            if path == "/v1/stream/hot":
+                host_q = q.get("host")
+                interval_s = float(q["interval"]) if q.get("interval") else 1.0
+                interval_s = max(0.5, min(10.0, interval_s))
+                runtime.stream_mgr.configure(host=host_q, interval=interval_s)
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+
+                first_frame = True
+                last_seq = runtime.current_seq()
+                try:
+                    while not stop_event.is_set():
+                        frame = runtime.state_cache.build_hot_frame(
+                            workspace=ws,
+                            npu_payload=runtime.stream_mgr.snapshot(compact_history=not first_frame),
+                            stream_stats=runtime.stream_mgr.stats(),
+                            uptime_sec=runtime.uptime_sec(),
+                        )
+                        first_frame = False
+                        line = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
+                        payload = f"event: hot\ndata: {line}\n\n".encode("utf-8")
+                        self.wfile.write(payload)
+                        self.wfile.flush()
+
+                        last_seq = runtime.wait_for_update(last_seq, timeout=interval_s)
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    return
+                return
+
+            self._send_json(404, {"ok": False, "error": f"not found: {path}"})
+
+        def do_POST(self) -> None:
+            if not self._check_auth():
+                return
+            path, q = self._parse_query()
+            length = int(self.headers.get("Content-Length") or "0")
+            body_obj: dict[str, Any] = {}
+            if length > 0:
+                try:
+                    body_obj = json.loads(self.rfile.read(min(length, 65536)).decode("utf-8"))
+                except Exception:
+                    body_obj = {}
+
+            ws = runtime.resolve_ws(body_obj.get("workspace") or q.get("workspace"))
+
+            if path == "/v1/invalidate":
+                etag = runtime.state_cache.invalidate(ws)
+                runtime.notify_subscribers()
+                self._send_json(200, {"ok": True, "cold_etag": etag, "workspace": str(ws)})
+                return
+
+            if path == "/v1/configure":
+                host = body_obj.get("host") or q.get("host")
+                interval = body_obj.get("interval") or q.get("interval")
+                runtime.stream_mgr.configure(
+                    host=str(host) if host else None,
+                    interval=float(interval) if interval is not None else None,
+                )
+                self._send_json(200, {"ok": True, **runtime.stream_mgr.stats()})
+                return
+
+            self._send_json(404, {"ok": False, "error": f"not found: {path}"})
+
+    return DaemonHandler
+
+
+def _bind_server(preferred_port: int, handler_cls: type[http.server.BaseHTTPRequestHandler]) -> tuple[_ThreadingHTTPServer, int]:
+    candidates = list(range(preferred_port, preferred_port + 20)) + [0]
+    last_exc: Exception | None = None
+    for port in candidates:
+        try:
+            srv = _ThreadingHTTPServer(("127.0.0.1", port), handler_cls)
+            return srv, int(srv.server_address[1])
+        except OSError as exc:
+            last_exc = exc
+            continue
+    raise RuntimeError(f"Failed to bind daemon socket on 127.0.0.1: {last_exc}")
+
+
+def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFAULT_PORT) -> int:
+    DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    token = secrets.token_urlsafe(32)
+    stop_event = threading.Event()
+    runtime = OpsbDaemonRuntime(workspace=workspace, ssh_host=ssh_host, port=preferred_port, token=token)
+    handler_cls = _make_handler(runtime, stop_event)
+    server, actual_port = _bind_server(preferred_port, handler_cls)
+    runtime.port = actual_port
+
+    # Warm cold cache before accepting traffic so the first snapshot & hot frame are ready immediately.
+    runtime.state_cache.warm(workspace)
+    runtime.stream_mgr.start()
+
+    state = {
+        "pid": os.getpid(),
+        "port": actual_port,
+        "token": token,
+        "started_at": runtime.started_at,
+        "workspace": str(runtime.workspace),
+        "ssh_host": ssh_host,
+        "version": 1,
+    }
+    _write_daemon_state(state)
+
+    def _on_sig(_sig: int, _frame: Any) -> None:
+        stop_event.set()
+        runtime.notify_subscribers()
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, _on_sig)
+    signal.signal(signal.SIGINT, _on_sig)
+
+    try:
+        server.serve_forever(poll_interval=0.5)
+    finally:
+        stop_event.set()
+        runtime.notify_subscribers()
+        runtime.stream_mgr.stop()
+        server.server_close()
+        _remove_daemon_state(expected_pid=os.getpid())
+    return 0
+
+
+def start_daemon(
+    *,
+    workspace: Path,
+    ssh_host: str,
+    port: int = DEFAULT_PORT,
+    background: bool = False,
+) -> dict[str, Any]:
+    DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with DAEMON_LOCK_PATH.open("a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            existing = read_daemon_state()
+            health = probe_daemon_health(existing, timeout=1.0)
+            if existing and health:
+                return {
+                    "ok": True,
+                    "already_running": True,
+                    "pid": int(existing["pid"]),
+                    "port": int(existing["port"]),
+                    "health": health,
+                }
+
+            if not background:
+                raise RuntimeError("foreground mode handled directly")
+
+            py_exe = resolve_python_exe(workspace)
+            cmd = [
+                py_exe,
+                str(CLI_DIR / "opsb"),
+                "daemon",
+                "start",
+                "--workspace",
+                str(workspace),
+                "--host",
+                ssh_host,
+                "--port",
+                str(port),
+            ]
+            child_env = {**os.environ, "OPSB_DAEMON_LOCKED_PARENT": "1"}
+            with DAEMON_LOG_PATH.open("a", encoding="utf-8") as log_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    env=child_env,
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    close_fds=True,
+                )
+
+            deadline = time.monotonic() + 6.0
+            while time.monotonic() < deadline:
+                st = read_daemon_state()
+                if st and int(st.get("pid") or 0) == proc.pid:
+                    hl = probe_daemon_health(st, timeout=0.8)
+                    if hl:
+                        return {
+                            "ok": True,
+                            "already_running": False,
+                            "pid": proc.pid,
+                            "port": int(st["port"]),
+                            "health": hl,
+                        }
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.08)
+
+            return {"ok": False, "error": f"Daemon failed to become healthy within 6s (see {DAEMON_LOG_PATH})"}
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
+
+
+def stop_daemon() -> dict[str, Any]:
+    st = read_daemon_state()
+    if not st:
+        return {"ok": True, "stopped": False, "reason": "not running"}
+    pid = int(st.get("pid") or 0)
+    if not _pid_alive(pid):
+        _remove_daemon_state()
+        return {"ok": True, "stopped": False, "reason": "stale state cleaned"}
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        return {"ok": False, "error": str(exc)}
+
+    deadline = time.monotonic() + 3.0
+    while time.monotonic() < deadline and _pid_alive(pid):
+        time.sleep(0.05)
+
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    _remove_daemon_state()
+    return {"ok": True, "stopped": True, "pid": pid}
+
+
+def get_daemon_status() -> dict[str, Any]:
+    st = read_daemon_state()
+    if not st:
+        return {"ok": True, "running": False, "state_path": str(DAEMON_STATE_PATH)}
+    health = probe_daemon_health(st, timeout=1.2)
+    if not health:
+        pid = int(st.get("pid") or 0)
+        alive = _pid_alive(pid)
+        return {
+            "ok": True,
+            "running": False,
+            "pid": pid,
+            "pid_alive": alive,
+            "state_path": str(DAEMON_STATE_PATH),
+        }
+    return {
+        "ok": True,
+        "running": True,
+        "pid": int(st["pid"]),
+        "port": int(st["port"]),
+        "started_at": st.get("started_at"),
+        "state_path": str(DAEMON_STATE_PATH),
+        "health": health,
+    }
+
+
+def run_daemon(args: argparse.Namespace) -> int:
+    cfg = ConfigRepository.load()
+    ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
+    host = getattr(args, "host", None) or cfg.get("npu_ssh_host", "npu")
+    port = int(getattr(args, "port", None) or DEFAULT_PORT)
+    as_json = bool(getattr(args, "json", False))
+
+    if args.daemon_cmd == "start":
+        if getattr(args, "background", False):
+            res = start_daemon(workspace=ws, ssh_host=host, port=port, background=True)
+            print(json.dumps(res, ensure_ascii=False) if as_json else (f"Daemon running (PID {res.get('pid')}, port {res.get('port')})" if res.get("ok") else res.get("error")))
+            return 0 if res.get("ok") else 1
+        # Check under lock unless parent `start_daemon(--background)` already holds `daemon.lock`.
+        if os.environ.get("OPSB_DAEMON_LOCKED_PARENT") != "1":
+            with DAEMON_LOCK_PATH.open("a") as lf:
+                DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+                fcntl.flock(lf, fcntl.LOCK_EX)
+                try:
+                    existing = read_daemon_state()
+                    health = probe_daemon_health(existing, timeout=1.0)
+                finally:
+                    fcntl.flock(lf, fcntl.LOCK_UN)
+                if existing and health:
+                    out = {"ok": True, "already_running": True, "pid": existing["pid"], "port": existing["port"], "health": health}
+                    print(json.dumps(out, ensure_ascii=False) if as_json else f"Daemon already running (PID {existing['pid']}, port {existing['port']})")
+                    return 0
+        return run_daemon_server(workspace=ws, ssh_host=host, preferred_port=port)
+
+    if args.daemon_cmd == "stop":
+        res = stop_daemon()
+        print(json.dumps(res, ensure_ascii=False) if as_json else f"Daemon stop: {res}")
+        return 0 if res.get("ok") else 1
+
+    if args.daemon_cmd == "status":
+        res = get_daemon_status()
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False))
+        elif res.get("running"):
+            hl = res.get("health") or {}
+            print(
+                f"Parhelion daemon RUNNING: PID {res['pid']} · 127.0.0.1:{res['port']} · "
+                f"stream={hl.get('stream_connected')} ({hl.get('probe_backend')}) · "
+                f"dcmi={hl.get('dcmi_sample_ms')}ms · etag={hl.get('cold_etag')}"
+            )
+        else:
+            print("Parhelion daemon STOPPED")
+        return 0
+    return 1

@@ -9,7 +9,7 @@ struct OpsRepository: Sendable {
             ["status", "--workspace", workspace, "--offline-npu", "--compact", "--json"],
             timeout: 8.0
         )
-        return try JSONDecoder().decode(SupervisorSnapshot.self, from: data)
+        return try await DaemonClient.decodeOffMain(SupervisorSnapshot.self, from: data)
     }
 
     func fetchNpuTelemetry(workspace: String, host: String) async throws -> NpuTelemetry {
@@ -17,12 +17,12 @@ struct OpsRepository: Sendable {
             ["npu", "status", "--workspace", workspace, "--host", host, "--json"],
             timeout: 10.0
         )
-        return try JSONDecoder().decode(NpuTelemetry.self, from: data)
+        return try await DaemonClient.decodeOffMain(NpuTelemetry.self, from: data)
     }
 
     func listWorkspaces() async throws -> WorkspaceListResponse {
         let data = try await client.execute(["workspace", "list", "--json"])
-        return try JSONDecoder().decode(WorkspaceListResponse.self, from: data)
+        return try await DaemonClient.decodeOffMain(WorkspaceListResponse.self, from: data)
     }
 
     func selectWorkspace(_ path: String) async throws {
@@ -78,7 +78,7 @@ struct OpsRepository: Sendable {
             ["breakthrough", "list", "--workspace", workspace, "--min-delta", String(format: "%.2f", minDelta), "--json"],
             timeout: 8.0
         )
-        return try JSONDecoder().decode(BreakthroughCatalogResponse.self, from: data)
+        return try await DaemonClient.decodeOffMain(BreakthroughCatalogResponse.self, from: data)
     }
 
     func syncBreakthroughPlaybook(workspace: String, minDelta: Double) async throws -> (Int, Int) {
@@ -148,12 +148,12 @@ struct OpsRepository: Sendable {
         var args = ["collab", "invite", username, "--workspace", workspace, "--permission", permission, "--json"]
         if dryRun { args.append("--dry-run") }
         let data = try await client.execute(args, timeout: 45.0, allowNonZeroExit: true)
-        return try JSONDecoder().decode(CollabInviteResponse.self, from: data)
+        return try await DaemonClient.decodeOffMain(CollabInviteResponse.self, from: data)
     }
 
     func listSSHHosts() async throws -> SSHHostListResponse {
         let data = try await client.execute(["ssh", "list"])
-        return try JSONDecoder().decode(SSHHostListResponse.self, from: data)
+        return try await DaemonClient.decodeOffMain(SSHHostListResponse.self, from: data)
     }
 
     func selectSSHHost(_ alias: String) async throws {
@@ -169,7 +169,7 @@ struct OpsRepository: Sendable {
 
     func testSSH(_ alias: String) async throws -> SSHTestResult {
         let data = try await client.execute(["npu", "test-ssh", "--host", alias, "--json"], timeout: 10.0, allowNonZeroExit: true)
-        return try JSONDecoder().decode(SSHTestResult.self, from: data)
+        return try await DaemonClient.decodeOffMain(SSHTestResult.self, from: data)
     }
 
     func deployNpuProbe(_ alias: String) async throws {
@@ -258,7 +258,7 @@ struct OpsRepository: Sendable {
         if let problem, !problem.isEmpty { args.insert(problem, at: 2) }
         do {
             let data = try await client.execute(args, timeout: 10.0, allowNonZeroExit: true)
-            return try JSONDecoder().decode(BackfillStatusReport.self, from: data)
+            return try await DaemonClient.decodeOffMain(BackfillStatusReport.self, from: data)
         } catch {
             return BackfillStatusReport.unavailable("cli_unavailable")
         }
