@@ -106,6 +106,8 @@ def compute_account_slots(
                 worker_pid = pid
             else:
                 inf_path.unlink(missing_ok=True)
+        used_today = len(today_sids_by_aid.get(aid, set()))
+        rem_today = max(0, daily_limit - used_today)
         slots.append(
             {
                 "id": aid,
@@ -117,8 +119,10 @@ def compute_account_slots(
                 "enabled": bool(a.get("enabled", True)),
                 "cooldown_ends_epoch": round(ends_ep, 2),
                 "cooldown_remaining_sec": rem,
-                "used_today": len(today_sids_by_aid.get(aid, set())),
+                "used_today": used_today,
                 "daily_limit": daily_limit,
+                "remaining_today": rem_today,
+                "quota_exhausted": rem_today <= 0,
                 "phase": phase,
                 "active_title": active_title,
                 "active_sha": active_sha,
@@ -126,6 +130,82 @@ def compute_account_slots(
             }
         )
     return slots
+
+
+def _slot_balance_key(slot: dict[str, Any]) -> tuple[int, int, str, str]:
+    """Load-balance key across N accounts:
+    1. Higher remaining daily quota first (-remaining_today)
+    2. Teammate accounts before primary when remaining quota ties (0 vs 1)
+    3. Lexicographical order among teammates (label, then id)
+    """
+    lim = int(slot.get("daily_limit") or 50)
+    used = int(slot.get("used_today") or 0)
+    rem = int(slot["remaining_today"]) if slot.get("remaining_today") is not None else max(0, lim - used)
+    aid = str(slot.get("id") or "")
+    is_primary = 1 if aid == "primary" else 0
+    label_key = str(slot.get("label") or aid).casefold()
+    return (-rem, is_primary, label_key, aid.casefold())
+
+
+def _is_slot_exhausted(slot: dict[str, Any]) -> bool:
+    if slot.get("quota_exhausted") is not None:
+        return bool(slot["quota_exhausted"])
+    lim = int(slot.get("daily_limit") or 50)
+    used = int(slot.get("used_today") or 0)
+    return used >= lim
+
+
+def select_best_account_slot(
+    slots: list[dict[str, Any]],
+    account_id: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Pick the best non-exhausted submitter slot using quota-balanced, teammate-first routing."""
+    eligible = [s for s in slots if s.get("enabled") and s.get("logged_in")]
+    if not eligible:
+        eligible = [s for s in slots if s.get("id") == "primary"]
+    if not eligible:
+        return None, "未找到已登录的提交账号，请在设置中登录"
+
+    if account_id:
+        exact = next((s for s in eligible if s.get("id") == account_id), None)
+        if exact is not None:
+            if _is_slot_exhausted(exact):
+                lim = int(exact.get("daily_limit") or 50)
+                used = int(exact.get("used_today") or lim)
+                return None, f"账号 {exact.get('label') or account_id} 今日额度已满 ({used}/{lim})，已自动跳过"
+            return exact, None
+
+    available = [s for s in eligible if not _is_slot_exhausted(s)]
+    if not available:
+        lim = int(eligible[0].get("daily_limit") or 50)
+        return None, f"所有已启用账号今日 {lim}/{lim} 额度均已用尽，已自动暂停提交"
+
+    # Tier 0: Idle & cooldown ready (0s wait) — strictly balanced by remaining quota, teammate-first, lex order
+    ready_idle = sorted(
+        [s for s in available if s.get("phase") == "idle" and int(s.get("cooldown_remaining_sec") or 0) == 0],
+        key=_slot_balance_key,
+    )
+    if ready_idle:
+        return ready_idle[0], None
+
+    # Tier 1: Idle & cooling — shortest cooldown first, tie-break by load-balance key
+    idle_any = sorted(
+        [s for s in available if s.get("phase") == "idle"],
+        key=lambda x: (int(x.get("cooldown_remaining_sec") or 0), *_slot_balance_key(x)),
+    )
+    if idle_any:
+        return idle_any[0], None
+
+    # Tier 2: Sleeping in waiting_cooldown (cleanly replaceable)
+    waiting = sorted(
+        [s for s in available if s.get("phase") == "waiting_cooldown"],
+        key=lambda x: (int(x.get("cooldown_remaining_sec") or 0), *_slot_balance_key(x)),
+    )
+    if waiting:
+        return waiting[0], None
+
+    # Tier 3: Fallback among non-exhausted slots
+    return sorted(available, key=_slot_balance_key)[0], None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -238,30 +318,13 @@ def spawn_jump_submit(
                 "error": f"{title} ({sha[:7]}) 已在远程判题中 (sid={sid[:8]})，禁止重复碰撞提交",
             }
 
-    eligible = [s for s in slots if s["enabled"] and s["logged_in"]]
-    if not eligible:
-        eligible = [s for s in slots if s["id"] == "primary"]
-
-    chosen: dict[str, Any] | None = None
-    if account_id:
-        chosen = next((s for s in eligible if s["id"] == account_id), None)
+    chosen, select_err = select_best_account_slot(slots, account_id=account_id)
     if chosen is None:
-        # 1. Idle & cooldown ready (0s wait)
-        ready_idle = [s for s in eligible if s["phase"] == "idle" and s["cooldown_remaining_sec"] == 0]
-        if ready_idle:
-            chosen = ready_idle[0]
-        else:
-            # 2. Idle with shortest remaining cooldown
-            idle_any = sorted([s for s in eligible if s["phase"] == "idle"], key=lambda x: x["cooldown_remaining_sec"])
-            if idle_any:
-                chosen = idle_any[0]
-            else:
-                # 3. Slot sleeping in waiting_cooldown (can cleanly replace reservation)
-                waiting = sorted([s for s in eligible if s["phase"] == "waiting_cooldown"], key=lambda x: x["cooldown_remaining_sec"])
-                if waiting:
-                    chosen = waiting[0]
-                else:
-                    chosen = eligible[0]
+        return {
+            "ok": False,
+            "quota_exhausted": True,
+            "error": select_err or "所有账号今日提交额度已满",
+        }
 
     aid = str(chosen["id"])
     inf_path = inflight_file_for(aid)
@@ -402,6 +465,12 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             return 2
 
         try:
+            # Final race-condition guard: verify THIS account still has Beijing-day quota (< 50)
+            fresh_slots = compute_account_slots(workspace)
+            my_slot = next((s for s in fresh_slots if s.get("id") == aid), None)
+            if my_slot is not None and _is_slot_exhausted(my_slot):
+                return 3
+
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging", aid, acc_label)
 
             # Reuse existing pending queue entry if present, otherwise append audit record

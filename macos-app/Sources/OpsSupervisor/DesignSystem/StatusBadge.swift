@@ -4,9 +4,17 @@ struct SemanticPill: View {
     let text: String
     var icon: String? = nil
     var compact: Bool = false
+    var customForeground: Color? = nil
+    var customBackground: Color? = nil
 
     private var palette: (fg: Color, bg: Color) {
+        if let fg = customForeground, let bg = customBackground {
+            return (fg, bg)
+        }
         let u = text.uppercased()
+        if u.contains("已满") || u.contains("EXHAUSTED") || u.contains(" · FULL") {
+            return (.white, Color(red: 0.78, green: 0.22, blue: 0.26))
+        }
         if u.contains("CRITICAL") || u.contains("ESCAPE") || u.contains("逃逸锁定") || u.contains("榜上0分") || u.contains("清零待恢复") {
             return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
         }
@@ -19,7 +27,7 @@ struct SemanticPill: View {
         if u.contains("突破") || u.contains("BREAKTHROUGH") {
             return (.white, Color(red: 0.88, green: 0.46, blue: 0.08))
         }
-        if u.contains("PASS ↑") || u == "PASS" || u == "通过" || u.contains("稳定在榜") || u.contains("STEADY") || u.contains("READY") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
+        if u.contains("PASS ↑") || u == "PASS" || u == "通过" || u.contains("稳定在榜") || u.contains("STEADY") || u.contains("READY") || u.contains("就绪") || u == "FREE" || u == "INVITED" || u == "OK" || u == "ACTIVE" || u.contains("IDLE") || u.contains("空闲") || u.contains("冷却已就绪") || u.contains("已登录") || u.contains("已授权") || u.contains("启用") || u.contains("已生效") {
             return (Color(red: 0.10, green: 0.72, blue: 0.43), Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14))
         }
         if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("可恢复") || u.contains("排队等卡") || u.contains("WAITING-DIE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") {

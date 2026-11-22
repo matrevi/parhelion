@@ -273,12 +273,17 @@ def compute_synchronized_pipeline(
     cooldown_rem = max(0, int(round(cooldown_ends_epoch - now_epoch)))
 
     eligible_slots = [s for s in account_slots if s.get("enabled") and s.get("logged_in")]
-    if len(eligible_slots) >= 2:
-        # Effective submitter cooldown = minimum cooldown across enabled logged-in accounts not uploading
-        avail_slots = [s for s in eligible_slots if s.get("phase") not in ("packaging", "uploading")] or eligible_slots
+    active_quota_slots = [s for s in eligible_slots if not s.get("quota_exhausted")]
+    if active_quota_slots:
+        # Effective submitter cooldown = minimum cooldown across enabled, logged-in, NON-EXHAUSTED accounts
+        avail_slots = [s for s in active_quota_slots if s.get("phase") not in ("packaging", "uploading")] or active_quota_slots
         best_slot = min(avail_slots, key=lambda x: int(x.get("cooldown_remaining_sec") or 0))
         cooldown_rem = int(best_slot.get("cooldown_remaining_sec") or 0)
         cooldown_ends_epoch = float(best_slot.get("cooldown_ends_epoch") or 0.0)
+    elif eligible_slots:
+        # Every enabled account has exhausted its 50/50 daily quota
+        cooldown_rem = 0
+        cooldown_ends_epoch = 0.0
 
     local_worker = _inspect_local_worker(queue_lock_held)
     active_submissions: list[dict[str, Any]] = []
@@ -358,15 +363,14 @@ def compute_synchronized_pipeline(
                     "started_epoch": now_epoch,
                 }
                 break
-    # If >= 2 teammate accounts are enabled and at least one OTHER account is idle & ready,
-    # the overall submit channel is NOT locally blocked by a sleeping/uploading primary slot!
+    # If at least one non-exhausted account is idle & ready, the submit channel is NOT locally blocked!
     has_other_idle_ready = any(
         s.get("phase") == "idle" and int(s.get("cooldown_remaining_sec") or 0) == 0
-        for s in eligible_slots
+        for s in active_quota_slots
     )
     local_busy = (
         False
-        if (len(eligible_slots) >= 2 and has_other_idle_ready)
+        if (len(active_quota_slots) >= 1 and len(eligible_slots) >= 2 and has_other_idle_ready)
         else (
             bool(local_worker is not None and local_worker.get("phase") in (
                 "waiting_cooldown", "packaging", "preparing", "uploading", "consumer_locked"
@@ -374,7 +378,8 @@ def compute_synchronized_pipeline(
             or bool(queue_lock_held and active_remote is None and finishing_score_sync is None)
         )
     )
-    can_submit = (not local_busy) and (cooldown_rem == 0)
+    all_exhausted = bool(eligible_slots) and not active_quota_slots
+    can_submit = (not all_exhausted) and (not local_busy) and (cooldown_rem == 0)
 
     public_slots = [
         {
@@ -386,6 +391,8 @@ def compute_synchronized_pipeline(
             "cooldown_ends_epoch": s["cooldown_ends_epoch"],
             "used_today": int(s.get("used_today") or 0),
             "daily_limit": int(s.get("daily_limit") or 50),
+            "remaining_today": int(s.get("remaining_today") if s.get("remaining_today") is not None else max(0, int(s.get("daily_limit") or 50) - int(s.get("used_today") or 0))),
+            "quota_exhausted": bool(s.get("quota_exhausted")),
             "phase": s["phase"],
             "active_title": s["active_title"],
         }

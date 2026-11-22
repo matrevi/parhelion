@@ -31,13 +31,44 @@ struct SchedulerBarView: View {
                         let sRem = clock.cooldownRemaining(endsAt: slot.cooldownEndsEpoch)
                         let used = slot.usedToday ?? scheduler.usedToday24h
                         let lim = slot.dailyLimit ?? scheduler.dailyQuotaLimit
-                        SemanticPill(
-                            text: sRem == 0
-                                ? "\(slot.label) · \(lang.tr("就绪", "Ready")) · \(used)/\(lim)"
-                                : "\(slot.label) · \(sRem)s · \(used)/\(lim)",
-                            icon: sRem == 0 ? "checkmark.bolt.fill" : "timer",
-                            compact: false
-                        )
+                        let exhausted = slot.isExhausted || used >= lim
+                        if exhausted {
+                            SemanticPill(
+                                text: "\(slot.label) · \(lang.tr("已满", "FULL")) · \(used)/\(lim)",
+                                icon: "xmark.octagon.fill",
+                                compact: false,
+                                customForeground: .white,
+                                customBackground: Color(red: 0.82, green: 0.24, blue: 0.28)
+                            )
+                            .help(lang.tr(
+                                "\(slot.label) 今日已交满 \(used)/\(lim)，提交负载均衡已自动跳过该账号",
+                                "\(slot.label) reached daily cap \(used)/\(lim); automatically skipped by load balancer"
+                            ))
+                        } else if sRem == 0 {
+                            SemanticPill(
+                                text: "\(slot.label) · \(lang.tr("就绪", "Ready")) · \(used)/\(lim)",
+                                icon: "checkmark.bolt.fill",
+                                compact: false,
+                                customForeground: Color(red: 0.10, green: 0.72, blue: 0.43),
+                                customBackground: Color(red: 0.10, green: 0.72, blue: 0.43).opacity(0.14)
+                            )
+                            .help(lang.tr(
+                                "\(slot.label) 冷却已就绪，剩余 \(max(0, lim - used)) 次（负载均衡优先使用余量多的账号）",
+                                "\(slot.label) ready, \(max(0, lim - used)) shots left (load-balanced by remaining quota)"
+                            ))
+                        } else {
+                            SemanticPill(
+                                text: "\(slot.label) · \(sRem)s · \(used)/\(lim)",
+                                icon: "timer",
+                                compact: false,
+                                customForeground: Color(red: 0.90, green: 0.56, blue: 0.10),
+                                customBackground: Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15)
+                            )
+                            .help(lang.tr(
+                                "\(slot.label) 冷却剩余 \(sRem)s，今日已用 \(used)/\(lim)",
+                                "\(slot.label) cooling down (\(sRem)s left), \(used)/\(lim) used today"
+                            ))
+                        }
                     }
                 }
             } else {

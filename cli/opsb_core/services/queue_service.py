@@ -84,7 +84,16 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     pipeline = compute_synchronized_pipeline(workspace, outcome_rows, queue_lock_held, gap_sec=gap_sec, first_pending=first_pend)
     cooldown_sec = int(pipeline["cooldown_remaining_sec"])
-    avail_shots = max(0, daily_limit - hist_idx["used_24h"] - closing_reserve)
+    active_slots = [s for s in (pipeline.get("account_slots") or []) if s.get("enabled") and s.get("logged_in")]
+    if active_slots:
+        team_daily_limit = sum(int(s.get("daily_limit") or daily_limit) for s in active_slots)
+        team_used_today = sum(int(s.get("used_today") or 0) for s in active_slots)
+        team_remaining = sum(max(0, int(s.get("daily_limit") or daily_limit) - int(s.get("used_today") or 0)) for s in active_slots)
+        avail_shots = max(0, team_remaining - closing_reserve)
+    else:
+        team_daily_limit = daily_limit
+        team_used_today = hist_idx["used_24h"]
+        avail_shots = max(0, daily_limit - hist_idx["used_24h"] - closing_reserve)
 
     def eval_gates(title: str, est_sc: float | None, is_restore_zero: bool, safety_ok: bool = True) -> dict[str, Any]:
         p_obj = prob_map.get(title, {})
@@ -386,8 +395,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "cooldown_ends_epoch": pipeline["cooldown_ends_epoch"],
             "rate_ready": cooldown_sec == 0,
             "last_submitted_at": hist_idx["last_submitted_dt"].isoformat() if hist_idx["last_submitted_dt"] else None,
-            "daily_quota_limit": daily_limit,
-            "used_today_24h": hist_idx["used_24h"],
+            "daily_quota_limit": team_daily_limit,
+            "used_today_24h": team_used_today,
             "closing_reserve": closing_reserve,
             "available_normal_shots": avail_shots,
             "noise_floor_delta": noise_floor,

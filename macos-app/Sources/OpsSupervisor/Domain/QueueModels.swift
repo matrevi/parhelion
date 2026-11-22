@@ -9,8 +9,17 @@ struct PipelineAccountSlot: Codable, Identifiable, Hashable {
     let cooldownEndsEpoch: Double
     let usedToday: Int?
     let dailyLimit: Int?
+    let remainingToday: Int?
+    let quotaExhausted: Bool?
     let phase: String
     let activeTitle: String?
+
+    var isExhausted: Bool {
+        if let quotaExhausted { return quotaExhausted }
+        let used = usedToday ?? 0
+        let lim = dailyLimit ?? 50
+        return used >= lim
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, label, enabled, phase
@@ -19,6 +28,8 @@ struct PipelineAccountSlot: Codable, Identifiable, Hashable {
         case cooldownEndsEpoch = "cooldown_ends_epoch"
         case usedToday = "used_today"
         case dailyLimit = "daily_limit"
+        case remainingToday = "remaining_today"
+        case quotaExhausted = "quota_exhausted"
         case activeTitle = "active_title"
     }
 }
