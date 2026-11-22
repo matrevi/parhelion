@@ -3,6 +3,9 @@ import SwiftUI
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        setenv("TZ", "Asia/Shanghai", 1)
+        tzset()
+        NSTimeZone.default = Formatters.shanghaiTimeZone
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -17,10 +20,17 @@ struct OpsSupervisorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var store = ContestStore()
 
+    init() {
+        setenv("TZ", "Asia/Shanghai", 1)
+        tzset()
+        NSTimeZone.default = Formatters.shanghaiTimeZone
+    }
+
     var body: some Scene {
         WindowGroup("Parhelion · Operator & NPU Supervisor") {
             AppRouterView()
                 .environmentObject(store)
+                .environment(\.timeZone, Formatters.shanghaiTimeZone)
                 .frame(minWidth: 1120, minHeight: 720)
         }
         .defaultSize(width: 1340, height: 840)

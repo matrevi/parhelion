@@ -190,6 +190,8 @@ struct NpuTaskItem: Codable, Identifiable {
     let die: Int?
     let state: String
     let stage: String
+    let lane: String?
+    let isBackfill: Bool?
     let problem: String?
     let sha: String?
     let shortSha: String?
@@ -202,8 +204,15 @@ struct NpuTaskItem: Codable, Identifiable {
     let detail: String
     let subprocesses: Int
 
+    var isBackfillTask: Bool {
+        if isBackfill == true { return true }
+        if lane?.uppercased() == "B0" { return true }
+        return stage.uppercased().hasPrefix("BACKFILL")
+    }
+
     enum CodingKeys: String, CodingKey {
-        case pid, die, state, stage, problem, sha, difficulty, boosted, detail, subprocesses
+        case pid, die, state, stage, lane, problem, sha, difficulty, boosted, detail, subprocesses
+        case isBackfill = "is_backfill"
         case shortSha = "short_sha"
         case wsptPriority = "wspt_priority"
         case wsptTag = "wspt_tag"

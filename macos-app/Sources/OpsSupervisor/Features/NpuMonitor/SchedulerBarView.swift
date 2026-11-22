@@ -1,6 +1,9 @@
+import AppKit
 import SwiftUI
 
 struct SchedulerBarView: View {
+    private static let judgeMeURL = URL(string: "https://123.249.115.173/me")!
+
     @EnvironmentObject var store: ContestStore
     let scheduler: SchedulerState
 
@@ -28,6 +31,16 @@ struct SchedulerBarView: View {
                 icon: cdRem == 0 ? "checkmark.bolt.fill" : "timer",
                 compact: false
             )
+
+            Button {
+                NSWorkspace.shared.open(Self.judgeMeURL)
+            } label: {
+                Label(lang.tr("浏览器查看", "Open Judge"), systemImage: "safari")
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help(lang.tr("在默认浏览器中打开判题记录 (https://123.249.115.173/me)", "Open judge submissions in default browser (https://123.249.115.173/me)"))
 
             Spacer()
 

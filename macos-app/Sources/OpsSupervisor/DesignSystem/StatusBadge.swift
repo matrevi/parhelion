@@ -10,6 +10,9 @@ struct SemanticPill: View {
         if u.contains("CRITICAL") || u.contains("ESCAPE") || u.contains("逃逸锁定") || u.contains("榜上0分") || u.contains("清零待恢复") {
             return (.white, Color(red: 0.84, green: 0.23, blue: 0.26))
         }
+        if u.contains("BACKFILL") || u.contains("样例桶") || u == "B0" {
+            return (Color(red: 0.78, green: 0.42, blue: 0.04), Color(red: 0.94, green: 0.62, blue: 0.14).opacity(0.18))
+        }
         if u.contains("CPU-BUILD") || u.contains("无锁编译") {
             return (Color(red: 0.12, green: 0.68, blue: 0.62), Color(red: 0.12, green: 0.68, blue: 0.62).opacity(0.15))
         }

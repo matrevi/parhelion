@@ -108,15 +108,35 @@ struct NpuServerQueueView: View {
     private func taskCard(_ task: NpuTaskItem) -> some View {
         let active = task.state == "ACTIVE"
         let isBuild = task.state == "CPU_BUILD"
-        let highlightCol: Color = active ? .accentColor : (isBuild ? .teal : .clear)
+        let isBackfill = task.isBackfillTask
+        let highlightCol: Color = isBackfill
+            ? .orange
+            : (active ? .accentColor : (isBuild ? .teal : .clear))
 
-        return SurfaceCard(highlighted: active || isBuild, highlightColor: highlightCol, padding: 10) {
+        return SurfaceCard(highlighted: active || isBuild || isBackfill, highlightColor: highlightCol, padding: 10) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 7) {
                     SemanticPill(
                         text: lang.npuStage(task.stage),
-                        icon: active ? "play.fill" : (isBuild ? "hammer.fill" : "clock")
+                        icon: isBackfill
+                            ? (active ? "waveform.path.ecg" : (isBuild ? "hammer.fill" : "clock.arrow.circlepath"))
+                            : (active ? "play.fill" : (isBuild ? "hammer.fill" : "clock"))
                     )
+                    if isBackfill {
+                        Text(lang.tr("B0 样例桶", "B0 Bucket"))
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(red: 0.78, green: 0.42, blue: 0.04))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(Color.orange.opacity(0.16))
+                            )
+                            .overlay(
+                                Capsule(style: .continuous)
+                                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.6)
+                            )
+                    }
                     Text(task.problem ?? lang.tr("排队验证任务", "Queued Worker"))
                         .font(.system(size: 13, weight: .bold))
                         .lineLimit(1)
@@ -124,7 +144,11 @@ struct NpuServerQueueView: View {
                         DifficultyBadge(difficulty: d)
                     }
                     Spacer()
-                    if let w = task.wsptPriority, w > 0 {
+                    if isBackfill {
+                        Text(lang.tr("低优让行 · B0", "Low Prio · B0"))
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(.orange)
+                    } else if let w = task.wsptPriority, w > 0 {
                         Text(String(format: lang.tr("优先级 %.1f", "WSPT %.1f"), w))
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.secondary)

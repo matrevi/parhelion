@@ -165,7 +165,12 @@ def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: st
 
 
 def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> int:
-    """Detached consumer holding `.submit-queue.lock` exclusively for one jump-queued submission."""
+    """Detached consumer: holds `.submit-queue.lock` ONLY for cooldown wait + local pack/upload.
+
+    Once the platform accepts the submission (receipt written with `submission_id`), the queue
+    lock and inflight marker are released immediately so subsequent submissions can fire as soon
+    as the 190s platform cooldown clears — even while this submission is still Running remotely.
+    """
     results_dir = workspace / "results"
     lock_path = results_dir / ".submit-queue.lock"
     queue_path = results_dir / "submit-queue.jsonl"
@@ -173,6 +178,11 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     started_iso = utc_now().isoformat()
+    record: dict[str, Any] | None = None
+    receipt: dict[str, Any] | None = None
+    early_out_rec: dict[str, Any] | None = None
+
+    # Phase 1 (locked): claim queue record, wait 190s rate-limit cooldown, pack & HTTP POST upload
     with lock_path.open("a") as lf:
         try:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -228,29 +238,67 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str) -> i
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading")
             receipt = _submit_via_worktree(workspace, title, sha)
             invalidate_ttl_cache("remote_judge")
+            invalidate_ttl_cache("scheduler_bridge")
             if receipt.get("existing"):
-                out_rec = {**record, "finished_at": utc_now().isoformat(), "status": "duplicate", "submission_id": receipt["submission_id"]}
-            else:
-                _write_inflight_phase(title, sha, workspace, started_iso, "judging")
-                sub_id = receipt["submission_id"]
-                status, score = _wait_and_fetch_score(workspace, title, sub_id)
-                out_rec = {
+                early_out_rec = {
                     **record,
                     "finished_at": utc_now().isoformat(),
-                    "status": status,
-                    "submission_id": sub_id,
-                    "score": score,
-                    "submitted_at": receipt.get("submitted_at") or utc_now().isoformat(),
+                    "status": "duplicate",
+                    "submission_id": receipt["submission_id"],
                 }
+                with outcome_path.open("a", encoding="utf-8") as of:
+                    of.write(json.dumps(early_out_rec, ensure_ascii=False) + "\n")
+                invalidate_ttl_cache("scheduler_bridge")
         except Exception as exc:
-            out_rec = {**record, "finished_at": utc_now().isoformat(), "status": "rejected", "detail": str(exc)[:400]}
+            base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
+            early_out_rec = {
+                **base_rec,
+                "finished_at": utc_now().isoformat(),
+                "status": "rejected",
+                "detail": str(exc)[:400],
+            }
+            with outcome_path.open("a", encoding="utf-8") as of:
+                of.write(json.dumps(early_out_rec, ensure_ascii=False) + "\n")
+            invalidate_ttl_cache("scheduler_bridge")
         finally:
+            # Release local inflight marker & queue lock BEFORE remote judging wait!
             INFLIGHT_FILE.unlink(missing_ok=True)
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
-        with outcome_path.open("a", encoding="utf-8") as of:
-            of.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
-        invalidate_ttl_cache("scheduler_bridge")
-        fcntl.flock(lf, fcntl.LOCK_UN)
+    if early_out_rec is not None or receipt is None or record is None:
+        return 0
+
+    # Phase 2 (lock-free): poll remote Judge to terminal status without blocking next submission
+    sub_id = receipt["submission_id"]
+    try:
+        status, score = _wait_and_fetch_score(workspace, title, sub_id)
+        out_rec = {
+            **record,
+            "finished_at": utc_now().isoformat(),
+            "status": status,
+            "submission_id": sub_id,
+            "score": score,
+            "submitted_at": receipt.get("submitted_at") or utc_now().isoformat(),
+        }
+    except Exception as exc:
+        out_rec = {
+            **record,
+            "finished_at": utc_now().isoformat(),
+            "status": "rejected",
+            "submission_id": sub_id,
+            "detail": f"poll error: {str(exc)[:360]}",
+        }
+
+    # Briefly lock only to append terminal outcome atomically
+    with lock_path.open("a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        try:
+            with outcome_path.open("a", encoding="utf-8") as of:
+                of.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
+            invalidate_ttl_cache("scheduler_bridge")
+            invalidate_ttl_cache("remote_judge")
+        finally:
+            fcntl.flock(lf, fcntl.LOCK_UN)
 
     # Closed-loop calibration + auto-archive into `breakthrough/` on terminal evaluation
     if out_rec.get("status") not in ("rejected", "skipped", "duplicate"):

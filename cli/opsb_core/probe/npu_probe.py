@@ -396,11 +396,15 @@ def get_descendants(root_pid: int, procs: dict[int, dict[str, Any]]) -> list[int
 
 
 def _is_driver_wrapper(cmd: str) -> bool:
-    """Return True if cmd is the inline `python3 -c` 3-Phase driver script from npu-test.py.
+    """Return True if cmd is an inline `python3 -c` driver script (npu-test.py or backfill.py).
     Scanning its literal source text would match `CONCATD_FAST`, `profiler_launches`, `device0.lock`, etc.
     """
     return "python3 -c" in cmd and (
-        "bench-repo-" in cmd or "PHASE A:" in cmd or "CONCATD_FAST" in cmd
+        "bench-repo-" in cmd
+        or "PHASE A:" in cmd
+        or "CONCATD_FAST" in cmd
+        or "BACKFILL_RESULT " in cmd
+        or ".opsb_backfill_build.json" in cmd
     )
 
 
@@ -576,10 +580,19 @@ def build_snapshot() -> dict[str, Any]:
                 and (int(die_session.get("pid") or 0) in tree or int(die_session.get("pid") or 0) == h_pid)
             )
             substage_hint = str(die_session.get("substage") or "") if sess_matches else None
+            sess_mode = str(die_session.get("mode") or "").upper() if sess_matches else ""
             if sess_matches:
                 prob = die_session.get("title") or prob
                 sha = die_session.get("sha") or sha
-            stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
+            is_backfill = (
+                sess_mode == "B0"
+                or substage_hint == "backfill_perf"
+                or any("/.backfill/" in procs.get(cpid, {}).get("cmd", "") for cpid in tree)
+            )
+            if is_backfill:
+                stage, detail = "BACKFILL", "Baseline perf-bucket backfill (B0)"
+            else:
+                stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
             # Measure ONLY actual Die 0 hold duration (from die_session.started_epoch), NEVER Phase A + queue wait!
             if sess_matches and float(die_session.get("started_epoch") or 0) > 0:
                 elapsed = int(max(0, round(now_epoch - float(die_session["started_epoch"]))))
@@ -610,6 +623,8 @@ def build_snapshot() -> dict[str, Any]:
                     "die": die_idx,
                     "state": "ACTIVE",
                     "stage": stage,
+                    "lane": "B0" if is_backfill else (sess_mode or "Q1"),
+                    "is_backfill": is_backfill,
                     "problem": prob,
                     "sha": sha,
                     "elapsed_sec": elapsed,
@@ -669,10 +684,22 @@ def build_snapshot() -> dict[str, Any]:
         if not prob:
             # Skip orphan wrapper pids without a ticket yet (e.g. mid-git-fetch before cpu_hb)
             continue
-        stage, detail = classify_stage(tree, procs, holds_die=False)
-        is_boosted = int(tk.get("tier") or 0) >= 50
-        if is_boosted:
-            detail = "Priority boosted by OpsSupervisor"
+        is_backfill = (
+            str(tk.get("lane") or "").upper() == "B0"
+            or str(tk.get("kind") or "").upper() == "BACKFILL"
+            or ("tier" in tk and int(tk.get("tier") or 0) == 0)
+            or any("/.backfill/" in procs.get(cpid, {}).get("cmd", "") for cpid in tree)
+        )
+        if is_backfill:
+            stage, detail = "BACKFILL-WAIT", "Waiting idle Die 0 for perf-bucket backfill (B0 · tier 0)"
+            is_boosted = False
+            lane_str = "B0"
+        else:
+            stage, detail = classify_stage(tree, procs, holds_die=False)
+            is_boosted = int(tk.get("tier") or 0) >= 50
+            if is_boosted:
+                detail = "Priority boosted by OpsSupervisor"
+            lane_str = "Q0" if tk.get("fast") else "Q1"
         tk_created = float(tk.get("created") or 0)
         wait_elapsed = int(max(0, round(now_epoch - tk_created))) if tk_created > 0 else procs[w_pid]["elapsed_sec"]
         wt_item = {
@@ -680,6 +707,8 @@ def build_snapshot() -> dict[str, Any]:
             "die": None,
             "state": "WAITING",
             "stage": stage,
+            "lane": lane_str,
+            "is_backfill": is_backfill,
             "problem": prob,
             "sha": sha,
             "elapsed_sec": wait_elapsed,
@@ -698,11 +727,20 @@ def build_snapshot() -> dict[str, Any]:
         b_sha = str(bd.get("sha") or "")
         st_ep = float(bd.get("started_epoch") or 0)
         el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
-        b_key = f"{b_title}:{b_sha[:7]}"
+        b_is_bf = str(bd.get("lane") or "").upper() == "B0" or str(bd.get("kind") or "").upper() == "BACKFILL"
+        b_key = f"{b_title}:{b_sha[:7]}:{'B0' if b_is_bf else 'OP'}"
         if b_key not in seen_build_keys:
             seen_build_keys.add(b_key)
             parallel_cpu_builds.append(
-                {"pid": b_pid, "title": b_title, "sha": b_sha, "short_sha": b_sha[:7] or "—", "elapsed_sec": max(0, el_s)}
+                {
+                    "pid": b_pid,
+                    "title": b_title,
+                    "sha": b_sha,
+                    "short_sha": b_sha[:7] or "—",
+                    "elapsed_sec": max(0, el_s),
+                    "lane": "B0" if b_is_bf else "Q1",
+                    "is_backfill": b_is_bf,
+                }
             )
 
     for pid, p in procs.items():
@@ -711,25 +749,47 @@ def build_snapshot() -> dict[str, Any]:
         cmd_l = p["cmd"].lower()
         if any(k in cmd_l for k in ("build.sh", "/ccec", "compiler")) and "grep" not in cmd_l:
             prob, sha = infer_problem_and_sha([pid], procs)
+            b_is_bf = "/.backfill/" in p["cmd"]
+            if not b_is_bf:
+                try:
+                    if "/.backfill/" in os.readlink(f"/proc/{pid}/cwd"):
+                        b_is_bf = True
+                except Exception:
+                    pass
             if prob:
-                b_key = f"{prob}:{(sha or '')[:7]}"
+                b_key = f"{prob}:{(sha or '')[:7]}:{'B0' if b_is_bf else 'OP'}"
                 if b_key not in seen_build_keys:
                     seen_build_keys.add(b_key)
                     parallel_cpu_builds.append(
-                        {"pid": pid, "title": prob, "sha": sha or "", "short_sha": (sha or "")[:7] or "—", "elapsed_sec": p["elapsed_sec"]}
+                        {
+                            "pid": pid,
+                            "title": prob,
+                            "sha": sha or "",
+                            "short_sha": (sha or "")[:7] or "—",
+                            "elapsed_sec": p["elapsed_sec"],
+                            "lane": "B0" if b_is_bf else "Q1",
+                            "is_backfill": b_is_bf,
+                        }
                     )
 
     for cb in parallel_cpu_builds:
+        cb_bf = bool(cb.get("is_backfill"))
         tasks.append(
             {
                 "pid": cb["pid"],
                 "die": None,
                 "state": "CPU_BUILD",
-                "stage": "CPU-BUILD",
+                "stage": "BACKFILL-BUILD" if cb_bf else "CPU-BUILD",
+                "lane": "B0" if cb_bf else "Q1",
+                "is_backfill": cb_bf,
                 "problem": cb["title"],
                 "sha": cb["sha"] or None,
                 "elapsed_sec": cb["elapsed_sec"],
-                "detail": "Phase A lock-free 32-core CPU build (0s NPU lock)",
+                "detail": (
+                    "Phase A baseline worktree build for perf-bucket backfill (B0)"
+                    if cb_bf
+                    else "Phase A lock-free 32-core CPU build (0s NPU lock)"
+                ),
                 "subprocesses": 4,
             }
         )

@@ -83,7 +83,7 @@ struct CandidateSubmissionCardView: View {
 
     private var lang: AppLanguage { store.lang }
     private var pipeline: LivePipelineState? { store.snapshot?.scheduler.pipeline }
-    private var isBusySubmitting: Bool { (pipeline?.isBusy ?? false) || store.isLaunchingSubmit }
+    private var isLocalUploading: Bool { (pipeline?.isLocalBusy ?? false) || store.isLaunchingSubmit }
 
     var body: some View {
         let isCrit = item.badge == "CRITICAL RESTORE"
@@ -165,8 +165,8 @@ struct CandidateSubmissionCardView: View {
                     Button {
                         Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note) }
                     } label: {
-                        if isBusySubmitting {
-                            Label(lang.tr("上一发提交中，请等待", "Submitting, please wait"), systemImage: "hourglass")
+                        if isLocalUploading {
+                            Label(lang.tr("打包上传中，请稍候", "Uploading, please wait"), systemImage: "hourglass")
                                 .font(.system(size: 11.5, weight: .semibold))
                         } else if rankIndex == 1 {
                             Label(
@@ -177,14 +177,19 @@ struct CandidateSubmissionCardView: View {
                             )
                             .font(.system(size: 11.5, weight: .semibold))
                         } else {
-                            Label(lang.tr("插队提交", "Jump Queue"), systemImage: "bolt.fill")
-                                .font(.system(size: 11.5, weight: .semibold))
+                            Label(
+                                cdRem > 0
+                                    ? lang.tr("插队预约 (\(cdRem)s)", "Jump (\(cdRem)s)")
+                                    : lang.tr("插队提交", "Jump Queue"),
+                                systemImage: "bolt.fill"
+                            )
+                            .font(.system(size: 11.5, weight: .semibold))
                         }
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(isCrit ? .red : .accentColor)
                     .controlSize(.small)
-                    .disabled(isBusySubmitting)
+                    .disabled(isLocalUploading)
                 }
             }
         }
@@ -213,7 +218,7 @@ struct CompletedSubmissionCardView: View {
     let onInspectExperience: (BreakthroughEntry) -> Void
 
     private var lang: AppLanguage { store.lang }
-    private var isBusySubmitting: Bool { (store.snapshot?.scheduler.pipeline?.isBusy ?? false) || store.isLaunchingSubmit }
+    private var isLocalUploading: Bool { (store.snapshot?.scheduler.pipeline?.isLocalBusy ?? false) || store.isLaunchingSubmit }
 
     var body: some View {
         let beforeScore = item.priorScore ?? 0.0
@@ -295,14 +300,14 @@ struct CompletedSubmissionCardView: View {
                                 )
                             }
                         } label: {
-                            Text(isBusySubmitting
-                                 ? lang.tr("请等待…", "Wait…")
+                            Text(isLocalUploading
+                                 ? lang.tr("上传中…", "Uploading…")
                                  : lang.tr("重新提交此版", "Resubmit"))
                                 .font(.system(size: 11))
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
-                        .disabled(isBusySubmitting)
+                        .disabled(isLocalUploading)
                     }
                 }
             }

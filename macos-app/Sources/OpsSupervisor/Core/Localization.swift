@@ -25,8 +25,18 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
     }
 
     func npuStage(_ raw: String) -> String {
-        guard self == .zh else { return raw }
+        guard self == .zh else {
+            switch raw.uppercased() {
+            case "BACKFILL": return "Bucket Backfill"
+            case "BACKFILL-BUILD": return "Backfill Build"
+            case "BACKFILL-WAIT": return "Backfill Wait"
+            default: return raw
+            }
+        }
         switch raw.uppercased() {
+        case "BACKFILL": return "样例桶补测"
+        case "BACKFILL-BUILD": return "样例桶编译"
+        case "BACKFILL-WAIT": return "样例桶候票"
         case "WAITING-DIE": return "排队等卡"
         case "CPU-BUILD": return "无锁编译"
         case "PRECISION": return "精度验证"
@@ -40,6 +50,15 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
 
     func npuDetail(_ raw: String) -> String {
         guard self == .zh else { return raw }
+        if raw.contains("Baseline perf-bucket backfill") {
+            return "B0 自动基线配对 · 样例桶性能补测"
+        }
+        if raw.contains("Phase A baseline worktree build for perf-bucket backfill") {
+            return "B0 样例桶基线无锁编译 (0s 占卡 · 独立 worktree)"
+        }
+        if raw.contains("Waiting idle Die 0 for perf-bucket backfill") {
+            return "B0 样例桶低优候卡 (让行所有算子验证任务)"
+        }
         if raw.contains("Phase A lock-free") {
             return "Phase A 32核无锁并行编译 (0s 占卡)"
         }

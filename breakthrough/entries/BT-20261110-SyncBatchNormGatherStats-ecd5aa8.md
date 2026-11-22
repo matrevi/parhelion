@@ -3,21 +3,21 @@ id: BT-20261110-SyncBatchNormGatherStats-ecd5aa8
 problem: SyncBatchNormGatherStats
 difficulty: 2
 sha: ecd5aa84543125e0c9a8f1cfd458631ffe467f86
-baseline_sha: f8c6803
+baseline_sha: 8caa859
 timestamp: "2026-11-10T00:25:00Z"
-score_before: 6.69
+score_before: 33.61
 score_after: 55.10
-delta_raw: 48.41
-delta_weighted: 96.82
+delta_raw: 21.49
+delta_weighted: 42.98
 status: verified
 category: vectorization
-tags: [workspace-1KB, Dekker-TwoSum, error-compensation, PipeBarrier, TQue-depth4, DMA-overlap, dispatch-floor]
-title: "1KB Workspace Floor Removal + Vectorized Dekker/TwoSum Variance + Depth-4 TQue + 32KB/Block Core Sizing"
+tags: [Dekker-TwoSum, error-compensation, PipeBarrier, TQue-depth4, DMA-overlap, workspace-1KB, dispatch-floor]
+title: "Vectorized Dekker/TwoSum Variance + Depth-4 TQue DMA Overlap"
 ---
 
-# SyncBatchNormGatherStats · `+48.41` pts (`6.69 -> 55.10`, extended to `57.45` via `544439e`)
+# SyncBatchNormGatherStats · `+21.49` pts (`33.61 -> 55.10`, extended to `57.45` via `544439e`)
 
-> **Code Provenance**: `8caa859` lowered workspace `16 MB -> 1024 B` (`6.69 -> 33.61`, `+26.92`); `ecd5aa8` (`d59b513` + `f1c95c4` + `ecd5aa8`) vectorized Dekker/TwoSum variance and raised `TQue` depth `1 -> 4` (**`33.61 -> 55.10`**, `+48.41` total, sub `1244679`, rank 36). Follow-up **`544439e`** (`20d0000` + `84a80bc` + `66f9548`) tuned `SetBlockDim` to `clamp(ceil(C/1024), 4, AIV)` and 32B `DataCopy`, lifting online peak to **`57.45`** (`+2.35`, sub `6af2a1b96bd0f9be37f03bcf`, rank 33).
+> **Code Provenance**: Prerequisite `8caa859` lowered template workspace `16 MB -> 1024 B` (`6.69 -> 33.61`); **`ecd5aa8`** (`d59b513` + `f1c95c4` + `ecd5aa8`) vectorized Dekker/TwoSum variance and raised `TQue` depth `1 -> 4` (**`33.61 -> 55.10`**, **`+21.49` raw / `+42.98` weighted**, sub `1244679`, rank 36). Follow-up **`544439e`** (`20d0000` + `84a80bc` + `66f9548`) tuned `SetBlockDim` to `clamp(ceil(C/1024), 4, AIV)` and 32B `DataCopy`, lifting online peak to **`57.45`** (`+2.35`, sub `6af2a1b96bd0f9be37f03bcf`, rank 33).
 
 ## 1. Context & Bottleneck
 1. **16 MB workspace platform overhead (`f8c6803 -> 8caa859`)**: 99% of online time (`650–1798 us` vs `4–30 us` local kernel) was per-call platform overhead proportional to the template default `GetWorkspaceSizes(1)[0] = 16 MB`, even though the kernel never dereferenced workspace and used zero KFC high-level APIs.

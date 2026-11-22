@@ -681,12 +681,28 @@ if cache_valid:
     res.update(built=False, build_cached=True, build_sec=round(float(m.get('build_sec') or 0.0), 1))
 else:
     b_t0 = time.time()
+    cpu_hb_dir = opsb_home / 'cpu_builds'
+    cpu_hb_dir.mkdir(parents=True, exist_ok=True)
+    cpu_hb = cpu_hb_dir / ('%d.json' % os.getpid())
+    try:
+        cpu_hb.write_text(json.dumps({
+            'pid': os.getpid(), 'title': title, 'sha': sha,
+            'lane': 'B0', 'kind': 'BACKFILL', 'started_epoch': round(b_t0, 3),
+        }))
+    except Exception:
+        pass
     build_cmd = (
         'set -o pipefail; source %s >/dev/null 2>&1; '
         'sed "s/COMPUTE_UNIT=\\"soc-a\\"/COMPUTE_UNIT=\\"%s\\"/" build.sh | bash -s -- -j4'
         % (set_env, target)
     )
-    rc, out, err = sh(['bash', '-c', build_cmd], cwd=str(wt), timeout=build_timeout)
+    try:
+        rc, out, err = sh(['bash', '-c', build_cmd], cwd=str(wt), timeout=build_timeout)
+    finally:
+        try:
+            cpu_hb.unlink(missing_ok=True)
+        except Exception:
+            pass
     b_sec = round(time.time() - b_t0, 1)
     res.update(built=True, build_sec=b_sec, build_rc=rc)
     try:

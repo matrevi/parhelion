@@ -240,11 +240,45 @@ def compute_synchronized_pipeline(
     cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
     cooldown_rem = max(0, int(round(cooldown_ends_epoch - now_epoch)))
     local_worker = _inspect_local_worker(queue_lock_held)
+    local_busy = bool(local_worker is not None and local_worker.get("phase") in (
+        "waiting_cooldown", "packaging", "preparing", "uploading", "consumer_locked"
+    )) or bool(queue_lock_held and active_remote is None and finishing_score_sync is None)
+    can_submit = (not local_busy) and (cooldown_rem == 0)
 
-    # Priority A: Active non-terminal submission on Remote Judge
+    # Priority A: Local uploader actively waiting cooldown / packaging / uploading a new submission
+    if local_worker is not None and local_worker.get("phase") in (
+        "waiting_cooldown", "packaging", "preparing", "uploading"
+    ):
+        w_title = local_worker.get("title") or (first_pending[0] if first_pending else None)
+        w_sha = local_worker.get("sha") or (first_pending[1] if first_pending else "")
+        raw_p = local_worker["phase"]
+        mapped_phase = "packaging" if raw_p == "preparing" else raw_p
+        st_ep = float(local_worker["started_epoch"])
+        return {
+            "is_busy": True,
+            "local_busy": True,
+            "can_submit": False,
+            "phase": mapped_phase,
+            "active_title": w_title,
+            "active_sha": w_sha,
+            "active_short_sha": w_sha[:7] if w_sha else "",
+            "remote_submission_id": None,
+            "remote_judge_id": None,
+            "remote_status": None,
+            "judge_started_epoch": round(st_ep, 2),
+            "judge_elapsed_sec": max(0, int(now_epoch - st_ep)),
+            "cooldown_ends_epoch": round(cooldown_ends_epoch, 2),
+            "cooldown_remaining_sec": cooldown_rem,
+            "rate_limit_gap_sec": gap_sec,
+            "server_clock_offset_sec": server_offset_sec,
+        }
+
+    # Priority B: Active non-terminal submission on Remote Judge (does NOT block next submit once cooldown clears!)
     if active_remote is not None:
         return {
             "is_busy": True,
+            "local_busy": local_busy,
+            "can_submit": can_submit,
             "phase": active_remote["phase"],
             "active_title": active_remote["title"],
             "active_sha": active_remote["sha"],
@@ -260,10 +294,12 @@ def compute_synchronized_pipeline(
             "server_clock_offset_sec": server_offset_sec,
         }
 
-    # Priority B: Remote judge finished, local consumer fetching ranking score before writing outcome
+    # Priority C: Remote judge finished, local consumer fetching ranking score before writing outcome
     if finishing_score_sync is not None:
         return {
             "is_busy": True,
+            "local_busy": local_busy,
+            "can_submit": can_submit,
             "phase": "fetching_score",
             "active_title": finishing_score_sync["title"],
             "active_sha": finishing_score_sync["sha"],
@@ -279,20 +315,20 @@ def compute_synchronized_pipeline(
             "server_clock_offset_sec": server_offset_sec,
         }
 
-    # Priority C: Local submitter holds lock (waiting cooldown, packaging worktree, or uploading HTTP POST)
+    # Priority D: Fallback local lock holder (e.g. legacy external consumer)
     if local_worker is not None:
         w_title = local_worker.get("title") or (first_pending[0] if first_pending else None)
         w_sha = local_worker.get("sha") or (first_pending[1] if first_pending else "")
         raw_p = local_worker["phase"]
         if raw_p == "consumer_locked":
             mapped_phase = "waiting_cooldown" if cooldown_rem > 0 else "packaging"
-        elif raw_p in ("waiting_cooldown", "packaging", "preparing", "uploading"):
-            mapped_phase = "packaging" if raw_p == "preparing" else raw_p
         else:
             mapped_phase = "packaging"
         st_ep = float(local_worker["started_epoch"])
         return {
             "is_busy": True,
+            "local_busy": True,
+            "can_submit": False,
             "phase": mapped_phase,
             "active_title": w_title,
             "active_sha": w_sha,
@@ -310,6 +346,8 @@ def compute_synchronized_pipeline(
 
     return {
         "is_busy": False,
+        "local_busy": False,
+        "can_submit": (cooldown_rem == 0),
         "phase": "idle",
         "active_title": None,
         "active_sha": None,

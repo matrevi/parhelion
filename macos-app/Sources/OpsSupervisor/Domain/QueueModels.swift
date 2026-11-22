@@ -2,6 +2,8 @@ import Foundation
 
 struct LivePipelineState: Codable {
     let isBusy: Bool
+    let localBusy: Bool?
+    let canSubmit: Bool?
     let phase: String
     let activeTitle: String?
     let activeSha: String?
@@ -16,9 +18,19 @@ struct LivePipelineState: Codable {
     let rateLimitGapSec: Int
     let serverClockOffsetSec: Double
 
+    /// True ONLY while a local worker is actively packaging, uploading, or waiting cooldown.
+    /// Remote judging (`remote_queued`/`remote_compiling`/`remote_running`) does NOT block
+    /// submitting the next problem once the 190s platform cooldown has elapsed.
+    var isLocalBusy: Bool {
+        if let localBusy { return localBusy }
+        return phase == "waiting_cooldown" || phase == "packaging" || phase == "uploading"
+    }
+
     enum CodingKeys: String, CodingKey {
         case phase
         case isBusy = "is_busy"
+        case localBusy = "local_busy"
+        case canSubmit = "can_submit"
         case activeTitle = "active_title"
         case activeSha = "active_sha"
         case activeShortSha = "active_short_sha"

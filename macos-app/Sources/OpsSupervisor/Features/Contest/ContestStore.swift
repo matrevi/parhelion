@@ -83,8 +83,10 @@ final class ContestStore: ObservableObject {
     }
 
     private func maybeAutoConsumeTopCandidate(_ snap: SupervisorSnapshot) async {
+        let cdRem = snap.scheduler.pipeline?.cooldownRemainingSec ?? snap.scheduler.cooldownRemainingSec
         guard snap.scheduler.autoConsumerEnabled,
-              !(snap.scheduler.pipeline?.isBusy ?? false),
+              !(snap.scheduler.pipeline?.isLocalBusy ?? false),
+              cdRem == 0,
               !isLaunchingSubmit else { return }
 
         guard let top = snap.submissionQueue.first(where: { item in
