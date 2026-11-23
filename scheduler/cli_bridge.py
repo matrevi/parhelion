@@ -1037,13 +1037,13 @@ class SchedulerEngine:
             "problems": out[title] if title else out,
         }
 
-    def diagnose(self, title: str | None = None) -> dict[str, Any]:
+    def diagnose(self, title: str | None = None, sha: str | None = None) -> dict[str, Any]:
         """Return residual diagnostics, bucket correlations, blind spots, and ROI ranking for 1 or all 10 ops."""
         self.refresh_models()
         if title:
             if title not in self.estimator.problems_meta:
                 raise ValueError(f"Unknown problem title: {title}")
-            return self.calibrator.diagnose_problem(title)
+            return self.calibrator.diagnose_problem(title, sha=sha)
         problems_out: dict[str, Any] = {}
         for t in sorted(self.estimator.problems_meta):
             problems_out[t] = self.calibrator.diagnose_problem(t)
@@ -1446,6 +1446,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tst.add_argument("--sha", default=None, help="Commit SHA (defaults to repo HEAD)")
     p_tst.add_argument("--fast", action="store_true", help="Route through Q0 fast-lane")
     p_tst.add_argument("--build-only", action="store_true", help="Run Phase A 32-core CPU compile only (0.0s NPU lock)")
+    p_tst.add_argument("--pmu", action="store_true", help="Enable L1 PipeUtilization AI-Core PMU counters")
     p_tst.add_argument("--dry-run", action="store_true", help="Output 3-phase execution plan without running")
 
     p_cal = sub.add_parser("calibrate", parents=[common], help="Fit Simplex MAP calibration & write calibration.json")
@@ -1469,6 +1470,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_dia = sub.add_parser("diagnose", parents=[common], help="Inspect residual diagnostics, bucket correlations, and blind spots")
     p_dia.add_argument("--title", default=None, help="Optional operator problem title (defaults to all 10)")
+    p_dia.add_argument("--sha", default=None, help="Optional commit SHA for commit-scoped local artifact diagnostics")
 
     p_evo = sub.add_parser("evolve", parents=[common], help="Append-only bench evolution from online residual feedback")
     p_evo.add_argument("--title", default=None, help="Optional operator problem title (defaults to all 10)")
@@ -1544,6 +1546,7 @@ def main(argv: list[str] | None = None) -> int:
                 sha=args.sha,
                 fast=args.fast,
                 build_only=args.build_only,
+                pmu=getattr(args, "pmu", False),
                 dry_run=args.dry_run,
                 stream_stdout=not args.dry_run,
             )
@@ -1569,7 +1572,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "bench-status":
             payload = engine.bench_status(title=args.title)
         elif args.command == "diagnose":
-            payload = engine.diagnose(title=args.title)
+            payload = engine.diagnose(title=args.title, sha=getattr(args, "sha", None))
         elif args.command == "evolve":
             payload = engine.evolve(
                 title=args.title,

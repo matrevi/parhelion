@@ -7,7 +7,14 @@
 //    struct onto AI-Core stack) with direct const __gm__ dereference of hot fields in
 //    the first 64B cacheline.
 // 2. Host side trims payload via c->GetRawTilingData()->SetDataSize(actualBytes) (64B for
-//    compact regimes) and sets GetWorkspaceSizes(1)[0] = 1024 (avoiding default 16 MB penalty!).
+//    compact regimes).
+//    WORKSPACE SAFETY GUARD (`ACL 507035` warning):
+//    - Setting `GetWorkspaceSizes(1)[0] = 1024` (1 KB) is ONLY valid when the kernel
+//      NEVER reads or writes `workspace` GM!
+//    - If the kernel calls `GetUserWorkspace(workspace)` or writes any temporary buffer
+//      to `workspace`, allocate `RESERVED_WORKSPACE (16 MB = 16*1024*1024) + user_bytes`
+//      (or `GetLibApiWorkSpaceSize() + userBytes`); using 1024 causes GM out-of-bounds
+//      access and `ACL 507035` runtime errors.
 
 #include <cstdint>
 
@@ -59,8 +66,12 @@ __aicore__ inline void SplitAlignedRange(int64_t totalUnits, int64_t blkIdx, int
 #endif
 
 // Host-side helper pattern (use inside op_host DoTiling):
+//   constexpr size_t kAccelReservedWorkspaceBytes = 16ULL * 1024ULL * 1024ULL;
 //   size_t actualBytes = useCompact ? 64u : ((usedBytes + 63u) & ~63u);
 //   c->GetRawTilingData()->SetDataSize(actualBytes);
-//   c->GetWorkspaceSizes(1)[0] = 1024;  // Never leave default 16 MB GetLibApiWorkSpaceSize()!
+//   // SAFE ONLY if kernel NEVER reads/writes `workspace` GM:
+//   c->GetWorkspaceSizes(1)[0] = (userWorkspaceBytes == 0)
+//       ? 1024U
+//       : (kAccelReservedWorkspaceBytes + userWorkspaceBytes);  // Never 1024 with GetUserWorkspace()!
 
 }  // namespace ParhelionSnippets

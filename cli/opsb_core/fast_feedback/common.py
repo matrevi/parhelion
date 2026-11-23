@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -165,6 +166,25 @@ def _resolve_problem_info(workspace: Path, title: str) -> tuple[str, Path]:
     return title, cand_repo
 
 
+def _repo_git_head(repo_dir: Path) -> str | None:
+    if not (repo_dir / ".git").exists():
+        return None
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+        if proc.returncode == 0:
+            head = proc.stdout.strip()
+            if head:
+                return head
+    except Exception:
+        pass
+    return None
+
+
 def _load_run_artifacts(
     workspace: Path,
     title: str,
@@ -180,6 +200,7 @@ def _load_run_artifacts(
         "title": canonical_title,
         "repo_dir": repo_dir,
         "sha": sha or "",
+        "sha_source": "none",
         "run_dir": None,
         "result_json": {},
         "log_text": "",
@@ -227,6 +248,7 @@ def _load_run_artifacts(
         }
 
     chosen: dict[str, Any] | None = None
+    sha_source = "none"
     if sha:
         target_low = sha.strip().lower()
         exact = res_dir / sha.strip()
@@ -239,9 +261,19 @@ def _load_run_artifacts(
                     if cand is not None:
                         chosen = cand
                         break
+        if chosen is not None:
+            sha_source = "explicit"
     else:
         candidates = [info for d in res_dir.iterdir() if d.is_dir() and (info := _inspect_dir(d)) is not None]
-        if candidates:
+        head_sha = _repo_git_head(repo_dir)
+        if head_sha and (res_dir / head_sha).is_dir():
+            head_cand = _inspect_dir(res_dir / head_sha)
+            if head_cand is not None and (
+                not require_passing or head_cand["passed"] or not any(c["passed"] for c in candidates)
+            ):
+                chosen = head_cand
+                sha_source = "git_head"
+        if chosen is None and candidates:
             if require_passing:
                 passing = [c for c in candidates if c["passed"] and c["has_full_val"]] or [c for c in candidates if c["passed"]]
                 pool = passing or candidates
@@ -249,6 +281,7 @@ def _load_run_artifacts(
                 pool = candidates
             pool.sort(key=lambda c: (1 if c["has_full_val"] else 0, c["sort_key"]), reverse=True)
             chosen = pool[0]
+            sha_source = "latest_mtime"
 
     if chosen is None:
         return empty
@@ -256,6 +289,7 @@ def _load_run_artifacts(
         "title": canonical_title,
         "repo_dir": repo_dir,
         "sha": chosen["sha"],
+        "sha_source": sha_source,
         "run_dir": chosen["run_dir"],
         "result_json": chosen["result_json"],
         "log_text": chosen["log_text"],

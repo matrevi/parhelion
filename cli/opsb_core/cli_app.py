@@ -166,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     s_ts.add_argument("--sha", default=None)
     s_ts.add_argument("--fast", action="store_true", help="Q0 fast-lane (~10s die lock)")
     s_ts.add_argument("--build-only", action="store_true", help="Phase A lock-free 32-core CPU build (0s die lock)")
+    s_ts.add_argument("--pmu", action="store_true", help="Enable L1 PipeUtilization AI-Core PMU counters (slower profiler)")
     s_ts.add_argument("--dry-run", action="store_true")
     s_ts.add_argument("--sync-only", action="store_true")
     s_ts.add_argument("--workspace", "-w")

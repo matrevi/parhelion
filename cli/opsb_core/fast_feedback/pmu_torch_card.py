@@ -1,148 +1,14 @@
 """PMU pipe utilization & `ours/torch` ratio diagnostic card (`build_pmu_torch_card`)."""
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
 from typing import Any
 
 from ..config import read_json
 from .cold3_probe import evaluate_cold3_probe
-from .common import _bench_specs_dir, _load_run_artifacts, _parse_validation_perf_safe, _to_ratio
+from .common import _bench_specs_dir, _load_run_artifacts, _parse_validation_perf_safe
 from .elf_guard import evaluate_elf_guard
-
-_PMU_ALIAS_SPECS: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("aiv_vec_ratio", "vec_ratio", "pipe_v", "PIPE_V"), "aiv_vec_ratio"),
-    (("aiv_mte2_ratio", "mte2_ratio", "MTE2"), "aiv_mte2_ratio"),
-    (("aiv_mte3_ratio", "mte3_ratio", "MTE3"), "aiv_mte3_ratio"),
-    (("aiv_scalar_ratio", "scalar_ratio", "aiv_scalar_time_ratio", "Scalar"), "aiv_scalar_ratio"),
-    (
-        (
-            "aiv_ub_bank_conflict", "bank_conflict_ratio", "bank_conflict", "BankConflict",
-            "ResourceConflictRatio", "resource_conflict_ratio",
-            "vec_bankgroup_conflict_ratio", "vec_bank_conflict_ratio",
-        ),
-        "bank_conflict_ratio",
-    ),
-)
-
-_INLINE_PMU_PATS: tuple[tuple[str, str], ...] = (
-    (r"\b(?:aiv_vec_ratio|vec_ratio|pipe_v|PIPE_V)=([\d.]+%?)", "aiv_vec_ratio"),
-    (r"\b(?:aiv_mte2_ratio|mte2_ratio|MTE2)=([\d.]+%?)", "aiv_mte2_ratio"),
-    (r"\b(?:aiv_mte3_ratio|mte3_ratio|MTE3)=([\d.]+%?)", "aiv_mte3_ratio"),
-    (r"\b(?:aiv_scalar_ratio|scalar_ratio|Scalar)=([\d.]+%?)", "aiv_scalar_ratio"),
-    (r"\b(?:aiv_ub_bank_conflict|bank_conflict_ratio|bank_conflict|ResourceConflictRatio|BankConflict)=([\d.]+%?)", "bank_conflict_ratio"),
-)
-
-
-def _extract_pmu_and_torch(log_text: str) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
-    """Extract markdown-table timings/torch refs + per-case & aggregate PMU pipe ratios."""
-    extra_ours: dict[str, float] = {}
-    extra_torch: dict[str, float] = {}
-    per_case_pmu: dict[str, dict[str, float]] = {}
-    buckets: dict[str, list[float]] = {dest: [] for _, dest in _PMU_ALIAS_SPECS}
-
-    def _ingest_pmu_dict(d: dict[str, Any], cname: str = "") -> None:
-        if not isinstance(d, dict):
-            return
-        sub_dicts = [d, *(d[k] for k in ("pipe", "pmu", "metrics", "PipeUtilization") if isinstance(d.get(k), dict))]
-        rec: dict[str, float] = {}
-        for sd in sub_dicts:
-            for aliases, dest in _PMU_ALIAS_SPECS:
-                for alias in aliases:
-                    if alias in sd:
-                        rv = _to_ratio(sd[alias])
-                        if rv is not None and rv >= 0.0:
-                            rec[dest] = rv
-                            buckets[dest].append(rv)
-                            break
-        if cname and rec:
-            per_case_pmu[cname] = rec
-
-    md_cols: list[str] | None = None
-    for raw in log_text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        if line.startswith("|") and line.endswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            if all(re.fullmatch(r":?-+:?", c) for c in cells if c):
-                continue
-            low_cells = [c.lower() for c in cells]
-            if "case" in low_cells and any(k in low_cells for k in ("med_us", "ours_us", "median_us", "torch_med", "torch_us")):
-                md_cols = low_cells
-                continue
-            if md_cols and len(cells) >= len(md_cols):
-                row_map = dict(zip(md_cols, cells))
-                cname = row_map.get("case", "")
-                if cname and ":" not in cname and not cname.startswith("__"):
-                    for keys, dest_map in (
-                        (("med_us", "ours_us", "median_us", "custom_us"), extra_ours),
-                        (("torch_med", "torch_us", "tau_torch_us", "torch_min"), extra_torch),
-                    ):
-                        for k in keys:
-                            if k in row_map:
-                                try:
-                                    v = float(row_map[k].rstrip("us"))
-                                    if v > 0:
-                                        dest_map.setdefault(cname, v)
-                                        break
-                                except ValueError:
-                                    pass
-                continue
-        else:
-            md_cols = None
-
-        for prefix in ("PERF ", "KPERF_JSON ", "KERNEL_JSON ", "KERNEL_PERF ", "PROF_SUMMARY ", "PMU_JSON ", "PROFILER_PMU "):
-            if line.startswith(prefix):
-                try:
-                    payload = json.loads(line[len(prefix):].strip())
-                except ValueError:
-                    break
-                items = payload if isinstance(payload, list) else ([payload] if isinstance(payload, dict) else [])
-                for it in items:
-                    if not isinstance(it, dict) or it.get("mode") == "torch" or it.get("source") == "torch":
-                        continue
-                    cname = str(it.get("case") or it.get("label") or "")
-                    for tk in ("torch_us", "tau_torch_us"):
-                        if isinstance(it.get(tk), (int, float)) and float(it[tk]) > 0 and cname:
-                            extra_torch.setdefault(cname, float(it[tk]))
-                    _ingest_pmu_dict(it, cname)
-                    if isinstance(it.get("ops"), dict):
-                        for op_val in it["ops"].values():
-                            if isinstance(op_val, dict):
-                                _ingest_pmu_dict(op_val, cname)
-                break
-        else:
-            m_case = re.search(r"\bcase=(\S+)", line)
-            cname = m_case.group(1) if m_case else ""
-            m_t = re.search(r"\b(?:torch_us|tau_torch_us|torch)=([\d.]+)", line)
-            if m_t and cname:
-                try:
-                    tv = float(m_t.group(1))
-                    if tv > 0:
-                        extra_torch.setdefault(cname, tv)
-                except ValueError:
-                    pass
-            pmu_inline = {key: m.group(1) for pat, key in _INLINE_PMU_PATS if (m := re.search(pat, line))}
-            if pmu_inline:
-                _ingest_pmu_dict(pmu_inline, cname)
-
-    def _mean(vals: list[float]) -> float | None:
-        return round(sum(vals) / len(vals), 4) if vals else None
-
-    bank_mean = _mean(buckets["bank_conflict_ratio"])
-    pmu_summary = {
-        "aiv_vec_ratio": _mean(buckets["aiv_vec_ratio"]),
-        "aiv_mte2_ratio": _mean(buckets["aiv_mte2_ratio"]),
-        "aiv_mte3_ratio": _mean(buckets["aiv_mte3_ratio"]),
-        "aiv_scalar_ratio": _mean(buckets["aiv_scalar_ratio"]),
-        "bank_conflict_ratio": bank_mean,
-        "aiv_ub_bank_conflict": bank_mean,
-        "samples": max((len(v) for v in buckets.values()), default=0),
-        "per_case": per_case_pmu,
-    }
-    return extra_ours, extra_torch, pmu_summary
+from .pmu_extract import _extract_pmu_and_torch
 
 
 def _classify_bottleneck(pmu: dict[str, Any], cold3: dict[str, Any], bucket_rows: list[dict[str, Any]]) -> str:
@@ -217,10 +83,15 @@ def _render_markdown_card(
     cw = f"{c3m['warm_median_us']:.2f}us" if c3m.get("warm_median_us") is not None else "—"
     _fr = lambda v: f"{v:.3f}" if isinstance(v, (int, float)) else "—"
 
+    pmu_line = (
+        f"- **PMU**: vec={_fr(pmu_summary['aiv_vec_ratio'])} | mte2={_fr(pmu_summary['aiv_mte2_ratio'])} | mte3={_fr(pmu_summary['aiv_mte3_ratio'])} | scalar={_fr(pmu_summary['aiv_scalar_ratio'])} | bank={_fr(pmu_summary['bank_conflict_ratio'])}"
+        if pmu_summary.get("pmu_available")
+        else f"- **PMU**: unavailable ({pmu_summary.get('pmu_mode', 'l0_timing_only')} — run `opsb test {title} --pmu` / `OPSB_PMU=1` for L1 PipeUtilization)"
+    )
     lines: list[str] = [
         f"### PMU & Torch Card: {title} ({sha7})",
         f"- **Bottleneck**: `{bottleneck}` | **ELF**: `{elf_verdict['status']}` (.text={text_kb}, .o={obj_kb}, tmpl={tmpl_s}) | **Cold3**: `{cold3_verdict['status']}` (1st={c1}, 3run={c3}, warm={cw})",
-        f"- **PMU**: vec={_fr(pmu_summary['aiv_vec_ratio'])} | mte2={_fr(pmu_summary['aiv_mte2_ratio'])} | mte3={_fr(pmu_summary['aiv_mte3_ratio'])} | scalar={_fr(pmu_summary['aiv_scalar_ratio'])} | bank={_fr(pmu_summary['bank_conflict_ratio'])}",
+        pmu_line,
     ]
     if top_buckets:
         lines.extend(["| Bucket | Stratum | Ours | Torch | Ours/Torch | w_hat | Headroom |", "|---|---|---:|---:|---:|---:|---:|"])
@@ -260,6 +131,15 @@ def build_pmu_torch_card(workspace: Path, title: str, sha: str | None = None, to
     spec_buckets = _load_perf_spec_buckets(ws, canonical_title, repo_dir)
     cal_doc = read_json(ws / "results" / canonical_title / "calibration.json", {})
     cal_buckets = {str(cb["id"]): cb for cb in (cal_doc.get("buckets") or []) if isinstance(cb, dict) and cb.get("id")} if isinstance(cal_doc, dict) else {}
+    cal_corrs = cal_doc.get("bucket_correlations") if isinstance(cal_doc, dict) and isinstance(cal_doc.get("bucket_correlations"), dict) else {}
+    rj = art["result_json"] if isinstance(art.get("result_json"), dict) else {}
+    regime_s = str(rj.get("profiler_regime") or "")
+    if pmu_summary.get("pmu_available"):
+        pmu_summary["pmu_mode"] = "l1_pipe_utilization"
+    elif "l0" in regime_s or "Lock-free verify + profiler parse" in log_text or pmu_summary.get("zero_dummy_samples", 0) > 0:
+        pmu_summary["pmu_mode"] = "l0_timing_only"
+    else:
+        pmu_summary["pmu_mode"] = "unavailable"
 
     bucket_rows: list[dict[str, Any]] = []
     for bid, ours_us in sorted(ours_map.items()):
@@ -269,10 +149,23 @@ def build_pmu_torch_card(workspace: Path, title: str, sha: str | None = None, to
         ratio = round(ours_us / torch_f, 4) if torch_f else None
         w_hat_raw = cb.get("learned_w")
         w_hat = float(w_hat_raw) if isinstance(w_hat_raw, (int, float)) and float(w_hat_raw) > 0 else None
+        corr_raw = cb.get("empirical_corr")
+        if corr_raw is None:
+            corr_raw = cb.get("corr") if cb.get("corr") is not None else cal_corrs.get(bid)
+        corr = float(corr_raw) if isinstance(corr_raw, (int, float)) else None
         if ratio is not None:
-            headroom_score = round(w_hat * max(0.0, ratio - 0.8), 6) if w_hat is not None else round(ratio, 6)
+            raw_hs = w_hat * max(0.0, ratio - 0.8) if w_hat is not None else ratio
+            if corr is not None and corr < 0.0:
+                headroom_score = round(raw_hs * max(0.0, 1.0 + corr), 6) if corr > -0.25 else 0.0
+            else:
+                headroom_score = round(raw_hs, 6)
         else:
-            headroom_score = round(w_hat, 6) if w_hat is not None else 0.0
+            headroom_score = round(0.05 * w_hat, 6) if (w_hat is not None and corr is not None and corr >= 0.0) else 0.0
+        priority_tier = (
+            3 if (ratio is not None and ratio > 0.8 and corr is not None and corr > 0.0)
+            else (2 if (ratio is not None and ratio > 0.8 and corr is None)
+                  else (1 if (ratio is not None and (corr is None or corr >= 0.0)) else 0))
+        )
         bucket_rows.append({
             "bucket": bid,
             "stratum": str(cb.get("stratum") or sb.get("stratum") or "M_MID_UB"),
@@ -280,11 +173,23 @@ def build_pmu_torch_card(workspace: Path, title: str, sha: str | None = None, to
             "torch_us": round(torch_f, 3) if torch_f is not None else None,
             "ratio_vs_torch": ratio,
             "w_hat": round(w_hat, 5) if w_hat is not None else None,
+            "corr": round(corr, 4) if corr is not None else None,
             "headroom_score": headroom_score,
+            "_priority_tier": priority_tier,
             "pmu": pmu_summary["per_case"].get(bid, {}),
         })
 
-    bucket_rows.sort(key=lambda r: (float(r["headroom_score"]), float(r["ratio_vs_torch"] or 0.0), float(r["ours_us"])), reverse=True)
+    bucket_rows.sort(
+        key=lambda r: (
+            int(r.get("_priority_tier", 0)),
+            float(r["headroom_score"]),
+            float(r["ratio_vs_torch"] or 0.0),
+            float(r["ours_us"]),
+        ),
+        reverse=True,
+    )
+    for r in bucket_rows:
+        r.pop("_priority_tier", None)
     top_buckets = bucket_rows[: max(1, int(top_n))]
 
     elf_verdict = evaluate_elf_guard(ws, canonical_title, sha=resolved_sha or sha)
@@ -301,8 +206,10 @@ def build_pmu_torch_card(workspace: Path, title: str, sha: str | None = None, to
     return {
         "title": canonical_title,
         "sha": resolved_sha,
+        "sha_source": art.get("sha_source", "none"),
         "runtime_soc": parsed.get("runtime_soc"),
         "dominant_bottleneck": bottleneck,
+        "pmu_available": bool(pmu_summary.get("pmu_available")),
         "pmu": pmu_summary,
         "prof_summary": parsed.get("prof_summary") or {},
         "buckets": bucket_rows,

@@ -294,6 +294,8 @@ def run_test(args: argparse.Namespace) -> int:
             b_cmd += ["--sha", args.sha]
         if getattr(args, "fast", False):
             b_cmd.append("--fast")
+        if getattr(args, "pmu", False) and "--pmu" in help_out:
+            b_cmd.append("--pmu")
         if getattr(args, "dry_run", False):
             b_cmd.append("--dry-run")
         if getattr(args, "build_only", False):
@@ -324,6 +326,10 @@ def run_test(args: argparse.Namespace) -> int:
         npu_runner = ws / "tools" / "npu-test.py"
     if npu_runner.is_file():
         cmd = [py_exe, str(npu_runner), args.problem, "--workspace", str(ws)]
-        env = {**os.environ, **({"OPSB_FAST_LANE": "1"} if args.fast else {})}
+        env = {
+            **os.environ,
+            **({"OPSB_FAST_LANE": "1"} if args.fast else {}),
+            **({"OPSB_PMU": "1"} if getattr(args, "pmu", False) else {}),
+        }
         return subprocess.call(cmd, cwd=str(ws), env=env)
     return 1

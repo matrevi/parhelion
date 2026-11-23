@@ -1854,7 +1854,51 @@ class BenchmarkCalibrator:
         tmp.replace(fb_path)
         return fb_path
 
-    def diagnose_problem(self, title: str) -> dict[str, Any]:
+    def _inspect_commit_validation(self, title: str, sha: str) -> dict[str, Any]:
+        req = sha.strip()
+        res_dir = self.workspace / "results" / title
+        resolved = req
+        run_dir = res_dir / req
+        if not run_dir.is_dir() and res_dir.is_dir():
+            low = req.lower()
+            matches = sorted(d for d in res_dir.iterdir() if d.is_dir() and d.name.lower().startswith(low))
+            if matches:
+                run_dir = matches[-1]
+                resolved = run_dir.name
+        info: dict[str, Any] = {"requested_sha": req, "resolved_sha": resolved, "found": run_dir.is_dir()}
+        if not run_dir.is_dir():
+            return info
+        rj: dict[str, Any] = {}
+        for jn in ("result.json", "result-fast.json", "result-build.json"):
+            jp = run_dir / jn
+            if jp.is_file():
+                try:
+                    rj = json.loads(jp.read_text(encoding="utf-8"))
+                except Exception:
+                    rj = {}
+                break
+        log_text = ""
+        for ln in ("validation.log", "validation-fast.log", "build.log"):
+            lp = run_dir / ln
+            if lp.is_file():
+                log_text = lp.read_text(errors="replace")
+                info["log_file"] = str(lp)
+                break
+        parsed = parse_validation_perf(log_text) if log_text else {"cases": {}, "source": "none"}
+        exit_code = rj.get("exit_code")
+        passed = (exit_code == 0) or (exit_code is None and ("EXTENDED_PASSED" in log_text or "BUILD_ONLY_PASSED" in log_text))
+        info.update({
+            "passed": bool(passed),
+            "exit_code": exit_code,
+            "profiler_regime": rj.get("profiler_regime"),
+            "perf_source": parsed.get("source"),
+            "measured_bucket_count": len(parsed.get("cases") or {}),
+            "phase_a_cpu_sec": rj.get("phase_a_cpu_sec"),
+            "phase_b_die_sec": rj.get("phase_b_die_sec"),
+        })
+        return info
+
+    def diagnose_problem(self, title: str, sha: str | None = None) -> dict[str, Any]:
         """Full bench health check, bucket correlation attribution, residual forensics, and `bench_feedback.json` write."""
         self._esc_cache.clear()
         self._cal_cache.clear()
@@ -1905,7 +1949,7 @@ class BenchmarkCalibrator:
             for b in cal["buckets"][:10]
         ]
 
-        return {
+        out = {
             "title": title,
             "model_version": cal.get("model_version", MODEL_VERSION),
             "updated_at": cal["updated_at"],
@@ -1939,6 +1983,12 @@ class BenchmarkCalibrator:
             "detected_cpp_branch_guards": fallback_branches[:10],
             "observation_ledger": cal["observation_ledger"],
         }
+        if sha:
+            cv = self._inspect_commit_validation(title, sha)
+            out["requested_sha"] = sha
+            out["sha"] = cv["resolved_sha"]
+            out["commit_validation"] = cv
+        return out
 
     def evolve_bench(
         self,

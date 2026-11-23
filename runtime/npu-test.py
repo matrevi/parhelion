@@ -84,6 +84,41 @@ def _compute_scheduler_priority(title: str, fast: bool, workspace: Path = ROOT) 
     return (1.5 if fast else 1.0), ("Q0" if fast else "Q1"), 600.0
 
 
+def evaluate_build_signature(
+    repo: Path,
+    branch_ref: str,
+    target: str,
+    sha: str,
+    prev_sig: dict | None,
+    is_ancestor: bool = True,
+) -> tuple[dict, list[str]]:
+    """Build `<repo>/build/.opsb_build_sig` payload and detect branch/header changes requiring clean rebuild."""
+    opk_dir = repo / "op_kernel"
+    opk_headers = sorted(
+        str(p.relative_to(repo))
+        for p in opk_dir.rglob("*")
+        if p.is_file() and p.suffix.lower() in (".h", ".hpp", ".cuh")
+    ) if opk_dir.is_dir() else []
+    cur_sig = {
+        "branch_ref": branch_ref or "HEAD",
+        "target": target or "soc-a",
+        "op_kernel_headers": opk_headers,
+        "last_sha": sha,
+    }
+    reasons: list[str] = []
+    if isinstance(prev_sig, dict) and prev_sig:
+        if prev_sig.get("branch_ref") != cur_sig["branch_ref"]:
+            reasons.append(f"branch:{prev_sig.get('branch_ref')}->{cur_sig['branch_ref']}")
+        if prev_sig.get("target") != cur_sig["target"]:
+            reasons.append(f"target:{prev_sig.get('target')}->{cur_sig['target']}")
+        if prev_sig.get("op_kernel_headers") != cur_sig["op_kernel_headers"]:
+            reasons.append("op_kernel_headers_changed")
+        prev_sha = str(prev_sig.get("last_sha") or "")
+        if prev_sha and prev_sha != sha and not reasons and not is_ancestor:
+            reasons.append(f"non_ancestor:{prev_sha[:7]}->{sha[:7]}")
+    return cur_sig, reasons
+
+
 REMOTE_3PHASE = r'''
 import datetime, fcntl, glob, hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
@@ -92,6 +127,8 @@ title = cfg['title']
 sha = cfg['sha']
 fast = bool(cfg.get('fast', False))
 cold3 = bool(cfg.get('cold3', False))
+pmu = bool(cfg.get('pmu', False))
+branch_ref_cfg = str(cfg.get('branch_ref') or '').strip()
 build_only = bool(cfg.get('build_only', False))
 sync_only = bool(cfg.get('sync_only', False))
 mlfq = cfg.get('mlfq') or ('Q0' if fast else 'Q1')
@@ -240,12 +277,74 @@ try:
     else:
         build_jobs = max(4, min(16, usable_cores // active_builds))
     env['OPSB_EFFECTIVE_BUILD_JOBS'] = str(build_jobs)
+
+    # Structural build signature guard (`<repo>/build/.opsb_build_sig`):
+    # Triggers `--make_clean` on branch switch, target switch, or `op_kernel/` header additions/removals,
+    # while keeping incremental rebuilds fast within the same branch.
+    sig_branch = branch_ref_cfg
+    if not sig_branch or sig_branch == 'HEAD':
+        try:
+            sig_branch = subprocess.check_output(
+                ['git', '-C', str(repo), 'name-rev', '--name-only', '--refs=refs/remotes/origin/*', 'HEAD'],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip() or 'HEAD'
+        except Exception:
+            sig_branch = 'HEAD'
+    opk_dir_sig = repo / 'op_kernel'
+    opk_headers_sig = sorted(
+        str(p.relative_to(repo))
+        for p in opk_dir_sig.rglob('*')
+        if p.is_file() and p.suffix.lower() in ('.h', '.hpp', '.cuh')
+    ) if opk_dir_sig.is_dir() else []
+    cur_build_sig = {
+        'branch_ref': sig_branch,
+        'target': env.get('OPSB_BUILD_TARGET', 'soc-a'),
+        'op_kernel_headers': opk_headers_sig,
+        'last_sha': sha,
+    }
+    sig_path = repo / 'build' / '.opsb_build_sig'
+    prev_build_sig = None
+    if sig_path.is_file():
+        try:
+            prev_build_sig = json.loads(sig_path.read_text(encoding='utf-8'))
+        except Exception:
+            prev_build_sig = {}
+    clean_reasons = []
+    if isinstance(prev_build_sig, dict) and prev_build_sig:
+        if prev_build_sig.get('branch_ref') != cur_build_sig['branch_ref']:
+            clean_reasons.append(f"branch:{prev_build_sig.get('branch_ref')}->{cur_build_sig['branch_ref']}")
+        if prev_build_sig.get('target') != cur_build_sig['target']:
+            clean_reasons.append(f"target:{prev_build_sig.get('target')}->{cur_build_sig['target']}")
+        if prev_build_sig.get('op_kernel_headers') != cur_build_sig['op_kernel_headers']:
+            clean_reasons.append('op_kernel_headers_changed')
+        prev_sha_sig = str(prev_build_sig.get('last_sha') or '')
+        if prev_sha_sig and prev_sha_sig != sha and not clean_reasons:
+            rc_anc = subprocess.run(
+                ['git', '-C', str(repo), 'merge-base', '--is-ancestor', prev_sha_sig, sha],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ).returncode
+            if rc_anc != 0:
+                clean_reasons.append(f"non_ancestor:{prev_sha_sig[:7]}->{sha[:7]}")
+    if env.get('OPSB_MAKE_CLEAN') == '1':
+        clean_reasons.append('explicit_env')
+    if clean_reasons:
+        env['OPSB_MAKE_CLEAN'] = '1'
+        env['OPSB_CLEAN_REASON'] = ','.join(clean_reasons)
+        emit(f"[PHASE-A] Auto clean-rebuild armed ({env['OPSB_CLEAN_REASON']})")
+
     emit(f'[PHASE-A] Building KernelC package + examples on {ncpu}-core CPU with adaptive -j{build_jobs} (active_builds={active_builds}, 0s NPU lock)...')
     phase_a_sh = r"""
 set -uo pipefail
 source /opt/toolchain/latest/set_env.sh
 TARGET="${OPSB_BUILD_TARGET:-soc-a}"
 JOBS="${OPSB_EFFECTIVE_BUILD_JOBS:-4}"
+if [ "${OPSB_MAKE_CLEAN:-0}" = "1" ]; then
+  echo "[PHASE-A] Clean rebuild triggered (${OPSB_CLEAN_REASON:-signature_changed}) via --make_clean..."
+  (sed "s/COMPUTE_UNIT=\"soc-a\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- --make_clean) >/dev/null 2>&1 || rm -rf "$PWD/build"/* "$PWD/build_out"/*
+  rm -rf "$PWD/examples/build"
+fi
 sed "s/COMPUTE_UNIT=\"soc-a\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- -j"$JOBS"
 BRC=$?
 if [ "$BRC" -ne 0 ]; then
@@ -282,6 +381,12 @@ fi
         }, indent=2) + '\n')
         sys.exit(b_rc)
 
+    try:
+        sig_path.parent.mkdir(parents=True, exist_ok=True)
+        sig_path.write_text(json.dumps(cur_build_sig, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    except Exception:
+        pass
+
     # Phase A compiled kernel ELF `.o` telemetry (0s NPU lock; tracks 3-run cold-start bloat)
     kernel_o_count = 0
     kernel_o_max_bytes = 0
@@ -291,11 +396,15 @@ fi
     template_instantiations = 0
     template_instantiation_source = 'none'
     obj_template_syms = set()
+    sym_size_map = {}
+    top_symbols = []
+    max_hot_symbol_bytes = 0
     try:
         o_paths = sorted(glob.glob(str(repo / 'build/packages/vendors/*_custom/op_impl/ai_core/tbe/kernel/**/*.o'), recursive=True))
         if not o_paths:
             o_paths = sorted(glob.glob(str(repo / 'build/op_kernel/**/*.o'), recursive=True))
         for op in o_paths:
+            op_base = os.path.basename(op)
             try:
                 sz = os.path.getsize(op)
             except OSError:
@@ -304,7 +413,7 @@ fi
             kernel_o_sum_bytes += sz
             if sz > kernel_o_max_bytes:
                 kernel_o_max_bytes = sz
-            kernel_o_files[os.path.basename(op)] = sz
+            kernel_o_files[op_base] = sz
             try:
                 sp = subprocess.run(['size', '-A', op], capture_output=True, text=True, timeout=2.0)
                 if sp.returncode == 0:
@@ -316,6 +425,42 @@ fi
                                 kernel_o_max_text_bytes = tb
             except Exception:
                 pass
+            # Collect per-function symbol sizes (`nm --size-sort` first, `readelf -sW` fallback)
+            got_sym_sizes = False
+            try:
+                nms_p = subprocess.run(['nm', '-C', '--defined-only', '--size-sort', op], capture_output=True, text=True, timeout=2.0)
+                if nms_p.returncode == 0 and nms_p.stdout:
+                    for nml in nms_p.stdout.splitlines():
+                        cols = nml.strip().split(None, 2)
+                        if len(cols) == 3 and cols[1] in ('T', 'W', 't', 'w'):
+                            try:
+                                sbytes = int(cols[0], 16)
+                            except ValueError:
+                                continue
+                            sname = cols[2]
+                            if sbytes > 0:
+                                key = (op_base, sname)
+                                sym_size_map[key] = max(sym_size_map.get(key, 0), sbytes)
+                                got_sym_sizes = True
+            except Exception:
+                pass
+            if not got_sym_sizes:
+                try:
+                    re_p = subprocess.run(['readelf', '-sW', op], capture_output=True, text=True, timeout=2.0)
+                    if re_p.returncode == 0 and re_p.stdout:
+                        for rel_l in re_p.stdout.splitlines():
+                            cols = rel_l.split()
+                            if len(cols) >= 8 and cols[3] == 'FUNC' and cols[6] != 'UND':
+                                try:
+                                    sbytes = int(cols[2], 0)
+                                except ValueError:
+                                    continue
+                                sname = cols[-1]
+                                if sbytes > 0 and sname:
+                                    key = (op_base, sname)
+                                    sym_size_map[key] = max(sym_size_map.get(key, 0), sbytes)
+                except Exception:
+                    pass
             # Count compiled template / tiling-key symbols via nm or objdump
             try:
                 nm_p = subprocess.run(['nm', '-C', '--defined-only', op], capture_output=True, text=True, timeout=2.0)
@@ -336,6 +481,13 @@ fi
                                 obj_template_syms.add(odl.strip().split()[-1])
             except Exception:
                 pass
+
+        if sym_size_map:
+            top_symbols = [
+                {'symbol': s[:180], 'bytes': b, 'file': f}
+                for (f, s), b in sorted(sym_size_map.items(), key=lambda kv: kv[1], reverse=True)[:8]
+            ]
+            max_hot_symbol_bytes = top_symbols[0]['bytes']
 
         if obj_template_syms:
             template_instantiations = len(obj_template_syms)
@@ -358,7 +510,10 @@ fi
                     for km in re.finditer(r'\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)', ktxt):
                         tk_set.add(re.sub(r'\s+', '', km.group(1)))
                         macro_cnt += 1
-                    macro_cnt += len(re.findall(r'\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL)\s*\(', ktxt))
+                    for km in re.finditer(r'\bTPL_SEL(?:_[A-Z0-9_]+)?\s*\(\s*([^)]*)\)', ktxt):
+                        tk_set.add('TPL_SEL:' + re.sub(r'\s+', '', km.group(1)))
+                        macro_cnt += 1
+                    macro_cnt += len(re.findall(r'\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL|TPL_[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(', ktxt))
                     tmpl_cnt += len(re.findall(r'\btemplate\s*<', ktxt))
                 template_instantiations = max(len(tk_set), macro_cnt) if (tk_set or macro_cnt) else tmpl_cnt
                 template_instantiation_source = 'source_scan'
@@ -369,6 +524,8 @@ fi
                 'max_bytes': kernel_o_max_bytes,
                 'sum_bytes': kernel_o_sum_bytes,
                 'max_text_bytes': kernel_o_max_text_bytes,
+                'max_hot_symbol_bytes': max_hot_symbol_bytes,
+                'top_symbols': top_symbols,
                 'template_instantiations': template_instantiations,
                 'template_source': template_instantiation_source,
                 'files': dict(sorted(kernel_o_files.items(), key=lambda kv: kv[1], reverse=True)[:8]),
@@ -419,6 +576,8 @@ fi
             'kernel_o_max_bytes': kernel_o_max_bytes,
             'kernel_o_sum_bytes': kernel_o_sum_bytes,
             'kernel_o_max_text_bytes': kernel_o_max_text_bytes,
+            'max_hot_symbol_bytes': max_hot_symbol_bytes,
+            'top_symbols': top_symbols,
             'template_instantiations': template_instantiations,
             'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
@@ -539,6 +698,10 @@ if (runtime_dir / 'sitecustomize.py').is_file() and env.get('OPSB_ARENA_ACCEL', 
 if cold3:
     env['OPSB_COLD3'] = '1'
     emit('COLD3_MODE=1')
+
+if pmu:
+    env['OPSB_PMU'] = '1'
+    emit('PMU_MODE=1')
 
 if fast:
     env['FAST_LANE'] = '1'
@@ -966,6 +1129,7 @@ res_payload = {
     'exit_code': code,
     'fast_lane': fast,
     'cold3': cold3,
+    'pmu': pmu,
     'phase_a_cpu_sec': phase_a_sec,
     'phase_b_die_sec': phase_b_sec,
     'phase_c_cpu_sec': phase_c_sec,
@@ -977,6 +1141,8 @@ res_payload = {
     'kernel_o_max_bytes': kernel_o_max_bytes,
     'kernel_o_sum_bytes': kernel_o_sum_bytes,
     'kernel_o_max_text_bytes': kernel_o_max_text_bytes,
+    'max_hot_symbol_bytes': max_hot_symbol_bytes,
+    'top_symbols': top_symbols,
     'template_instantiations': template_instantiations,
     'first_iter_us': first_iter_us,
     'cold_3run_mean_us': cold_3run_mean_us,
@@ -997,6 +1163,7 @@ def run_3phase_validation(
     fast: bool = False,
     build_only: bool = False,
     cold3: bool = False,
+    pmu: bool = False,
     npu_host: str = "npu",
     workspace: Path = ROOT,
     stream_stdout: bool = True,
@@ -1023,6 +1190,11 @@ def run_3phase_validation(
 
     fast_mode = bool(fast or os.environ.get("OPSB_FAST_LANE") == "1")
     cold3_mode = bool(cold3 or os.environ.get("OPSB_COLD3") == "1")
+    pmu_mode = bool(pmu or os.environ.get("OPSB_PMU") == "1")
+    try:
+        branch_ref = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    except Exception:
+        branch_ref = "HEAD"
     wspt_base, mlfq, aging_tau = _compute_scheduler_priority(problem["title"], fast=fast_mode, workspace=workspace)
 
     credential = subprocess.check_output(
@@ -1041,6 +1213,8 @@ def run_3phase_validation(
         sync_only=sync_only,
         fast=fast_mode,
         cold3=cold3_mode,
+        pmu=pmu_mode,
+        branch_ref=branch_ref,
         build_only=build_only,
         mlfq=mlfq,
         wspt_base=wspt_base,
@@ -1097,7 +1271,8 @@ def run_3phase_validation(
         fast_lane=fast_mode,
         build_only=build_only,
         mlfq_level="CPU" if build_only else mlfq,
-        profiler_regime=None if (build_only or sync_only) else "fast_single_session_l0",
+        profiler_regime=None if (build_only or sync_only) else ("fast_single_session_l1_pmu" if pmu_mode else "fast_single_session_l0"),
+        pmu=pmu_mode,
         wall_sec=round((finished_at - t_start).total_seconds(), 2),
         finished_at=finished_at.isoformat(),
     )
@@ -1105,6 +1280,7 @@ def run_3phase_validation(
         "phase_a_cpu_sec", "phase_b_die_sec", "phase_c_cpu_sec", "hold_sec",
         "npu_exec_sec", "acl_host_sec", "arena_cases_inproc",
         "kernel_o_count", "kernel_o_max_bytes", "kernel_o_sum_bytes", "kernel_o_max_text_bytes",
+        "max_hot_symbol_bytes", "top_symbols",
         "template_instantiations",
         "first_iter_us", "cold_3run_mean_us", "cold_spread_median_us", "cold3", "cold3_stats",
     ):
@@ -1122,6 +1298,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--build-only", action="store_true", help="Run Phase A 32-core CPU compile only (0.0s NPU lock)")
     parser.add_argument("--fast", action="store_true", help="Run Q0 fast-lane subset after Phase A CPU build")
     parser.add_argument("--cold3", action="store_true", help="Record explicit un-warmed 3-run cold-start timings (COLD3_STATS)")
+    parser.add_argument("--pmu", action="store_true", help="Enable L1 PipeUtilization AI-Core PMU counters")
     parser.add_argument("--npu-host", default="npu", help="SSH host alias (default: npu)")
     parser.add_argument("--workspace", "-w", default=None, help="Contest workspace root (default: OPSB_WORKSPACE or cwd)")
     args = parser.parse_args(argv)
@@ -1134,6 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
         fast=args.fast,
         build_only=args.build_only,
         cold3=args.cold3,
+        pmu=args.pmu,
         npu_host=args.npu_host,
         workspace=ws,
         stream_stdout=True,

@@ -74,6 +74,11 @@ def _format_diagnose_report(doc: dict[str, Any]) -> str:
         f"  Buckets: spec={doc.get('spec_bucket_count')}  effective={doc.get('effective_bucket_count')}  "
         f"unpaired_spec={doc.get('unpaired_bucket_count')}  extra_discovered={len(doc.get('extra_discovered_buckets') or [])}",
     ]
+    if isinstance(cv := doc.get("commit_validation"), dict):
+        lines.append(
+            f"  Commit {str(cv.get('resolved_sha') or '')[:7]}: found={cv.get('found')} passed={cv.get('passed')} "
+            f"regime={cv.get('profiler_regime')} source={cv.get('perf_source')} buckets={cv.get('measured_bucket_count', 0)}"
+        )
     if doc.get("strong_positive_buckets"):
         lines.append("  Strong +Corr Buckets (prioritize):")
         for b in doc["strong_positive_buckets"][:6]:

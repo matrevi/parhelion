@@ -924,6 +924,7 @@ class NpuTaskScheduler:
         sha: str | None = None,
         fast: bool = False,
         build_only: bool = False,
+        pmu: bool = False,
         dry_run: bool = False,
         stream_stdout: bool = True,
     ) -> dict[str, Any]:
@@ -1039,6 +1040,7 @@ class NpuTaskScheduler:
             sync_only=False,
             fast=fast,
             build_only=build_only,
+            pmu=pmu,
             npu_host=self.npu_host,
             workspace=self.workspace,
             stream_stdout=stream_stdout,

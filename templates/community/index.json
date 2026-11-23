@@ -211,6 +211,37 @@
       ],
       "related_snippets": ["SNP-direct-gm-tiling-64b"],
       "doc_path": "entries/COM-10core-dvfs-bimodal-trap.md"
+    },
+    {
+      "id": "COM-dummy-halfcores-launch-illusion",
+      "pillar": "community",
+      "title": "ANTI-PATTERN: Dummy SetBlockDim(halfCores)/20 + Early Return on Small Shapes",
+      "summary": "Never launch 1-core small shapes with dummy SetBlockDim(halfCores)/SetBlockDim(20) + early return (`if (GetBlockIdx() != 0) return;`): hides local idle-die 1c DVFS spikes while adding online dispatch overhead (`-11.83 pts` on StridedSliceGrad 734e097), and `(maxCores+1)/2` hits the 10-core DVFS trap on 20c soc-b.",
+      "category": "tiling-regime",
+      "tags": ["anti-pattern", "dummy-multicore", "SetBlockDim", "half-cores", "cold-3run"],
+      "bottlenecks": ["cold-launch-tax", "dvfs-10core-spike", "port-contention"],
+      "regimes": ["PUBLIC", "S_SMALL_CORE"],
+      "dtypes": ["float32", "float16", "bfloat16"],
+      "portability": "anti-pattern",
+      "status": "anti-pattern",
+      "prior_alpha": 1.0,
+      "prior_beta": 1.0,
+      "wins": 0,
+      "fails": 1,
+      "confidence": 0.333,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "StridedSliceGrad",
+          "sha": "734e0975e327642dae6b365b53db0d578fbb6ce8",
+          "delta_raw": -11.83,
+          "verdict": "anti-pattern",
+          "note": "Online scored 59.74 vs 71.57 (Public #3 3.95->4.56us); `(maxCores+1)/2` also hits 10-core trap on 20c soc-b.",
+          "recorded_at": "2026-11-23T09:07:13+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-direct-gm-tiling-64b"],
+      "doc_path": "entries/COM-dummy-halfcores-launch-illusion.md"
     }
   ]
 }

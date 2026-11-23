@@ -791,6 +791,36 @@ def _is_driver_wrapper(cmd: str) -> bool:
     )
 
 
+def _collect_op_ancestors(root_pid: int, procs: dict[int, dict[str, Any]], max_depth: int = 8) -> set[int]:
+    """Walk up driver/repo ancestors without climbing into generic login shells or sshd."""
+    ancestors: set[int] = set()
+    cur = procs.get(root_pid, {}).get("ppid", 0)
+    for _ in range(max_depth):
+        if cur <= 1 or cur not in procs or cur in ancestors:
+            break
+        cmd = procs[cur].get("cmd", "")
+        low = cmd.lower()
+        if not (
+            _is_driver_wrapper(cmd)
+            or any(tok in low for tok in ("bench", "npu-test", "validation", "build.sh", "backfill", "arena", "flock", "opsb"))
+        ):
+            break
+        ancestors.add(cur)
+        cur = procs[cur].get("ppid", 0)
+    return ancestors
+
+
+def _collect_tree_and_driver_peers(root_pid: int, procs: dict[int, dict[str, Any]]) -> set[int]:
+    """Collect descendant tree plus owning driver wrapper subtree to avoid sibling PID duplicates."""
+    related = set(get_descendants(root_pid, procs))
+    ancestors = _collect_op_ancestors(root_pid, procs)
+    related.update(ancestors)
+    for anc in ancestors:
+        if _is_driver_wrapper(procs.get(anc, {}).get("cmd", "")):
+            related.update(get_descendants(anc, procs))
+    return related
+
+
 def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> tuple[str | None, str | None]:
     problem: str | None = None
     sha: str | None = None
@@ -1195,13 +1225,16 @@ class StreamProbeSession:
             tree = get_descendants(h_pid, procs)
             holder_trees[die_idx] = tree
             all_holder_pids.update(tree)
+            all_holder_pids.update(_collect_tree_and_driver_peers(h_pid, procs))
             ppid = procs.get(h_pid, {}).get("ppid", 0)
             if ppid:
                 all_holder_pids.add(ppid)
 
         waiting_roots = {
             pid for pid in waiting_roots
-            if pid not in all_holder_pids and pid not in active_cpu_build_pids
+            if pid not in all_holder_pids
+            and pid not in active_cpu_build_pids
+            and not (_collect_tree_and_driver_peers(pid, procs) & all_holder_pids)
         }
 
         tasks: list[dict[str, Any]] = []
@@ -1291,9 +1324,11 @@ class StreamProbeSession:
                     waiting_roots.add(tpid)
 
         waiting_tasks_list: list[dict[str, Any]] = []
+        all_waiting_pids: set[int] = set()
         sorted_waiters = sorted(
             waiting_roots,
             key=lambda x: (
+                1 if x in tickets_by_pid else 0,
                 int(tickets_by_pid.get(x, {}).get("tier") or 1),
                 float(tickets_by_pid.get(x, {}).get("prio") or 0.0),
                 -float(tickets_by_pid.get(x, {}).get("created") or now_epoch),
@@ -1301,9 +1336,13 @@ class StreamProbeSession:
             reverse=True,
         )
         for w_pid in sorted_waiters:
-            if w_pid not in procs or w_pid in active_cpu_build_pids:
+            if w_pid not in procs or w_pid in active_cpu_build_pids or w_pid in all_waiting_pids:
+                continue
+            rel_pids = _collect_tree_and_driver_peers(w_pid, procs)
+            if rel_pids & (all_holder_pids | all_waiting_pids):
                 continue
             tree = get_descendants(w_pid, procs)
+            all_waiting_pids.update(rel_pids)
             tk = tickets_by_pid.get(w_pid, {})
             prob, sha = infer_problem_and_sha(tree, procs)
             prob = tk.get("title") or prob
@@ -1346,14 +1385,20 @@ class StreamProbeSession:
             tasks.append(wt_item)
 
         parallel_cpu_builds: list[dict[str, Any]] = []
-        seen_build_keys: set[str] = set()
+        seen_build_keys: set[tuple[str, str]] = set()
+        cpu_build_tree_pids: set[int] = set()
         for b_pid, bd in cpu_builds_by_pid.items():
+            rel_b = _collect_tree_and_driver_peers(b_pid, procs) if b_pid in procs else {b_pid}
+            if rel_b & (all_holder_pids | all_waiting_pids):
+                continue
             b_title = bd.get("title") or bd.get("problem") or "Operator"
             b_sha = str(bd.get("sha") or "")
             st_ep = float(bd.get("started_epoch") or 0)
             el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
             b_is_bf = str(bd.get("lane") or "").upper() == "B0" or str(bd.get("kind") or "").upper() == "BACKFILL"
-            b_key = f"{b_title}:{b_sha[:7]}:{'B0' if b_is_bf else 'OP'}"
+            lane_str = "B0" if b_is_bf else "Q1"
+            b_key = (str(b_title).strip().lower(), lane_str)
+            cpu_build_tree_pids.update(rel_b)
             if b_key not in seen_build_keys:
                 seen_build_keys.add(b_key)
                 parallel_cpu_builds.append(
@@ -1363,16 +1408,20 @@ class StreamProbeSession:
                         "sha": b_sha,
                         "short_sha": b_sha[:7] or "—",
                         "elapsed_sec": max(0, el_s),
-                        "lane": "B0" if b_is_bf else "Q1",
+                        "lane": lane_str,
                         "is_backfill": b_is_bf,
                     }
                 )
 
+        occupied_pids = all_holder_pids | all_waiting_pids | cpu_build_tree_pids
         for pid, p in procs.items():
-            if pid in all_holder_pids or pid in waiting_roots or _is_driver_wrapper(p["cmd"]):
+            if pid in occupied_pids or _is_driver_wrapper(p["cmd"]):
                 continue
             cmd_l = p["cmd"].lower()
             if any(k in cmd_l for k in ("build.sh", "/ccec", "compiler")) and "grep" not in cmd_l:
+                rel_c = _collect_tree_and_driver_peers(pid, procs)
+                if rel_c & occupied_pids:
+                    continue
                 prob, sha = infer_problem_and_sha([pid], procs)
                 b_is_bf = "/.backfill/" in p["cmd"]
                 if not b_is_bf:
@@ -1382,7 +1431,10 @@ class StreamProbeSession:
                     except Exception:
                         pass
                 if prob:
-                    b_key = f"{prob}:{(sha or '')[:7]}:{'B0' if b_is_bf else 'OP'}"
+                    lane_str = "B0" if b_is_bf else "Q1"
+                    b_key = (prob.strip().lower(), lane_str)
+                    cpu_build_tree_pids.update(rel_c)
+                    occupied_pids.update(rel_c)
                     if b_key not in seen_build_keys:
                         seen_build_keys.add(b_key)
                         parallel_cpu_builds.append(
@@ -1392,7 +1444,7 @@ class StreamProbeSession:
                                 "sha": sha or "",
                                 "short_sha": (sha or "")[:7] or "—",
                                 "elapsed_sec": p["elapsed_sec"],
-                                "lane": "B0" if b_is_bf else "Q1",
+                                "lane": lane_str,
                                 "is_backfill": b_is_bf,
                             }
                         )
@@ -1418,6 +1470,30 @@ class StreamProbeSession:
                     "subprocesses": 4,
                 }
             )
+
+        # Canonical `(problem, lane)` deduplication (`ACTIVE > CPU_BUILD > WAITING`)
+        state_rank = {"ACTIVE": 3, "CPU_BUILD": 2, "WAITING": 1}
+        winners: dict[tuple[str, str], dict[str, Any]] = {}
+        for t in tasks:
+            p_raw = str(t.get("problem") or "").strip()
+            p_key = p_raw.lower() if p_raw else f"pid:{t.get('pid')}"
+            l_key = str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper()
+            k = (p_key, l_key)
+            prev = winners.get(k)
+            cand_score = (state_rank.get(str(t.get("state") or ""), 0), int(t.get("subprocesses") or 0), 1 if t.get("sha") else 0)
+            prev_score = (state_rank.get(str(prev.get("state") or ""), 0), int(prev.get("subprocesses") or 0), 1 if prev.get("sha") else 0) if prev else (-1, -1, -1)
+            if prev is None or cand_score > prev_score:
+                winners[k] = t
+        tasks = [t for t in tasks if winners.get((str(t.get("problem") or "").strip().lower() or f"pid:{t.get('pid')}", str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper())) is t]
+        surviving_cpu_keys = {
+            (str(t.get("problem") or "").strip().lower(), str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper())
+            for t in tasks if t.get("state") == "CPU_BUILD"
+        }
+        parallel_cpu_builds = [
+            cb for cb in parallel_cpu_builds
+            if (str(cb.get("title") or "").strip().lower(), str(cb.get("lane") or "Q1").strip().upper()) in surviving_cpu_keys
+        ]
+        waiting_tasks_list = [t for t in tasks if t.get("state") == "WAITING"]
 
         primary_dev = (
             npu["devices"][0]

@@ -54,10 +54,10 @@
     {
       "id": "SNP-direct-gm-tiling-64b",
       "pillar": "snippets",
-      "title": "64B Direct-GM Tiling + SetDataSize Trim + 1 KB Workspace Floor",
-      "summary": "Pack hot tiling scalars in the first 64B cacheline, trim H2D payload via SetDataSize(64), dereference const __gm__ directly without stack copies, and clamp default 16 MB workspace down to 1 KB.",
+      "title": "64B Direct-GM Tiling + SetDataSize Trim + Conditional 1 KB Workspace Guard",
+      "summary": "Pack hot tiling scalars in the first 64B cacheline, trim H2D payload via SetDataSize(64), and dereference const __gm__ directly without stack copies. WARNING: 1 KB workspace is ONLY valid when the kernel NEVER reads/writes workspace GM; if using GetUserWorkspace(workspace) or writing workspace, allocate RESERVED_WORKSPACE (16 MB) + user_bytes to avoid ACL 507035.",
       "category": "tiling-regime",
-      "tags": ["64B-tiling", "direct-gm", "SetDataSize", "workspace-1KB"],
+      "tags": ["64B-tiling", "direct-gm", "SetDataSize", "workspace-1KB", "acl-507035-guard"],
       "bottlenecks": ["cold-launch-tax", "scalar-bound", "h2d-tiling-tax"],
       "regimes": ["S_SMALL_CORE", "M_MID_UB"],
       "dtypes": ["float32", "float16", "bfloat16", "int32", "int64"],

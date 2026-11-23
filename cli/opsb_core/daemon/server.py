@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import hmac
 import http.server
@@ -37,9 +38,23 @@ DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
 
 
+def _is_expected_disconnect(exc: BaseException | None) -> bool:
+    if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):
+        return True
+    if isinstance(exc, OSError):
+        return exc.errno in (errno.EPIPE, errno.ECONNRESET, errno.ECONNABORTED, errno.ETIMEDOUT)
+    return False
+
+
 class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def handle_error(self, request: Any, client_address: Any) -> None:
+        _, exc, _ = sys.exc_info()
+        if _is_expected_disconnect(exc):
+            return
+        super().handle_error(request, client_address)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -163,6 +178,32 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
 
         def log_message(self, format: str, *args: Any) -> None:
             return
+
+        def handle(self) -> None:
+            try:
+                super().handle()
+            except Exception as exc:
+                if _is_expected_disconnect(exc):
+                    self.close_connection = True
+                    return
+                raise
+
+        def handle_one_request(self) -> None:
+            try:
+                super().handle_one_request()
+            except Exception as exc:
+                if _is_expected_disconnect(exc):
+                    self.close_connection = True
+                    return
+                raise
+
+        def finish(self) -> None:
+            try:
+                super().finish()
+            except Exception as exc:
+                if _is_expected_disconnect(exc):
+                    return
+                raise
 
         def _check_auth(self) -> bool:
             provided = self.headers.get("X-Opsb-Token") or ""
@@ -289,8 +330,11 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                         self.wfile.flush()
 
                         last_seq = runtime.wait_for_update(last_seq, timeout=interval_s)
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    return
+                except Exception as exc:
+                    if _is_expected_disconnect(exc):
+                        self.close_connection = True
+                        return
+                    raise
                 return
 
             self._send_json(404, {"ok": False, "error": f"not found: {path}"})

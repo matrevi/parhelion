@@ -3,10 +3,21 @@ import SwiftUI
 struct NpuServerQueueView: View {
     @EnvironmentObject var store: ContestStore
     @EnvironmentObject var hotStore: HotTelemetryStore
+    @Namespace private var laneNamespace
     let npu: NpuTelemetry
 
     private var lang: AppLanguage { store.lang }
     private var liveNpu: NpuTelemetry { hotStore.npu ?? npu }
+
+    private func taskAnimID(_ task: NpuTaskItem) -> String {
+        let prob = task.problem ?? "pid-\(task.pid)"
+        let lane = (task.lane ?? (task.isBackfillTask ? "B0" : "Q1")).uppercased()
+        return "\(prob)|\(lane)"
+    }
+
+    private var taskMotionSignature: [String] {
+        liveNpu.tasks.map { "\($0.state)|\($0.problem ?? "")|\($0.lane ?? "")|\($0.pid)" }
+    }
 
     private var dieExecTasks: [NpuTaskItem] {
         liveNpu.tasks.filter { $0.state == "ACTIVE" }
@@ -69,6 +80,7 @@ struct NpuServerQueueView: View {
                         )
                     }
                     .padding(10)
+                    .animation(.snappy(duration: 0.28), value: taskMotionSignature)
                 }
             }
         }
@@ -102,6 +114,11 @@ struct NpuServerQueueView: View {
             } else {
                 ForEach(items) { task in
                     taskCard(task)
+                        .matchedGeometryEffect(id: taskAnimID(task), in: laneNamespace)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .top)),
+                            removal: .opacity
+                        ))
                 }
             }
         }

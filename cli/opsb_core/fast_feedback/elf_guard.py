@@ -22,8 +22,10 @@ def _scan_op_kernel_template_instantiations(repo_dir: Path) -> tuple[int, dict[s
 
     tiling_keys: set[str] = set()
     macro_calls = 0
+    kernelc_tpl_macros = 0
     explicit_inst = 0
     template_defs = 0
+    noinline_funcs = 0
 
     for fpath in sorted(op_kernel_dir.rglob("*")):
         if not fpath.is_file() or fpath.suffix.lower() not in (".h", ".hpp", ".cpp", ".cc", ".cxx", ".c"):
@@ -38,15 +40,25 @@ def _scan_op_kernel_template_instantiations(repo_dir: Path) -> tuple[int, dict[s
         for m in re.finditer(r"\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)", txt):
             tiling_keys.add(re.sub(r"\s+", "", m.group(1)))
             macro_calls += 1
+        for m in re.finditer(r"\b(TPL_SEL(?:_[A-Z0-9_]+)?)\s*\(\s*([^)]*)\)", txt):
+            tiling_keys.add(f"TPL_SEL:{re.sub(r'\s+', '', m.group(2))}")
+            macro_calls += 1
+            kernelc_tpl_macros += 1
+        tpl_decls = re.findall(r"\b(?:TPL_[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(", txt)
+        macro_calls += len(tpl_decls)
+        kernelc_tpl_macros += len(tpl_decls)
         macro_calls += len(re.findall(r"\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL)\s*\(", txt))
         explicit_inst += len(re.findall(r"(?m)^\s*template\s+(?:class|struct|void|__global__|__aicore__)\b", txt))
         template_defs += len(re.findall(r"\btemplate\s*<", txt))
+        noinline_funcs += len(re.findall(r"\bnoinline\b|__aicore__.*\bnoinline\b", txt))
 
     counts = {
         "tiling_keys": len(tiling_keys),
         "macro_calls": macro_calls,
+        "kernelc_tpl_macros": kernelc_tpl_macros,
         "explicit_instantiations": explicit_inst,
         "template_decls": template_defs,
+        "noinline_hints": noinline_funcs,
     }
     total = (max(len(tiling_keys), macro_calls) + explicit_inst) if (tiling_keys or macro_calls or explicit_inst) else template_defs
     return int(total), counts
@@ -60,25 +72,60 @@ def _append_elf_alerts(
     o_max_bytes: float | int | None,
     build_sec: float | int | None,
     tmpl_count: float | int | None,
+    max_hot_symbol_bytes: int | None = None,
+    top_symbols: list[dict[str, Any]] | None = None,
+    noinline_hints: int = 0,
 ) -> None:
+    top_sym = top_symbols[0] if top_symbols else None
+    top_sym_name = str(top_sym.get("symbol") or "hot_kernel")[:64] if isinstance(top_sym, dict) else "hot_kernel"
+    multi_mode_split = (
+        max_hot_symbol_bytes is not None
+        and max_hot_symbol_bytes < int(eff_thresh["fail_text_bytes"])
+        and ((top_symbols and len(top_symbols) >= 2) or noinline_hints > 0)
+    )
     if o_max_text is not None:
         if o_max_text >= eff_thresh["fail_text_bytes"]:
-            alerts.append({
-                "code": "ICACHE_TEXT_BLOAT",
-                "severity": "redline",
-                "metric": "kernel_o_max_text_bytes",
-                "value": int(o_max_text),
-                "threshold": int(eff_thresh["fail_text_bytes"]),
-                "message": (
-                    f"Kernel .text size {int(o_max_text)}B ({o_max_text / 1024:.1f} KB) exceeds "
-                    f"{int(eff_thresh['fail_text_bytes']) // 1024} KB L1 I-Cache redline -> triggers cold-kernel stall."
-                ),
-                "suggested_kb_tags": ["noinline", "elf-diet", "icache-32kb"],
-            })
+            fail_kb = int(eff_thresh["fail_text_bytes"]) // 1024
+            if multi_mode_split:
+                alerts.append({
+                    "code": "ICACHE_TEXT_BLOAT",
+                    "severity": "warn",
+                    "attribution": "multi_mode_or_noinline_split",
+                    "metric": "kernel_o_max_text_bytes",
+                    "value": int(o_max_text),
+                    "max_hot_symbol_bytes": int(max_hot_symbol_bytes),
+                    "threshold": int(eff_thresh["fail_text_bytes"]),
+                    "message": (
+                        f"Total .text {o_max_text / 1024:.1f} KB >= {fail_kb} KB across multi-mode/noinline symbols, "
+                        f"but largest symbol '{top_sym_name}' is {max_hot_symbol_bytes / 1024:.1f} KB (< {fail_kb} KB I-Cache)."
+                    ),
+                    "suggested_kb_tags": ["tiling-key-prune", "elf-diet"],
+                })
+            else:
+                attr = "monolithic_hot_symbol" if max_hot_symbol_bytes is not None else "total_text_only"
+                sym_detail = (
+                    f" (top symbol '{top_sym_name}' = {max_hot_symbol_bytes / 1024:.1f} KB)"
+                    if max_hot_symbol_bytes is not None else ""
+                )
+                alerts.append({
+                    "code": "ICACHE_TEXT_BLOAT",
+                    "severity": "redline",
+                    "attribution": attr,
+                    "metric": "kernel_o_max_text_bytes",
+                    "value": int(o_max_text),
+                    **({"max_hot_symbol_bytes": int(max_hot_symbol_bytes)} if max_hot_symbol_bytes is not None else {}),
+                    "threshold": int(eff_thresh["fail_text_bytes"]),
+                    "message": (
+                        f"Kernel .text size {int(o_max_text)}B ({o_max_text / 1024:.1f} KB) exceeds "
+                        f"{fail_kb} KB L1 I-Cache redline{sym_detail} -> triggers cold-kernel stall."
+                    ),
+                    "suggested_kb_tags": ["noinline", "elf-diet", "icache-32kb"],
+                })
         elif o_max_text >= eff_thresh["warn_text_bytes"]:
             alerts.append({
                 "code": "ICACHE_TEXT_WARN",
                 "severity": "warn",
+                "attribution": "multi_mode_or_noinline_split" if multi_mode_split else "total_text_warn",
                 "metric": "kernel_o_max_text_bytes",
                 "value": int(o_max_text),
                 "threshold": int(eff_thresh["warn_text_bytes"]),
@@ -216,12 +263,33 @@ def evaluate_elf_guard(
         kbs.get("template_instantiation_count"),
     )
     tmpl_source = "compiled_stats" if tmpl_count is not None else "none"
-    static_scan_detail: dict[str, int] = {}
+    _, static_scan_detail = _scan_op_kernel_template_instantiations(repo_dir)
     if tmpl_count is None:
-        scanned_n, static_scan_detail = _scan_op_kernel_template_instantiations(repo_dir)
+        scanned_n = int(
+            (max(static_scan_detail.get("tiling_keys", 0), static_scan_detail.get("macro_calls", 0)) + static_scan_detail.get("explicit_instantiations", 0))
+            if any(static_scan_detail.get(k, 0) for k in ("tiling_keys", "macro_calls", "explicit_instantiations"))
+            else static_scan_detail.get("template_decls", 0)
+        )
         if scanned_n > 0 or (repo_dir / "op_kernel").is_dir():
             tmpl_count = scanned_n
             tmpl_source = "op_kernel_scan"
+
+    raw_top_syms = rj.get("top_symbols") or kbs.get("top_symbols") or []
+    top_symbols = [
+        {
+            "symbol": str(s.get("symbol") or ""),
+            "bytes": int(s.get("bytes") or 0),
+            **({"file": str(s["file"])} if s.get("file") else {}),
+        }
+        for s in raw_top_syms[:8]
+        if isinstance(s, dict) and s.get("symbol") and isinstance(s.get("bytes"), (int, float))
+    ]
+    max_hot_sym_raw = _first_num(
+        rj.get("max_hot_symbol_bytes"),
+        kbs.get("max_hot_symbol_bytes"),
+        top_symbols[0]["bytes"] if top_symbols else None,
+    )
+    max_hot_sym_bytes = int(max_hot_sym_raw) if max_hot_sym_raw is not None else None
 
     alerts: list[dict[str, Any]] = []
     _append_elf_alerts(
@@ -231,6 +299,9 @@ def evaluate_elf_guard(
         o_max_bytes=o_max_bytes,
         build_sec=build_sec,
         tmpl_count=tmpl_count,
+        max_hot_symbol_bytes=max_hot_sym_bytes,
+        top_symbols=top_symbols,
+        noinline_hints=int(static_scan_detail.get("noinline_hints", 0)),
     )
     status = "redline" if any(a["severity"] == "redline" for a in alerts) else ("warn" if any(a["severity"] == "warn" for a in alerts) else "ok")
     has_telemetry = any(x is not None for x in (o_count, o_max_bytes, o_max_text, build_sec))
@@ -239,6 +310,8 @@ def evaluate_elf_guard(
         "kernel_o_max_bytes": int(o_max_bytes) if o_max_bytes is not None else None,
         "kernel_o_sum_bytes": int(o_sum_bytes) if o_sum_bytes is not None else None,
         "kernel_o_max_text_bytes": int(o_max_text) if o_max_text is not None else None,
+        "max_hot_symbol_bytes": max_hot_sym_bytes,
+        "top_symbols": top_symbols,
         "phase_a_cpu_sec": round(float(build_sec), 2) if build_sec is not None else None,
         "template_instantiation_count": int(tmpl_count) if tmpl_count is not None else None,
         "template_source": tmpl_source,
@@ -249,6 +322,7 @@ def evaluate_elf_guard(
     return {
         "title": art["title"],
         "sha": art["sha"],
+        "sha_source": art.get("sha_source", "none"),
         "status": status,
         "metrics": metrics,
         "thresholds": eff_thresh,
