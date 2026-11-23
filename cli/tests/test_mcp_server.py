@@ -240,13 +240,25 @@ def test_escape_lock_blocks_submit_gate(isolated_mcp_env: Path, tmp_path: Path) 
 def test_lazy_fast_feedback_and_test_and_submit_gate(isolated_mcp_env: Path, tmp_path: Path) -> None:
     ws, _, sha = _make_mcp_workspace(tmp_path)
 
-    # Fallback when Track 1 not installed
-    pmu_fb = call_tool("parhelion_pmu_card", {"problem": "PadV3Grad"}, ws)
-    assert pmu_fb["available"] is False
-    c3_fb = call_tool("parhelion_elf_cold3_check", {"problem": "PadV3Grad"}, ws)
-    assert c3_fb["available"] is False
+    # Real merged Track 1 fast_feedback integration (`available=True`)
+    pmu_real = call_tool("parhelion_pmu_card", {"problem": "PadV3Grad"}, ws)
+    assert pmu_real["available"] is True
+    assert pmu_real["title"] == "PadV3Grad"
+    assert "dominant_bottleneck" in pmu_real
+    assert "markdown_card" in pmu_real
+    c3_real = call_tool("parhelion_elf_cold3_check", {"problem": "PadV3Grad"}, ws)
+    assert c3_real["available"] is True
+    assert c3_real["title"] == "PadV3Grad"
+    assert "elf_guard" in c3_real and "cold3_probe" in c3_real
 
-    # Lazy delegation when Track 1 is present
+    # Fallback when Track 1 is unavailable (`available=False`)
+    with mock.patch.dict(sys.modules, {"opsb_core.services.fast_feedback_service": None}):
+        pmu_fb = call_tool("parhelion_pmu_card", {"problem": "PadV3Grad"}, ws)
+        assert pmu_fb["available"] is False
+        c3_fb = call_tool("parhelion_elf_cold3_check", {"problem": "PadV3Grad"}, ws)
+        assert c3_fb["available"] is False
+
+    # Lazy delegation with mocked Track 1 responses
     fake_ff = mock.MagicMock()
     fake_ff.build_pmu_torch_card.return_value = {"title": "PadV3Grad", "dominant_bottleneck": "mte2-bound", "markdown_card": "card"}
     fake_ff.evaluate_elf_guard.return_value = {"status": "warn", "alerts": []}

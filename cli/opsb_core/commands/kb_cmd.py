@@ -76,9 +76,10 @@ def _handle_query(args: argparse.Namespace) -> int:
         for ap in res["anti_patterns"]:
             print(f"    ! {ap['id']} (fails={ap['fails']}): {ap['title']}")
             print(f"      {ap['summary']}")
-    if res["results"]:
+    results = res.get("results") if "results" in res else (res.get("entries") or [])
+    if results:
         print("  [Ranked Knowledge Entries]")
-        for it in res["results"]:
+        for it in results:
             print(
                 f"    * [{it['pillar']}|{it['status']}|conf={it['confidence']:.3f}|{it['portability']}] "
                 f"{it['id']} — {it['title']} (score={it['query_score']:.3f})"

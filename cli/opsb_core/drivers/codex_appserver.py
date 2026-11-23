@@ -1,0 +1,245 @@
+"""Pure `codex app-server --listen stdio://` JSON-RPC 2.0 client & headless turn runner."""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tomllib
+from pathlib import Path
+from typing import IO, Any
+
+from .. import config as _cfg
+from .macos_gui import build_parhelion_mcp_command
+
+
+def _toml_quote(text: str) -> str:
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _strip_toml_sections(text: str, section_headers: set[str]) -> str:
+    """Remove exact `[header]` sections (preserving all other TOML lines & comments)."""
+    out: list[str] = []
+    skipping = False
+    for ln in text.splitlines(keepends=True):
+        stripped = ln.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if stripped in section_headers:
+                skipping = True
+                continue
+            skipping = False
+        if not skipping:
+            out.append(ln)
+    return "".join(out)
+
+
+def render_codex_config_toml(workspace: Path, mcp_url: str | None = None) -> str:
+    if mcp_url:
+        lines = ["# Managed by Parhelion", "[mcp_servers.parhelion]", f"url = {_toml_quote(mcp_url)}"]
+    else:
+        cmd, args, env = build_parhelion_mcp_command(workspace)
+        args_toml = ", ".join(_toml_quote(a) for a in args)
+        lines = [
+            "# Managed by Parhelion", "[mcp_servers.parhelion]",
+            f"command = {_toml_quote(cmd)}", f"args = [{args_toml}]", "[mcp_servers.parhelion.env]",
+            *(f"{k} = {_toml_quote(v)}" for k, v in env.items()),
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def upsert_workspace_codex_toml(ws_toml_path: Path, workspace: Path, mcp_url: str | None = None) -> None:
+    ws_toml_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = ws_toml_path.read_text(encoding="utf-8") if ws_toml_path.is_file() else ""
+    base = _strip_toml_sections(existing, {"[mcp_servers.parhelion]", "[mcp_servers.parhelion.env]"})
+    block = render_codex_config_toml(workspace, mcp_url=mcp_url)
+    merged = (base.rstrip() + "\n\n" + block) if base.strip() else block
+    tomllib.loads(merged)
+    tmp = ws_toml_path.with_suffix(".tmp")
+    tmp.write_text(merged, encoding="utf-8")
+    os.replace(tmp, ws_toml_path)
+
+
+def ensure_codex_project_trusted(config_toml_path: Path, real_ws: str) -> bool:
+    """Idempotently add `[projects."<real_ws>"] trust_level = "trusted"` without clobbering existing TOML."""
+    config_toml_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = config_toml_path.read_text(encoding="utf-8") if config_toml_path.is_file() else ""
+    if existing.strip():
+        try:
+            projects = tomllib.loads(existing).get("projects")
+            if isinstance(projects, dict) and isinstance(projects.get(real_ws), dict) and projects[real_ws].get("trust_level") == "trusted":
+                return False
+        except tomllib.TOMLDecodeError:
+            pass
+    header = f"[projects.{_toml_quote(real_ws)}]"
+    cleaned = _strip_toml_sections(existing, {header})
+    snippet = f'{header}\ntrust_level = "trusted"\n'
+    new_text = (cleaned.rstrip() + "\n\n" + snippet) if cleaned.strip() else snippet
+    tomllib.loads(new_text)
+    tmp = config_toml_path.with_suffix(".tmp")
+    tmp.write_text(new_text, encoding="utf-8")
+    os.replace(tmp, config_toml_path)
+    return True
+
+
+class CodexAppServerClient:
+    """Native `codex app-server --listen stdio://` JSON-RPC 2.0 client."""
+
+    def __init__(self, stdin_stream: IO[str], stdout_stream: IO[str], log_stream: IO[str] | None = None) -> None:
+        self._stdin = stdin_stream
+        self._stdout = stdout_stream
+        self._log = log_stream
+        self._next_id = 1
+        self.events: list[dict[str, Any]] = []
+
+    def _log_msg(self, direction: str, msg: Any) -> None:
+        if self._log is None:
+            return
+        self._log.write(json.dumps({"ts": _cfg.utc_now().isoformat(), "dir": direction, "msg": msg}, ensure_ascii=False) + "\n")
+        self._log.flush()
+
+    def _write_msg(self, msg: dict[str, Any]) -> None:
+        self._log_msg("out", msg)
+        self._stdin.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
+        self._stdin.flush()
+
+    def _read_until_id(self, req_id: int) -> dict[str, Any]:
+        while True:
+            raw = self._stdout.readline()
+            if raw == "":
+                raise RuntimeError(f"Codex app-server stdout closed before id={req_id}")
+            s = raw.strip()
+            if not s:
+                continue
+            try:
+                msg = json.loads(s)
+            except json.JSONDecodeError:
+                continue
+            self._log_msg("in", msg)
+            if isinstance(msg, dict) and msg.get("id") == req_id:
+                return msg
+            if isinstance(msg, dict):
+                self.events.append(msg)
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        req_id = self._next_id
+        self._next_id += 1
+        self._write_msg({"jsonrpc": "2.0", "id": req_id, "method": method, "params": params})
+        return self._read_until_id(req_id)
+
+    def initialize(self) -> dict[str, Any]:
+        resp = self.request("initialize", {"clientInfo": {"name": "parhelion", "title": "Parhelion", "version": "3.0.0"}})
+        if "error" in resp:
+            raise RuntimeError(f"Codex initialize failed: {resp['error']}")
+        self._write_msg({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+        return resp.get("result") or {}
+
+    def open_thread(self, cwd: Path, resume_id: str | None = None, *, persist_extended_history: bool = False) -> str:
+        if resume_id:
+            resp = self.request("thread/resume", {"threadId": resume_id, "cwd": str(cwd)})
+            res = resp.get("result") if isinstance(resp.get("result"), dict) else None
+            if "error" not in resp and res is not None:
+                thread = res.get("thread") if isinstance(res.get("thread"), dict) else {}
+                return str(thread.get("id") or res.get("threadId") or resume_id)
+        params: dict[str, Any] = {"cwd": str(cwd)}
+        if persist_extended_history:
+            params["persistExtendedHistory"] = True
+        resp = self.request("thread/start", params)
+        if "error" in resp:
+            raise RuntimeError(f"Codex thread/start failed: {resp['error']}")
+        res = resp.get("result") or {}
+        thread = res.get("thread") if isinstance(res.get("thread"), dict) else {}
+        return str(thread.get("id") or res.get("threadId") or "")
+
+    def set_thread_name(self, thread_id: str, name: str) -> dict[str, Any]:
+        resp = self.request("thread/name/set", {"threadId": thread_id, "name": name})
+        if "error" in resp:
+            raise RuntimeError(f"Codex thread/name/set failed: {resp['error']}")
+        return resp.get("result") or {}
+
+    def start_turn(self, thread_id: str, prompt_text: str) -> dict[str, Any]:
+        resp = self.request("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt_text}]})
+        if "error" in resp:
+            raise RuntimeError(f"Codex turn/start failed: {resp['error']}")
+        while True:
+            raw = self._stdout.readline()
+            if raw == "":
+                break
+            s = raw.strip()
+            if not s:
+                continue
+            try:
+                msg = json.loads(s)
+            except json.JSONDecodeError:
+                continue
+            self._log_msg("in", msg)
+            if isinstance(msg, dict):
+                self.events.append(msg)
+                if msg.get("method") in ("turn/completed", "turn/failed"):
+                    break
+        return resp.get("result") or {}
+
+
+def preseed_codex_thread(bin_path: str, real_wt: Path, name: str, c_home: Path) -> str:
+    """Pre-create a persisted Codex thread via `codex app-server` before opening the GUI deep link."""
+    proc = subprocess.Popen(
+        [bin_path, "app-server", "--listen", "stdio://"],
+        cwd=str(real_wt), env={**os.environ, "CODEX_HOME": str(c_home)},
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    client = CodexAppServerClient(proc.stdin, proc.stdout)
+    try:
+        client.initialize()
+        tid = client.open_thread(real_wt, persist_extended_history=True)
+        if tid and name:
+            try:
+                client.set_thread_name(tid, name)
+            except Exception:
+                pass
+        return tid
+    finally:
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+
+def run_codex_headless_turn(
+    workspace: Path,
+    worktree: Path,
+    brief: str,
+    session_id: str,
+    native_session_id: str,
+    resume_id: str | None,
+    cmd: list[str],
+    env: dict[str, str],
+    log_path: Path,
+) -> int:
+    from .session_store import update_session
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as lf:
+        proc = subprocess.Popen(
+            cmd, cwd=str(worktree), env={**os.environ, **env},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        client = CodexAppServerClient(proc.stdin, proc.stdout, log_stream=lf)
+        try:
+            client.initialize()
+            thread_id = client.open_thread(worktree, resume_id=resume_id)
+            if thread_id:
+                update_session(workspace, session_id, native_session_id=thread_id)
+            client.start_turn(thread_id or native_session_id, brief)
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+            rc = proc.wait(timeout=10)
+            if proc.stderr is not None and (err_txt := proc.stderr.read()):
+                lf.write(json.dumps({"event": "stderr", "text": err_txt}) + "\n")
+        return int(rc)
