@@ -187,7 +187,7 @@ Dependency-free Python 3 stdlib CLI returning pure JSON on `stdout` (`PYTHONPATH
 
 ```bash
 # Full live snapshot (NPU MLFQ+WSPT queue, 4-stage submit queue, quota bucket, problem priorities)
-python3 -m scheduler.cli_bridge status --workspace /Users/winbeau/Competitions/ops-bench
+python3 -m scheduler.cli_bridge status --workspace /path/to/workspace
 
 # Evaluate 4-stage gate & score estimator for any commit
 python3 -m scheduler.cli_bridge evaluate --title CTCLossV2 --sha 02c2048 --speedup 1.35
@@ -212,7 +212,7 @@ python3 -m scheduler.cli_bridge diagnose --title ConcatD
 python3 -m scheduler.cli_bridge verify-escape --title MultilabelMarginLoss --bad-sha af84e85 --good-sha 59f8065
 
 # Causal historical replay & accuracy verification
-python3 -m scheduler.cli_bridge retrospect --workspace /Users/winbeau/Competitions/ops-bench
+python3 -m scheduler.cli_bridge retrospect --workspace /path/to/workspace
 
 # B0 backfill lane (lowest priority, auto-detect + dedup + idempotent baseline bucket pairing)
 python3 -m scheduler.cli_bridge backfill [--title <T>] [--auto | --force] [--dry-run] [--offline]

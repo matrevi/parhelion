@@ -12,11 +12,13 @@ parhelion/
 ├── Sources/Parhelion/                 # Native SwiftUI UI (App, Core, Domain, DesignSystem, Features)
 ├── scripts/
 │   ├── generate_icon.swift            # CoreGraphics vector AppIcon generator
-│   └── bundle_app.sh                  # Release build + codesigned `/Applications/Parhelion.app` bundler
+│   ├── bundle_app.sh                  # Release build + codesigned `/Applications/Parhelion.app` bundler
+│   └── build_dmg.sh                   # Compressed UDZO `.dmg` + SHA-256 release packager
 ├── cli/
 │   ├── opsb                           # Thin executable entrypoint (`~/.local/bin/opsb`)
 │   └── opsb_core/                     # Layered Python CLI + local HTTP/SSE telemetry daemon
 ├── scheduler/                         # Paired-kperf Simplex-MAP estimator, 4-stage gate & WSPT scheduler
+├── runtime/                           # Generic 3-phase NPU runner (`npu-test.py`, `npu_runtime/`) & judge client
 ├── templates/
 │   └── breakthrough/schema.json       # Empty schema template (zero contest data)
 ├── skills/
@@ -48,11 +50,12 @@ parhelion/
         └── state/                     # scheduler_state.json, backfill_ledger.jsonl, verified_escapes.json
 ```
 
-## Build & Install
+## Build, Install & Release DMG
 
 ```bash
-chmod +x scripts/bundle_app.sh
-./scripts/bundle_app.sh --install
+chmod +x scripts/bundle_app.sh scripts/build_dmg.sh
+./scripts/bundle_app.sh --install      # Build & install /Applications/Parhelion.app + ~/.local/bin/opsb
+./scripts/build_dmg.sh                 # Package dist/Parhelion-v<ver>-<arch>.dmg + .sha256
 ```
 
 This builds `Parhelion.app`, installs it to `/Applications/Parhelion.app`, and symlinks `~/.local/bin/opsb`.
