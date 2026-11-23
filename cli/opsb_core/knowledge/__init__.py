@@ -1,8 +1,9 @@
-"""Self-Evolving Triad Knowledge Base package (`breakthrough` + `snippets` + `community`)."""
+"""Self-Evolving 4-Pillar Knowledge Base package (`breakthrough` + `snippets` + `hardware` + `community`)."""
 from __future__ import annotations
 
 from .audit import get_kb_evolution_history, revert_event, rollback_last
 from .evolution import compute_confidence, promote_entry, record_kb_entry, record_kb_feedback, validate_evidence
+from .migration import classify_community_entry_is_hardware, migrate_hardware_entries_from_community
 from .query import format_prompt_cache_digest, get_kb_entry, list_kb_entries, query_kb
 from .seeding import ensure_triad_kb_seeded, project_readonly_skills
 from .store import (
@@ -29,12 +30,14 @@ __all__ = [
     "VALID_STATUSES",
     "VALID_VERDICTS",
     "WRITABLE_PILLARS",
+    "classify_community_entry_is_hardware",
     "compute_confidence",
     "ensure_triad_kb_seeded",
     "format_prompt_cache_digest",
     "get_kb_entry",
     "get_kb_evolution_history",
     "list_kb_entries",
+    "migrate_hardware_entries_from_community",
     "project_readonly_skills",
     "promote_entry",
     "query_kb",

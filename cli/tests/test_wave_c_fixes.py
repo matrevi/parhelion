@@ -249,7 +249,8 @@ def test_v3_008_and_v3_017_kb_entries(isolated_home: Path) -> None:
 
     q = query_kb(bottlenecks=["cold-launch-tax"], regime="S_SMALL_CORE", parhelion_home=isolated_home)
     anti_ids = [a["id"] for a in q["anti_patterns"]]
-    assert "COM-dummy-halfcores-launch-illusion" in anti_ids
+    assert "HW-dummy-halfcores-launch-illusion" in anti_ids
+    assert get_kb_entry("COM-dummy-halfcores-launch-illusion", parhelion_home=isolated_home)["id"] == "HW-dummy-halfcores-launch-illusion"
     com = get_kb_entry("COM-dummy-halfcores-launch-illusion", parhelion_home=isolated_home)
     assert "-11.83" in com["content"]
     assert "(maxCores + 1) / 2" in com["content"] or "(maxCores+1)/2" in com["summary"]

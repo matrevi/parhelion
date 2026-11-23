@@ -32,7 +32,9 @@ struct TriadKBDetailView: View {
     private var headerBanner: some View {
         let accent: Color = entry.isAntiPattern
             ? Color(red: 0.84, green: 0.23, blue: 0.26)
-            : (entry.pillar == "snippets" ? Color(red: 0.12, green: 0.68, blue: 0.62) : Color.accentColor)
+            : (entry.pillar == "snippets"
+                ? Color(red: 0.12, green: 0.68, blue: 0.62)
+                : (entry.pillar == "hardware" ? Color(red: 0.45, green: 0.34, blue: 0.88) : Color.accentColor))
         return SurfaceCard(highlighted: true, highlightColor: accent, padding: 14) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
@@ -122,8 +124,10 @@ struct TriadKBDetailView: View {
                     Label(
                         isCodeSnippet
                             ? lang.tr("KernelC C++ 代码积木 (\(entry.docPath))", "KernelC C++ Snippet (\(entry.docPath))")
-                            : lang.tr("方案文档 (\(entry.docPath))", "Knowledge Document (\(entry.docPath))"),
-                        systemImage: isCodeSnippet ? "curlybraces.square.fill" : "doc.plaintext.fill"
+                            : (entry.pillar == "hardware"
+                                ? lang.tr("硬件规律文档 (\(entry.docPath))", "Hardware Law Document (\(entry.docPath))")
+                                : lang.tr("社区方案文档 (\(entry.docPath))", "Community Scheme Document (\(entry.docPath))")),
+                        systemImage: isCodeSnippet ? "curlybraces.square.fill" : (entry.pillar == "hardware" ? "cpu.fill" : "doc.plaintext.fill")
                     )
                     .font(.system(size: 12, weight: .bold))
 

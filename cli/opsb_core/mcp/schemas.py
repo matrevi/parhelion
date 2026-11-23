@@ -54,14 +54,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_query",
-        "description": "Query Triad KB (breakthrough + snippets + community + anti-patterns) by symptom, regime, or dtype.",
+        "description": "Query 4-Pillar KB (breakthrough + snippets + hardware + community + anti-patterns) by symptom, regime, or dtype.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "bottlenecks": {"type": "array", "items": {"type": "string"}},
                 "regime": {"type": "string"},
                 "dtype": {"type": "string"},
-                "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "community", "all"]},
+                "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "all"]},
                 "text": {"type": "string"},
                 "include_anti_patterns": {"type": "boolean"},
                 "limit": {"type": "integer"},
@@ -71,11 +71,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_record",
-        "description": "Propose a new snippet, community card, or anti-pattern (strictly evidence-gated).",
+        "description": "Propose a new snippet, hardware law (silicon/doc-discovered Accel behavior), community acceleration card, or anti-pattern (strictly evidence-gated).",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "pillar": {"type": "string", "enum": ["snippets", "community"]},
+                "pillar": {"type": "string", "enum": ["snippets", "hardware", "community"]},
                 "title": {"type": "string"},
                 "summary": {"type": "string"},
                 "problem": {"type": "string"},

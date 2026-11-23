@@ -15,8 +15,8 @@ from typing import Any, Callable
 from .. import config as cfg_mod
 from ..config import append_jsonl_locked, read_json, utc_now
 
-VALID_PILLARS = ("breakthrough", "snippets", "community")
-WRITABLE_PILLARS = ("snippets", "community")
+VALID_PILLARS = ("breakthrough", "snippets", "hardware", "community")
+WRITABLE_PILLARS = ("snippets", "hardware", "community")
 VALID_PORTABILITIES = ("native-accel", "portable", "remap-to-accel", "anti-pattern")
 VALID_STATUSES = ("verified", "unverified", "deprecated", "anti-pattern")
 VALID_VERDICTS = ("win", "fail", "anti-pattern")
@@ -70,8 +70,11 @@ def resolve_parhelion_home(parhelion_home: Path | str | None = None) -> Path:
 def triad_kb_dirs(parhelion_home: Path | str | None = None) -> dict[str, Path]:
     home = resolve_parhelion_home(parhelion_home)
     return {
-        "home": home, "breakthrough": home / "breakthrough",
-        "snippets": home / "snippets", "community": home / "community",
+        "home": home,
+        "breakthrough": home / "breakthrough",
+        "snippets": home / "snippets",
+        "hardware": home / "hardware",
+        "community": home / "community",
         "evolution_log": home / "kb-evolution.jsonl",
     }
 
@@ -216,10 +219,15 @@ def _snapshot_for_audit(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _find_entry_location(dirs: dict[str, Path], entry_id: str) -> tuple[str, Path, int, dict[str, Any]] | None:
     q = entry_id.strip().lower()
+    legacy_hit: tuple[str, Path, int, dict[str, Any]] | None = None
     for pillar in VALID_PILLARS:
         idx_path = dirs[pillar] / "index.json"
         raw = read_json(idx_path, {"entries": []})
         for idx, cur in enumerate((raw.get("entries") if isinstance(raw, dict) else []) or []):
-            if isinstance(cur, dict) and str(cur.get("id") or "").lower() == q:
+            if not isinstance(cur, dict):
+                continue
+            if str(cur.get("id") or "").lower() == q:
                 return pillar, idx_path, idx, cur
-    return None
+            if legacy_hit is None and str(cur.get("legacy_id") or "").lower() == q:
+                legacy_hit = (pillar, idx_path, idx, cur)
+    return legacy_hit

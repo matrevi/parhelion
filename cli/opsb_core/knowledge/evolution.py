@@ -99,9 +99,10 @@ def _render_community_markdown(entry: dict[str, Any], body: str = "") -> str:
         ev_rows = "\n## Evidence Ledger\n| Problem | SHA | Verdict | Detail |\n|---|---|---|---|\n" + "\n".join(rows) + "\n"
     body_txt = body.strip() or entry.get("summary", "")
     rel_block = f"\n## Related Snippets\n- {rel}\n" if rel else ""
+    legacy_line = f"legacy_id: {entry['legacy_id']}\n" if entry.get("legacy_id") else ""
     return (
-        f"---\nid: {entry['id']}\npillar: {entry['pillar']}\nportability: {entry['portability']}\n"
-        f"status: {entry['status']}\nconfidence: {entry['confidence']}\n"
+        f"---\nid: {entry['id']}\n{legacy_line}pillar: {entry.get('pillar', 'community')}\nportability: {entry.get('portability', 'portable')}\n"
+        f"status: {entry.get('status', 'unverified')}\nconfidence: {entry.get('confidence', 0.5)}\n"
         f"bottlenecks: [{b_tags}]\nregimes: [{r_tags}]\ndtypes: [{d_tags}]\n---\n\n"
         f"# {entry['title']}\n\n{body_txt}\n{rel_block}{ev_rows}"
     )
@@ -153,7 +154,7 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
     if is_anti:
         portability, status = "anti-pattern", "anti-pattern"
     else:
-        portability = port_req or ("native-accel" if p_norm == "snippets" else "portable")
+        portability = port_req or ("native-accel" if p_norm in ("snippets", "hardware") else "portable")
         if req_status:
             status = req_status
         elif p_norm == "snippets":
@@ -161,7 +162,7 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
         else:
             status = "verified" if any(e["verdict"] == "win" and _meets_promote(e) for e in ev_list) else "unverified"
 
-    prior_alpha = 2.0 if (portability == "native-accel" or (p_norm == "snippets" and status == "verified")) else 1.0
+    prior_alpha = 2.0 if (portability == "native-accel" or (p_norm in ("snippets", "hardware") and status == "verified")) else 1.0
     prior_beta = 1.0
     confidence = compute_confidence(wins, fails, portability=portability, status=status, prior_alpha=prior_alpha, prior_beta=prior_beta)
 
@@ -169,15 +170,16 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
     ensure_triad_kb_seeded(parhelion_home=dirs["home"])
     p_dir, idx_path = dirs[p_norm], dirs[p_norm] / "index.json"
 
-    prefix = "SNP" if p_norm == "snippets" else "COM"
+    prefix = "SNP" if p_norm == "snippets" else ("HW" if p_norm == "hardware" else "COM")
     explicit_id = str(payload.get("id") or "").strip()
     entry_id = explicit_id or _slugify_id(prefix, title, ev_list[0]["sha"])
     bottlenecks = _normalize_tag_list(payload.get("bottlenecks")) or _infer_bottlenecks_from_text(
         f"{title} {summary}", str(payload.get("category") or ""), _normalize_tag_list(payload.get("tags")),
     )
+    default_cat = "tiling-regime" if p_norm == "snippets" else ("hardware-law" if p_norm == "hardware" else "vectorization")
     entry_record: dict[str, Any] = {
         "id": entry_id, "pillar": p_norm, "title": title, "summary": summary,
-        "category": str(payload.get("category") or ("tiling-regime" if p_norm == "snippets" else "vectorization")).strip(),
+        "category": str(payload.get("category") or default_cat).strip(),
         "tags": [str(t).strip() for t in (payload.get("tags") or []) if str(t).strip()],
         "bottlenecks": bottlenecks,
         "regimes": [str(r).strip().upper() for r in (payload.get("regimes") or []) if str(r).strip()] or ["M_MID_UB"],
@@ -218,8 +220,8 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
     return {"ok": True, "entry": _normalize_entry(saved, p_norm, p_dir), "event": event}
 
 
-def _refresh_community_doc(p_dir: Path, entry: dict[str, Any]) -> None:
-    doc_abs = _resolve_doc_path(p_dir, str(entry.get("doc_path") or ""), entry["id"], "community")
+def _refresh_markdown_doc(p_dir: Path, entry: dict[str, Any], pillar: str) -> None:
+    doc_abs = _resolve_doc_path(p_dir, str(entry.get("doc_path") or ""), entry["id"], pillar)
     existing_body = ""
     if doc_abs and doc_abs.is_file():
         raw_md = doc_abs.read_text(encoding="utf-8", errors="replace")
@@ -245,13 +247,21 @@ def record_kb_feedback(
     loc = _find_entry_location(dirs, entry_id)
     if loc is None:
         raise ValueError(f"KB entry {entry_id!r} not found across {VALID_PILLARS}.")
-    pillar, idx_path, _, _ = loc
+    pillar, idx_path, _, matched_raw = loc
+    canonical_id = str(matched_raw.get("id") or entry_id)
     p_dir = dirs[pillar]
 
     def _mutate(cur: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         entries = list(cur.get("entries") or [])
-        q = entry_id.strip().lower()
-        target_idx = next((i for i, e in enumerate(entries) if isinstance(e, dict) and str(e.get("id") or "").lower() == q), None)
+        q = canonical_id.strip().lower()
+        target_idx = next(
+            (
+                i for i, e in enumerate(entries)
+                if isinstance(e, dict)
+                and (str(e.get("id") or "").lower() == q or str(e.get("legacy_id") or "").lower() == entry_id.strip().lower())
+            ),
+            None,
+        )
         if target_idx is None:
             raise ValueError(f"KB entry {entry_id!r} disappeared during update.")
 
@@ -269,7 +279,7 @@ def record_kb_feedback(
             new_status, new_port = "anti-pattern", "anti-pattern"
             if old_status != "anti-pattern":
                 action, transition = "demote", f"{old_status}->anti-pattern"
-        elif pillar == "community" and old_status == "unverified" and v_norm == "win" and _meets_promote(ev):
+        elif pillar in ("community", "hardware") and old_status == "unverified" and v_norm == "win" and _meets_promote(ev):
             new_status, action, transition = "verified", "promote", "unverified->verified"
 
         merged.update({
@@ -286,12 +296,12 @@ def record_kb_feedback(
 
     mut_res = _with_index_lock(idx_path, _mutate)
     updated_raw = mut_res["after_raw"]
-    if pillar == "community":
-        _refresh_community_doc(p_dir, updated_raw)
+    if pillar in ("community", "hardware"):
+        _refresh_markdown_doc(p_dir, updated_raw, pillar)
 
     created_snippet_id: str | None = None
     if promote_snippet_code and promote_snippet_code.strip() and v_norm == "win":
-        snip_base = re.sub(r"^(COM|BT)-", "SNP-", updated_raw["id"])
+        snip_base = re.sub(r"^(COM|HW|BT)-", "SNP-", updated_raw["id"])
         snip_base = snip_base if snip_base.startswith("SNP-") else f"SNP-{snip_base}"
         existing_snips = {str(e.get("id") or "").lower() for e in (read_json(dirs["snippets"] / "index.json", {"entries": []}).get("entries") or []) if isinstance(e, dict)}
         snip_id = snip_base if snip_base.lower() not in existing_snips else f"{snip_base}-{ev['sha'][:7].lower()}"

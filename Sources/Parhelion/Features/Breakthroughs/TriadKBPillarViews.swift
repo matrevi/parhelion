@@ -64,7 +64,9 @@ struct TriadKBListPane: View {
     private func rowCard(_ entry: TriadKBEntry, selected: Bool) -> some View {
         let highlight: Color = entry.isAntiPattern
             ? Color(red: 0.84, green: 0.23, blue: 0.26)
-            : (entry.pillar == "snippets" ? Color(red: 0.12, green: 0.68, blue: 0.62) : Color.accentColor)
+            : (entry.pillar == "snippets"
+                ? Color(red: 0.12, green: 0.68, blue: 0.62)
+                : (entry.pillar == "hardware" ? Color(red: 0.45, green: 0.34, blue: 0.88) : Color.accentColor))
         return SurfaceCard(highlighted: selected, highlightColor: highlight, padding: 10) {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
@@ -173,8 +175,8 @@ struct TriadEvolutionLogView: View {
             HStack(spacing: 10) {
                 Label(
                     lang.tr(
-                        "三元知识库进化审计日志 (\(store.triadEvolutionEvents.count) 条)",
-                        "Triad KB Evolution Audit Log (\(store.triadEvolutionEvents.count) event(s))"
+                        "四元知识库进化审计日志 (\(store.triadEvolutionEvents.count) 条)",
+                        "4-Pillar KB Evolution Audit Log (\(store.triadEvolutionEvents.count) event(s))"
                     ),
                     systemImage: "clock.arrow.2.circlepath"
                 )
@@ -211,7 +213,7 @@ struct TriadEvolutionLogView: View {
                     Text(lang.tr("尚未记录任何知识库进化事件", "No KB evolution events recorded yet."))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text(lang.tr("对突破/积木/社区卡片提交 Win 或 Fail 实证后，系统将在此记录自动晋升/降级与回滚链。",
+                    Text(lang.tr("对突破/积木/硬件/社区卡片提交 Win 或 Fail 实证后，系统将在此记录自动晋升/降级与回滚链。",
                                  "Submit Win/Fail evidence on any entry to track auto-promotions, demotions, and rollbacks here."))
                         .font(.system(size: 11.5))
                         .foregroundStyle(.tertiary)

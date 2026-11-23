@@ -13,6 +13,7 @@ from ..config import SUPERVISOR_ROOT, read_json, workspace_id
 from ..services.contest_service import resolve_workspace_meta
 
 DEFAULT_ELF_THRESHOLDS: dict[str, float | int] = {
+    "hot_symbol_warn_bytes": 16384,
     "warn_text_bytes": 24576,
     "fail_text_bytes": 32768,
     "warn_o_max_bytes": 98304,

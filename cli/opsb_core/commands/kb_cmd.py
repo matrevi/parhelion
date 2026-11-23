@@ -13,6 +13,7 @@ from ..services.triad_kb_service import (
     get_kb_entry,
     get_kb_evolution_history,
     list_kb_entries,
+    migrate_hardware_entries_from_community,
     project_readonly_skills,
     query_kb,
     record_kb_entry,
@@ -284,9 +285,29 @@ def _handle_seed(args: argparse.Namespace) -> int:
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     print(
-        f"Seeded Triad KB at {res['parhelion_home']}: seeded={res['seeded_pillars']}, "
+        f"Seeded 4-Pillar KB at {res['parhelion_home']}: seeded={res['seeded_pillars']}, "
         f"copied={res['copied_count']} file(s)."
     )
+    return 0
+
+
+def _handle_migrate_hardware(args: argparse.Namespace) -> int:
+    as_json = bool(getattr(args, "json", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    res = migrate_hardware_entries_from_community(dry_run=dry_run)
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    if dry_run:
+        print(
+            f"[dry-run] Would migrate {res['to_move_count']} hardware entries out of community "
+            f"(remaining community={res['remaining_community_count']})."
+        )
+    else:
+        print(
+            f"Migrated {res['migrated_count']} hardware entries to {res['parhelion_home']}/hardware "
+            f"(hardware={res['hardware_total']}, community={res['community_total']})."
+        )
     return 0
 
 
@@ -303,6 +324,7 @@ def run_kb(args: argparse.Namespace) -> int:
         "rollback": _handle_rollback,
         "project": _handle_project,
         "seed": _handle_seed,
+        "migrate-hardware": _handle_migrate_hardware,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -315,19 +337,19 @@ def run_kb(args: argparse.Namespace) -> int:
 
 def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register `opsb kb` subcommands onto the main `opsb` subparsers."""
-    s_kb = sub.add_parser("kb", help="Self-evolving Triad Knowledge Base (breakthrough / snippets / community)")
+    s_kb = sub.add_parser("kb", help="Self-evolving 4-Pillar Knowledge Base (breakthrough / snippets / hardware / community)")
     kb_sub = s_kb.add_subparsers(dest="kb_cmd")
-    s_kb.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "community", "all"], default="all")
+    s_kb.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default="all")
     s_kb.add_argument("--status", "-s", choices=["verified", "unverified", "deprecated", "anti-pattern", "all"], default="all")
     s_kb.add_argument("--portability", choices=["native-accel", "portable", "remap-to-accel", "anti-pattern"], default=None)
     s_kb.add_argument("--json", action="store_true")
     s_kb.set_defaults(func=run_kb, kb_cmd="list")
 
-    k_q = kb_sub.add_parser("query", help="Query Triad KB across all 3 pillars by hardware symptom")
+    k_q = kb_sub.add_parser("query", help="Query 4-Pillar KB across all 4 pillars by hardware symptom")
     k_q.add_argument("--bottleneck", "-b", action="append", help="Bottleneck tag (repeatable or comma-separated)")
     k_q.add_argument("--regime", "-r", help="Regime (PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED, X_EXTREME)")
     k_q.add_argument("--dtype", "-d", help="Data type (float32, float16, bfloat16, int8, int32)")
-    k_q.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "community", "all"], default=argparse.SUPPRESS)
+    k_q.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default=argparse.SUPPRESS)
     k_q.add_argument("--text", "-q", default="", help="Free-text search terms")
     k_q.add_argument("--limit", type=int, default=8)
     k_q.add_argument("--no-anti-patterns", action="store_true")
@@ -336,8 +358,8 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_q.set_defaults(func=run_kb)
 
-    k_ls = kb_sub.add_parser("list", help="List Triad KB entries")
-    k_ls.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "community", "all"], default=argparse.SUPPRESS)
+    k_ls = kb_sub.add_parser("list", help="List 4-Pillar KB entries")
+    k_ls.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default=argparse.SUPPRESS)
     k_ls.add_argument("--status", "-s", choices=["verified", "unverified", "deprecated", "anti-pattern", "all"], default=argparse.SUPPRESS)
     k_ls.add_argument("--portability", choices=["native-accel", "portable", "remap-to-accel", "anti-pattern"], default=argparse.SUPPRESS)
     k_ls.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -348,8 +370,8 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_sh.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_sh.set_defaults(func=run_kb)
 
-    k_rc = kb_sub.add_parser("record", help="Record an evidence-gated snippet or community card")
-    k_rc.add_argument("--pillar", required=True, choices=["snippets", "community"])
+    k_rc = kb_sub.add_parser("record", help="Record an evidence-gated snippet, hardware law, or community card")
+    k_rc.add_argument("--pillar", required=True, choices=["snippets", "hardware", "community"])
     k_rc.add_argument("--title", required=True)
     k_rc.add_argument("--summary", required=True)
     k_rc.add_argument("--problem", required=True)
@@ -401,7 +423,12 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_pr.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_pr.set_defaults(func=run_kb)
 
-    k_sd = kb_sub.add_parser("seed", help="Non-destructively seed Triad KB snippets & community templates")
+    k_sd = kb_sub.add_parser("seed", help="Non-destructively seed 4-Pillar KB snippets, hardware & community templates")
     k_sd.add_argument("--templates-root", default=None)
     k_sd.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_sd.set_defaults(func=run_kb)
+
+    k_mh = kb_sub.add_parser("migrate-hardware", help="Idempotently extract hardware-discovered laws from community/ into hardware/")
+    k_mh.add_argument("--dry-run", action="store_true", help="Preview classification without mutating files")
+    k_mh.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    k_mh.set_defaults(func=run_kb)

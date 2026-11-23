@@ -136,6 +136,26 @@ def _append_elf_alerts(
                 "suggested_kb_tags": ["noinline", "elf-diet", "icache-32kb"],
             })
 
+    hot_warn = int(eff_thresh.get("hot_symbol_warn_bytes", 16384))
+    if (
+        max_hot_symbol_bytes is not None
+        and max_hot_symbol_bytes >= hot_warn
+        and max_hot_symbol_bytes < int(eff_thresh["fail_text_bytes"])
+    ):
+        alerts.append({
+            "code": "L1I_HOT_ENTRY_WARN",
+            "severity": "warn",
+            "attribution": "hot_entry_exceeds_16kb_aiv_l1i",
+            "metric": "max_hot_symbol_bytes",
+            "value": int(max_hot_symbol_bytes),
+            "threshold": hot_warn,
+            "message": (
+                f"Largest hot symbol '{top_sym_name}' is {max_hot_symbol_bytes / 1024:.1f} KB "
+                f"(>= {hot_warn // 1024} KB AIV L1I iron law); keep hot entries contiguous inside 0x0000..0x4000."
+            ),
+            "suggested_kb_tags": ["16kb-l1i", "comdat", "elf-diet"],
+        })
+
     if o_max_bytes is not None:
         if o_max_bytes >= eff_thresh["fail_o_max_bytes"]:
             alerts.append({

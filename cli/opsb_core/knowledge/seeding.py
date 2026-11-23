@@ -94,10 +94,11 @@ def project_readonly_skills(
     skill_md = (
         "---\n"
         "name: parhelion-kb\n"
-        "description: Read-only canonical KernelC Triad Knowledge Base index (Breakthroughs, Snippets, Community & Anti-Patterns).\n"
+        "description: Read-only canonical KernelC 4-Pillar Knowledge Base index (Breakthroughs, Snippets, Hardware Laws, Community & Anti-Patterns).\n"
         "---\n\n"
-        "# Parhelion Triad Knowledge Base (`parhelion-kb`)\n\n"
+        "# Parhelion 4-Pillar Knowledge Base (`parhelion-kb`)\n\n"
         "- Query dynamically by bottleneck/regime/dtype via `opsb kb query` or MCP `parhelion_kb_query`.\n"
+        "- Pillar distinction: `hardware` = silicon/doc/compiler-discovered hardware laws & traps; `community` = ready-made community/cross-platform acceleration algorithms; `snippets` = reusable KernelC `.h` blocks; `breakthrough` = verified online wins.\n"
         "- Record new verified patterns or negative anti-patterns only with verifiable `problem`, `sha`, `verdict`, and measurable metrics (`opsb kb record` / `opsb kb feedback`).\n"
         "- Inspect `KB_INDEX.md` and `snippets/*.h` in this directory for read-only verified building blocks.\n"
     )
@@ -107,16 +108,20 @@ def project_readonly_skills(
 
     anti = [e for e in entries if e["status"] == "anti-pattern" or e["portability"] == "anti-pattern"]
     snips = [e for e in entries if e["pillar"] == "snippets" and e not in anti]
+    hws = [e for e in entries if e["pillar"] == "hardware" and e not in anti]
     bts = [e for e in entries if e["pillar"] == "breakthrough" and e not in anti]
     coms = [e for e in entries if e["pillar"] == "community" and e not in anti]
 
     idx_lines = [
-        "# Parhelion Triad KB Snapshot Index (Read-Only)",
+        "# Parhelion 4-Pillar KB Snapshot Index (Read-Only)",
         "",
-        f"- Total entries: `{len(entries)}` (`breakthrough={len(bts)}`, `snippets={len(snips)}`, `community={len(coms)}`, `anti-patterns={len(anti)}`)",
+        f"- Total entries: `{len(entries)}` (`breakthrough={len(bts)}`, `snippets={len(snips)}`, `hardware={len(hws)}`, `community={len(coms)}`, `anti-patterns={len(anti)}`)",
         "",
         "## Anti-Patterns (DO NOT REPEAT)",
-        *(f"- `{e['id']}` (fails={e['fails']}): {e['title']} — {e['summary']}" for e in anti),
+        *(f"- `{e['id']}` [{e['pillar']}] (fails={e['fails']}): {e['title']} — {e['summary']}" for e in anti),
+        "",
+        "## Accel Hardware Laws & Silicon Findings",
+        *(f"- `{e['id']}` [{e['status']}|conf={e['confidence']:.2f}]: {e['title']}" for e in hws),
         "",
         "## Verified KernelC Snippets",
     ]

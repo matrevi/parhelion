@@ -52,8 +52,8 @@ def revert_event(event_id: str, parhelion_home: Path | None = None) -> dict[str,
     target = next((r for r in rows if str(r.get("event_id") or "") == event_id.strip()), None)
     if target is None:
         raise ValueError(f"Evolution event {event_id!r} not found.")
-    if target.get("action") == "revert":
-        raise ValueError(f"Cannot revert a revert event {event_id!r}.")
+    if target.get("action") in ("revert", "migrate"):
+        raise ValueError(f"Cannot revert a {target.get('action')} event {event_id!r}.")
     if event_id.strip() in reverted_ids:
         raise ValueError(f"Evolution event {event_id!r} was already reverted.")
 
@@ -139,6 +139,6 @@ def rollback_last(parhelion_home: Path | None = None) -> dict[str, Any]:
     reverted_ids = _reverted_event_ids(rows)
     for row in reversed(rows):
         ev_id = str(row.get("event_id") or "")
-        if row.get("action") != "revert" and ev_id and ev_id not in reverted_ids:
+        if row.get("action") not in ("revert", "migrate") and ev_id and ev_id not in reverted_ids:
             return revert_event(ev_id, parhelion_home=dirs["home"])
     raise ValueError("No revertible KB evolution events found.")

@@ -32,7 +32,7 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
         text_blob = f"{title} {summary}"
         raw_status = str(raw.get("status") or "unverified").strip().lower()
         status = raw_status if raw_status in VALID_STATUSES else "unverified"
-        default_port = "native-accel" if pillar == "snippets" else "portable"
+        default_port = "native-accel" if pillar in ("snippets", "hardware") else "portable"
         port_raw = str(raw.get("portability") or default_port).strip().lower()
         portability = port_raw if port_raw in VALID_PORTABILITIES else default_port
 
@@ -73,15 +73,18 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
     if not doc_path:
         doc_path = f"code/{entry_id}.h" if pillar == "snippets" else f"entries/{entry_id}.md"
 
+    default_cat = "tiling-regime" if pillar == "snippets" else ("hardware-law" if pillar == "hardware" else "vectorization")
     normalized: dict[str, Any] = {
         "id": entry_id, "pillar": pillar, "title": title, "summary": summary,
-        "category": category or ("tiling-regime" if pillar == "snippets" else "vectorization"),
+        "category": category or default_cat,
         "tags": raw_tags, "bottlenecks": bottlenecks, "regimes": regimes, "dtypes": dtypes,
         "portability": portability, "status": status, "prior_alpha": float(prior_alpha), "prior_beta": float(prior_beta),
         "confidence": confidence, "wins": wins, "fails": fails, "evidence": evidence,
         "related_snippets": [str(s) for s in (raw.get("related_snippets") or []) if str(s).strip()],
         "doc_path": doc_path, "abs_doc_path": str(abs_doc) if abs_doc else None,
     }
+    if raw.get("legacy_id"):
+        normalized["legacy_id"] = str(raw["legacy_id"]).strip()
     for key in ("problem", "difficulty", "sha", "baseline_sha", "timestamp", "score_before", "score_after", "delta_raw", "delta_weighted"):
         if key in raw:
             normalized[key] = raw[key]
@@ -90,7 +93,7 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
 
 def _load_all_entries(parhelion_home: Path | None = None, *, auto_seed: bool = True) -> tuple[dict[str, Path], list[dict[str, Any]]]:
     dirs = triad_kb_dirs(parhelion_home)
-    if auto_seed and (not (dirs["snippets"] / "index.json").is_file() or not (dirs["community"] / "index.json").is_file()):
+    if auto_seed and any(not (dirs[p] / "index.json").is_file() for p in ("snippets", "hardware", "community")):
         ensure_triad_kb_seeded(parhelion_home=dirs["home"])
     all_entries: list[dict[str, Any]] = []
     for pillar in VALID_PILLARS:
@@ -136,7 +139,8 @@ def get_kb_entry(entry_id: str, parhelion_home: Path | None = None, auto_seed: b
     _, entries = _load_all_entries(parhelion_home=parhelion_home, auto_seed=auto_seed)
     match = (
         next((e for e in entries if e["id"].lower() == q), None)
-        or next((e for e in entries if e["id"].lower().startswith(q)), None)
+        or next((e for e in entries if str(e.get("legacy_id") or "").lower() == q), None)
+        or next((e for e in entries if e["id"].lower().startswith(q) or str(e.get("legacy_id") or "").lower().startswith(q)), None)
         or next((e for e in entries if q in e["title"].lower()), None)
     )
     if match is None:
@@ -204,7 +208,10 @@ def _score_entry_for_query(
     status = entry.get("status", "unverified")
     status_boost = 1.25 if status == "verified" else (0.95 if status == "unverified" else 0.2)
     pillar = entry.get("pillar", "community")
-    pillar_boost = 1.08 if pillar == "breakthrough" else (1.06 if pillar == "snippets" else 1.0)
+    pillar_boost = (
+        1.08 if pillar == "breakthrough"
+        else (1.07 if pillar == "hardware" else (1.06 if pillar == "snippets" else 1.0))
+    )
     return round(overlap * float(entry.get("confidence", 0.5)) * status_boost * pillar_boost, 4), round(overlap, 4), reasons
 
 
@@ -277,7 +284,7 @@ def format_prompt_cache_digest(query_result: dict[str, Any], max_chars: int = 24
         *([f"dtype={q_meta['dtype']}"] if q_meta.get("dtype") else []),
     ]
     ctx = f" ({'; '.join(tags)})" if tags else ""
-    lines: list[str] = [f"### Parhelion Triad KB Digest{ctx}"]
+    lines: list[str] = [f"### Parhelion 4-Pillar KB Digest{ctx}"]
 
     anti_list = list(query_result.get("anti_patterns") or [])
     if anti_list:

@@ -179,8 +179,8 @@ struct DriverSettingsTab: View {
                         SemanticPill(text: codexOk ? "Codex OK" : "Codex —", compact: true)
                     }
                     Text(lang.tr(
-                        "soc-a 硬件对齐与 PipeBarrier 手册；常规已由 `AGENTS.md` + MCP + 三元库覆盖，按需注册至 `~/.dsh/skills` 与 `~/.codex/skills`。",
-                        "Optional soc-a reference manual; standard workflows use `AGENTS.md` + MCP + Triad KB."
+                        "soc-a 硬件对齐与 PipeBarrier 手册；常规已由 `AGENTS.md` + MCP + 四元知识库覆盖，按需注册至 `~/.dsh/skills` 与 `~/.codex/skills`。",
+                        "Optional soc-a reference manual; standard workflows use `AGENTS.md` + MCP + 4-Pillar KB."
                     ))
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)

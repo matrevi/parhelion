@@ -54,13 +54,15 @@ class TriadKBTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PARHELION_HOME": str(p_home)}, clear=False):
                 first = ensure_triad_kb_seeded()
                 self.assertTrue(first["ok"])
-                self.assertEqual(set(first["seeded_pillars"]), {"snippets", "community"})
-                self.assertGreaterEqual(first["copied_count"], 14)
+                self.assertEqual(set(first["seeded_pillars"]), {"snippets", "hardware", "community"})
+                self.assertGreaterEqual(first["copied_count"], 18)
 
                 snips = list_kb_entries(pillar="snippets")
+                hws = list_kb_entries(pillar="hardware")
                 coms = list_kb_entries(pillar="community")
                 self.assertEqual(snips["count"], 5)
-                self.assertGreaterEqual(coms["count"], 7)
+                self.assertGreaterEqual(hws["count"], 5)
+                self.assertGreaterEqual(coms["count"], 6)
 
                 for s in snips["entries"]:
                     self.assertTrue(Path(s["abs_doc_path"]).is_file())
@@ -136,10 +138,10 @@ class TriadKBTests(unittest.TestCase):
                     limit=10,
                 )
                 pillars_returned = {r["pillar"] for r in res["results"]}
-                self.assertEqual(pillars_returned, {"breakthrough", "snippets", "community"})
+                self.assertEqual(pillars_returned, {"breakthrough", "snippets", "hardware", "community"})
 
                 anti_ids = [a["id"] for a in res["anti_patterns"]]
-                self.assertIn("COM-10core-dvfs-bimodal-trap", anti_ids)
+                self.assertIn("HW-10core-dvfs-bimodal-trap", anti_ids)
                 for r in res["results"]:
                     self.assertNotEqual(r["status"], "anti-pattern")
 
@@ -154,7 +156,7 @@ class TriadKBTests(unittest.TestCase):
                 digest = format_prompt_cache_digest(res, max_chars=2400)
                 self.assertLessEqual(len(digest), 2400)
                 self.assertIn("DO-NOT-REPEAT Warnings", digest)
-                self.assertIn("COM-10core-dvfs-bimodal-trap", digest)
+                self.assertIn("HW-10core-dvfs-bimodal-trap", digest)
                 self.assertIn("SNP-direct-gm-tiling-64b", digest)
                 # Warnings must appear before positive guidance
                 self.assertLess(digest.index("DO-NOT-REPEAT"), digest.index("Verified & Ranked"))
@@ -360,7 +362,7 @@ class TriadKBTests(unittest.TestCase):
                     ["kb", "query", "--bottleneck", "cold-launch-tax", "--regime", "S_SMALL_CORE", "--digest"]
                 )
                 self.assertEqual(rc, 0)
-                self.assertIn("Parhelion Triad KB Digest", out)
+                self.assertIn("Parhelion 4-Pillar KB Digest", out)
 
                 rc, out, _ = _run_kb_cli(["kb", "show", "SNP-direct-gm-tiling-64b", "--json"])
                 self.assertEqual(rc, 0)

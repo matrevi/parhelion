@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-23T14:00:00+00:00",
+  "entries": [
+    {
+      "id": "HW-10core-dvfs-bimodal-trap",
+      "legacy_id": "COM-10core-dvfs-bimodal-trap",
+      "pillar": "hardware",
+      "title": "ANTI-PATTERN: 10-Core SetBlockDim(10) Cold DVFS Bimodal Latency Spike",
+      "summary": "Avoid SetBlockDim(10) on soc-a: warmed local medians mask a ~9us bimodal DVFS down-clocking spike on the first 1-2 runs that hits online 3-run scoring. Always stick to {1, 4, 8, 20, 40}.",
+      "category": "hardware-law",
+      "tags": ["anti-pattern", "10-core", "dvfs-spike", "cold-3run", "soc-a"],
+      "bottlenecks": ["cold-launch-tax", "dvfs-10core-spike", "port-contention"],
+      "regimes": ["S_SMALL_CORE", "M_MID_UB"],
+      "dtypes": ["float32", "float16", "bfloat16"],
+      "portability": "anti-pattern",
+      "status": "anti-pattern",
+      "prior_alpha": 1.0,
+      "prior_beta": 1.0,
+      "wins": 0,
+      "fails": 3,
+      "confidence": 0.2,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "SyncBatchNormGatherStats",
+          "sha": "73046fe",
+          "delta_us": 1.3,
+          "verdict": "anti-pattern",
+          "note": "online & cold3 revealed 9us first-2-run DVFS spike in 10-core mode; fixed in 9c943d3 (5.26->3.96us)",
+          "recorded_at": "2026-11-22T18:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "SyncBatchNormGatherStats",
+          "sha": "9c943d3",
+          "delta_us": 1.3,
+          "verdict": "fail",
+          "note": "profiler cold3 verification confirmed 10-core mode degraded latency by +1.30us (5.26 vs 3.96us) compared to controlled core ladder",
+          "recorded_at": "2026-11-22T19:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "QuantUpdateScatter",
+          "sha": "0aa17ab",
+          "verdict": "fail",
+          "note": "profiler showed non-20/40 partial block counts triggered unstable cold run1 spikes",
+          "recorded_at": "2026-11-22T19:15:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-direct-gm-tiling-64b"],
+      "doc_path": "entries/HW-10core-dvfs-bimodal-trap.md"
+    },
+    {
+      "id": "HW-dummy-halfcores-launch-illusion",
+      "legacy_id": "COM-dummy-halfcores-launch-illusion",
+      "pillar": "hardware",
+      "title": "ANTI-PATTERN: Dummy SetBlockDim(halfCores)/20 + Early Return on Small Shapes",
+      "summary": "Never launch 1-core small shapes with dummy SetBlockDim(halfCores)/SetBlockDim(20) + early return (`if (GetBlockIdx() != 0) return;`): hides local idle-die 1c DVFS spikes while adding online dispatch overhead (`-11.83 pts` on StridedSliceGrad 734e097), and `(maxCores+1)/2` hits the 10-core DVFS trap on 20c soc-b.",
+      "category": "hardware-law",
+      "tags": ["anti-pattern", "dummy-multicore", "SetBlockDim", "half-cores", "cold-3run"],
+      "bottlenecks": ["cold-launch-tax", "dvfs-10core-spike", "port-contention"],
+      "regimes": ["PUBLIC", "S_SMALL_CORE"],
+      "dtypes": ["float32", "float16", "bfloat16"],
+      "portability": "anti-pattern",
+      "status": "anti-pattern",
+      "prior_alpha": 1.0,
+      "prior_beta": 1.0,
+      "wins": 0,
+      "fails": 1,
+      "confidence": 0.333,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "StridedSliceGrad",
+          "sha": "734e0975e327642dae6b365b53db0d578fbb6ce8",
+          "delta_raw": -11.83,
+          "verdict": "anti-pattern",
+          "note": "Online scored 59.74 vs 71.57 (Public #3 3.95->4.56us); `(maxCores+1)/2` also hits 10-core trap on 20c soc-b.",
+          "recorded_at": "2026-11-23T09:07:13+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-direct-gm-tiling-64b"],
+      "doc_path": "entries/HW-dummy-halfcores-launch-illusion.md"
+    },
+    {
+      "id": "HW-16kb-aiv-l1i-hot-packing",
+      "pillar": "hardware",
+      "title": "Accel soc-a 16 KB AIV L1I Iron Law & Multi-TU Hybrid COMDAT/Static Linker Layout",
+      "summary": "Pack hot kernel entries (_0.._2 / _0.._3) contiguously inside 0x0000..0x4000 (<= 16 KB AIV L1 I-Cache) and slim .text/.o_max. Across multiple TUs, mark shared cross-schMode helpers `inline __attribute__((noinline))` (WEAK COMDAT saves 5-10 KB) while keeping single-schMode hot helpers `static __attribute__((noinline))` adjacent to callers with zero cross-section jump.",
+      "category": "hardware-law",
+      "tags": ["16kb-l1i", "aiv-icache", "comdat", "linker-layout", "soc-a", "arch-v1"],
+      "bottlenecks": ["icache-bloat", "cold-launch-tax"],
+      "regimes": ["PUBLIC", "S_SMALL_CORE", "M_MID_UB"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32", "int8"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 5,
+      "fails": 0,
+      "confidence": 0.875,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "MultilabelMarginLoss",
+          "sha": "13c554d",
+          "delta_raw": 10.55,
+          "verdict": "win",
+          "note": "online verified packing _0+_1 <= 15 KB inside 16 KB AIV L1I with COMDAT dedup",
+          "recorded_at": "2026-11-23T12:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "PadV3Grad",
+          "sha": "398d587",
+          "delta_raw": 4.2,
+          "verdict": "win",
+          "note": "online verified <13.9 KB L1I hot-1c ordering on PadV3Grad / CTCLossV2 / ConfusionTransposeD / StridedSliceGrad",
+          "recorded_at": "2026-11-23T12:10:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-noinline-cold-pad"],
+      "doc_path": "entries/HW-16kb-aiv-l1i-hot-packing.md"
+    },
+    {
+      "id": "HW-compiler-abi-7arg-unroll-guard",
+      "pillar": "hardware",
+      "title": "ANTI-PATTERN: Compiler/arch-v1 Inner-Loop noinline, rank<=8 unroll(disable), & >7-8 Scalar Args HBM Stack Spill",
+      "summary": "Online-verified Compiler compiler & ABI redlines on Accel soc-a: (1) NEVER call `noinline` inside hot loops or put `#pragma clang loop unroll(disable)` on `rank<=8` short loops (StridedSliceGrad a690e69 dropped -7.24 pts online); (2) NEVER pass >7-8 scalar arguments (or const-struct/LocalTensor refs) to `noinline` callees — excess args inevitably spill to HBM stack (verified on CTCLossV2/ConcatD/PadV3Grad/StridedSliceGrad).",
+      "category": "hardware-law",
+      "tags": ["anti-pattern", "compiler-abi", "hbm-stack-spill", "noinline", "unroll-disable", "arch-v1"],
+      "bottlenecks": ["icache-bloat", "scalar-bound", "cold-launch-tax"],
+      "regimes": ["PUBLIC", "S_SMALL_CORE", "M_MID_UB", "L_HBM_TILED"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32"],
+      "portability": "anti-pattern",
+      "status": "anti-pattern",
+      "prior_alpha": 1.0,
+      "prior_beta": 1.0,
+      "wins": 0,
+      "fails": 4,
+      "confidence": 0.167,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "StridedSliceGrad",
+          "sha": "a690e69",
+          "delta_raw": -7.24,
+          "verdict": "anti-pattern",
+          "note": "online dropped -7.24 pts from inner-loop noinline ExpandStep2Cold + unroll(disable) on short rank/odo loops",
+          "recorded_at": "2026-11-23T11:30:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "ConcatD",
+          "sha": "4394e77",
+          "verdict": "fail",
+          "note": "profiler confirmed >7-8 scalar args to noinline callees spill to HBM stack across CTC/ConcatD/PadV3Grad/SSG",
+          "recorded_at": "2026-11-23T12:15:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-noinline-cold-pad"],
+      "doc_path": "entries/HW-compiler-abi-7arg-unroll-guard.md"
+    },
+    {
+      "id": "HW-multicore-preload-cacheline-bailout",
+      "pillar": "hardware",
+      "title": "Accel soc-a Multi-Core Iron Laws: No PreLoad(N), 32B/64B Slot Alignment (>16c), & Safe Capability Bailout",
+      "summary": "Online-verified multi-core silicon laws on Accel soc-a: (1) NEVER use `KernelC::PreLoad(N)`, dummy `SetBlockDim(4/halfCores)`, or `10c` (fix core ladder to {1,4,8,20,40}); (2) for `cores > 16`, keep per-core workspace slots 32B/64B aligned (`slotStride=1` caused L2 false sharing losing -3..-4 pts on MML); (3) in multi-core fast-path kernels, NEVER write `if (b0 >= B) return true;` before capability fallback checks (idle cores return early while active cores fall through -> silent WA).",
+      "category": "hardware-law",
+      "tags": ["preload", "false-sharing", "cacheline-align", "capability-bailout", "multicore", "soc-a"],
+      "bottlenecks": ["sync-hazard", "cold-launch-tax", "dvfs-10core-spike", "mte3-bound"],
+      "regimes": ["PUBLIC", "S_SMALL_CORE", "M_MID_UB", "L_HBM_TILED", "X_EXTREME"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 3,
+      "fails": 0,
+      "confidence": 0.833,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "MultilabelMarginLoss",
+          "sha": "13c554d",
+          "delta_raw": 3.5,
+          "verdict": "win",
+          "note": "online verified 32B/64B per-core slot stride eliminated -3..-4 pt L2 false sharing on 20-40 cores",
+          "recorded_at": "2026-11-23T12:20:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "PadV3Grad",
+          "sha": "e3cd79c",
+          "verdict": "win",
+          "note": "online verified capability bailout must precede `if (b0 >= B) return true;` and PreLoad(N) must be banned",
+          "recorded_at": "2026-11-23T12:25:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-direct-gm-tiling-64b", "SNP-zero-tpipe-ub-arena"],
+      "doc_path": "entries/HW-multicore-preload-cacheline-bailout.md"
+    }
+  ]
+}

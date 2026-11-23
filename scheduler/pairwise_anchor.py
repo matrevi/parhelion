@@ -119,9 +119,9 @@ def evaluate_pairwise_anchor(
         raw_delta *= max(0.65, 1.0 - 0.35 * unpaired_spec_frac)
 
     n_pairs = int(cal.get("pairwise_count") or 0)
-    if n_pairs < 4 and abs(raw_delta) > 7.5:
+    if not regime_mismatch and n_pairs < 4 and abs(raw_delta) > 7.5:
         sgn = 1.0 if raw_delta > 0 else -1.0
-        raw_delta = sgn * (7.5 + 0.35 * (abs(raw_delta) - 7.5))
+        raw_delta = sgn * (7.5 + 0.50 * (abs(raw_delta) - 7.5))
 
     hard_cap = min(98.0, max(frontier_top1 + 3.0, anchor_sc + 25.0))
     est_score = max(0.0, min(hard_cap, anchor_sc + max(-25.0, raw_delta)))

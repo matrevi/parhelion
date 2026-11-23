@@ -115,7 +115,7 @@ def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, 
 
     entries: list[dict[str, Any]] = []
     anti_patterns: list[dict[str, Any]] = []
-    pillars_to_scan = ("snippets", "community") if pillar in (None, "all") else ((pillar,) if pillar in ("snippets", "community") else ())
+    pillars_to_scan = ("snippets", "hardware", "community") if pillar in (None, "all") else ((pillar,) if pillar in ("snippets", "hardware", "community") else ())
     for pil in pillars_to_scan:
         _, raw_idx = _fallback_read_index(pil)
         for item in raw_idx["entries"]:
@@ -173,8 +173,8 @@ def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, 
 
 def tool_parhelion_kb_record(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     pillar = str(args.get("pillar") or "").strip().lower()
-    if pillar not in ("snippets", "community"):
-        raise ValueError("Invalid 'pillar': must be 'snippets' or 'community'.")
+    if pillar not in ("snippets", "hardware", "community"):
+        raise ValueError("Invalid 'pillar': must be 'snippets', 'hardware', or 'community'.")
     title, summary = str(args.get("title") or "").strip(), str(args.get("summary") or "").strip()
     if not title or not summary:
         raise ValueError("'title' and 'summary' must be non-empty.")
@@ -184,7 +184,7 @@ def tool_parhelion_kb_record(args: dict[str, Any], workspace: Path) -> dict[str,
         delta_raw=args.get("delta_raw"), delta_us=args.get("delta_us"), note=str(args.get("note") or ""),
     )
     evidence["workspace"] = str(workspace)
-    portability = "anti-pattern" if evidence["verdict"] == "anti-pattern" else str(args.get("portability") or ("native-accel" if pillar == "snippets" else "portable"))
+    portability = "anti-pattern" if evidence["verdict"] == "anti-pattern" else str(args.get("portability") or ("native-accel" if pillar in ("snippets", "hardware") else "portable"))
     payload: dict[str, Any] = {
         "title": title, "summary": summary,
         "bottlenecks": [str(x) for x in (args.get("bottlenecks") or []) if str(x).strip()],
@@ -197,7 +197,8 @@ def tool_parhelion_kb_record(args: dict[str, Any], workspace: Path) -> dict[str,
     if (kb_mod := _load_triad_kb_module()) is not None and callable(rec_fn := getattr(kb_mod, "record_kb_entry", None)):
         return rec_fn(pillar, payload)
 
-    entry_id = f"{'SNP' if pillar == 'snippets' else 'COM'}-{_slugify(title)}"
+    prefix = "SNP" if pillar == "snippets" else ("HW" if pillar == "hardware" else "COM")
+    entry_id = f"{prefix}-{_slugify(title)}"
     ph = resolve_parhelion_home()
     idx_path, raw_idx = _fallback_read_index(pillar)
     wins = 1 if evidence["verdict"] == "win" else 0
@@ -242,7 +243,7 @@ def tool_parhelion_kb_feedback(args: dict[str, Any], workspace: Path) -> dict[st
     if (kb_mod := _load_triad_kb_module()) is not None and callable(fb_fn := getattr(kb_mod, "record_kb_feedback", None)):
         return fb_fn(entry_id, evidence["verdict"], evidence, promote_snippet_code=promote_code)
 
-    for pil in ("community", "snippets"):
+    for pil in ("hardware", "community", "snippets"):
         idx_path, raw_idx = _fallback_read_index(pil)
         for idx, ent in enumerate(raw_idx["entries"]):
             if not isinstance(ent, dict) or ent.get("id") != entry_id:

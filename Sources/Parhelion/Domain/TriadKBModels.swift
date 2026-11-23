@@ -3,6 +3,7 @@ import Foundation
 enum TriadKBPillar: String, CaseIterable, Identifiable {
     case breakthrough
     case snippets
+    case hardware
     case community
     case evolution
 
@@ -12,6 +13,7 @@ enum TriadKBPillar: String, CaseIterable, Identifiable {
         switch self {
         case .breakthrough: return lang.tr("突破档案", "Breakthroughs")
         case .snippets: return lang.tr("代码积木", "Snippets")
+        case .hardware: return lang.tr("硬件规律", "Hardware")
         case .community: return lang.tr("社区方案", "Community")
         case .evolution: return lang.tr("进化日志", "Evolution Log")
         }
@@ -21,6 +23,7 @@ enum TriadKBPillar: String, CaseIterable, Identifiable {
         switch self {
         case .breakthrough: return "flame.fill"
         case .snippets: return "chevron.left.forwardslash.chevron.right"
+        case .hardware: return "cpu.fill"
         case .community: return "books.vertical.fill"
         case .evolution: return "clock.arrow.2.circlepath"
         }
@@ -69,6 +72,7 @@ struct TriadKBEvidence: Codable, Identifiable, Hashable {
 
 struct TriadKBEntry: Codable, Identifiable, Hashable {
     let id: String
+    let legacyId: String?
     let pillar: String
     let title: String
     let summary: String
@@ -125,6 +129,7 @@ struct TriadKBEntry: Codable, Identifiable, Hashable {
         case problem, difficulty, sha, timestamp
         case priorAlpha = "prior_alpha"
         case priorBeta = "prior_beta"
+        case legacyId = "legacy_id"
         case relatedSnippets = "related_snippets"
         case docPath = "doc_path"
         case absDocPath = "abs_doc_path"
@@ -141,6 +146,7 @@ struct TriadKBEntry: Codable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
+        legacyId = try c.decodeIfPresent(String.self, forKey: .legacyId)
         pillar = try c.decodeIfPresent(String.self, forKey: .pillar) ?? "community"
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? id
         summary = try c.decodeIfPresent(String.self, forKey: .summary) ?? ""
