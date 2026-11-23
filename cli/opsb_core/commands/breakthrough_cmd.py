@@ -82,7 +82,7 @@ def run_queue_list(args: argparse.Namespace) -> int:
 
 def run_breakthrough(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
-    ws, snap = _load_enriched_snapshot(getattr(args, "workspace", None), cfg)
+    ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
     sched = cfg.setdefault("scheduler", {})
     cur_thresh = float(sched.get("breakthrough_threshold", 5.0))
 
@@ -93,16 +93,6 @@ def run_breakthrough(args: argparse.Namespace) -> int:
             ConfigRepository.save(cfg)
         out = {"breakthrough_threshold": cur_thresh}
         print(json.dumps(out, ensure_ascii=False) if args.json else f"Breakthrough threshold: Δ >= {cur_thresh:.2f} pts")
-        return 0
-
-    if args.bt_cmd == "sync":
-        thresh = float(args.min_delta) if args.min_delta is not None else cur_thresh
-        probs_map = {p["title"]: p for p in snap["problems"]}
-        res = sync_breakthroughs_from_items(ws, snap["submission_queue"], probs_map, thresh)
-        if args.json:
-            print(json.dumps(res, ensure_ascii=False, indent=2))
-        else:
-            print(f"Synced breakthrough playbook ({res['directory']}): +{len(res['created_ids'])} new, {res['total_entries']} total.")
         return 0
 
     if args.bt_cmd == "show":
@@ -116,7 +106,19 @@ def run_breakthrough(args: argparse.Namespace) -> int:
             print(detail.get("markdown") or json.dumps(detail, ensure_ascii=False, indent=2))
         return 0
 
+    if args.bt_cmd == "sync":
+        ws, snap = _load_enriched_snapshot(getattr(args, "workspace", None), cfg)
+        thresh = float(args.min_delta) if args.min_delta is not None else cur_thresh
+        probs_map = {p["title"]: p for p in snap["problems"]}
+        res = sync_breakthroughs_from_items(ws, snap["submission_queue"], probs_map, thresh)
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+        else:
+            print(f"Synced breakthrough playbook ({res['directory']}): +{len(res['created_ids'])} new, {res['total_entries']} total.")
+        return 0
+
     if args.bt_cmd == "add":
+        ws, snap = _load_enriched_snapshot(getattr(args, "workspace", None), cfg)
         prob_obj = next((p for p in snap["problems"] if p["title"].lower() == args.problem.lower()), None)
         prob_title = prob_obj["title"] if prob_obj else args.problem
         diff = int(prob_obj["difficulty"]) if prob_obj else DEFAULT_DIFFICULTIES.get(prob_title, 2)
@@ -173,13 +175,15 @@ def run_breakthrough(args: argparse.Namespace) -> int:
     if args.category:
         entries = [e for e in entries if e["category"].lower() == args.category.lower()]
 
-    bt_submissions = [
-        x for x in snap["submission_queue"]
-        if x.get("breakthrough_delta") is not None
-        and float(x["breakthrough_delta"]) >= thresh
-        and (args.include_candidates or x["kind"] == "completed")
-        and (not args.problem or x["title"].lower() == args.problem.lower())
-    ]
+    bt_submissions: list[dict] = []
+    if getattr(args, "include_candidates", False):
+        _, snap = _load_enriched_snapshot(getattr(args, "workspace", None), cfg)
+        bt_submissions = [
+            x for x in snap["submission_queue"]
+            if x.get("breakthrough_delta") is not None
+            and float(x["breakthrough_delta"]) >= thresh
+            and (not args.problem or x["title"].lower() == args.problem.lower())
+        ]
 
     out_payload = {
         "threshold": thresh,
