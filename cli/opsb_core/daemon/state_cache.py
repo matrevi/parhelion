@@ -29,6 +29,7 @@ from ..services.judge_sync import (
     _query_remote_submission_cached,
 )
 from ..services.queue_service import _probe_queue_lock, compute_workspace_snapshot
+from ..services.quota_helpers import compute_effective_closing_reserve
 from ..services.skills_service import get_skills_status
 from ..services.submit_runner import MIN_RATE_GAP_SEC, inflight_file_for
 from ..services.sync_reconciler import collapse_reconciled_outcomes, reconcile_sync_errors_async
@@ -503,6 +504,24 @@ class _WorkspaceStateEntry:
                             "account_id": r_aid,
                             "account_label": r_lbl,
                         }
+                elif age_sec < 180:
+                    sub_ep = float(r["submitted_epoch"])
+                    active_remotes.append(
+                        {
+                            "id": f"remote-{r['submission_id']}",
+                            "title": r["title"],
+                            "sha": r["sha"],
+                            "short_sha": r["sha"][:7],
+                            "submission_id": r["submission_id"],
+                            "judge_id": None,
+                            "remote_status": "Uploading/Syncing",
+                            "phase": "remote_queued",
+                            "started_epoch": round(sub_ep, 2),
+                            "elapsed_sec": max(0, int(now_epoch - sub_ep)),
+                            "account_id": r_aid,
+                            "account_label": r_lbl,
+                        }
+                    )
 
         queue_lock_held = _probe_queue_lock(self.workspace / "results" / ".submit-queue.lock")
         cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
@@ -633,15 +652,20 @@ class _WorkspaceStateEntry:
             for s in account_slots
         ]
 
+        eff_closing_reserve = (
+            compute_effective_closing_reserve(list(self.problems_by_title.values()), closing_reserve, noise_floor)
+            if self.problems_by_title
+            else closing_reserve
+        )
         if eligible_slots:
             team_daily_limit = sum(int(s.get("daily_limit") or daily_limit) for s in eligible_slots)
             team_used_today = sum(int(s.get("used_today") or 0) for s in eligible_slots)
             team_remaining = sum(max(0, int(s.get("daily_limit") or daily_limit) - int(s.get("used_today") or 0)) for s in eligible_slots)
-            avail_shots = max(0, team_remaining - closing_reserve)
+            avail_shots = max(0, team_remaining - eff_closing_reserve)
         else:
             team_daily_limit = daily_limit
             team_used_today = used_24h_fallback
-            avail_shots = max(0, daily_limit - used_24h_fallback - closing_reserve)
+            avail_shots = max(0, daily_limit - used_24h_fallback - eff_closing_reserve)
 
         base_common = {
             "local_busy": local_busy,
@@ -748,7 +772,7 @@ class _WorkspaceStateEntry:
             "rate_ready": cooldown_rem == 0,
             "daily_quota_limit": team_daily_limit,
             "used_today_24h": team_used_today,
-            "closing_reserve": closing_reserve,
+            "closing_reserve": eff_closing_reserve,
             "available_normal_shots": avail_shots,
             "noise_floor_delta": noise_floor,
             "breakthrough_threshold": bt_threshold,

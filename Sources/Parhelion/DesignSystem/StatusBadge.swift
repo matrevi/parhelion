@@ -33,13 +33,13 @@ struct SemanticPill: View {
         if u.contains("SYNC ERROR") || u.contains("SYNC ERR") || u.contains("同步中断") {
             return (Color(red: 0.86, green: 0.48, blue: 0.06), Color(red: 0.94, green: 0.62, blue: 0.14).opacity(0.18))
         }
-        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("可恢复") || u.contains("排队等卡") || u.contains("WAITING-DIE") || u.contains("RATE") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") || u == "UNVERIFIED" || u == "DEPRECATED" {
+        if u.contains("PASS ↓") || u.contains("RESTORE") || u.contains("可恢复") || u.contains("排队等卡") || u.contains("WAITING-DIE") || u.contains("RATE") || u.contains("冷却等待") || u.contains("COOLDOWN") || u.contains("COOLING") || u.contains("HELD") || u.contains("HOLD") || u.contains("LOCKED") || u.contains("EXPIRED") || u.contains("OFFLINE") || u.contains("MISSING") || u.contains("限流冷却") || u.contains("已锁定") || u.contains("提分较小") || u.contains("已过期") || u.contains("未登录") || u.contains("未安装") || u == "UNVERIFIED" || u == "DEPRECATED" {
             return (Color(red: 0.90, green: 0.56, blue: 0.10), Color(red: 0.90, green: 0.56, blue: 0.10).opacity(0.15))
         }
         if u.contains("PROFILER") || u.contains("性能采集") || u.contains("HIGH ROI") || u.contains("高收益") || u.contains("PACKAGING") || u.contains("COMPILING") || u.contains("打包") || u.contains("编译") || u == "REVERT" {
             return (Color(red: 0.58, green: 0.38, blue: 0.95), Color(red: 0.58, green: 0.38, blue: 0.95).opacity(0.15))
         }
-        if u.contains("PRECISION") || u.contains("精度验证") || u.contains("JUDGING") || u.contains("评测中") || u.contains("HEADROOM") || u.contains("提分空间") || u.contains("REMOTE") || u.contains("UPLOADING") || u.contains("SYNCING") || u == "PUBLIC" || u == "公开" || u.contains("远程") || u.contains("上传") || u.contains("同步") || u == "PORTABLE" || u == "FEEDBACK" || u == "CREATE" {
+        if u.contains("PRECISION") || u.contains("精度验证") || u.contains("JUDGING") || u.contains("评测中") || u.contains("HEADROOM") || u.contains("提分空间") || u.contains("REMOTE") || u.contains("UPLOADING") || u.contains("SYNCING") || u.contains("EXPLORE") || u.contains("探索") || u == "PUBLIC" || u == "公开" || u.contains("远程") || u.contains("上传") || u.contains("同步") || u == "PORTABLE" || u == "FEEDBACK" || u == "CREATE" {
             return (Color(red: 0.20, green: 0.56, blue: 0.96), Color(red: 0.20, green: 0.56, blue: 0.96).opacity(0.15))
         }
         if u.contains("BUILD") {
@@ -51,7 +51,7 @@ struct SemanticPill: View {
         if u.contains("STRESS") || u.contains("并发压测") || u.contains("CIRCUIT") || u.contains("频控") || u.contains("无突破") {
             return (.orange, Color.orange.opacity(0.16))
         }
-        if u.contains("REJECTED") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") || u.contains("精度未过") || u.contains("运行超时") || u.contains("运行报错") || u.contains("编译失败") || u.contains("本地拦截") {
+        if u.contains("REJECTED") || u.contains("门禁拒绝") || u.contains("GATE HELD") || u.contains("门禁未通过") || u.contains("WRONG") || u.contains("ERROR") || u.contains("TIME LIMIT") || u == "FAILED" || u.contains("未通过") || u.contains("精度未过") || u.contains("运行超时") || u.contains("运行报错") || u.contains("编译失败") || u.contains("本地拦截") {
             return (Color(red: 0.90, green: 0.28, blue: 0.32), Color(red: 0.90, green: 0.28, blue: 0.32).opacity(0.15))
         }
         return (.secondary, Color.secondary.opacity(0.12))

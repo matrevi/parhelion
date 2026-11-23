@@ -40,6 +40,7 @@ from .estimator import (
     _parse_iso,
     resolve_sha,
 )
+from .parhelion_paths import list_eligible_account_slots
 
 STATUS_TAGS: tuple[str, ...] = (
     "READY",
@@ -659,33 +660,49 @@ class SubmissionGate:
         )
 
     def get_quota_status(self, as_of: datetime.datetime | None = None) -> QuotaStatus:
-        """Stage 4 helper: Beijing-day 50-cap Token Bucket & decay-discounted closing reserve."""
+        """Stage 4 helper: multi-account Beijing-day Token Bucket & decay-discounted closing reserve."""
         ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
         bj_now = ref_now.astimezone(BEIJING_TZ)
         bj_midnight = bj_now.replace(hour=0, minute=0, second=0, microsecond=0)
         next_bj_midnight = bj_midnight + datetime.timedelta(days=1)
 
-        used_ids: set[str] = set()
-        last_submit_ts: datetime.datetime | None = None
+        eligible_slots = list_eligible_account_slots() if as_of is None else []
+        slot_ids = [s["id"] for s in eligible_slots] if eligible_slots else ["primary"]
+        slot_id_set = set(slot_ids)
+        uid_to_aid = {s["user_id"]: s["id"] for s in eligible_slots if s.get("user_id")}
+        per_acc_limit = self.config.daily_limit
+
+        used_ids_by_aid: dict[str, set[str]] = {aid: set() for aid in slot_ids}
+        last_ts_by_aid: dict[str, datetime.datetime | None] = {aid: None for aid in slot_ids}
+
+        def _map_aid(raw_aid: Any, raw_uid: Any = None) -> str:
+            aid = str(raw_aid or "")
+            if aid in slot_id_set:
+                return aid
+            if raw_uid and str(raw_uid) in uid_to_aid:
+                return uid_to_aid[str(raw_uid)]
+            return "primary" if "primary" in slot_id_set else slot_ids[0]
 
         for r in self.estimator.outcomes:
             st = str(r.get("status", ""))
             if st in ("skipped", "duplicate"):
                 continue
+            aid = _map_aid(r.get("account_id"), r.get("user_id"))
             if st == "rejected":
                 if "daily submission limit" in str(r.get("detail", "")) or "daily_limit" in str(r.get("detail", "")):
                     ts_r = _parse_iso(r.get("finished_at") or r.get("queued_at"))
                     if ts_r and bj_midnight <= ts_r.astimezone(BEIJING_TZ) < ref_now.astimezone(BEIJING_TZ):
-                        used_ids.update(f"limit_fill_{i}" for i in range(self.config.daily_limit))
+                        used_ids_by_aid[aid].update(f"limit_fill_{i}" for i in range(per_acc_limit))
                 continue
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
             if ts is None or ts >= ref_now:
                 continue
-            if last_submit_ts is None or ts > last_submit_ts:
-                last_submit_ts = ts
+            cur_last = last_ts_by_aid[aid]
+            if cur_last is None or ts > cur_last:
+                last_ts_by_aid[aid] = ts
             if ts.astimezone(BEIJING_TZ) >= bj_midnight:
                 sid = str(r.get("submission_id") or f"{r.get('title')}:{r.get('sha')}:{ts.isoformat()}")
-                used_ids.add(sid)
+                used_ids_by_aid[aid].add(sid)
 
         if as_of is None:
             for rec_file in (self.workspace / "results").glob("*/*/submission-receipt.json"):
@@ -693,15 +710,20 @@ class SubmissionGate:
                     rdata = json.loads(rec_file.read_text())
                     ts = _parse_iso(rdata.get("submitted_at"))
                     if ts and ts <= ref_now:
-                        if last_submit_ts is None or ts > last_submit_ts:
-                            last_submit_ts = ts
+                        aid = _map_aid(rdata.get("account_id"), rdata.get("user_id"))
+                        cur_last = last_ts_by_aid[aid]
+                        if cur_last is None or ts > cur_last:
+                            last_ts_by_aid[aid] = ts
                         if ts.astimezone(BEIJING_TZ) >= bj_midnight and rdata.get("submission_id"):
-                            used_ids.add(str(rdata["submission_id"]))
+                            used_ids_by_aid[aid].add(str(rdata["submission_id"]))
                 except Exception:
                     continue
 
-        used_today = min(self.config.daily_limit, len(used_ids))
-        remaining_today = max(0, self.config.daily_limit - used_today)
+        used_per_aid = {aid: min(per_acc_limit, len(used_ids_by_aid[aid])) for aid in slot_ids}
+        rem_per_aid = {aid: max(0, per_acc_limit - used_per_aid[aid]) for aid in slot_ids}
+        total_daily_limit = per_acc_limit * len(slot_ids)
+        used_today = sum(used_per_aid.values())
+        remaining_today = sum(rem_per_aid.values())
 
         # Identify genuine closing restore targets using decay-discounted `true_restore_gain`!
         restore_targets: list[dict[str, Any]] = []
@@ -734,18 +756,35 @@ class SubmissionGate:
         restore_targets.sort(key=lambda x: (x["critical"], x["weighted_gain"]), reverse=True)
 
         # Dynamic closing reserve: exact needed restores + 1 safety buffer (floored by min_closing_reserve)
-        reserved = min(12, max(self.config.min_closing_reserve, len(restore_targets) + (1 if restore_targets else 0)))
+        reserve_cap = max(12, self.config.min_closing_reserve)
+        reserved = min(reserve_cap, max(self.config.min_closing_reserve, len(restore_targets) + (1 if restore_targets else 0)))
         discretionary = max(0, remaining_today - reserved)
 
-        if last_submit_ts is not None:
-            since_last = max(0, int((ref_now - last_submit_ts).total_seconds()))
-            rate_wait = max(0, self.config.rate_limit_gap_sec - since_last)
+        # Effective cooldown = minimum wait across non-exhausted eligible accounts (V3-012)
+        non_exhausted = [aid for aid in slot_ids if rem_per_aid[aid] > 0]
+        if non_exhausted:
+            best_wait: int | None = None
+            best_since: int | None = None
+            for aid in non_exhausted:
+                lts = last_ts_by_aid[aid]
+                if lts is None:
+                    best_wait = 0
+                    best_since = None
+                    break
+                since_i = max(0, int((ref_now - lts).total_seconds()))
+                wait_i = max(0, self.config.rate_limit_gap_sec - since_i)
+                if best_wait is None or wait_i < best_wait:
+                    best_wait = wait_i
+                    best_since = since_i
+            rate_wait = best_wait if best_wait is not None else 0
+            since_last = best_since
         else:
-            since_last = None
+            all_ts = [t for t in last_ts_by_aid.values() if t is not None]
+            since_last = max(0, int((ref_now - max(all_ts)).total_seconds())) if all_ts else None
             rate_wait = 0
 
         return QuotaStatus(
-            daily_limit=self.config.daily_limit,
+            daily_limit=total_daily_limit,
             used_today=used_today,
             remaining_today=remaining_today,
             needed_closing_restores=len(restore_targets),
@@ -967,7 +1006,7 @@ class SubmissionGate:
                 passed=False,
                 code="DAILY_LIMIT_REACHED",
                 reason=(
-                    f"50/day hard limit reached ({quota.used_today}/{quota.daily_limit}); "
+                    f"{quota.daily_limit}/day hard limit reached ({quota.used_today}/{quota.daily_limit}); "
                     f"next reset at {quota.next_reset_utc}"
                 ),
                 metrics={"remaining": 0, "reserved": quota.reserved_for_closing},

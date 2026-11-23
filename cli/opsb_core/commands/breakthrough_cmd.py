@@ -51,7 +51,8 @@ def run_queue_list(args: argparse.Namespace) -> int:
         items.sort(key=lambda x: (x["kind"] != "completed", float(x.get("breakthrough_delta") or 0.0)), reverse=True)
 
     if args.json:
-        print(json.dumps({"threshold": thresh, "count": len(items), "items": items}, ensure_ascii=False, indent=2))
+        active_subs = ((snap.get("scheduler") or {}).get("pipeline") or {}).get("active_submissions") or []
+        print(json.dumps({"threshold": thresh, "count": len(items), "active_submissions": active_subs, "items": items}, ensure_ascii=False, indent=2))
         return 0
 
     hdr = f"Breakthrough Filter (Δ >= {thresh:.1f} pts)" if (args.breakthrough or args.min_delta is not None) else "Submission Queue"
@@ -61,7 +62,14 @@ def run_queue_list(args: argparse.Namespace) -> int:
         bt_d = it.get("breakthrough_delta")
         bt_tag = f" [🚀 {bt_d:+.2f}]" if (bt_d is not None and bt_d >= thresh) else ""
         doc_tag = f" [DOC:{it['experience_id']}]" if it.get("experience_id") else ""
-        if it["kind"] == "completed":
+        if it["kind"] == "inflight":
+            est_v = it.get("estimated_score")
+            sc_flow = f"{it.get('current_score', 0.0):5.2f} -> ~{est_v:5.2f}" if est_v is not None else f"{it.get('current_score', 0.0):5.2f} -> judging..."
+            jid_s = f" #{it['remote_judge_id']}" if it.get("remote_judge_id") else ""
+            acc_s = f" [{it['account_label']}]" if it.get("account_label") else ""
+            st_lbl = f"INFLIGHT({it.get('phase') or it.get('raw_status')}{jid_s})"
+            bt_tag = f"{bt_tag}{acc_s}"
+        elif it["kind"] == "completed":
             sc_flow = f"{it.get('prior_score', 0.0):5.2f} -> {it.get('actual_score') or 0.0:5.2f}"
             st_lbl = it["raw_status"]
         else:

@@ -1,179 +1,5 @@
 import SwiftUI
 
-struct ActiveSubmissionCardView: View {
-    @EnvironmentObject var store: ContestStore
-    let active: ActiveSubmissionItem
-    let pipe: LivePipelineState
-    @ObservedObject var clock: WallClockTicker
-
-    private var lang: AppLanguage { store.lang }
-
-    var body: some View {
-        let judgeEl = clock.elapsedSince(startedAt: active.startedEpoch)
-        let matchedSlot = pipe.accountSlots?.first(where: { $0.id == active.accountId })
-        let slotCd = clock.cooldownRemaining(endsAt: matchedSlot?.cooldownEndsEpoch ?? pipe.cooldownEndsEpoch)
-        let slotColor: Color = {
-            if active.accountId == "primary" { return .blue }
-            if active.accountId.hasSuffix("-2") { return .teal }
-            if active.accountId.hasSuffix("-3") { return .purple }
-            return .indigo
-        }()
-
-        SurfaceCard(highlighted: true, highlightColor: slotColor, padding: 11) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 7) {
-                    ProgressView().controlSize(.small)
-                    Text(active.accountLabel)
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(slotColor)
-                        .padding(.horizontal, 6.5)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(slotColor.opacity(0.14)))
-                    Text(active.title)
-                        .font(.system(size: 13.5, weight: .bold))
-                    if !active.shortSha.isEmpty {
-                        Text(active.shortSha)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    if let jid = active.remoteJudgeId {
-                        Text(lang.tr("单号 #\(jid)", "Judge #\(jid)"))
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.blue)
-                    }
-                    if active.startedEpoch > 0 {
-                        Text("· \(Formatters.shortTimestamp(epoch: active.startedEpoch))")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    SemanticPill(text: phaseLabel(active.phase, remoteStatus: active.remoteStatus))
-                }
-
-                HStack(spacing: 16) {
-                    Label(elapsedLabel(phase: active.phase, sec: judgeEl), systemImage: "clock.fill")
-                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(slotColor)
-
-                    Label(
-                        slotCd > 0
-                            ? lang.tr("\(active.accountLabel) 冷却剩余: \(slotCd)s", "\(active.accountLabel) cooldown: \(slotCd)s")
-                            : lang.tr("\(active.accountLabel) 190s 冷却已就绪", "\(active.accountLabel) Ready"),
-                        systemImage: "timer"
-                    )
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(slotCd > 0 ? .orange : .green)
-
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private func elapsedLabel(phase: String, sec: Int) -> String {
-        let dur = Formatters.duration(sec)
-        switch phase {
-        case "waiting_cooldown": return lang.tr("本地排队等待: \(dur)", "Waiting cooldown: \(dur)")
-        case "packaging", "uploading": return lang.tr("本地处理耗时: \(dur)", "Local stage: \(dur)")
-        case "fetching_score": return lang.tr("总耗时: \(dur) (同步榜单中)", "Elapsed: \(dur) (Syncing)")
-        default: return lang.tr("远程判题已耗时: \(dur)", "Remote judging: \(dur)")
-        }
-    }
-
-    private func phaseLabel(_ phase: String, remoteStatus: String?) -> String {
-        switch phase {
-        case "waiting_cooldown": return lang.tr("本地等待限流冷却", "Waiting Cooldown")
-        case "packaging": return lang.tr("本地校验打包中", "Packaging")
-        case "uploading": return lang.tr("正在上传代码", "Uploading")
-        case "remote_queued": return lang.tr("远程排队中 (\(remoteStatus ?? "Queued"))", "Remote Queued")
-        case "remote_compiling": return lang.tr("远程编译算子中", "Remote Compiling")
-        case "remote_running": return lang.tr("远程运行测例中 (\(remoteStatus ?? "Running"))", "Remote Running")
-        case "fetching_score": return lang.tr("判题完成 · 同步分数中", "Syncing Score")
-        default: return phase
-        }
-    }
-}
-
-struct InflightJudgeCardView: View {
-    @EnvironmentObject var store: ContestStore
-    let pipe: LivePipelineState
-    @ObservedObject var clock: WallClockTicker
-
-    private var lang: AppLanguage { store.lang }
-
-    var body: some View {
-        let judgeEl = clock.elapsedSince(startedAt: pipe.judgeStartedEpoch)
-        let cdRem = clock.cooldownRemaining(endsAt: pipe.cooldownEndsEpoch)
-
-        SurfaceCard(highlighted: true, highlightColor: .blue, padding: 11) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(pipe.activeTitle ?? "Operator")
-                        .font(.system(size: 13.5, weight: .bold))
-                    if let sha = pipe.activeShortSha, !sha.isEmpty {
-                        Text(sha)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    if let jid = pipe.remoteJudgeId {
-                        Text(lang.tr("单号 #\(jid)", "Judge #\(jid)"))
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(.blue)
-                    }
-                    if let st = pipe.judgeStartedEpoch, st > 0 {
-                        Text("· \(Formatters.shortTimestamp(epoch: st))")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    SemanticPill(text: phaseLabel(pipe.phase, remoteStatus: pipe.remoteStatus))
-                }
-
-                HStack(spacing: 16) {
-                    Label(elapsedLabel(phase: pipe.phase, sec: judgeEl), systemImage: "clock.fill")
-                        .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.blue)
-
-                    Label(
-                        cdRem > 0
-                            ? lang.tr("平台限流冷却剩余: \(cdRem)s", "Rate cooldown: \(cdRem)s")
-                            : lang.tr("平台 190s 冷却已就绪", "190s Cooldown Ready"),
-                        systemImage: "timer"
-                    )
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(cdRem > 0 ? .orange : .green)
-
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private func elapsedLabel(phase: String, sec: Int) -> String {
-        let dur = Formatters.duration(sec)
-        switch phase {
-        case "waiting_cooldown": return lang.tr("本地排队等待: \(dur)", "Waiting cooldown: \(dur)")
-        case "packaging", "uploading": return lang.tr("本地处理耗时: \(dur)", "Local stage: \(dur)")
-        case "fetching_score": return lang.tr("总耗时: \(dur) (同步榜单中)", "Elapsed: \(dur) (Syncing)")
-        default: return lang.tr("远程判题已耗时: \(dur)", "Remote judging: \(dur)")
-        }
-    }
-
-    private func phaseLabel(_ phase: String, remoteStatus: String?) -> String {
-        switch phase {
-        case "waiting_cooldown": return lang.tr("本地等待限流冷却", "Waiting Cooldown")
-        case "packaging": return lang.tr("本地校验打包中", "Packaging")
-        case "uploading": return lang.tr("正在上传代码", "Uploading")
-        case "remote_queued": return lang.tr("远程排队中 (\(remoteStatus ?? "Queued"))", "Remote Queued")
-        case "remote_compiling": return lang.tr("远程编译算子中", "Remote Compiling")
-        case "remote_running": return lang.tr("远程运行测例中 (\(remoteStatus ?? "Running"))", "Remote Running")
-        case "fetching_score": return lang.tr("判题完成 · 同步分数中", "Syncing Score")
-        default: return phase
-        }
-    }
-}
-
 struct CandidateSubmissionCardView: View {
     @EnvironmentObject var store: ContestStore
     @EnvironmentObject var hotStore: HotTelemetryStore
@@ -215,7 +41,7 @@ struct CandidateSubmissionCardView: View {
                             compact: true
                         )
                     }
-                    SemanticPill(text: readableCandidateBadge(item.badge))
+                    SemanticPill(text: readableCandidateBadge(item))
                 }
 
                 HStack(spacing: 8) {
@@ -254,7 +80,7 @@ struct CandidateSubmissionCardView: View {
                 HStack(spacing: 8) {
                     Text(gateSummaryText(item))
                         .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(item.gates.safetyOk ? Color(red: 0.12, green: 0.70, blue: 0.42) : .orange)
+                        .foregroundStyle(gateSummaryColor(item))
 
                     Spacer()
 
@@ -301,31 +127,61 @@ struct CandidateSubmissionCardView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(isCrit ? .red : .accentColor)
                     .controlSize(.small)
-                    .disabled(isLocalUploading || item.badge.uppercased().contains("ESCAPE"))
+                    .disabled(isLocalUploading || item.badge.uppercased().contains("ESCAPE") || !item.gates.safetyOk)
                 }
             }
         }
     }
 
-    private func readableCandidateBadge(_ badge: String) -> String {
-        let u = badge.uppercased()
+    private func readableCandidateBadge(_ item: SubmissionQueueItem) -> String {
+        let u = item.badge.uppercased()
         if u.contains("ESCAPE") { return lang.tr("逃逸硬锁 · 禁止提交", "ESCAPE LOCK") }
+        if u.contains("REJECTED") { return lang.tr("门禁拒绝 · REJECTED", "REJECTED") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
-        if u.contains("HOLD") || u.contains("LOW") { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
         if u.contains("CIRCUIT") { return lang.tr("连6发无突破", "CIRCUIT OPEN") }
+        if u.contains("HOLD") || u.contains("LOW") { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
+        if u.contains("RATE") { return lang.tr("冷却等待 · RATE WAIT", "RATE WAIT") }
+        if !item.gates.allPass { return lang.tr("门禁未通过 · HELD", "GATE HELD") }
+        if u.contains("EXPLORE") { return lang.tr("探索通道 · EXPLORE", "EXPLORE") }
         return lang.tr("待提交 · READY", "READY")
     }
 
+    private func gateSummaryColor(_ item: SubmissionQueueItem) -> Color {
+        let u = item.badge.uppercased()
+        if u.contains("ESCAPE") || u.contains("REJECTED") || !item.gates.safetyOk { return .red }
+        if u.contains("CRITICAL") { return Color(red: 0.12, green: 0.70, blue: 0.42) }
+        if !item.gates.allPass || u.contains("RATE") { return .orange }
+        return Color(red: 0.12, green: 0.70, blue: 0.42)
+    }
+
     private func gateSummaryText(_ item: SubmissionQueueItem) -> String {
-        if item.badge.uppercased().contains("ESCAPE") {
+        let u = item.badge.uppercased()
+        if u.contains("ESCAPE") {
             return lang.tr(
                 "🔒 逃逸硬锁激活：需先复现线上 WA/TLE 并通过 verify-escape 解锁",
                 "🔒 ESCAPE LOCK: add reproducer & pass verify-escape before submitting"
             )
         }
         if !item.gates.safetyOk { return lang.tr("⚠ 缺少完整服务端精度测试记录", "⚠ Missing NPU extended validation") }
-        if item.badge.contains("CRITICAL") { return lang.tr("✓ 历史高分验证通过，可立即恢复", "✓ Validated best SHA ready to restore") }
-        if !item.gates.noiseOk { return lang.tr("✓ 精度通过 · 预计涨幅低于自动阈值 (可手动插队)", "✓ Precision OK · Below noise floor (Jump Queue allowed)") }
+        if u.contains("CRITICAL") { return lang.tr("✓ 历史高分验证通过，可立即恢复", "✓ Validated best SHA ready to restore") }
+        if u.contains("REJECTED") {
+            return lang.tr("⛔ 门禁拒绝提交（收益/熔断/配额未通过）", "⛔ Rejected by submission gate")
+        }
+        if !item.gates.circuitOk {
+            return lang.tr("⚠ 12h 连续未突破（熔断开启 · 请切换基线或插队覆盖）", "⚠ Circuit breaker open (switch baseline or override)")
+        }
+        if !item.gates.noiseOk {
+            return lang.tr("✓ 精度通过 · 预计涨幅低于自动阈值 (可手动插队)", "✓ Precision OK · Below noise floor (Jump Queue allowed)")
+        }
+        if !item.gates.quotaOk {
+            return lang.tr("⚠ 今日常规额度已用尽（保留收官恢复配额）", "⚠ Daily normal quota exhausted (reserve protected)")
+        }
+        if u.contains("RATE") {
+            return lang.tr("⏳ 4项门禁通过 · 等待 190s 平台冷却就绪", "⏳ All 4 gates passed · Waiting 190s cooldown")
+        }
+        if !item.gates.allPass {
+            return lang.tr("⚠ 未通过全部提交门禁", "⚠ Not all gate stages passed")
+        }
         return lang.tr("✓ 本地精度与防抖门禁全部通过", "✓ All 4 gate stages passed")
     }
 }
@@ -455,40 +311,6 @@ struct CompletedSubmissionCardView: View {
         case "skipped": return lang.tr("已跳过", "Skipped")
         default: return raw
         }
-    }
-}
-
-struct QueueArrowSeparator: View {
-    var body: some View {
-        Image(systemName: "arrow.right")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(.tertiary)
-    }
-}
-
-struct QueueScoreCell: View {
-    let title: String
-    let main: String
-    let delta: Double?
-    let mainColor: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.system(size: 10))
-                .foregroundStyle(.secondary)
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(main)
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundStyle(mainColor)
-                if let d = delta {
-                    Text(String(format: "(%+.2f)", d))
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(d >= 0 ? Color(red: 0.10, green: 0.72, blue: 0.42) : .orange)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

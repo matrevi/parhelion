@@ -12,10 +12,9 @@ from pathlib import Path
 from typing import Any
 
 from ..config import (
-    CONFIG_DIR,
     DEFAULT_BENCH_ROOT,
-    SESSIONS_DIR as PARHELION_SESSIONS_DIR,
     SUPERVISOR_ROOT,
+    _resolve_parhelion_home,
     discover_default_workspace,
     invalidate_ttl_cache,
     parse_iso,
@@ -26,9 +25,15 @@ from ..config import (
     write_ttl_cache,
 )
 
-SESSIONS_DIR = PARHELION_SESSIONS_DIR
 LEGACY_SESSIONS_DIR = Path.home() / ".judge" / "sessions"
-ACCOUNTS_REGISTRY = CONFIG_DIR / "cj_accounts.json"
+
+
+def _sessions_dir() -> Path:
+    return _resolve_parhelion_home() / "sessions"
+
+
+def _accounts_registry_path() -> Path:
+    return _resolve_parhelion_home() / "cj_accounts.json"
 
 
 def _resolve_judge_submit_dir() -> Path:
@@ -109,7 +114,7 @@ def read_judge_status() -> dict[str, Any]:
     env_p = os.environ.get("JUDGE_SESSION_FILE")
     if env_p:
         candidates.append(Path(env_p).expanduser())
-    candidates.append(SESSIONS_DIR / "primary.json")
+    candidates.append(_sessions_dir() / "primary.json")
     candidates.append(Path.home() / ".judge" / "session.json")
     for cand in candidates:
         if cand.is_file():
@@ -118,21 +123,24 @@ def read_judge_status() -> dict[str, Any]:
 
 
 def _load_accounts_registry() -> list[dict[str, Any]]:
-    raw = read_json(ACCOUNTS_REGISTRY, {"accounts": []})
+    raw = read_json(_accounts_registry_path(), {"accounts": []})
     items = raw.get("accounts") if isinstance(raw, dict) else []
     return [x for x in (items or []) if isinstance(x, dict) and x.get("id")]
 
 
 def _save_accounts_registry(items: list[dict[str, Any]]) -> None:
-    CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = ACCOUNTS_REGISTRY.with_suffix(".tmp")
+    ph = _resolve_parhelion_home()
+    reg_path = _accounts_registry_path()
+    ph.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = reg_path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"accounts": items}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.chmod(tmp, 0o600)
-    os.replace(tmp, ACCOUNTS_REGISTRY)
+    os.replace(tmp, reg_path)
 
 
 def list_judge_accounts() -> list[dict[str, Any]]:
     """Return all configured Judge team submitter slots (primary + extra teammate sessions)."""
+    sdir = _sessions_dir()
     reg = _load_accounts_registry()
     primary_meta = next((x for x in reg if x.get("id") == "primary"), None)
     prim_st = read_judge_status()
@@ -150,9 +158,9 @@ def list_judge_accounts() -> list[dict[str, Any]]:
         aid = str(item.get("id") or "")
         if not aid or aid == "primary":
             continue
-        sf = Path(str(item.get("session_file") or (SESSIONS_DIR / f"{aid}.json"))).expanduser()
+        sf = Path(str(item.get("session_file") or (sdir / f"{aid}.json"))).expanduser()
         if not sf.is_file():
-            for alt in (SESSIONS_DIR / f"{aid}.json", LEGACY_SESSIONS_DIR / f"{aid}.json"):
+            for alt in (sdir / f"{aid}.json", LEGACY_SESSIONS_DIR / f"{aid}.json"):
                 if alt.is_file():
                     sf = alt
                     break
@@ -201,7 +209,7 @@ def remove_judge_account(account_id: str) -> dict[str, Any]:
     if removed is None:
         return {"ok": False, "error": f"Unknown account slot: {account_id}"}
     sf = Path(str(removed.get("session_file") or "")).expanduser()
-    if sf.is_file() and (SESSIONS_DIR in sf.parents or LEGACY_SESSIONS_DIR in sf.parents):
+    if sf.is_file() and (_sessions_dir() in sf.parents or LEGACY_SESSIONS_DIR in sf.parents):
         sf.unlink(missing_ok=True)
     _save_accounts_registry(kept)
     return {"ok": True, "accounts": list_judge_accounts()}
@@ -225,8 +233,9 @@ def import_judge_session(src_path: str, label: str = "") -> dict[str, Any]:
     while f"teammate-{n}" in existing_ids:
         n += 1
     aid = f"teammate-{n}"
-    SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    dst = SESSIONS_DIR / f"{aid}.json"
+    sdir = _sessions_dir()
+    sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    dst = sdir / f"{aid}.json"
     dst.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.chmod(dst, 0o600)
     reg.append(
@@ -319,8 +328,9 @@ def login_judge(
             while f"teammate-{n}" in existing_ids:
                 n += 1
             target_slot = f"teammate-{n}"
-        SESSIONS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        session_file = SESSIONS_DIR / f"{target_slot}.json"
+        sdir = _sessions_dir()
+        sdir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        session_file = sdir / f"{target_slot}.json"
 
     script = (
         "import json, os, sys\n"

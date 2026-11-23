@@ -8,6 +8,7 @@ from typing import Any
 
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
+from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
@@ -35,6 +36,12 @@ def _latest_result_dir(workspace: Path, title: str, sha: str | None = None) -> P
 def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     cfg = load_parhelion_config()
     snap = compute_workspace_snapshot(workspace, cfg)
+    try:
+        bridge = invoke_bridge(workspace, "status", ["--offline"], use_cache=True)
+        if isinstance(bridge, dict):
+            merge_bridge_enrichment(snap, bridge)
+    except Exception:
+        pass
     prob_filter = str(args.get("problem") or "").strip().lower()
     include_npu = bool(args.get("include_npu", False))
     include_queue = bool(args.get("include_queue", True))

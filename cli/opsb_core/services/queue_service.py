@@ -10,6 +10,7 @@ from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
 from .judge_sync import compute_synchronized_pipeline
+from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
 from .sync_reconciler import reconcile_sync_errors_async
 
 
@@ -86,16 +87,17 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     pipeline = compute_synchronized_pipeline(workspace, outcome_rows, queue_lock_held, gap_sec=gap_sec, first_pending=first_pend)
     cooldown_sec = int(pipeline["cooldown_remaining_sec"])
+    eff_closing_reserve = compute_effective_closing_reserve(problems_out, closing_reserve, noise_floor)
     active_slots = [s for s in (pipeline.get("account_slots") or []) if s.get("enabled") and s.get("logged_in")]
     if active_slots:
         team_daily_limit = sum(int(s.get("daily_limit") or daily_limit) for s in active_slots)
         team_used_today = sum(int(s.get("used_today") or 0) for s in active_slots)
         team_remaining = sum(max(0, int(s.get("daily_limit") or daily_limit) - int(s.get("used_today") or 0)) for s in active_slots)
-        avail_shots = max(0, team_remaining - closing_reserve)
+        avail_shots = max(0, team_remaining - eff_closing_reserve)
     else:
         team_daily_limit = daily_limit
         team_used_today = hist_idx["used_24h"]
-        avail_shots = max(0, daily_limit - hist_idx["used_24h"] - closing_reserve)
+        avail_shots = max(0, daily_limit - hist_idx["used_24h"] - eff_closing_reserve)
 
     def eval_gates(title: str, est_sc: float | None, is_restore_zero: bool, safety_ok: bool = True) -> dict[str, Any]:
         p_obj = prob_map.get(title, {})
@@ -393,6 +395,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     done_q = [x for x in chron_items if x["kind"] == "completed"]
     done_q.sort(key=lambda x: x.get("finished_at") or x.get("queued_at") or "", reverse=True)
+    inflight_q = build_inflight_queue_items(pipeline, prob_map, queue_rows, exp_map, now.isoformat())
 
     return {
         "sampled_at": now.isoformat(),
@@ -406,7 +409,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "last_submitted_at": hist_idx["last_submitted_dt"].isoformat() if hist_idx["last_submitted_dt"] else None,
             "daily_quota_limit": team_daily_limit,
             "used_today_24h": team_used_today,
-            "closing_reserve": closing_reserve,
+            "closing_reserve": eff_closing_reserve,
+            "configured_closing_reserve": closing_reserve,
             "available_normal_shots": avail_shots,
             "noise_floor_delta": noise_floor,
             "breakthrough_threshold": bt_threshold,
@@ -417,7 +421,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "pipeline": pipeline,
         },
         "problems": problems_out,
-        "submission_queue": active_q + done_q,
+        "submission_queue": inflight_q + active_q + done_q,
     }
 
 

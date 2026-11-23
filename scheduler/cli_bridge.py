@@ -30,7 +30,13 @@ from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
-from .parhelion_paths import ensure_workspace_data_dirs, workspace_bench_specs_dir, workspace_state_dir
+from .parhelion_paths import (
+    ensure_workspace_data_dirs,
+    read_parhelion_scheduler_config,
+    workspace_bench_specs_dir,
+    workspace_state_dir,
+    write_parhelion_scheduler_config,
+)
 
 def _detect_default_workspace() -> pathlib.Path:
     env_ws = os.environ.get("OPSB_WORKSPACE")
@@ -92,7 +98,20 @@ class SchedulerEngine:
         self.state_file = self.state_dir / "scheduler_state.json"
         self.npu_host = npu_host
         self._raw_state = self._load_state()
-        self.config = GateConfig.from_dict(self._raw_state.get("config", {}))
+        cfg_dict = dict(self._raw_state.get("config", {}))
+        ph_sched = read_parhelion_scheduler_config()
+        if ph_sched:
+            if ph_sched.get("noise_floor_delta") is not None:
+                cfg_dict["noise_floor_pts"] = float(ph_sched["noise_floor_delta"])
+            if ph_sched.get("closing_reserve") is not None:
+                cfg_dict["min_closing_reserve"] = int(ph_sched["closing_reserve"])
+            if ph_sched.get("daily_quota_limit") is not None:
+                cfg_dict["daily_limit"] = int(ph_sched["daily_quota_limit"])
+            if ph_sched.get("rate_limit_gap_sec") is not None:
+                cfg_dict["rate_limit_gap_sec"] = int(ph_sched["rate_limit_gap_sec"])
+            if ph_sched.get("circuit_breaker_limit") is not None:
+                cfg_dict["circuit_limit_shots"] = int(ph_sched["circuit_breaker_limit"])
+        self.config = GateConfig.from_dict(cfg_dict)
         self.overrides: dict[str, dict[str, Any]] = dict(self._raw_state.get("overrides", {}))
         self.held_items: dict[str, dict[str, Any]] = dict(self._raw_state.get("held_items", {}))
         self.verified_escapes: dict[str, dict[str, Any]] = dict(self._raw_state.get("verified_escapes", {}))
@@ -727,6 +746,15 @@ class SchedulerEngine:
             self.config.aging_tau_sec = max(60.0, float(aging_tau))
         if not dry_run:
             self._save_state()
+            ph_updates: dict[str, Any] = {}
+            if noise_floor is not None:
+                ph_updates["noise_floor_delta"] = round(self.config.noise_floor_pts, 2)
+            if reserve is not None:
+                ph_updates["closing_reserve"] = self.config.min_closing_reserve
+            if circuit_shots is not None:
+                ph_updates["circuit_breaker_limit"] = self.config.circuit_limit_shots
+            if ph_updates:
+                write_parhelion_scheduler_config(ph_updates)
         self.refresh_models()
         return {"updated": not dry_run, "dry_run": dry_run, "config": self.config.to_dict()}
 

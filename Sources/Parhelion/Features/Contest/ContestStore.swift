@@ -164,13 +164,20 @@ final class ContestStore: ObservableObject {
               cdRem == 0,
               !isLaunchingSubmit else { return }
 
-        // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` items:
+        // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` / gated items:
         // rollbacks are user-triggered (or closing-time), and escaped ops must pass verify-escape first.
+        let inflightSet = Set(pipe?.inflightKeys ?? [])
         guard let top = snap.submissionQueue.first(where: { item in
-            item.kind == "pending"
-                && !item.badge.contains("ESCAPE")
-                && !item.badge.contains("HOLD")
-                && !item.badge.contains("CIRCUIT")
+            let u = item.badge.uppercased()
+            let actionableKind = item.kind == "pending" || item.kind == "candidate"
+            let notBlockedBadge = !u.contains("ESCAPE")
+                && !u.contains("HOLD")
+                && !u.contains("CIRCUIT")
+                && !u.contains("REJECTED")
+                && !u.contains("RATE")
+            return actionableKind
+                && notBlockedBadge
+                && !inflightSet.contains("\(item.title)|\(item.shortSha)")
                 && item.gates.allPass
         }) else { return }
 

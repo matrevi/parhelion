@@ -178,7 +178,22 @@ def run_queue(args: argparse.Namespace) -> int:
         if bridge_extra:
             invoke_bridge(ws, "config", bridge_extra)
         invalidate_ttl_cache("scheduler_bridge")
-        print(json.dumps({"ok": True, "scheduler": sched}, ensure_ascii=False))
+        snap = compute_workspace_snapshot(ws, cfg)
+        bridge = invoke_bridge(ws, "status", ["--offline"], use_cache=False)
+        if isinstance(bridge, dict):
+            merge_bridge_enrichment(snap, bridge)
+        s_snap = snap["scheduler"]
+        out_sched = {
+            **sched,
+            "per_account_daily_quota_limit": int(sched.get("daily_quota_limit", 50)),
+            "configured_closing_reserve": int(sched.get("closing_reserve", 2)),
+            "daily_quota_limit": int(s_snap["daily_quota_limit"]),
+            "used_today_24h": int(s_snap["used_today_24h"]),
+            "closing_reserve": int(s_snap["closing_reserve"]),
+            "available_normal_shots": int(s_snap["available_normal_shots"]),
+            "noise_floor_delta": float(s_snap["noise_floor_delta"]),
+        }
+        print(json.dumps({"ok": True, "scheduler": out_sched}, ensure_ascii=False))
         return 0
 
     if args.q_cmd == "skip":

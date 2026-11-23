@@ -269,6 +269,25 @@ def compute_synchronized_pipeline(
                         "account_id": r_aid,
                         "account_label": r_lbl,
                     }
+            elif age_sec < 180:
+                sub_ep = r["submitted_dt"].timestamp()
+                active_remotes.append(
+                    {
+                        "id": f"remote-{r['submission_id']}",
+                        "title": r["title"],
+                        "sha": r["sha"],
+                        "short_sha": r["sha"][:7],
+                        "submission_id": r["submission_id"],
+                        "judge_id": None,
+                        "remote_status": "Uploading/Syncing",
+                        "phase": "remote_queued",
+                        "started_epoch": round(sub_ep, 2),
+                        "elapsed_sec": max(0, int(now_epoch - sub_ep)),
+                        "account_id": r_aid,
+                        "account_label": r_lbl,
+                        "vis_pass": 0,
+                    }
+                )
 
     active_remote = active_remotes[0] if active_remotes else None
 

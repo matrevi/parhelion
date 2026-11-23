@@ -68,9 +68,9 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     ]
     if "reserved_for_closing" in b_quota:
         sched["closing_reserve"] = int(b_quota["reserved_for_closing"])
-    if len(active_slots) >= 2:
+    if active_slots:
         # Preserve multi-account team totals (e.g. 2x50=100, 3x50=150) instead of overwriting with single-account 50
-        per_acc_lim = int(b_quota.get("daily_limit") or 50)
+        per_acc_lim = int(b_cfg.get("daily_limit") or 50)
         team_limit = sum(int(s.get("daily_limit") or per_acc_lim) for s in active_slots)
         team_used = sum(int(s.get("used_today") or 0) for s in active_slots)
         team_rem = sum(max(0, int(s.get("daily_limit") or per_acc_lim) - int(s.get("used_today") or 0)) for s in active_slots)
@@ -173,7 +173,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
 
         if (t, sha) in existing:
             for item in payload["submission_queue"]:
-                if item["title"] == t and item["sha"] == sha and item["kind"] != "completed":
+                if item["title"] == t and item["sha"] == sha and item["kind"] not in ("completed", "inflight"):
                     if est_sc is not None:
                         item["estimated_score"] = est_sc
                     item["breakthrough_delta"] = cand_bt
@@ -217,7 +217,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             )
 
     for item in payload["submission_queue"]:
-        if item["kind"] != "completed":
+        if item["kind"] not in ("completed", "inflight"):
             pair = (item["title"], item["sha"])
             if pair in est_by_pair:
                 item["estimated_score"] = est_by_pair[pair]
@@ -227,9 +227,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     item["is_breakthrough"] = cbd >= bt_thresh
 
     if extra_cands:
-        active = [x for x in payload["submission_queue"] if x["kind"] != "completed"] + extra_cands
+        inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]
+        active = [x for x in payload["submission_queue"] if x["kind"] not in ("completed", "inflight")] + extra_cands
         active.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)
         done = [x for x in payload["submission_queue"] if x["kind"] == "completed"]
-        payload["submission_queue"] = active + done
+        payload["submission_queue"] = inflight + active + done
         sched["actionable_count"] = len(active)
     sched["breakthrough_count"] = sum(1 for x in payload["submission_queue"] if x.get("is_breakthrough"))
