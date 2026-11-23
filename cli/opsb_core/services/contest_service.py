@@ -16,6 +16,11 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
     if isinstance(clean_manifest, dict):
         cid = clean_manifest.get("contest_id", "")
         owner = clean_manifest.get("git_owner", "winbeau")
+        g_slug = clean_manifest.get("group_slug") or "public"
+        c_slug = clean_manifest.get("contest_slug") or ""
+        c_url = clean_manifest.get("contest_url") or (
+            f"https://judge.invalid/{g_slug}/{c_slug}" if c_slug else "https://judge.invalid"
+        )
         return {
             "workspace": str(workspace),
             "layout": clean_manifest.get("layout", "clean-agents-first"),
@@ -25,7 +30,7 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
             "git_owner": owner,
             "repo_prefix": clean_manifest.get("repo_prefix", ""),
             "npu_ssh_host": clean_manifest.get("npu_ssh_host", "npu"),
-            "contest_url": f"https://judge.invalid/contests/{cid}" if cid else "https://judge.invalid",
+            "contest_url": c_url,
             "gitcode_url": f"https://gitcode.com/{owner}",
             "problems": clean_manifest.get("problems", []),
         }
@@ -54,6 +59,11 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
         )
 
     cid = contest_detail.get("id") or contest_detail.get("_id") or "6a9e2d04bf41025d60f21804"
+    g_slug = str(contest_detail.get("group_name") or "public").strip("/")
+    c_slug = str(contest_detail.get("name") or "ictcompetition").strip("/")
+    contest_url = f"https://judge.invalid/{g_slug}/{c_slug}"
+    for item in normalized:
+        item["problem_url"] = f"{contest_url}/{item['slug']}"
     return {
         "workspace": str(workspace),
         "layout": "legacy-multi-repo" if legacy_problems else "uninitialized",
@@ -63,7 +73,7 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
         "git_owner": "winbeau",
         "repo_prefix": "bench",
         "npu_ssh_host": "npu",
-        "contest_url": f"https://judge.invalid/contests/{cid}",
+        "contest_url": contest_url,
         "gitcode_url": "https://gitcode.com/winbeau",
         "problems": normalized,
     }
@@ -401,6 +411,7 @@ def build_problem_models(
                 "slug": p["slug"],
                 "repo_slug": p["repo_slug"],
                 "problem_id": p["problem_id"],
+                "problem_url": p.get("problem_url") or f"{meta.get('contest_url', 'https://judge.invalid').rstrip('/')}/{p.get('slug', title.lower())}",
                 "numeric_id": p.get("numeric_id"),
                 "difficulty": diff,
                 "sdk_version": p.get("sdk_version", "9.1.0"),

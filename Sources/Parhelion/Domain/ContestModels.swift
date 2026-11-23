@@ -81,6 +81,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let slug: String
     let repoSlug: String
     let problemId: String
+    let problemUrl: String?
     let numericId: Int?
     let difficulty: Int
     let sdkVersion: String
@@ -122,6 +123,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case title, slug, path, status, rank, difficulty, calibration, testcases, history
         case repoSlug = "repo_slug"
         case problemId = "problem_id"
+        case problemUrl = "problem_url"
         case numericId = "numeric_id"
         case sdkVersion = "sdk_version"
         case totalTeams = "total_teams"

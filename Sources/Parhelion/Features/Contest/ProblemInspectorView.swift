@@ -64,7 +64,9 @@ struct ProblemInspectorView: View {
                 ))
 
                 Button {
-                    SystemNavigator.openURL("https://judge.invalid/problems/\(problem.problemId)")
+                    let fallbackBase = (store.snapshot?.contest.contestUrl ?? "https://judge.invalid").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    let url = problem.problemUrl ?? "\(fallbackBase)/\(problem.slug)"
+                    SystemNavigator.openURL(url)
                 } label: { Image(systemName: "globe") }
                 .help(lang.tr("在 Judge 打开赛题", "Open on Judge"))
 
