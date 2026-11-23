@@ -9,9 +9,10 @@ from typing import Any
 from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl, utc_now
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
-from .sync_reconciler import reconcile_sync_errors_async
+from .sync_reconciler import recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
 
 
 def estimate_score_from_note(note: str, base_score: float, best_score: float) -> float | None:
@@ -35,6 +36,23 @@ def estimate_score_from_note(note: str, base_score: float, best_score: float) ->
     if best_score > base_score and ("restore" in low or "rollback" in low):
         return round(best_score, 2)
     return None
+
+
+def _outcome_precedence(o: dict[str, Any]) -> tuple[int, int, int, str]:
+    """Ensure real judged outcomes WITH `submission_id` always outrank `skipped` rows without one."""
+    sid = str(o.get("submission_id") or "").strip()
+    st = str(o.get("status") or "").strip()
+    has_verdict = 1 if (sid and st in TERMINAL_JUDGE_STATUSES) else 0
+    has_score = 1 if (o.get("score") is not None) else 0
+    has_sid = 1 if sid else 0
+    ts = str(o.get("finished_at") or o.get("submitted_at") or o.get("queued_at") or "")
+    return (has_verdict, has_score, has_sid, ts)
+
+
+def _prefer_outcome(table: dict[Any, dict[str, Any]], key: Any, row: dict[str, Any]) -> None:
+    prev = table.get(key)
+    if prev is None or _outcome_precedence(row) >= _outcome_precedence(prev):
+        table[key] = row
 
 
 def _probe_queue_lock(lock_file: Path) -> bool:
@@ -75,14 +93,20 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     outcome_rows = hist_idx["outcome_rows"]
     sha_pass_scores = hist_idx["sha_pass_scores"]
 
-    outcomes_exact = {
-        (str(o.get("title", "")), str(o.get("sha", "")).lower(), str(o.get("queued_at", ""))): o
-        for o in outcome_rows
-    }
-    outcomes_pair = {
-        (str(o.get("title", "")), str(o.get("sha", "")).lower()): o
-        for o in outcome_rows
-    }
+    outcomes_exact: dict[tuple[str, str, str], dict[str, Any]] = {}
+    outcomes_pair: dict[tuple[str, str], dict[str, Any]] = {}
+    outcomes_short: dict[tuple[str, str], dict[str, Any]] = {}
+    for o in outcome_rows:
+        ot = str(o.get("title") or "")
+        os_low = str(o.get("sha") or "").lower()
+        oq = str(o.get("queued_at") or "")
+        _prefer_outcome(outcomes_exact, (ot, os_low, oq), o)
+        _prefer_outcome(outcomes_pair, (ot, os_low), o)
+        if ot and len(os_low) >= 7:
+            _prefer_outcome(outcomes_short, (ot, os_low[:7]), o)
+
+    unreconciled_pairs = recent_unreconciled_receipt_pairs(workspace, outcome_rows)
+
     skipped_exact: dict[tuple[str, str], dict[str, Any]] = {}
     skipped_short: dict[tuple[str, str], dict[str, Any]] = {}
     for o in outcome_rows:
@@ -103,14 +127,31 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             return skipped_short.get((t_name, s_low[:7]))
         return None
 
+    def _resolve_queue_outcome(t_name: str, sha_str: str, q_at_str: str, is_forced: bool) -> dict[str, Any] | None:
+        s_low = str(sha_str or "").lower()
+        exact = outcomes_exact.get((t_name, s_low, q_at_str))
+        if exact is not None:
+            return exact
+        skip_o = _find_skip_outcome(t_name, s_low)
+        skip_ts = str((skip_o or {}).get("finished_at") or (skip_o or {}).get("queued_at") or "")
+        pair_o = outcomes_pair.get((t_name, s_low)) or (outcomes_short.get((t_name, s_low[:7])) if len(s_low) >= 7 else None)
+        if is_forced:
+            if pair_o is not None and str(pair_o.get("submission_id") or "").strip():
+                out_ts = str(pair_o.get("submitted_at") or pair_o.get("finished_at") or "")
+                if skip_o is None or out_ts >= str(q_at_str or "") or pair_o.get("reconciled_from") == "orphan_receipt":
+                    return pair_o
+            if skip_o is not None and skip_ts >= str(q_at_str or ""):
+                return skip_o
+            return None
+        return pair_o or skip_o
+
     first_pend: tuple[str, str] | None = None
     for q in queue_rows:
         qt, qs, qq = str(q.get("title", "")), str(q.get("sha", "")), str(q.get("queued_at", ""))
         qs_low = qs.lower()
-        skip_o = _find_skip_outcome(qt, qs_low)
-        skip_ts = str((skip_o or {}).get("finished_at") or (skip_o or {}).get("queued_at") or "")
-        is_skipped = bool(skip_o is not None and (not q.get("force") or skip_ts >= qq))
-        if (qt, qs_low, qq) not in outcomes_exact and not is_skipped and (q.get("force") or (qt, qs_low) not in outcomes_pair):
+        if len(qs_low) >= 7 and (qt, qs_low[:7]) in unreconciled_pairs:
+            continue
+        if _resolve_queue_outcome(qt, qs_low, qq, bool(q.get("force"))) is None:
             first_pend = (qt, qs)
             break
 
@@ -171,7 +212,11 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         t = p_obj["title"]
         if p_obj["current_score"] == 0.0 and p_obj["best_score"] > 0.0 and p_obj["best_sha"]:
             b_sha = p_obj["best_sha"]
-            if (t, b_sha.lower()) not in queued_pairs and _find_skip_outcome(t, b_sha) is None:
+            if (
+                (t, b_sha.lower()) not in queued_pairs
+                and _find_skip_outcome(t, b_sha) is None
+                and (t, b_sha[:7].lower()) not in unreconciled_pairs
+            ):
                 priors = sha_pass_scores.get((t, b_sha), [p_obj["best_score"]])
                 est = round(sum(priors) / len(priors), 2)
                 gates = eval_gates(t, est, is_restore_zero=True)
@@ -266,6 +311,91 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     peak_pass_score: dict[str, float] = {}
     seen_pass_shas: set[tuple[str, str]] = set()
     chron_items: list[dict[str, Any]] = []
+    matched_outcome_sids: set[str] = set()
+    inflight_set = set(pipeline.get("inflight_keys") or [])
+    inflight_lower = {
+        (k.split("|", 1)[0], k.split("|", 1)[1].lower()[:7])
+        for k in inflight_set
+        if "|" in str(k)
+    }
+
+    def _append_completed_item(item_id: str, t: str, sha: str, q_at: str, note: str, est: float, out: dict[str, Any]) -> None:
+        p_obj = prob_map.get(t, {"difficulty": DEFAULT_DIFFICULTIES.get(t, 2), "current_score": 0.0, "best_score": 0.0})
+        cur_sc = float(p_obj.get("current_score", 0.0))
+        prior_sc = prior_board.get(t, 0.0)
+        st = out.get("status", "done")
+        raw_detail = str(out.get("detail") or "")
+        if st == "rejected" and (raw_detail.lower().startswith("poll error:") or bool(out.get("submission_id"))):
+            st = "sync_error"
+        actual = float(out["score"]) if out.get("score") is not None else None
+        delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
+        bt_delta: float | None = None
+        base_p_sha = last_pass_sha.get(t)
+        effective_note = str(out.get("note") or note or "")
+        low_note = effective_note.strip().lower()
+        is_restore_note = any(low_note.startswith(pfx) for pfx in ("restore", "rollback", "retry restore", "closing restore"))
+        if st == "Pass":
+            badge = "PASS ↑" if (delta is None or delta >= 0) else "PASS ↓"
+            if actual is not None:
+                peak_p = peak_pass_score.get(t, 0.0)
+                is_repeat = (t, sha[:7]) in seen_pass_shas
+                if (not is_repeat) and (not is_restore_note) and (peak_p > 0) and (actual > peak_p):
+                    bt_delta = round(actual - peak_p, 2)
+                seen_pass_shas.add((t, sha[:7]))
+                last_pass_score[t] = actual
+                last_pass_sha[t] = sha[:7]
+                peak_pass_score[t] = max(peak_p, actual)
+                prior_board[t] = actual
+        elif st == "skipped":
+            badge = "SKIPPED"
+        elif st == "sync_error":
+            badge = "SYNC ERROR"
+        elif st in ("Running", "Queued", "Pending"):
+            badge = "JUDGING"
+        else:
+            badge = "REJECTED"
+            if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error", "Compile Error"):
+                prior_board[t] = 0.0
+        chron_items.append(
+            {
+                "id": item_id,
+                "kind": "completed",
+                "title": t,
+                "difficulty": int(p_obj.get("difficulty", 2)),
+                "sha": sha,
+                "short_sha": sha[:7],
+                "note": effective_note,
+                "detail": out.get("detail", ""),
+                "submission_id": out.get("submission_id"),
+                "queued_at": q_at,
+                "finished_at": out.get("finished_at") or out.get("submitted_at"),
+                "badge": badge,
+                "raw_status": st,
+                "current_score": cur_sc,
+                "prior_score": round(prior_sc, 2),
+                "estimated_score": est,
+                "actual_score": round(actual, 2) if actual is not None else None,
+                "delta_score": delta,
+                "breakthrough_delta": bt_delta,
+                "is_breakthrough": bool(bt_delta is not None and bt_delta >= bt_threshold),
+                "experience_id": exp_map.get((t, sha[:7])),
+                "baseline_pass_sha": base_p_sha,
+                "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
+                "gates": {
+                    "safety_ok": st not in ("rejected", "Compile Error", "Runtime Error", "Wrong Answer"),
+                    "noise_ok": st != "skipped",
+                    "circuit_ok": True,
+                    "quota_ok": True,
+                    "all_pass": st == "Pass",
+                    "delta_expected": round(est - prior_sc, 2),
+                    "wspt_score": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
+                },
+                "can_approve": False,
+                "can_skip": False,
+                "can_restore": False,
+            }
+        )
+
     for idx, q in enumerate(queue_rows):
         t, sha, q_at = q.get("title", ""), q.get("sha", ""), q.get("queued_at", "")
         note = q.get("note", "")
@@ -273,15 +403,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         p_obj = prob_map.get(t, {"difficulty": DEFAULT_DIFFICULTIES.get(t, 2), "current_score": 0.0, "best_score": 0.0})
 
         sha_low = str(sha or "").lower()
-        skip_out = _find_skip_outcome(t, sha_low)
-        skip_ts = str((skip_out or {}).get("finished_at") or (skip_out or {}).get("queued_at") or "")
-        out = outcomes_exact.get((t, sha_low, q_at))
-        if out is None:
-            if forced:
-                if skip_out is not None and skip_ts >= str(q_at or ""):
-                    out = skip_out
-            else:
-                out = outcomes_pair.get((t, sha_low)) or skip_out
+        out = _resolve_queue_outcome(t, sha_low, str(q_at or ""), forced)
+        if out is not None and out.get("submission_id"):
+            matched_outcome_sids.add(str(out["submission_id"]))
         prior_sc = prior_board.get(t, 0.0)
         cur_sc = float(p_obj.get("current_score", 0.0))
 
@@ -296,10 +420,13 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 est = round(sum(priors) / len(priors), 2) if priors else (round(base_anchor + 2.5, 2) if base_anchor > 0 else 40.0)
 
         if out is None:
-            # Skip putting in waiting list if this (title, sha) is ALREADY inflight/running on ANY teammate account!
-            inflight_set = set(pipeline.get("inflight_keys") or [])
-            if f"{t}|{sha[:7]}" in inflight_set or (
-                pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").startswith(sha[:7])
+            # Skip putting in waiting list if this (title, sha) is ALREADY inflight/running OR has an unreconciled receipt!
+            s7_low = sha_low[:7]
+            if (
+                f"{t}|{sha[:7]}" in inflight_set
+                or (t, s7_low) in inflight_lower
+                or (len(s7_low) >= 7 and (t, s7_low) in unreconciled_pairs)
+                or (pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").lower().startswith(s7_low))
             ):
                 continue
             is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
@@ -361,79 +488,20 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 }
             )
         else:
-            st = out.get("status", "done")
-            raw_detail = str(out.get("detail") or "")
-            if st == "rejected" and (raw_detail.lower().startswith("poll error:") or bool(out.get("submission_id"))):
-                st = "sync_error"
-            actual = float(out["score"]) if out.get("score") is not None else None
-            delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
-            bt_delta: float | None = None
-            base_p_sha = last_pass_sha.get(t)
-            effective_note = str(out.get("note") or note or "")
-            low_note = effective_note.strip().lower()
-            is_restore_note = any(low_note.startswith(pfx) for pfx in ("restore", "rollback", "retry restore", "closing restore"))
-            if st == "Pass":
-                badge = "PASS ↑" if (delta is None or delta >= 0) else "PASS ↓"
-                if actual is not None:
-                    prev_p = last_pass_score.get(t)
-                    peak_p = peak_pass_score.get(t, 0.0)
-                    is_repeat = (t, sha[:7]) in seen_pass_shas
-                    if (not is_repeat) and (not is_restore_note) and (peak_p > 0) and (actual > peak_p):
-                        bt_delta = round(actual - peak_p, 2)
-                    seen_pass_shas.add((t, sha[:7]))
-                    last_pass_score[t] = actual
-                    last_pass_sha[t] = sha[:7]
-                    peak_pass_score[t] = max(peak_p, actual)
-                    prior_board[t] = actual
-            elif st == "skipped":
-                badge = "SKIPPED"
-            elif st == "sync_error":
-                badge = "SYNC ERROR"
-            elif st in ("Running", "Queued", "Pending"):
-                badge = "JUDGING"
-            else:
-                badge = "REJECTED"
-                if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error", "Compile Error"):
-                    prior_board[t] = 0.0
-            chron_items.append(
-                {
-                    "id": f"done-{idx}-{t}-{sha[:7]}",
-                    "kind": "completed",
-                    "title": t,
-                    "difficulty": int(p_obj.get("difficulty", 2)),
-                    "sha": sha,
-                    "short_sha": sha[:7],
-                    "note": effective_note,
-                    "detail": out.get("detail", ""),
-                    "submission_id": out.get("submission_id"),
-                    "queued_at": q_at,
-                    "finished_at": out.get("finished_at") or out.get("submitted_at"),
-                    "badge": badge,
-                    "raw_status": st,
-                    "current_score": cur_sc,
-                    "prior_score": round(prior_sc, 2),
-                    "estimated_score": est,
-                    "actual_score": round(actual, 2) if actual is not None else None,
-                    "delta_score": delta,
-                    "breakthrough_delta": bt_delta,
-                    "is_breakthrough": bool(bt_delta is not None and bt_delta >= bt_threshold),
-                    "experience_id": exp_map.get((t, sha[:7])),
-                    "baseline_pass_sha": base_p_sha,
-                    "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
-                    "gates": {
-                        "safety_ok": st not in ("rejected", "Compile Error", "Runtime Error", "Wrong Answer"),
-                        "noise_ok": st != "skipped",
-                        "circuit_ok": True,
-                        "quota_ok": True,
-                        "all_pass": st == "Pass",
-                        "delta_expected": round(est - prior_sc, 2),
-                        "wspt_score": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
-                    },
-                    "can_approve": False,
-                    "can_skip": False,
-                    "can_restore": False,
-                }
-            )
+            _append_completed_item(f"done-{idx}-{t}-{sha[:7]}", t, sha, q_at, note, est, out)
+
+    for r_idx, out in enumerate(outcome_rows):
+        sid = str(out.get("submission_id") or "").strip()
+        if not sid or sid in matched_outcome_sids or out.get("reconciled_from") != "orphan_receipt":
+            continue
+        t = str(out.get("title") or "")
+        sha = str(out.get("sha") or "")
+        if not t or not sha:
+            continue
+        q_at = str(out.get("queued_at") or out.get("submitted_at") or "")
+        note = str(out.get("note") or "")
+        est = round(float(out["estimated_score"]), 2) if out.get("estimated_score") is not None else round(prior_board.get(t, 0.0) or float(prob_map.get(t, {}).get("current_score", 0.0)), 2)
+        _append_completed_item(f"done-orphan-{r_idx}-{t}-{sha[:7]}", t, sha, q_at, note, est, out)
 
     raw_active = [x for x in (advisory_items + chron_items) if x["kind"] != "completed"]
     raw_active.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)

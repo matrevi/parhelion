@@ -223,10 +223,10 @@ def compute_synchronized_pipeline(
     # 2. Check ALL recent receipts (< 35 min) not yet written to outcome_rows (supports N concurrent remote runs!)
     outcome_sids = {str(o.get("submission_id")) for o in outcome_rows if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES}
     active_remotes: list[dict[str, Any]] = []
-    finishing_score_sync: dict[str, Any] | None = None
+    finishing_syncs: list[dict[str, Any]] = []
     server_offset_sec = 0.0
 
-    for r in receipts[:max(10, len(account_slots) * 4)]:
+    for r in receipts:
         age_sec = now_epoch - r["submitted_dt"].timestamp()
         if age_sec > 2100:
             break
@@ -261,22 +261,24 @@ def compute_synchronized_pipeline(
                             "vis_pass": remote_info.get("vis_pass", 0),
                         }
                     )
-                elif age_sec < 300 and finishing_score_sync is None:
-                    finishing_score_sync = {
-                        "id": f"sync-{r['submission_id']}",
-                        "title": r["title"],
-                        "sha": r["sha"],
-                        "short_sha": r["sha"][:7],
-                        "submission_id": r["submission_id"],
-                        "judge_id": remote_info.get("judge_id"),
-                        "remote_status": r_status,
-                        "phase": "fetching_score",
-                        "started_epoch": round(adj_create_epoch, 2),
-                        "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
-                        "account_id": r_aid,
-                        "account_label": r_lbl,
-                    }
-            elif age_sec < 180:
+                else:
+                    finishing_syncs.append(
+                        {
+                            "id": f"sync-{r['submission_id']}",
+                            "title": r["title"],
+                            "sha": r["sha"],
+                            "short_sha": r["sha"][:7],
+                            "submission_id": r["submission_id"],
+                            "judge_id": remote_info.get("judge_id"),
+                            "remote_status": r_status,
+                            "phase": "fetching_score",
+                            "started_epoch": round(adj_create_epoch, 2),
+                            "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
+                            "account_id": r_aid,
+                            "account_label": r_lbl,
+                        }
+                    )
+            else:
                 sub_ep = r["submitted_dt"].timestamp()
                 active_remotes.append(
                     {
@@ -296,6 +298,15 @@ def compute_synchronized_pipeline(
                     }
                 )
 
+    if finishing_syncs:
+        try:
+            from .sync_reconciler import reconcile_sync_errors_async
+
+            reconcile_sync_errors_async(workspace)
+        except Exception:
+            pass
+
+    finishing_score_sync = finishing_syncs[0] if finishing_syncs else None
     active_remote = active_remotes[0] if active_remotes else None
 
     cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
@@ -361,23 +372,24 @@ def compute_synchronized_pipeline(
                     "elapsed_sec": ar["elapsed_sec"],
                 }
             )
-    if finishing_score_sync is not None:
-        k = (finishing_score_sync["title"], finishing_score_sync["short_sha"], finishing_score_sync["account_id"])
+    for fs in finishing_syncs:
+        k = (fs["title"], fs["short_sha"], fs["account_id"])
         if k not in seen_active_pairs:
+            seen_active_pairs.add(k)
             active_submissions.append(
                 {
-                    "id": finishing_score_sync["id"],
-                    "title": finishing_score_sync["title"],
-                    "sha": finishing_score_sync["sha"],
-                    "short_sha": finishing_score_sync["short_sha"],
+                    "id": fs["id"],
+                    "title": fs["title"],
+                    "sha": fs["sha"],
+                    "short_sha": fs["short_sha"],
                     "phase": "fetching_score",
-                    "account_id": finishing_score_sync["account_id"],
-                    "account_label": finishing_score_sync["account_label"],
-                    "remote_submission_id": finishing_score_sync["submission_id"],
-                    "remote_judge_id": finishing_score_sync["judge_id"],
-                    "remote_status": finishing_score_sync["remote_status"],
-                    "started_epoch": finishing_score_sync["started_epoch"],
-                    "elapsed_sec": finishing_score_sync["elapsed_sec"],
+                    "account_id": fs["account_id"],
+                    "account_label": fs["account_label"],
+                    "remote_submission_id": fs["submission_id"],
+                    "remote_judge_id": fs["judge_id"],
+                    "remote_status": fs["remote_status"],
+                    "started_epoch": fs["started_epoch"],
+                    "elapsed_sec": fs["elapsed_sec"],
                 }
             )
     inflight_keys = sorted({f"{x['title']}|{x['short_sha']}" for x in active_submissions if x.get("title") and x.get("short_sha")})
@@ -417,13 +429,13 @@ def compute_synchronized_pipeline(
             "logged_in": s["logged_in"],
             "enabled": s["enabled"],
             "cooldown_remaining_sec": s["cooldown_remaining_sec"],
-            "cooldown_ends_epoch": s["cooldown_ends_epoch"],
+            "cooldown_ends_epoch": s.get("cooldown_ends_epoch", 0.0),
             "used_today": int(s.get("used_today") or 0),
             "daily_limit": int(s.get("daily_limit") or 50),
             "remaining_today": int(s.get("remaining_today") if s.get("remaining_today") is not None else max(0, int(s.get("daily_limit") or 50) - int(s.get("used_today") or 0))),
             "quota_exhausted": bool(s.get("quota_exhausted")),
             "phase": s["phase"],
-            "active_title": s["active_title"],
+            "active_title": s.get("active_title"),
         }
         for s in account_slots
     ]

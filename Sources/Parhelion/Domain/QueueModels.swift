@@ -300,3 +300,31 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
         case canRestore = "can_restore"
     }
 }
+
+struct JumpSubmitResult: Sendable {
+    let ok: Bool
+    let message: String
+    let isDuplicateOrMutex: Bool
+
+    static func parse(from data: Data, problem: String, sha: String) -> JumpSubmitResult {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return JumpSubmitResult(ok: false, message: "提交启动失败", isDuplicateOrMutex: false)
+        }
+        let ok = (obj["ok"] as? Bool) ?? false
+        let err = (obj["error"] as? String) ?? "已启动提交"
+        let dupFlags = [
+            "duplicate_inflight",
+            "duplicate_terminal",
+            "duplicate_recent_outcome",
+            "duplicate_sync_error",
+            "operator_inflight",
+            "operator_inflight_mutex",
+        ]
+        let isDup = dupFlags.contains { (obj[$0] as? Bool) == true }
+        return JumpSubmitResult(
+            ok: ok,
+            message: ok ? "已提交 \(problem) (\(String(sha.prefix(7)))) 至发送通道" : err,
+            isDuplicateOrMutex: isDup
+        )
+    }
+}

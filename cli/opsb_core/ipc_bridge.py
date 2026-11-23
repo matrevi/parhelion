@@ -16,6 +16,7 @@ from .config import (
     workspace_state_dir,
     write_ttl_cache,
 )
+from .services.sync_reconciler import recent_unreconciled_receipt_pairs
 
 
 def _queue_fingerprint(workspace: Path) -> str:
@@ -151,8 +152,11 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             if len(s_low) >= 7:
                 skipped_short_pairs.add((it["title"], s_low[:7]))
     ws_raw = (payload.get("contest") or {}).get("workspace")
+    unreconciled_receipt_pairs: set[tuple[str, str]] = set()
     if ws_raw:
-        out_file = Path(str(ws_raw)) / "results" / "submit-queue-outcome.jsonl"
+        ws_path = Path(str(ws_raw))
+        unreconciled_receipt_pairs = recent_unreconciled_receipt_pairs(ws_path)
+        out_file = ws_path / "results" / "submit-queue-outcome.jsonl"
         if out_file.is_file():
             for o in read_jsonl(out_file):
                 if o.get("status") == "skipped" and o.get("title") and o.get("sha"):
@@ -160,6 +164,11 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     skipped_pairs.add((str(o["title"]), s_low))
                     if len(s_low) >= 7:
                         skipped_short_pairs.add((str(o["title"]), s_low[:7]))
+    inflight_key_lower = {
+        (k.split("|", 1)[0], k.split("|", 1)[1].lower()[:7])
+        for k in inflight_key_set
+        if "|" in str(k)
+    }
     for sq in bridge.get("submit_queue") or []:
         if sq.get("status_tag") == "SKIPPED" and sq.get("title") and sq.get("sha"):
             s_low = str(sq["sha"]).lower()
@@ -178,9 +187,9 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             continue
         if (t, sha_low) in skipped_pairs or (len(short_s) >= 7 and (t, short_s) in skipped_short_pairs):
             continue
-        if f"{t}|{sha[:7]}" in inflight_key_set:
+        if f"{t}|{sha[:7]}" in inflight_key_set or (len(short_s) >= 7 and ((t, short_s) in inflight_key_lower or (t, short_s) in unreconciled_receipt_pairs)):
             continue
-        if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha.startswith(inflight_short):
+        if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha_low.startswith(inflight_short.lower()):
             continue
         is_crit_rest_pre = bool(uc.get("is_critical_restore", False))
         if (t, short_s) in completed_short_pairs and not is_crit_rest_pre:

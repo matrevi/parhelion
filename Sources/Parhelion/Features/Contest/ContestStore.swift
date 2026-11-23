@@ -52,11 +52,12 @@ final class ContestStore: ObservableObject {
     let repository = OpsRepository()
     let daemonClient = DaemonClient()
 
-    private var lastColdETag: String?
-    private var lastLoadedWorkspace: String?
+    var lastColdETag: String?
+    var lastLoadedWorkspace: String?
     private var streamTask: Task<Void, Never>?
     private var fallbackTimer: Timer?
-    private var isFetchingColdFromETag = false
+    var isFetchingColdFromETag = false
+    var autoConsumeBackoffUntil: [String: Date] = [:]
 
     init(hotStore: HotTelemetryStore? = nil) {
         self.hotStore = hotStore ?? HotTelemetryStore()
@@ -103,6 +104,7 @@ final class ContestStore: ObservableObject {
             )
             switch result {
             case .notModified(let etag):
+                lastLoadedWorkspace = targetWs
                 if !etag.isEmpty { lastColdETag = etag }
                 errorMessage = nil
             case .updated(let snap, let etag):
@@ -144,58 +146,10 @@ final class ContestStore: ObservableObject {
     }
 
     private func refreshColdSnapshotIfChanged(expectedEtag: String) async {
-        guard !isFetchingColdFromETag, expectedEtag != lastColdETag else { return }
+        guard !isFetchingColdFromETag, (expectedEtag != lastColdETag || lastLoadedWorkspace != selectedWorkspace) else { return }
         isFetchingColdFromETag = true
         defer { isFetchingColdFromETag = false }
         await refreshLocal(force: false)
-    }
-
-    private func maybeAutoConsumeTopCandidate(
-        _ snap: SupervisorSnapshot,
-        livePipeline: LivePipelineState? = nil,
-        liveCooldownRem: Int? = nil
-    ) async {
-        let pipe = livePipeline ?? hotStore.pipeline ?? snap.scheduler.pipeline
-        let cdRem = liveCooldownRem ?? pipe?.cooldownRemainingSec ?? snap.scheduler.cooldownRemainingSec
-        let autoEnabled = hotStore.schedulerHot?.autoConsumerEnabled ?? snap.scheduler.autoConsumerEnabled
-        guard autoEnabled,
-              (pipe?.canSubmit ?? true),
-              !(pipe?.isLocalBusy ?? false),
-              cdRem == 0,
-              !isLaunchingSubmit else { return }
-
-        // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` / gated items:
-        // rollbacks are user-triggered (or closing-time), and escaped ops must pass verify-escape first.
-        let inflightSet = Set(pipe?.inflightKeys ?? [])
-        var inflightTitles = Set<String>()
-        for key in pipe?.inflightKeys ?? [] {
-            if let opTitle = key.split(separator: "|", maxSplits: 1).first, !opTitle.isEmpty {
-                inflightTitles.insert(String(opTitle))
-            }
-        }
-        for active in pipe?.activeSubmissions ?? [] where !active.title.isEmpty {
-            inflightTitles.insert(active.title)
-        }
-        if let activeTitle = pipe?.activeTitle, !activeTitle.isEmpty {
-            inflightTitles.insert(activeTitle)
-        }
-        guard let top = snap.submissionQueue.first(where: { item in
-            let u = item.badge.uppercased()
-            let actionableKind = item.kind == "pending" || item.kind == "candidate"
-            let notBlockedBadge = !u.contains("ESCAPE")
-                && !u.contains("HOLD")
-                && !u.contains("CIRCUIT")
-                && !u.contains("REJECTED")
-                && !u.contains("RATE")
-                && !u.contains("SKIP")
-            return actionableKind
-                && notBlockedBadge
-                && !inflightSet.contains("\(item.title)|\(item.shortSha)")
-                && !inflightTitles.contains(item.title)
-                && item.gates.allPass
-        }) else { return }
-
-        await jumpSubmitNow(problem: top.title, sha: top.sha, note: top.note)
     }
 
     func refreshNpu(silent: Bool = false) async {
@@ -228,7 +182,11 @@ final class ContestStore: ObservableObject {
         if !frame.coldEtag.isEmpty && (frame.coldEtag != lastColdETag || lastLoadedWorkspace != selectedWorkspace) {
             await refreshColdSnapshotIfChanged(expectedEtag: frame.coldEtag)
         }
-        if let snap = snapshot, frame.schedulerHot.autoConsumerEnabled {
+        let coldStale = isFetchingColdFromETag
+            || isRefreshingLocal
+            || (!frame.coldEtag.isEmpty && frame.coldEtag != lastColdETag)
+            || (lastLoadedWorkspace != selectedWorkspace)
+        if !coldStale, let snap = snapshot, frame.schedulerHot.autoConsumerEnabled {
             await maybeAutoConsumeTopCandidate(
                 snap,
                 livePipeline: frame.pipeline,
@@ -324,6 +282,7 @@ final class ContestStore: ObservableObject {
         selectedWorkspace = path
         lastColdETag = nil
         lastLoadedWorkspace = nil
+        autoConsumeBackoffUntil.removeAll()
         pmuCardsByProblem = [:]
         elfByProblem = [:]
         cold3ByProblem = [:]
@@ -455,24 +414,6 @@ final class ContestStore: ObservableObject {
             } else {
                 bannerMessage = tr("经验库已是最新 (共 \(total) 条结构化突破)", "Playbook up to date (\(total) structured entries)")
             }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    func jumpSubmitNow(problem: String, sha: String, note: String) async {
-        if isLaunchingSubmit { return }
-        isLaunchingSubmit = true
-        defer { isLaunchingSubmit = false }
-        do {
-            let (ok, msg) = try await repository.jumpSubmitNow(workspace: selectedWorkspace, problem: problem, sha: sha, note: note)
-            if ok {
-                bannerMessage = tr("已启动提交 \(problem) (\(String(sha.prefix(7))))", "Launched submit for \(problem) (\(String(sha.prefix(7))))")
-            } else {
-                errorMessage = msg
-            }
-            await daemonClient.invalidate(workspace: selectedWorkspace)
-            await refreshLocal(force: true)
         } catch {
             errorMessage = error.localizedDescription
         }

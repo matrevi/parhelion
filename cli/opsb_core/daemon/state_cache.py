@@ -454,9 +454,9 @@ class _WorkspaceStateEntry:
         slot_by_uid = {str(s.get("user_id")): s for s in account_slots if s.get("user_id")}
 
         active_remotes: list[dict[str, Any]] = []
-        finishing_score_sync: dict[str, Any] | None = None
+        finishing_syncs: list[dict[str, Any]] = []
         server_offset_sec = 0.0
-        for r in receipts[: max(10, len(account_slots) * 4)]:
+        for r in receipts:
             age_sec = now_epoch - float(r["submitted_epoch"])
             if age_sec > 2100:
                 break
@@ -489,22 +489,24 @@ class _WorkspaceStateEntry:
                                 "account_label": r_lbl,
                             }
                         )
-                    elif age_sec < 300 and finishing_score_sync is None:
-                        finishing_score_sync = {
-                            "id": f"sync-{r['submission_id']}",
-                            "title": r["title"],
-                            "sha": r["sha"],
-                            "short_sha": r["sha"][:7],
-                            "submission_id": r["submission_id"],
-                            "judge_id": remote_info.get("judge_id"),
-                            "remote_status": r_status,
-                            "phase": "fetching_score",
-                            "started_epoch": round(adj_create_epoch, 2),
-                            "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
-                            "account_id": r_aid,
-                            "account_label": r_lbl,
-                        }
-                elif age_sec < 180:
+                    else:
+                        finishing_syncs.append(
+                            {
+                                "id": f"sync-{r['submission_id']}",
+                                "title": r["title"],
+                                "sha": r["sha"],
+                                "short_sha": r["sha"][:7],
+                                "submission_id": r["submission_id"],
+                                "judge_id": remote_info.get("judge_id"),
+                                "remote_status": r_status,
+                                "phase": "fetching_score",
+                                "started_epoch": round(adj_create_epoch, 2),
+                                "elapsed_sec": max(0, int(now_epoch - adj_create_epoch)),
+                                "account_id": r_aid,
+                                "account_label": r_lbl,
+                            }
+                        )
+                else:
                     sub_ep = float(r["submitted_epoch"])
                     active_remotes.append(
                         {
@@ -522,6 +524,10 @@ class _WorkspaceStateEntry:
                             "account_label": r_lbl,
                         }
                     )
+
+        if finishing_syncs:
+            reconcile_sync_errors_async(self.workspace, on_reconciled=self.invalidate)
+        finishing_score_sync = finishing_syncs[0] if finishing_syncs else None
 
         queue_lock_held = _probe_queue_lock(self.workspace / "results" / ".submit-queue.lock")
         cooldown_ends_epoch = (latest_sub_epoch + gap_sec) if latest_sub_epoch > 0 else 0.0
@@ -584,23 +590,24 @@ class _WorkspaceStateEntry:
                         "elapsed_sec": ar["elapsed_sec"],
                     }
                 )
-        if finishing_score_sync is not None:
-            k = (finishing_score_sync["title"], finishing_score_sync["short_sha"], finishing_score_sync["account_id"])
+        for fs in finishing_syncs:
+            k = (fs["title"], fs["short_sha"], fs["account_id"])
             if k not in seen_active_pairs:
+                seen_active_pairs.add(k)
                 active_submissions.append(
                     {
-                        "id": finishing_score_sync["id"],
-                        "title": finishing_score_sync["title"],
-                        "sha": finishing_score_sync["sha"],
-                        "short_sha": finishing_score_sync["short_sha"],
+                        "id": fs["id"],
+                        "title": fs["title"],
+                        "sha": fs["sha"],
+                        "short_sha": fs["short_sha"],
                         "phase": "fetching_score",
-                        "account_id": finishing_score_sync["account_id"],
-                        "account_label": finishing_score_sync["account_label"],
-                        "remote_submission_id": finishing_score_sync["submission_id"],
-                        "remote_judge_id": finishing_score_sync["judge_id"],
-                        "remote_status": finishing_score_sync["remote_status"],
-                        "started_epoch": finishing_score_sync["started_epoch"],
-                        "elapsed_sec": finishing_score_sync["elapsed_sec"],
+                        "account_id": fs["account_id"],
+                        "account_label": fs["account_label"],
+                        "remote_submission_id": fs["submission_id"],
+                        "remote_judge_id": fs["judge_id"],
+                        "remote_status": fs["remote_status"],
+                        "started_epoch": fs["started_epoch"],
+                        "elapsed_sec": fs["elapsed_sec"],
                     }
                 )
 

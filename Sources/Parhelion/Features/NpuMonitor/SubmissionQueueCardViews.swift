@@ -102,7 +102,7 @@ struct CandidateSubmissionCardView: View {
                     }
 
                     Button {
-                        Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note) }
+                        Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
                     } label: {
                         if isLocalUploading {
                             Label(lang.tr("打包上传中，请稍候", "Uploading, please wait"), systemImage: "hourglass")
@@ -280,7 +280,9 @@ struct CompletedSubmissionCardView: View {
                                 await store.jumpSubmitNow(
                                     problem: item.title,
                                     sha: item.sha,
-                                    note: lang.tr("重新提交历史版本 \(item.shortSha)", "Resubmit historical \(item.shortSha)")
+                                    note: lang.tr("重新提交历史版本 \(item.shortSha)", "Resubmit historical \(item.shortSha)"),
+                                    isAuto: false,
+                                    force: true
                                 )
                             }
                         } label: {

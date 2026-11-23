@@ -16,8 +16,9 @@ from typing import Any
 class _CooldownReservationCancelled(BaseException):
     """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
-from ..config import CONFIG_DIR, LOGS_DIR, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..config import CLI_DIR, CONFIG_DIR, LOGS_DIR, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .auth_service import list_judge_accounts
+from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STATUSES
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
@@ -411,10 +412,35 @@ def spawn_jump_submit(
         if op_inflight is not None:
             return {
                 "ok": False,
+                "operator_inflight": True,
                 "operator_inflight_mutex": True,
                 "duplicate_inflight": True,
                 "inflight": op_inflight,
                 "error": f"{title} 已有在途提交 ({str(op_inflight.get('sha') or '')[:7]})，按单算子互斥保护保持排队等待",
+            }
+    outcome_sids = {
+        str(o.get("submission_id"))
+        for o in outcomes_all
+        if o.get("submission_id")
+        and o.get("status") not in ("Running", "Queued", "Pending", "Waiting", "Compiling", "Building", "Judging", "Testing")
+    }
+    now_ep = utc_now().timestamp()
+    sha7_low = (sha or "")[:7].lower()
+    title_dir = results_dir / title
+    for r_file in title_dir.glob("*/submission-receipt.json") if title_dir.is_dir() else []:
+        rd = read_json(r_file, {})
+        if not isinstance(rd, dict):
+            continue
+        r_sha = str(rd.get("validated_commit") or r_file.parent.name or "").lower()
+        if not (r_file.parent.name.lower().startswith(sha7_low) or r_sha.startswith(sha7_low)):
+            continue
+        sid = str(rd.get("submission_id") or "")
+        dt = parse_iso(rd.get("submitted_at"))
+        if sid and sid not in outcome_sids and dt and (now_ep - dt.timestamp()) < 2100:
+            return {
+                "ok": False,
+                "duplicate_inflight": True,
+                "error": f"{title} ({sha[:7]}) 已在远程判题中 (sid={sid[:8]})，禁止重复碰撞提交",
             }
     if not force:
         sync_hit = has_pending_sync_error_for_commit(outcomes_all, title, sha)
@@ -424,38 +450,27 @@ def spawn_jump_submit(
                 "ok": False,
                 "duplicate_sync_error": True,
                 "duplicate_inflight": True,
+                "duplicate_terminal": True,
                 "error": f"{title} ({sha[:7]}) 已上传 (sid={sid[:8]}) 但同步中断，等待自动补偿同步，禁止重复提交",
             }
-    outcome_sids = {
-        str(o.get("submission_id"))
-        for o in outcomes_all
-        if o.get("submission_id") and o.get("status") not in ("Running", "Queued", "Pending")
-    }
-    now_ep = utc_now().timestamp()
-    # Anti-re-submit race guard: if this exact (title, sha) ALREADY finished judging within the last 10 min
-    # (e.g., stale 15s bridge cache raced with Auto-Submit right as outcome wrote), block duplicate shot!
-    is_explicit_restore = "restore" in (note or "").lower()
-    if not force and not is_explicit_restore:
+        terminal_statuses = TERMINAL_JUDGE_STATUSES | {"skipped"}
         for o in reversed(outcomes_all):
-            if o.get("title") == title and str(o.get("sha") or "").startswith(sha[:7]):
-                if o.get("status") in ("Pass", "Accepted", "Fail", "Wrong Answer", "Compile Error", "Runtime Error", "Time Limit Exceeded"):
-                    f_dt = parse_iso(o.get("finished_at") or o.get("submitted_at"))
-                    if f_dt and (now_ep - f_dt.timestamp()) < 600:
-                        return {
-                            "ok": False,
-                            "duplicate_recent_outcome": True,
-                            "error": f"{title} ({sha[:7]}) 刚评测完成 ({o.get('status')}, score={o.get('score')})，防抖拦截重复提交",
-                        }
-                break
-    for r_file in (results_dir / title).glob(f"{sha[:7]}*/submission-receipt.json") if (results_dir / title).is_dir() else []:
-        rd = read_json(r_file, {})
-        sid = str(rd.get("submission_id") or "")
-        dt = parse_iso(rd.get("submitted_at"))
-        if sid and sid not in outcome_sids and dt and (now_ep - dt.timestamp()) < 2100:
+            if o.get("title") != title or not str(o.get("sha") or "").lower().startswith(sha7_low):
+                continue
+            st = str(o.get("status") or "").strip()
+            has_term = (st in terminal_statuses) or (st == "sync_error" and bool(o.get("submission_id")))
+            if not has_term:
+                continue
+            f_dt = parse_iso(o.get("finished_at") or o.get("submitted_at"))
+            is_recent = bool(st in TERMINAL_JUDGE_STATUSES and f_dt and (now_ep - f_dt.timestamp()) < 600)
             return {
                 "ok": False,
-                "duplicate_inflight": True,
-                "error": f"{title} ({sha[:7]}) 已在远程判题中 (sid={sid[:8]})，禁止重复碰撞提交",
+                "duplicate_terminal": True,
+                **({"duplicate_recent_outcome": True} if is_recent else {}),
+                "status": st,
+                "score": o.get("score"),
+                "submission_id": o.get("submission_id"),
+                "error": f"{title} ({sha[:7]}) 已有终态记录 ({st}, score={o.get('score')})，禁止自动重复提交（手动重提请使用 --force）",
             }
 
     chosen, select_err = select_best_account_slot(slots, account_id=account_id)
@@ -766,14 +781,22 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             "detail": f"poll error: {str(exc)[:360]}",
         }
 
-    # Briefly lock IO only to append terminal outcome atomically
+    # Briefly lock IO only to append terminal outcome atomically (dedup if reconciler already wrote it)
     with io_lock_path.open("a") as iolf:
         fcntl.flock(iolf, fcntl.LOCK_EX)
         try:
-            with outcome_path.open("a", encoding="utf-8") as of:
-                of.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
-            invalidate_ttl_cache("scheduler_bridge")
-            invalidate_ttl_cache("remote_judge")
+            existing_rows = collapse_reconciled_outcomes(read_jsonl(outcome_path))
+            existing_match = next((r for r in existing_rows if str(r.get("submission_id") or "") == sub_id), None)
+            already_terminal = bool(
+                existing_match is not None
+                and str(existing_match.get("status") or "") in TERMINAL_JUDGE_STATUSES
+                and (out_rec.get("score") is None or existing_match.get("score") is not None)
+            )
+            if not already_terminal:
+                with outcome_path.open("a", encoding="utf-8") as of:
+                    of.write(json.dumps(out_rec, ensure_ascii=False) + "\n")
+                invalidate_ttl_cache("scheduler_bridge")
+                invalidate_ttl_cache("remote_judge")
         finally:
             fcntl.flock(iolf, fcntl.LOCK_UN)
 
@@ -867,6 +890,7 @@ def _wait_and_fetch_score(
     title: str,
     submission_id: str,
     session_file: str = "",
+    ranking_retry_delays: tuple[float, ...] = DEFAULT_RANKING_RETRY_DELAYS,
 ) -> tuple[str, float | None, list[float], list[float]]:
     py_exe = resolve_python_exe(workspace)
     env = dict(os.environ)
@@ -879,8 +903,15 @@ def _wait_and_fetch_score(
     poll_code = (
         "import json, os, sys, time, pathlib\n"
         f"root = pathlib.Path({str(workspace)!r})\n"
+        f"sys.path.insert(0, {str(CLI_DIR)!r})\n"
         f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from ict_cli import ICTClient\n"
+        "from opsb_core.services.judge_score_fetch import (\n"
+        "    fetch_ranking_row_with_retry,\n"
+        "    resolve_problem_id,\n"
+        "    resolve_score_and_times,\n"
+        "    update_score_snapshot,\n"
+        ")\n"
         "client = ICTClient(session_file=os.environ.get('JUDGE_SESSION_FILE') or None)\n"
         "if not client.load_session(): raise RuntimeError('Judge session expired; sign in via Settings')\n"
         f"deadline = time.monotonic() + {POLL_TIMEOUT_SEC}\n"
@@ -903,61 +934,32 @@ def _wait_and_fetch_score(
         "    time.sleep(10)\n"
         "if status in NON_TERM:\n"
         "    raise RuntimeError(f'poll timeout after {POLL_TIMEOUT_SEC}s (last status={status})')\n"
-        "sub_res = sub_detail.get('result') or []\n"
-        "pub_times = [float(r['time']) for r in sub_res if isinstance(r, dict) and r.get('time') is not None][:5]\n"
-        "pub_tbest = [float(r['best_time']) for r in sub_res if isinstance(r, dict) and r.get('best_time') is not None][:5]\n"
-        "score = None\n"
         "rank_row = None\n"
         "try:\n"
-        "    probs = []\n"
-        "    for _cand in (root / 'opsb.workspace.json', root / 'bench' / 'problems.json'):\n"
-        "        if _cand.is_file():\n"
-        "            _pdata = json.loads(_cand.read_text(encoding='utf-8'))\n"
-        "            probs = _pdata['problems'] if isinstance(_pdata, dict) and isinstance(_pdata.get('problems'), list) else (_pdata if isinstance(_pdata, list) else [])\n"
-        "            if probs:\n"
-        "                break\n"
-        f"    prob = next((p for p in probs if isinstance(p, dict) and p.get('title') == {title!r}), None)\n"
-        "    if prob and prob.get('problem_id'):\n"
-        "        for page in range(1, 8):\n"
-        "            payload = None\n"
+        f"    pid = resolve_problem_id(root, {title!r})\n"
+        "    if pid:\n"
+        "        def _fetch_page(page):\n"
         "            for attempt in range(4):\n"
         "                try:\n"
-        "                    resp = client.session.get(client.BASE_URL + f\"/api/problems/{prob['problem_id']}/ranking\", params={'page': page, 'size': 100}, timeout=20)\n"
-        "                    payload = resp.json() if resp.status_code == 200 else {}\n"
-        "                    break\n"
+        "                    resp = client.session.get(client.BASE_URL + f'/api/problems/{pid}/ranking', params={'page': page, 'size': 100}, timeout=20)\n"
+        "                    return resp.json() if resp.status_code == 200 else {}\n"
         "                except Exception:\n"
-        "                    if attempt == 3: payload = {}\n"
-        "                    else: time.sleep(2 * (attempt + 1))\n"
-        "            rows = (payload or {}).get('rows', []) if isinstance(payload, dict) else []\n"
-        f"            row = next((e for e in rows if isinstance(e, dict) and (e.get('submission_id') == {submission_id!r} or e.get('user_id') == client.user_id)), None)\n"
-        "            if row:\n"
-        "                score = row.get('score')\n"
-        "                rank_row = row\n"
-        "                break\n"
-        "            if page >= int((payload or {}).get('pages') or 1):\n"
-        "                break\n"
-        "    if not pub_times and rank_row is not None:\n"
-        "        rr_res = rank_row.get('result') or []\n"
-        "        if rr_res and isinstance(rr_res[0], dict):\n"
-        "            pub_times = [float(x['time']) for x in rr_res if x.get('time') is not None][:5]\n"
-        "        else:\n"
-        "            pub_times = [float(t) for t in (rank_row.get('times') or [])[:5] if t is not None]\n"
-        "    snap_path = root / 'results' / 'score-snapshot.json'\n"
-        "    if snap_path.is_file() and rank_row is not None:\n"
-        "        snap = json.loads(snap_path.read_text(encoding='utf-8'))\n"
-        f"        prev_entry = snap.get({title!r}) or {{}}\n"
-        f"        snap[{title!r}] = {{\n"
-        "            **prev_entry,\n"
-        "            'rank': rank_row.get('rank'),\n"
-        "            'status': status,\n"
-        f"            'submission_id': {submission_id!r},\n"
-        "            'score': score if status == 'Pass' else 0,\n"
-        "            'public_times_us': pub_times if pub_times else prev_entry.get('public_times_us', []),\n"
-        "            **({'public_tbest_us': pub_tbest} if pub_tbest else {}),\n"
-        "        }\n"
-        "        tmp_snap = snap_path.with_suffix('.tmp')\n"
-        "        tmp_snap.write_text(json.dumps(snap, indent=2) + '\\n', encoding='utf-8')\n"
-        "        os.replace(tmp_snap, snap_path)\n"
+        "                    if attempt == 3: return {}\n"
+        "                    time.sleep(2 * (attempt + 1))\n"
+        "            return {}\n"
+        "        rank_row = fetch_ranking_row_with_retry(\n"
+        f"            _fetch_page, {submission_id!r}, status=status, retry_delays={tuple(ranking_retry_delays)!r}\n"
+        "        )\n"
+        "except Exception:\n"
+        "    rank_row = None\n"
+        "score, pub_times, pub_tbest = resolve_score_and_times(sub_detail, rank_row, status)\n"
+        "try:\n"
+        "    if rank_row is not None or (status == 'Pass' and score is not None):\n"
+        "        update_score_snapshot(\n"
+        f"            root, {title!r}, {submission_id!r}, status, score,\n"
+        "            rank_row.get('rank') if rank_row is not None else None,\n"
+        "            pub_times, pub_tbest, require_current_check=False,\n"
+        "        )\n"
         "except Exception:\n"
         "    pass\n"
         "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"

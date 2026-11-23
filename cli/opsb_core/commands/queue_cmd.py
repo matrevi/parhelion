@@ -177,9 +177,10 @@ def run_submit(args: argparse.Namespace) -> int:
 
     # Auto-dispatch unified background worker if `--now` is requested or `auto_consumer_enabled` is ON
     explicit_now = bool(getattr(args, "now", False))
+    explicit_force = bool(getattr(args, "force", False))
     auto_on = bool(snap["scheduler"].get("auto_consumer_enabled", False))
     if explicit_now:
-        disp = spawn_jump_submit(CLI_DIR / "opsb", ws, title, sha, record["note"])
+        disp = spawn_jump_submit(CLI_DIR / "opsb", ws, title, sha, record["note"], force=explicit_force)
         verdict["dispatched"] = disp
     elif auto_on:
         pipeline = snap["scheduler"].get("pipeline") or {}
@@ -198,6 +199,7 @@ def run_submit(args: argparse.Namespace) -> int:
                 title,
                 sha,
                 record["note"],
+                force=explicit_force,
                 enforce_operator_mutex=True,
                 pipeline=pipeline,
             )
