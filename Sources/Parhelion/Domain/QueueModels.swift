@@ -233,6 +233,9 @@ struct GateBreakdown: Codable, Hashable {
     let allPass: Bool
     let deltaExpected: Double
     let wsptScore: Double
+    let ucbDelta: Double?
+    let exploreEligible: Bool?
+    let calibrationTrust: Double?
 
     enum CodingKeys: String, CodingKey {
         case safetyOk = "safety_ok"
@@ -242,6 +245,9 @@ struct GateBreakdown: Codable, Hashable {
         case allPass = "all_pass"
         case deltaExpected = "delta_expected"
         case wsptScore = "wspt_score"
+        case ucbDelta = "ucb_delta"
+        case exploreEligible = "explore_eligible"
+        case calibrationTrust = "calibration_trust"
     }
 }
 

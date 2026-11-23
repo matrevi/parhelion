@@ -110,9 +110,12 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             payload["contest"]["model_mae_pts"] = round(sum(maes) / len(maes), 2)
 
     est_by_pair: dict[tuple[str, str], float] = {}
+    sq_meta_by_pair: dict[tuple[str, str], dict[str, Any]] = {}
     for sq in bridge.get("submit_queue") or []:
-        if sq.get("title") and sq.get("sha") and sq.get("estimated_score") is not None:
-            est_by_pair[(sq["title"], sq["sha"])] = round(float(sq["estimated_score"]), 2)
+        if sq.get("title") and sq.get("sha"):
+            if sq.get("estimated_score") is not None:
+                est_by_pair[(sq["title"], sq["sha"])] = round(float(sq["estimated_score"]), 2)
+            sq_meta_by_pair[(sq["title"], sq["sha"])] = sq
 
     existing = {(it["title"], it["sha"]) for it in payload["submission_queue"]}
     prob_diff = {p["title"]: p["difficulty"] for p in payload["problems"]}
@@ -178,9 +181,16 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                         item["estimated_score"] = est_sc
                     item["breakthrough_delta"] = cand_bt
                     item["is_breakthrough"] = bool(cand_bt is not None and cand_bt >= bt_thresh)
-                    item["gates"] = gates
+                    if item.get("forced"):
+                        fg = dict(gates)
+                        fg["noise_ok"] = True
+                        fg["circuit_ok"] = True
+                        fg["all_pass"] = bool(fg.get("safety_ok", True) and fg.get("quota_ok", True))
+                        item["gates"] = fg
+                    else:
+                        item["gates"] = gates
                     item["wspt_priority"] = gates["wspt_score"]
-                    if note:
+                    if note and not item.get("forced"):
                         item["note"] = note
         else:
             existing.add((t, sha))
@@ -225,6 +235,14 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     cbd = round(item["estimated_score"] - item["current_score"], 2)
                     item["breakthrough_delta"] = cbd
                     item["is_breakthrough"] = cbd >= bt_thresh
+            sq_m = sq_meta_by_pair.get(pair)
+            if sq_m and isinstance(item.get("gates"), dict):
+                if item["gates"].get("ucb_delta") is None and sq_m.get("ucb_delta") is not None:
+                    item["gates"]["ucb_delta"] = round(float(sq_m["ucb_delta"]), 2)
+                if item["gates"].get("explore_eligible") is None and sq_m.get("explore_eligible") is not None:
+                    item["gates"]["explore_eligible"] = bool(sq_m["explore_eligible"])
+                if item["gates"].get("calibration_trust") is None and sq_m.get("calibration_trust") is not None:
+                    item["gates"]["calibration_trust"] = round(float(sq_m["calibration_trust"]), 3)
 
     if extra_cands:
         inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]

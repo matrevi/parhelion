@@ -36,8 +36,9 @@ from scheduler.bench_evolution import (  # noqa: E402
     fit_pairwise_simplex_map,
 )
 from scheduler.calibration import BenchmarkCalibrator  # noqa: E402
-from scheduler.estimator import parse_validation_perf, resolve_sha  # noqa: E402
+from scheduler.estimator import ProblemLedger, parse_validation_perf, resolve_sha  # noqa: E402
 from scheduler.gate import SubmissionGate  # noqa: E402
+from scheduler.pairwise_anchor import select_dual_anchor_prediction  # noqa: E402
 
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
@@ -147,8 +148,114 @@ class ThermalDriftCancellationTest(unittest.TestCase):
         self.assertEqual(drift, 0.0)
         self.assertEqual(adj, cand)
 
+    def test_detects_multiplicative_proportional_drift_and_rejects_slowdowns(self) -> None:
+        # 12 buckets spanning 3us..80us: 3 sped up >=1.25x, 9 slowed ~1.09x proportionally
+        # (additive diffs range +0.72us..+7.20us so flat-floor additive drift won't trigger).
+        base = {
+            "fast_a": 20.0, "fast_b": 15.0, "fast_c": 12.0,
+            "s1": 3.0, "s2": 4.0,
+            "m1": 8.0, "m2": 12.0, "m3": 18.0, "m4": 25.0, "l1": 40.0, "l2": 60.0, "l3": 80.0,
+        }
+        cand = {
+            "fast_a": 14.0, "fast_b": 10.5, "fast_c": 9.0,
+            "s1": 3.27, "s2": 4.36,
+            "m1": 8.72, "m2": 13.08, "m3": 19.62, "m4": 27.25, "l1": 43.60, "l2": 65.40, "l3": 87.20,
+        }
+        drift, adj = detect_thermal_drift(base, cand)
+        self.assertGreater(drift, 1.0)
+        self.assertAlmostEqual(adj["l1"], 43.60 / (1.0 + 0.85 * 0.09), delta=0.15)
+        self.assertAlmostEqual(adj["m1"], 8.72 / (1.0 + 0.85 * 0.09), delta=0.05)
+
+        # Reject when >=3 buckets suffer severe regression >1.25x
+        bad_reg = dict(cand)
+        bad_reg.update({"m1": 10.5, "m2": 15.5, "m3": 23.0})
+        d_reg, a_reg = detect_thermal_drift(base, bad_reg)
+        self.assertEqual(d_reg, 0.0)
+        self.assertEqual(a_reg, bad_reg)
+
+        # Reject when mid/large >=6.0us buckets show 0 drift while only small buckets tick up
+        small_only = {k: (v if base[k] >= 6.0 and not k.startswith("fast") else cand[k]) for k, v in base.items()}
+        small_only.update({"s3": 4.32, "s4": 3.24, "s5": 3.80})
+        base_small = {**base, "s3": 4.0, "s4": 3.0, "s5": 3.5}
+        d_sm, _ = detect_thermal_drift(base_small, small_only)
+        self.assertEqual(d_sm, 0.0)
+
 
 class PairwiseCalibrationAndExploreTest(unittest.TestCase):
+    def test_phi_delta_excludes_cand_from_tmin_and_raises_soft_cap_to_096(self) -> None:
+        # Candidate sets a 2x record (tb=5.0 vs ta=10.0) when historical min_tau[k]=10.0:
+        # tmin must stay 10.0 (not 5.0!), and soft saturation knee must sit at 0.96 (not 0.92).
+        bids = ["record_set", "near_knee", "above_knee"]
+        ta = {"record_set": 10.0, "near_knee": 10.0, "above_knee": 10.0}
+        tb = {"record_set": 5.0, "near_knee": 8.42, "above_knee": 6.0}
+        min_tau = {"record_set": 10.0, "near_knee": 10.0, "above_knee": 10.0}
+        dphi = build_pairwise_phi_delta(bids, ta, tb, min_tau, r_anchor_a=0.80)
+        # near_knee: r_a=0.80, raw_rb=0.80*(10/8.42)=0.9501 < 0.96 => linear 90*(0.9501-0.80)=+13.51
+        self.assertGreater(dphi[1], 13.0)
+        # record_set: raw_rb=1.60 -> 0.96 + 0.04*tanh((1.60-0.96)/0.25) > 0.99 -> dphi > +17.0
+        self.assertGreater(dphi[0], 17.0)
+        # r_a=0.88*(10/8.9)^0.75=0.96 (capped at 0.96) -> tiny slowdown 10->10.5 drops linearly from 0.96
+        dphi_hi = build_pairwise_phi_delta(["b"], {"b": 10.0}, {"b": 10.5}, {"b": 9.0}, r_anchor_a=0.88)
+        self.assertLess(dphi_hi[0], -3.0)
+
+    def test_dual_anchor_prefers_best_pass_sha_in_restore_regime(self) -> None:
+        latest = {"estimated_score": 60.4, "matched_cases": 24, "regime_mismatch": False, "anchor_kind": "latest"}
+        best = {"estimated_score": 72.8, "matched_cases": 24, "regime_mismatch": False, "anchor_kind": "best"}
+        chosen = select_dual_anchor_prediction(latest, best, current_score=59.74, best_score=71.33)
+        self.assertIs(chosen, best)
+
+        # In non-restore regime (gap < 1.5) with both same-regime, keep latest anchor
+        chosen_norm = select_dual_anchor_prediction(latest, best, current_score=70.50, best_score=71.33)
+        self.assertIs(chosen_norm, latest)
+
+    def test_predict_candidate_does_not_fold_cand_timings_into_min_tau(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = pathlib.Path(tmp)
+            op = ws / "bench" / "DemoOp"
+            (op / "op_kernel").mkdir(parents=True)
+            (ws / "bench" / "problems.json").write_text(
+                json.dumps([{"title": "DemoOp", "slug": "demoop", "difficulty": 2, "path": "bench/DemoOp"}])
+            )
+            base_sha = "a" * 40
+            best_sha = "b" * 40
+            cand_sha = "c" * 40
+            (ws / "results").mkdir(parents=True)
+            (ws / "results" / "score-snapshot.json").write_text(
+                json.dumps({"DemoOp": {"status": "Pass", "score": 55.0, "public_times_us": [4.0] * 5}})
+            )
+            outcomes = [
+                {"title": "DemoOp", "sha": best_sha, "canonical_sha": best_sha, "status": "Pass", "score": 70.0, "submitted_at": "2026-11-22T10:00:00+00:00"},
+                {"title": "DemoOp", "sha": base_sha, "canonical_sha": base_sha, "status": "Pass", "score": 55.0, "submitted_at": "2026-11-22T12:00:00+00:00"},
+            ]
+            (ws / "results" / "submit-queue-outcome.jsonl").write_text(
+                "\n".join(json.dumps(r) for r in outcomes) + "\n"
+            )
+            cases_base = [{"mode": "custom", "case": f"b_{i}", "median_us": 10.0} for i in range(10)]
+            cases_best = [{"mode": "custom", "case": f"b_{i}", "median_us": 7.5} for i in range(10)]
+            cases_cand = [{"mode": "custom", "case": f"b_{i}", "median_us": 6.5} for i in range(10)]
+            for s, cs in [(base_sha, cases_base), (best_sha, cases_best), (cand_sha, cases_cand)]:
+                d = ws / "results" / "DemoOp" / s
+                d.mkdir(parents=True)
+                (d / "result.json").write_text(json.dumps({"exit_code": 0, "profiler_regime": "fast_single_session_l0"}))
+                (d / "validation.log").write_text(
+                    "RUNTIME_SOC=soc-a\nEXTENDED_PASSED 10 cases\nKPERF_JSON " + json.dumps(cs) + "\n"
+                )
+            cal = BenchmarkCalibrator(ws, state_dir=ws / "state")
+            ledger = ProblemLedger(
+                title="DemoOp", difficulty=2, board_status="Pass", current_score=55.0, weighted_current_score=110.0,
+                public_score=7.0, hidden_score=48.0, implied_hidden_r=0.533, public_r_list=[0.7] * 5,
+                frontier_top1=85.0, frontier_top5=75.0, target_score=75.0, recoverable_headroom=30.0,
+                theoretical_headroom=45.0, active_board_sha=base_sha, active_judged_score=55.0,
+                active_judged_at="2026-11-22T12:00:00+00:00", decay_factor_gamma=1.0,
+                raw_historical_best_score=70.0, contemporary_best_score=70.0, historical_best_score=70.0,
+                historical_best_mean=70.0, historical_best_sha=best_sha, true_restore_gain=15.0, restore_gap=15.0,
+            )
+            pred = cal.predict_candidate("DemoOp", cand_sha, base_sha, ledger)
+            self.assertIsNotNone(pred)
+            assert pred is not None
+            self.assertEqual(pred["anchor_kind"], "best")
+            self.assertIn(f"anchor=best({best_sha[:7]})", pred["detail"])
+            self.assertGreater(pred["estimated_score"], 72.0)
     def test_non_saturating_phi_delta_penalizes_regressions_even_with_extreme_outlier(self) -> None:
         # Even when one bucket has 3000us (which caused V1 beta->3.0 saturation!), small buckets keep full sensitivity
         bids = ["bf16_huge", "f32_mid", "f16_mid"]
@@ -358,6 +465,22 @@ class LiveHistoricalCausalRegressionTest(unittest.TestCase):
         s2 = next(s for s in verdict.stages if s.stage == "NOISE_FLOOR")
         self.assertFalse(s2.passed)
         self.assertEqual(verdict.status_tag, "HOLD_LOW_GAIN")
+
+    def test_strided_slice_grad_dd1fefc_uses_best_anchor_in_restore_regime(self) -> None:
+        gate = SubmissionGate(REAL_WORKSPACE)
+        sha = resolve_sha(REAL_WORKSPACE, "StridedSliceGrad", "dd1fefc")
+        as_of = datetime.datetime(2026, 11, 23, 9, 37, 10, tzinfo=datetime.timezone.utc)
+        verdict = gate.evaluate(
+            title="StridedSliceGrad",
+            sha=sha,
+            as_of=as_of,
+            override_board_score=59.74,
+            override_board_status="Pass",
+        )
+        self.assertIn("anchor=best(ba4a357)", verdict.estimate.detail)
+        self.assertGreater(verdict.estimate.estimated_score, 70.0)
+        s2 = next(s for s in verdict.stages if s.stage == "NOISE_FLOOR")
+        self.assertTrue(s2.passed)
 
 
 if __name__ == "__main__":

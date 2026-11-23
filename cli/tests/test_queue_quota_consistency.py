@@ -212,3 +212,75 @@ def test_inflight_transitional_sync_and_queue_list_visibility(iso_ph: Path, tmp_
         assert rc2 == 0
         assert "INFLIGHT(" in buf_txt.getvalue()
         assert "ConcatD" in buf_txt.getvalue()
+
+
+def test_forced_pending_queue_item_all_pass_respects_safety_and_quota(iso_ph: Path, tmp_path: Path) -> None:
+    ws, sha = _make_multi_account_ws(tmp_path, iso_ph)
+    # Pending item with force=true and gain below noise floor (0.54 < 1.9)
+    (ws / "results" / "submit-queue.jsonl").write_text(
+        json.dumps({
+            "title": "ConcatD",
+            "sha": sha,
+            "note": "forced test below noise floor",
+            "queued_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "status": "queued",
+            "estimated_score": 78.50,
+            "force": True,
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    cfg = ConfigRepository.load()
+    snap = compute_workspace_snapshot(ws, cfg)
+    pending = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert len(pending) == 1
+    assert pending[0]["badge"] == "READY"
+    assert pending[0]["gates"]["noise_ok"] is True
+    assert pending[0]["gates"]["circuit_ok"] is True
+    assert pending[0]["gates"]["safety_ok"] is True
+    assert pending[0]["gates"]["quota_ok"] is True
+    assert pending[0]["gates"]["all_pass"] is True
+
+    # Even after merge_bridge_enrichment with an un-forced unsubmitted_candidate, forced pending stays all_pass=True
+    bridge = {
+        "quota": {"daily_limit": 100, "used_today": 1, "reserved_for_closing": 10, "discretionary_remaining": 89},
+        "config": {"noise_floor_pts": 1.9, "daily_limit": 50},
+        "unsubmitted_candidates": [{
+            "title": "ConcatD",
+            "sha": sha,
+            "approved": False,
+            "status_tag": "HOLD_NOISE",
+            "priority_score": 1.62,
+            "gate_reason": "below noise floor",
+            "stages": [
+                {"stage": "SAFETY", "passed": True},
+                {"stage": "NOISE_FLOOR", "passed": False},
+                {"stage": "CIRCUIT_BREAKER", "passed": True},
+                {"stage": "QUOTA_RESERVE", "passed": True},
+            ],
+            "estimate": {"estimated_score": 78.50, "current_score": 77.96, "delta_expected": 0.54, "ucb_delta": 4.2, "explore_eligible": False, "calibration_trust": 0.6},
+        }],
+    }
+    merge_bridge_enrichment(snap, bridge)
+    pending_after = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_after[0]["gates"]["all_pass"] is True
+    assert pending_after[0]["gates"]["ucb_delta"] == 4.2
+
+    # ESCAPE_LOCK must NEVER be bypassed even when force=True!
+    (ws / "results" / "ConcatD" / "calibration.json").write_text(
+        json.dumps({"escape_lock": True, "escape_sha": sha[:7], "escape_status": "Wrong Answer"}),
+        encoding="utf-8",
+    )
+    snap_esc = compute_workspace_snapshot(ws, cfg)
+    pending_esc = [it for it in snap_esc["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_esc[0]["badge"] == "ESCAPE LOCK"
+    assert pending_esc[0]["gates"]["safety_ok"] is False
+    assert pending_esc[0]["gates"]["all_pass"] is False
+
+    # Clear escape lock and exhaust daily normal quota -> quota_ok=False & all_pass=False even when force=True
+    (ws / "results" / "ConcatD" / "calibration.json").unlink()
+    cfg["scheduler"]["closing_reserve"] = 100
+    snap_quota = compute_workspace_snapshot(ws, cfg)
+    pending_q = [it for it in snap_quota["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_q[0]["gates"]["quota_ok"] is False
+    assert pending_q[0]["gates"]["all_pass"] is False

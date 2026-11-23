@@ -15,6 +15,13 @@ struct CandidateSubmissionCardView: View {
     var body: some View {
         let isCrit = item.badge == "CRITICAL RESTORE"
         let expDelta = (item.estimatedScore ?? item.currentScore) - item.currentScore
+        let noiseFloor = store.snapshot?.scheduler.noiseFloorDelta ?? 1.9
+        let exploreOn = (item.gates.exploreEligible ?? false) || item.badge.uppercased().contains("EXPLORE")
+        let ucbLabel: String? = {
+            guard let ucb = item.gates.ucbDelta, item.estimatedScore != nil else { return nil }
+            guard (ucb - expDelta) >= 0.8, (exploreOn || ucb >= noiseFloor) else { return nil }
+            return String(format: "%@ %+.1f", lang.tr("乐观", "UCB"), ucb)
+        }()
         let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? hotStore.schedulerHot?.cooldownEndsEpoch ?? store.snapshot?.scheduler.cooldownEndsEpoch)
 
         SurfaceCard(highlighted: rankIndex == 1 || isCrit, highlightColor: isCrit ? .red : .accentColor, padding: 11) {
@@ -56,7 +63,9 @@ struct CandidateSubmissionCardView: View {
                         title: lang.tr("预计得分", "Estimated"),
                         main: item.estimatedScore.map { String(format: "~%.2f", $0) } ?? "—",
                         delta: item.estimatedScore != nil ? expDelta : nil,
-                        mainColor: .blue
+                        mainColor: .blue,
+                        ucbLabel: ucbLabel,
+                        ucbHighlighted: exploreOn
                     )
                     QueueArrowSeparator()
                     QueueScoreCell(

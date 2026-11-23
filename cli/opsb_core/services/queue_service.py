@@ -99,14 +99,20 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         team_used_today = hist_idx["used_24h"]
         avail_shots = max(0, daily_limit - hist_idx["used_24h"] - eff_closing_reserve)
 
-    def eval_gates(title: str, est_sc: float | None, is_restore_zero: bool, safety_ok: bool = True) -> dict[str, Any]:
+    def eval_gates(
+        title: str,
+        est_sc: float | None,
+        is_restore_zero: bool,
+        safety_ok: bool = True,
+        forced: bool = False,
+    ) -> dict[str, Any]:
         p_obj = prob_map.get(title, {})
         cur_sc = float(p_obj.get("current_score", 0.0))
         diff = int(p_obj.get("difficulty", 2))
         delta_exp = (est_sc - cur_sc) if est_sc is not None else 3.0
-        noise_ok = is_restore_zero or cur_sc == 0.0 or (delta_exp >= noise_floor)
+        noise_ok = is_restore_zero or forced or cur_sc == 0.0 or (delta_exp >= noise_floor)
         quota_ok = is_restore_zero or (avail_shots > 0)
-        circuit_ok = is_restore_zero or not bool(p_obj.get("circuit_open", False))
+        circuit_ok = is_restore_zero or forced or not bool(p_obj.get("circuit_open", False))
         return {
             "safety_ok": safety_ok,
             "noise_ok": noise_ok,
@@ -254,7 +260,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             is_rest = is_known_pass and (cur_sc == 0.0 or "restore" in note.lower())
             esc_hit = escape_lock_info.get(t)
             esc_blocked = bool(esc_hit and not is_known_pass)
-            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked)
+            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked, forced=forced)
             if esc_blocked:
                 badge = "ESCAPE LOCK"
                 esc_s7, esc_st = esc_hit  # type: ignore[misc]
@@ -300,6 +306,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "is_breakthrough": bool(cand_bt_delta is not None and cand_bt_delta >= bt_threshold),
                     "experience_id": exp_map.get((t, sha[:7])),
                     "baseline_pass_sha": last_pass_sha.get(t),
+                    "forced": forced,
                     "wspt_priority": 0.0 if esc_blocked else gates["wspt_score"],
                     "gates": gates,
                     "can_approve": badge in ("HOLD: NOISE", "CIRCUIT OPEN"),

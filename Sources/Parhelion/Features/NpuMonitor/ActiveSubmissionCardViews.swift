@@ -221,6 +221,8 @@ struct QueueScoreCell: View {
     let main: String
     let delta: Double?
     let mainColor: Color
+    var ucbLabel: String? = nil
+    var ucbHighlighted: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -235,6 +237,16 @@ struct QueueScoreCell: View {
                     Text(String(format: "(%+.2f)", d))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(d >= 0 ? Color(red: 0.10, green: 0.72, blue: 0.42) : .orange)
+                }
+                if let ucbLabel {
+                    let accent: Color = ucbHighlighted ? .orange : .indigo
+                    Text(ucbLabel)
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accent)
+                        .lineLimit(1)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(accent.opacity(0.15)))
                 }
             }
         }

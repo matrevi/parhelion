@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -88,6 +89,54 @@ class ConfigMigrationTests(unittest.TestCase):
                 self.assertNotEqual(cfg_mod.workspace_data_dir(ws_a), cfg_mod.workspace_data_dir(ws_b))
                 self.assertTrue(cfg_mod.workspace_state_dir(ws_a).name == "state")
                 self.assertTrue(cfg_mod.workspace_bench_specs_dir(ws_a).name == "bench-specs")
+
+    def test_concurrent_migration_safe_and_never_copies_ephemeral_caches(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            legacy_opsb = fake_home / ".config" / "opsb"
+            legacy_opsb.mkdir(parents=True)
+            (legacy_opsb / "config.json").write_text(json.dumps({"language": "zh"}), encoding="utf-8")
+            (legacy_opsb / "cj_accounts.json").write_text(json.dumps({"accounts": []}), encoding="utf-8")
+            (legacy_opsb / ".cache_scheduler_bridge.json").write_text(json.dumps({"ts": 1.0, "data": {"stale": True}}), encoding="utf-8")
+            (legacy_opsb / ".board_slim_cache.json").write_text(json.dumps({"stale": True}), encoding="utf-8")
+
+            with mock.patch("pathlib.Path.home", return_value=fake_home), mock.patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("PARHELION_HOME", None)
+                os.environ.pop("OPSB_HOME", None)
+                import opsb_core.config as cfg_mod
+
+                cfg_mod = importlib.reload(cfg_mod)
+                errors: list[BaseException] = []
+                barrier = threading.Barrier(12)
+
+                def worker() -> None:
+                    try:
+                        barrier.wait(timeout=3.0)
+                        cfg_mod.ensure_parhelion_migrated()
+                        cfg_mod.ConfigRepository.load()
+                    except BaseException as exc:  # pragma: no cover
+                        errors.append(exc)
+
+                threads = [threading.Thread(target=worker) for _ in range(12)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join(timeout=5.0)
+
+                self.assertEqual(errors, [])
+                ph = fake_home / ".parhelion"
+                self.assertTrue((ph / "config.json").is_file())
+                self.assertTrue((ph / "cj_accounts.json").is_file())
+                # Ephemeral TTL caches must never be migrated from legacy directories
+                self.assertFalse((ph / "cache" / ".cache_scheduler_bridge.json").exists())
+                self.assertFalse((ph / "cache" / ".board_slim_cache.json").exists())
+                # No leftover .migtmp temp files
+                self.assertEqual(list(ph.rglob("*.migtmp")), [])
+                # Subsequent invalidate + load must not copy stale cache back
+                cfg_mod.invalidate_ttl_cache("scheduler_bridge")
+                cfg_mod.ConfigRepository.load()
+                self.assertFalse((ph / "cache" / ".cache_scheduler_bridge.json").exists())
+                self.assertIn(ph.resolve(), cfg_mod._MIGRATED_HOMES)
 
 
 if __name__ == "__main__":

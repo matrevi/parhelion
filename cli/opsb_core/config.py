@@ -7,7 +7,9 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -123,63 +125,72 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+_MIGRATE_LOCK = threading.Lock()
+_MIGRATED_HOMES: set[Path] = set()
+
+
 def _copy_if_missing(src: Path, dst: Path, mode: int | None = None) -> None:
     if not src.is_file() or dst.exists():
         return
     dst.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = dst.with_name(f".{dst.name}.migtmp")
-    shutil.copy2(src, tmp)
-    if mode is not None:
-        os.chmod(tmp, mode)
-    os.replace(tmp, dst)
+    tmp = dst.with_name(f".{dst.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(3)}.migtmp")
+    try:
+        shutil.copy2(src, tmp)
+        if mode is not None:
+            os.chmod(tmp, mode)
+        try:
+            os.link(tmp, dst)
+        except FileExistsError:
+            return
+        except OSError:
+            if not dst.exists():
+                os.replace(tmp, dst)
+    except (FileNotFoundError, FileExistsError):
+        return
+    except OSError:
+        if dst.exists() or not src.is_file():
+            return
+        raise
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def ensure_parhelion_migrated() -> None:
     """Losslessly migrate legacy ~/.config/parhelion and ~/.config/opsb state into ~/.parhelion/."""
     ph = _resolve_parhelion_home()
-    cfg_path = ph / "config.json"
-    cache_dir = ph / "cache"
-    logs_dir = ph / "logs"
-    sessions_dir = ph / "sessions"
-    daemon_state = ph / "daemon.json"
-    daemon_log = logs_dir / "daemon.log"
+    with _MIGRATE_LOCK:
+        if ph in _MIGRATED_HOMES:
+            return
+        logs_dir, sessions_dir = ph / "logs", ph / "sessions"
+        for sub in (ph, ph / "cache", logs_dir, sessions_dir):
+            sub.mkdir(mode=0o700, parents=True, exist_ok=True)
 
-    ph.mkdir(mode=0o700, parents=True, exist_ok=True)
-    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    sessions_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-
-    # Only run implicit home migration when targeting the default ~/.parhelion (or when marker absent)
-    home = Path.home()
-    legacy_parhelion = home / ".config" / "parhelion"
-    legacy_opsb = home / ".config" / "opsb"
-
-    if ph == (home / ".parhelion").resolve():
-        # Migrate config & daemon state when missing in ~/.parhelion/
-        if not cfg_path.exists():
-            if (legacy_parhelion / "config.json").is_file():
-                _copy_if_missing(legacy_parhelion / "config.json", cfg_path, mode=0o600)
-            elif (legacy_opsb / "config.json").is_file():
-                _copy_if_missing(legacy_opsb / "config.json", cfg_path, mode=0o600)
-
-        for src_dir in (legacy_parhelion, legacy_opsb):
-            if not src_dir.is_dir():
-                continue
-            _copy_if_missing(src_dir / "cj_accounts.json", ph / "cj_accounts.json", mode=0o600)
-            _copy_if_missing(src_dir / "daemon.json", daemon_state, mode=0o600)
-            _copy_if_missing(src_dir / "daemon.log", daemon_log)
-            _copy_if_missing(src_dir / "last_jump_submit.log", logs_dir / "last_jump_submit.log")
-            for p in src_dir.iterdir():
-                if not p.is_file():
+        home = Path.home()
+        if ph == (home / ".parhelion").resolve():
+            sources = (home / ".config" / "parhelion", home / ".config" / "opsb")
+            static_files = (
+                ("config.json", ph / "config.json", 0o600),
+                ("cj_accounts.json", ph / "cj_accounts.json", 0o600),
+                ("daemon.json", ph / "daemon.json", 0o600),
+                ("daemon.log", logs_dir / "daemon.log", None),
+                ("last_jump_submit.log", logs_dir / "last_jump_submit.log", None),
+            )
+            for src_dir in sources:
+                if not src_dir.is_dir():
                     continue
-                if p.name.startswith("inflight") and p.suffix == ".json":
-                    _copy_if_missing(p, ph / p.name, mode=0o600)
-                elif p.name.startswith(".cache_") or p.name.startswith(".board_"):
-                    _copy_if_missing(p, cache_dir / p.name)
-            legacy_sessions = src_dir / "sessions"
-            if legacy_sessions.is_dir():
-                for sp in legacy_sessions.glob("*.json"):
-                    _copy_if_missing(sp, sessions_dir / sp.name, mode=0o600)
+                for rel_name, dst_path, mode in static_files:
+                    _copy_if_missing(src_dir / rel_name, dst_path, mode=mode)
+                for p in src_dir.iterdir():
+                    if p.is_file() and p.name.startswith("inflight") and p.suffix == ".json":
+                        _copy_if_missing(p, ph / p.name, mode=0o600)
+                if (src_dir / "sessions").is_dir():
+                    for sp in (src_dir / "sessions").glob("*.json"):
+                        _copy_if_missing(sp, sessions_dir / sp.name, mode=0o600)
+
+        _MIGRATED_HOMES.add(ph)
 
 
 def utc_now() -> datetime.datetime:
@@ -249,7 +260,7 @@ def write_ttl_cache(name: str, data: Any, fingerprint: str = "") -> None:
         cache_dir = _resolve_parhelion_home() / "cache"
         cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         p = cache_dir / f".cache_{name}.json"
-        tmp = p.with_suffix(".tmp")
+        tmp = p.with_name(f".{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(
             json.dumps({"ts": time.time(), "fp": fingerprint, "data": data}, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",

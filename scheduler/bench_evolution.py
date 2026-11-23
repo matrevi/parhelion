@@ -176,16 +176,17 @@ def detect_thermal_drift(
     base_timings: dict[str, float],
     cand_timings: dict[str, float],
 ) -> tuple[float, dict[str, float]]:
-    """Detect and cancel uniform additive NPU thermal/clock floor drift between sessions.
+    """Detect and cancel uniform additive or proportional multiplicative NPU thermal/clock drift.
 
-    Physical signature (verified on `LayerNormV3 b676b33` vs true regression `4d36702`):
-      1. `>= 35%` of common buckets (at least 5) cluster within `+-0.32 us` around a modal
-         additive offset `delta in [0.45, 1.65] us`;
-      2. When the cluster spans both `<= 10 us` and `> 10 us` cases, the additive offset is
-         flat across latency scales (`|med_large - med_small| <= 0.45 us`), ruling out
-         multiplicative kernel slowdowns;
-      3. Fewer than 3 small/mid buckets (`tb <= 15 us`) slowed by `> 1.85 us`;
-      4. At least 2 buckets show genuine optimization speedup `>= 1.25x`.
+    1. Flat-floor additive signature (verified on `LayerNormV3 b676b33` vs true regression `4d36702`):
+       - `>= 35%` of common buckets (at least 5) cluster within `+-0.32 us` around a modal
+         additive offset `delta in [0.45, 1.65] us`, flat across `<= 10 us` vs `> 10 us`
+         (`<= 0.45 us`), with `< 3` small/mid buckets (`tb <= 15 us`) slowed by `> 1.85 us`.
+    2. Multiplicative proportional clock-scaling signature (fallback when additive does not trigger):
+       - `>= 8` common buckets, `strong_fast >= 2`, `< 3` severe regressions (`tc / tb > 1.25`),
+       - `>= 35%` (at least 5) buckets cluster tightly within `+-0.035` of modal `med_ratio`
+         in `tc / tb in [1.04, 1.15]` (preferring mid/large `tb >= 6.0 us` when available),
+       - normalizes `cand_timings` by `mult = 1.0 + 0.85 * (med_ratio - 1.0)` (`v / mult`).
 
     Returns `(drift_us, drift_adjusted_cand_timings)`.
     """
@@ -193,51 +194,100 @@ def detect_thermal_drift(
     if len(common) < 8:
         return 0.0, dict(cand_timings)
 
-    diffs: list[tuple[float, float, float]] = []
+    entries: list[tuple[str, float, float, float, float]] = []
     strong_fast = 0
     severe_small_reg = 0
+    severe_mult_reg = 0
     for k in common:
         tb, tc = base_timings[k], cand_timings[k]
         if tb <= 0 or tc <= 0:
             continue
-        ratio = tb / tc
+        speedup = tb / tc
+        slowdown = tc / tb
         diff = tc - tb
-        diffs.append((diff, tb, ratio))
-        if ratio >= 1.25:
+        entries.append((k, tb, tc, diff, slowdown))
+        if speedup >= 1.25:
             strong_fast += 1
         if tb <= 15.0 and diff > 1.85:
             severe_small_reg += 1
+        if slowdown > 1.25:
+            severe_mult_reg += 1
 
-    if strong_fast < 2 or severe_small_reg >= 3:
+    if len(entries) < 8 or strong_fast < 2:
         return 0.0, dict(cand_timings)
 
-    pos_cands = [d for d, _tb, _r in diffs if 0.45 <= d <= 1.65]
-    if len(pos_cands) < 4:
+    min_cluster = max(5, int(math.ceil(0.35 * len(entries))))
+
+    # 1. Flat-floor additive drift cancellation
+    if severe_small_reg < 3:
+        pos_cands = [diff for _k, _tb, _tc, diff, _sl in entries if 0.45 <= diff <= 1.65]
+        if len(pos_cands) >= 4:
+            best_cluster: list[tuple[float, float]] = []
+            for center in pos_cands:
+                cl = [(diff, tb) for _k, tb, _tc, diff, _sl in entries if abs(diff - center) <= 0.32]
+                if len(cl) > len(best_cluster):
+                    best_cluster = cl
+            if len(best_cluster) >= min_cluster:
+                small_cl = [d for d, tb in best_cluster if tb <= 10.0]
+                large_cl = [d for d, tb in best_cluster if tb > 10.0]
+                if not (small_cl and large_cl and abs(statistics.median(large_cl) - statistics.median(small_cl)) > 0.45):
+                    modal_delta = statistics.median(d for d, _ in best_cluster)
+                    drift = round(0.85 * modal_delta, 4)
+                    adjusted = {
+                        k: (round(max(1.0, max(0.5 * base_timings[k], v - drift)), 4) if k in base_timings else v)
+                        for k, v in cand_timings.items()
+                    }
+                    return drift, adjusted
+
+    # 2. Multiplicative proportional drift cancellation
+    if severe_mult_reg >= 3:
         return 0.0, dict(cand_timings)
 
-    best_cluster: list[tuple[float, float]] = []
-    for center in pos_cands:
-        cl = [(d, tb) for d, tb, _r in diffs if abs(d - center) <= 0.32]
-        if len(cl) > len(best_cluster):
-            best_cluster = cl
-
-    min_cluster = max(5, int(math.ceil(0.35 * len(common))))
-    if len(best_cluster) < min_cluster:
+    band = [(k, tb, tc, sl) for k, tb, tc, _diff, sl in entries if 1.04 <= sl <= 1.15]
+    if len(band) < min_cluster:
         return 0.0, dict(cand_timings)
 
-    modal_delta = statistics.median(d for d, _ in best_cluster)
-    small_cl = [d for d, tb in best_cluster if tb <= 10.0]
-    large_cl = [d for d, tb in best_cluster if tb > 10.0]
-    if small_cl and large_cl:
-        if abs(statistics.median(large_cl) - statistics.median(small_cl)) > 0.45:
-            return 0.0, dict(cand_timings)
+    mid_all_count = sum(1 for _k, tb, _tc, _diff, _sl in entries if tb >= 6.0)
+    mid_band = [item for item in band if item[1] >= 6.0]
+    prefer_mid = mid_all_count >= 5
+    if prefer_mid and len(mid_band) < 3:
+        return 0.0, dict(cand_timings)
 
-    drift = round(0.85 * modal_delta, 4)
+    centers = [sl for _k, _tb, _tc, sl in (mid_band if prefer_mid else band)]
+    best_mult_cl: list[tuple[str, float, float, float]] = []
+    for center in centers:
+        cl = [item for item in band if abs(item[3] - center) <= 0.035]
+        if len(cl) > len(best_mult_cl):
+            best_mult_cl = cl
+
+    if len(best_mult_cl) < min_cluster:
+        return 0.0, dict(cand_timings)
+
+    mid_in_cl = [sl for _k, tb, _tc, sl in best_mult_cl if tb >= 6.0]
+    if prefer_mid and len(mid_in_cl) < 3:
+        return 0.0, dict(cand_timings)
+
+    med_ratio = statistics.median(
+        mid_in_cl if (prefer_mid and mid_in_cl) else [sl for _k, _tb, _tc, sl in best_mult_cl]
+    )
+    tight = [item for item in band if abs(item[3] - med_ratio) <= 0.035]
+    if len(tight) < min_cluster:
+        return 0.0, dict(cand_timings)
+    if prefer_mid and sum(1 for _k, tb, _tc, _sl in tight if tb >= 6.0) < 3:
+        return 0.0, dict(cand_timings)
+
+    mult = 1.0 + 0.85 * (med_ratio - 1.0)
     adjusted = {
-        k: (round(max(1.0, max(0.5 * base_timings[k], v - drift)), 4) if k in base_timings else v)
+        k: (
+            round(min(v, max(1.0, v / mult)) if v > 1.0 else v / mult, 4)
+            if k in base_timings
+            else v
+        )
         for k, v in cand_timings.items()
     }
-    return drift, adjusted
+    equiv_drifts = [tc - adjusted[k] for k, _tb, tc, _sl in tight if k in adjusted]
+    equiv_drift_us = round(statistics.median(equiv_drifts), 4) if equiv_drifts else 0.0
+    return equiv_drift_us, adjusted
 
 
 def infer_bucket_metadata(case_id: str, observed_us: float = 8.0) -> dict[str, Any]:
@@ -324,9 +374,8 @@ def build_pairwise_phi_delta(
     """Compute non-saturating pairwise hidden delta vector `ΔΦ_k(A->B) = 90 * (r_k(B) - r_k(A))`.
 
     Anchors each bucket's baseline efficiency smoothly around `r_anchor_a` scaled by
-    `(min_tau / tau_a)^0.75` and uses smooth `tanh` soft-saturation above `0.92` so
-    near-roofline improvements saturate naturally while regressions are NEVER zeroed out
-    by a `beta -> 3.0` hard clamp.
+    `(min_tau / tau_a)^0.75` (never folding `tb` into `tmin`, preventing self-swallowing on
+    record-setting candidates) and uses smooth `tanh` soft-saturation above `0.96`.
     """
     r_base = max(0.20, min(0.88, r_anchor_a))
     dphi: list[float] = []
@@ -336,12 +385,12 @@ def build_pairwise_phi_delta(
         if ta is None or tb is None or ta <= 0 or tb <= 0:
             dphi.append(0.0)
             continue
-        tmin = min(min_tau.get(k, min(ta, tb)), ta, tb)
-        r_a = max(0.12, min(0.92, r_base * ((tmin / ta) ** 0.75)))
+        tmin = min(min_tau.get(k, ta), ta)
+        r_a = max(0.12, min(0.96, r_base * ((tmin / ta) ** 0.75)))
         ratio = max(0.25, min(3.5, ta / tb))
         raw_rb = r_a * ratio
-        if raw_rb > 0.92:
-            r_b = 0.92 + 0.08 * math.tanh((raw_rb - 0.92) / 0.25)
+        if raw_rb > 0.96:
+            r_b = 0.96 + 0.04 * math.tanh((raw_rb - 0.96) / 0.25)
         else:
             r_b = max(0.05, raw_rb)
         dphi.append(90.0 * (r_b - r_a))
