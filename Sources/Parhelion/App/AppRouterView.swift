@@ -12,7 +12,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return lang.tr("赛题与榜单", "Contest & Operators")
         case .npuMonitor: return lang.tr("NPU 遥测与队列", "NPU & Task Queues")
-        case .breakthroughs: return lang.tr("突破经验库", "Breakthroughs")
+        case .breakthroughs: return lang.tr("三元知识库", "Knowledge Hub")
         case .workspaces: return lang.tr("工作区管理", "Workspaces")
         }
     }
@@ -21,7 +21,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return lang.tr("实时总分 · 50 例对标", "Leaderboard · 50-Case Ratios")
         case .npuMonitor: return lang.tr("示波遥测 · 提交与门禁", "Telemetry · Queue · Gate")
-        case .breakthroughs: return lang.tr("结构化经验 · Δ 筛选", "Structured Playbook · Δ Filter")
+        case .breakthroughs: return lang.tr("突破 · 积木 · 社区 · 进化", "Breakthrough · Snippets · Community")
         case .workspaces: return lang.tr("项目切换 · 零噪声脚手架", "Projects · Clean Scaffolder")
         }
     }

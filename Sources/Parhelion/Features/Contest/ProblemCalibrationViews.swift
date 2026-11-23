@@ -409,3 +409,71 @@ struct BenchCoverageCardView: View {
         }
     }
 }
+
+/// On-demand ELF / Cold-3 / PMU diagnostic card (never executed in `HotTelemetryStore` 1s loop).
+struct FastFeedbackDiagnosticCardView: View {
+    @EnvironmentObject var store: ContestStore
+    let problem: ProblemItem
+
+    private var lang: AppLanguage { store.lang }
+    private var isLoading: Bool { store.loadingFastFeedbackProblems.contains(problem.title) }
+    private var card: PmuTorchCard? { store.pmuCardsByProblem[problem.title] }
+    private var elf: ElfGuardResult? { store.elfByProblem[problem.title] }
+    private var cold3: Cold3Result? { store.cold3ByProblem[problem.title] }
+
+    var body: some View {
+        SurfaceCard(padding: 11) {
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(spacing: 8) {
+                    Label(
+                        lang.tr("ELF / Cold-3 / PMU 快速诊断", "ELF / COLD-3 / PMU DIAGNOSTICS"),
+                        systemImage: "stethoscope"
+                    )
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button {
+                        Task { await store.loadFastFeedback(for: problem.title) }
+                    } label: {
+                        if isLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label(
+                                card == nil && elf == nil
+                                    ? lang.tr("运行诊断", "Run Probe")
+                                    : lang.tr("重新诊断", "Refresh"),
+                                systemImage: "waveform.path.ecg"
+                            )
+                            .font(.system(size: 10.5, weight: .semibold))
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                    .disabled(isLoading)
+                }
+
+                if card != nil || elf != nil || cold3 != nil {
+                    FastFeedbackBodyView(
+                        problem: problem,
+                        card: card,
+                        elfFallback: elf,
+                        cold3Fallback: cold3
+                    )
+                } else if let err = store.fastFeedbackErrorByProblem[problem.title] {
+                    Text(err)
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.orange)
+                } else {
+                    Text(lang.tr(
+                        "按需解析本地编译 ELF (.text/.o)、3-Run 冷启动与 profiler PMU 瓶颈（0s NPU 占卡 / 零 SSH）。",
+                        "On-demand local ELF (.text/.o), 3-run Cold-Start, and profiler PMU probe (0s NPU lock / zero SSH)."
+                    ))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}

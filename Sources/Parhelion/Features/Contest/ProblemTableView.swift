@@ -69,7 +69,8 @@ struct ProblemTableView: View {
                 Text(lang.tr("当前分", "Current")).frame(width: 66, alignment: .trailing)
                 Text(lang.tr("同代最优", "Equiv Best")).frame(width: 74, alignment: .trailing)
                 Text(lang.tr("排名", "Rank")).frame(width: 58, alignment: .trailing)
-                Text(lang.tr("调度建议", "Priority")).frame(width: 116, alignment: .trailing)
+                Text(lang.tr("调度建议", "Priority")).frame(width: 110, alignment: .trailing)
+                Text(lang.tr("对话", "Chat")).frame(width: 56, alignment: .trailing)
             }
             .font(.system(size: 11.5, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -151,7 +152,26 @@ struct ProblemTableView: View {
                 .frame(width: 58, alignment: .trailing)
 
             SemanticPill(text: lang.wsptTag(p.wsptTag), compact: true)
-                .frame(width: 116, alignment: .trailing)
+                .frame(width: 110, alignment: .trailing)
+
+            Button {
+                Task { await store.launchOperatorSession(problem: p.title, mode: "gui") }
+            } label: {
+                Label(lang.tr("新开", "Launch"), systemImage: "plus.bubble")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .disabled(store.isLaunchingSession)
+            .help(lang.tr("新开调优对话 (opsb driver launch \(p.title) --mode gui)", "Launch tuning session for \(p.title)"))
+            .frame(width: 56, alignment: .trailing)
+        }
+        .contextMenu {
+            Button {
+                Task { await store.launchOperatorSession(problem: p.title, mode: "gui") }
+            } label: {
+                Label(lang.tr("新开 GUI 调优对话", "Launch GUI Session"), systemImage: "plus.bubble.fill")
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 9)

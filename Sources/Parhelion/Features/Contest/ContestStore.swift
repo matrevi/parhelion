@@ -14,6 +14,24 @@ final class ContestStore: ObservableObject {
     @Published var isBackfilling: Bool = false
     private var lastBackfillFetch: Date = .distantPast
 
+    // Parhelion v3 Cold-Path State (Triad KB, Harness Drivers, On-Demand Fast-Feedback)
+    @Published var triadEntries: [TriadKBEntry] = []
+    @Published var triadEvolutionEvents: [KBEvolutionEvent] = []
+    @Published var triadEvolutionLogPath: String = ""
+    @Published var isLoadingTriadKB: Bool = false
+    @Published var activeDriver: String = "antigravity"
+    @Published var driverDiagnostics: [DriverDiagnosticModel] = []
+    @Published var driverSessions: [DriverSessionModel] = []
+    @Published var isLoadingDrivers: Bool = false
+    @Published var isSyncingDriver: Bool = false
+    @Published var isLaunchingSession: Bool = false
+    @Published var isLoadingSessions: Bool = false
+    @Published var pmuCardsByProblem: [String: PmuTorchCard] = [:]
+    @Published var elfByProblem: [String: ElfGuardResult] = [:]
+    @Published var cold3ByProblem: [String: Cold3Result] = [:]
+    @Published var loadingFastFeedbackProblems: Set<String> = []
+    @Published var fastFeedbackErrorByProblem: [String: String] = [:]
+
     @Published var lang: AppLanguage = AppLanguage(rawValue: UserDefaults.standard.string(forKey: "parhelion.lang") ?? "zh") ?? .zh
     private var didSetLangLocally: Bool = false
     @Published var workspaces: [WorkspaceEntry] = []
@@ -58,6 +76,7 @@ final class ContestStore: ObservableObject {
         }
         await refreshLocal(force: true)
         await reloadBreakthroughs()
+        await reloadDriverDoctor()
         startTelemetryStream()
     }
 
@@ -284,6 +303,11 @@ final class ContestStore: ObservableObject {
         selectedWorkspace = path
         lastColdETag = nil
         lastLoadedWorkspace = nil
+        pmuCardsByProblem = [:]
+        elfByProblem = [:]
+        cold3ByProblem = [:]
+        fastFeedbackErrorByProblem = [:]
+        driverSessions = []
         try? await repository.selectWorkspace(path)
         await reloadWorkspaces()
         await daemonClient.invalidate(workspace: path)

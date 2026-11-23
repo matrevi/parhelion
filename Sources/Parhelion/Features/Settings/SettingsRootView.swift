@@ -7,6 +7,9 @@ struct SettingsRootView: View {
 
     var body: some View {
         TabView {
+            DriverSettingsTab()
+                .tabItem { Label(lang.tr("Harness 驱动", "Harness Drivers"), systemImage: "terminal.fill") }
+
             SSHSettingsTab()
                 .tabItem { Label(lang.tr("NPU SSH 连接", "NPU SSH"), systemImage: "network") }
 

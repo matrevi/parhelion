@@ -3,6 +3,7 @@ import SwiftUI
 struct ContestOverviewView: View {
     @EnvironmentObject var store: ContestStore
     @UIState private var showInvitePopover: Bool = false
+    @UIState private var showSessionsPopover: Bool = false
 
     private var lang: AppLanguage { store.lang }
 
@@ -65,6 +66,20 @@ struct ContestOverviewView: View {
                         .font(.system(size: 12, weight: .medium))
                 }
                 .buttonStyle(.bordered)
+
+                Button {
+                    showSessionsPopover.toggle()
+                } label: {
+                    let running = store.activeGuiSessionsCount
+                    let badge = running > 0 ? " (\(running))" : ""
+                    Label(lang.tr("会话\(badge)", "Sessions\(badge)"), systemImage: "bubble.left.and.text.bubble.right")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.bordered)
+                .popover(isPresented: $showSessionsPopover, arrowEdge: .bottom) {
+                    DriverSessionsPopoverView()
+                        .environmentObject(store)
+                }
 
                 Button {
                     showInvitePopover.toggle()

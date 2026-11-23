@@ -23,6 +23,7 @@ struct ProblemInspectorView: View {
                 StrataAndSlotsCardView(problem: problem)
                 publicRatioCard
                 BenchCoverageCardView(problem: problem)
+                FastFeedbackDiagnosticCardView(problem: problem)
                 timelineCard
             }
             .padding(14)
@@ -44,6 +45,24 @@ struct ProblemInspectorView: View {
             }
             Spacer()
             HStack(spacing: 6) {
+                Button {
+                    Task { await store.launchOperatorSession(problem: problem.title, mode: "gui") }
+                } label: {
+                    if store.isLaunchingSession {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(lang.tr("新开对话", "Launch"), systemImage: "plus.bubble.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(store.isLaunchingSession)
+                .help(lang.tr(
+                    "通过 \(store.activeDriver) 为 \(problem.title) 新开 GUI 调优对话",
+                    "Launch \(store.activeDriver) GUI session for \(problem.title)"
+                ))
+
                 Button {
                     SystemNavigator.openURL("https://judge.invalid/problems/\(problem.problemId)")
                 } label: { Image(systemName: "globe") }

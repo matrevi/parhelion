@@ -4,6 +4,8 @@ import SwiftUI
 struct BreakthroughDetailView: View {
     @EnvironmentObject var store: ContestStore
     let entry: BreakthroughEntry
+    var triadEntry: TriadKBEntry? = nil
+    var onFeedback: ((TriadKBEntry, String) -> Void)? = nil
 
     private var lang: AppLanguage { store.lang }
 
@@ -50,8 +52,43 @@ struct BreakthroughDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 tagsAndFileRow
+                if let kb = triadEntry {
+                    triadFeedbackStrip(kb)
+                }
             }
             .padding(16)
+        }
+    }
+
+    private func triadFeedbackStrip(_ kb: TriadKBEntry) -> some View {
+        SurfaceCard(padding: 11) {
+            HStack(spacing: 8) {
+                SemanticPill(text: kb.portability, compact: true)
+                TriadConfidenceBadge(entry: kb)
+                Text(lang.tr("三元经验反馈：", "Triad Feedback:"))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Button {
+                    onFeedback?(kb, "win")
+                } label: {
+                    Label(lang.tr("有效 (+Win)", "Win (+)"), systemImage: "hand.thumbsup.fill")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .tint(.green)
+                .controlSize(.small)
+
+                Button {
+                    onFeedback?(kb, "fail")
+                } label: {
+                    Label(lang.tr("无效 (-Fail)", "Fail (-)"), systemImage: "hand.thumbsdown.fill")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+                .controlSize(.small)
+                Spacer()
+            }
         }
     }
 

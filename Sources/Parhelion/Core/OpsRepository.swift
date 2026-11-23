@@ -5,24 +5,15 @@ struct OpsRepository: Sendable {
     private let client = ProcessClient()
 
     func fetchLocalSnapshot(workspace: String) async throws -> SupervisorSnapshot {
-        let data = try await client.execute(
-            ["status", "--workspace", workspace, "--offline-npu", "--compact", "--json"],
-            timeout: 8.0
-        )
-        return try await DaemonClient.decodeOffMain(SupervisorSnapshot.self, from: data)
+        try await decodeCLI(["status", "--workspace", workspace, "--offline-npu", "--compact", "--json"], timeout: 8.0)
     }
 
     func fetchNpuTelemetry(workspace: String, host: String) async throws -> NpuTelemetry {
-        let data = try await client.execute(
-            ["npu", "status", "--workspace", workspace, "--host", host, "--json"],
-            timeout: 10.0
-        )
-        return try await DaemonClient.decodeOffMain(NpuTelemetry.self, from: data)
+        try await decodeCLI(["npu", "status", "--workspace", workspace, "--host", host, "--json"], timeout: 10.0)
     }
 
     func listWorkspaces() async throws -> WorkspaceListResponse {
-        let data = try await client.execute(["workspace", "list", "--json"])
-        return try await DaemonClient.decodeOffMain(WorkspaceListResponse.self, from: data)
+        try await decodeCLI(["workspace", "list", "--json"])
     }
 
     func selectWorkspace(_ path: String) async throws {
@@ -74,11 +65,7 @@ struct OpsRepository: Sendable {
     }
 
     func fetchBreakthroughCatalog(workspace: String, minDelta: Double = 0.5) async throws -> BreakthroughCatalogResponse {
-        let data = try await client.execute(
-            ["breakthrough", "list", "--workspace", workspace, "--min-delta", String(format: "%.2f", minDelta), "--json"],
-            timeout: 8.0
-        )
-        return try await DaemonClient.decodeOffMain(BreakthroughCatalogResponse.self, from: data)
+        try await decodeCLI(["breakthrough", "list", "--workspace", workspace, "--min-delta", String(format: "%.2f", minDelta), "--json"], timeout: 8.0)
     }
 
     func syncBreakthroughPlaybook(workspace: String, minDelta: Double) async throws -> (Int, Int) {
@@ -147,13 +134,11 @@ struct OpsRepository: Sendable {
     func inviteCollaborator(workspace: String, username: String, permission: String, dryRun: Bool) async throws -> CollabInviteResponse {
         var args = ["collab", "invite", username, "--workspace", workspace, "--permission", permission, "--json"]
         if dryRun { args.append("--dry-run") }
-        let data = try await client.execute(args, timeout: 45.0, allowNonZeroExit: true)
-        return try await DaemonClient.decodeOffMain(CollabInviteResponse.self, from: data)
+        return try await decodeCLI(args, timeout: 45.0, allowNonZeroExit: true)
     }
 
     func listSSHHosts() async throws -> SSHHostListResponse {
-        let data = try await client.execute(["ssh", "list"])
-        return try await DaemonClient.decodeOffMain(SSHHostListResponse.self, from: data)
+        try await decodeCLI(["ssh", "list"])
     }
 
     func selectSSHHost(_ alias: String) async throws {
@@ -168,8 +153,7 @@ struct OpsRepository: Sendable {
     }
 
     func testSSH(_ alias: String) async throws -> SSHTestResult {
-        let data = try await client.execute(["npu", "test-ssh", "--host", alias, "--json"], timeout: 10.0, allowNonZeroExit: true)
-        return try await DaemonClient.decodeOffMain(SSHTestResult.self, from: data)
+        try await decodeCLI(["npu", "test-ssh", "--host", alias, "--json"], timeout: 10.0, allowNonZeroExit: true)
     }
 
     func deployNpuProbe(_ alias: String) async throws {
@@ -262,5 +246,103 @@ struct OpsRepository: Sendable {
         } catch {
             return BackfillStatusReport.unavailable("cli_unavailable")
         }
+    }
+
+    // MARK: - Parhelion v3 Off-MainActor CLI Calls
+
+    private func decodeCLI<T: Decodable>(_ args: [String], timeout: TimeInterval = 12.0, allowNonZeroExit: Bool = false) async throws -> T {
+        let data = try await client.execute(args, timeout: timeout, allowNonZeroExit: allowNonZeroExit)
+        return try await DaemonClient.decodeOffMain(T.self, from: data)
+    }
+
+    func fetchTriadKBList(pillar: String = "all", status: String? = nil, portability: String? = nil) async throws -> TriadKBListResponse {
+        var args = ["kb", "list", "--pillar", pillar, "--json"]
+        if let status, !status.isEmpty, status != "all" { args += ["--status", status] }
+        if let portability, !portability.isEmpty, portability != "all" { args += ["--portability", portability] }
+        return try await decodeCLI(args, timeout: 10.0)
+    }
+
+    func fetchTriadKBEntry(id: String) async throws -> TriadKBShowResponse {
+        try await decodeCLI(["kb", "show", id, "--json"], timeout: 8.0, allowNonZeroExit: true)
+    }
+
+    func queryTriadKB(bottlenecks: [String] = [], regime: String? = nil, dtype: String? = nil, pillar: String = "all", text: String = "", limit: Int = 20) async throws -> TriadKBQueryResponse {
+        var args = ["kb", "query", "--pillar", pillar, "--limit", "\(limit)", "--json"]
+        for bn in bottlenecks where !bn.isEmpty { args += ["--bottleneck", bn] }
+        if let regime, !regime.isEmpty { args += ["--regime", regime] }
+        if let dtype, !dtype.isEmpty { args += ["--dtype", dtype] }
+        if !text.trimmingCharacters(in: .whitespaces).isEmpty { args += ["--text", text] }
+        return try await decodeCLI(args, timeout: 10.0)
+    }
+
+    func recordTriadKBFeedback(
+        entryId: String, verdict: String, problem: String, sha: String,
+        deltaRaw: Double? = nil, deltaUs: Double? = nil, speedup: Double? = nil, note: String = "", workspace: String = ""
+    ) async throws -> TriadKBFeedbackResponse {
+        var args = ["kb", "feedback", entryId, "--verdict", verdict, "--problem", problem, "--sha", sha, "--json"]
+        if let deltaRaw { args += ["--delta-raw", String(format: "%.4f", deltaRaw)] }
+        if let deltaUs { args += ["--delta-us", String(format: "%.4f", deltaUs)] }
+        if let speedup { args += ["--speedup", String(format: "%.4f", speedup)] }
+        if !note.isEmpty { args += ["--note", note] }
+        if !workspace.isEmpty { args += ["--workspace", workspace] }
+        return try await decodeCLI(args, timeout: 12.0, allowNonZeroExit: true)
+    }
+
+    func fetchKBEvolutionHistory(limit: Int = 50) async throws -> KBEvolutionHistoryResponse {
+        try await decodeCLI(["kb", "history", "--limit", "\(limit)", "--json"], timeout: 8.0)
+    }
+
+    func rollbackKBEvent(eventId: String? = nil) async throws -> KBRollbackResponse {
+        var args = ["kb", "rollback", "--json"]
+        if let eventId, !eventId.isEmpty { args += ["--event-id", eventId] }
+        return try await decodeCLI(args, timeout: 10.0, allowNonZeroExit: true)
+    }
+
+    func fetchDriverDoctor() async throws -> DriverDoctorResponse {
+        try await decodeCLI(["driver", "doctor", "--json"], timeout: 10.0)
+    }
+
+    func selectDriver(_ kind: String) async throws -> DriverSelectResponse {
+        try await decodeCLI(["driver", "select", kind, "--json"], timeout: 8.0, allowNonZeroExit: true)
+    }
+
+    func syncDriverWorkspace(workspace: String, driver: String? = nil) async throws -> DriverSyncResponse {
+        var args = ["driver", "sync", "--workspace", workspace, "--json"]
+        if let driver, !driver.isEmpty { args += ["--driver", driver] }
+        return try await decodeCLI(args, timeout: 15.0, allowNonZeroExit: true)
+    }
+
+    func launchDriverSession(
+        workspace: String, problem: String, driver: String? = nil, mode: String = "gui", track: String = "", goal: String = "", preseed: Bool = false
+    ) async throws -> DriverLaunchResponse {
+        var args = ["driver", "launch", problem, "--mode", mode, "--workspace", workspace, "--json"]
+        if let driver, !driver.isEmpty { args += ["--driver", driver] }
+        if !track.isEmpty { args += ["--track", track] }
+        if !goal.isEmpty { args += ["--goal", goal] }
+        if preseed { args.append("--preseed") }
+        return try await decodeCLI(args, timeout: 25.0, allowNonZeroExit: true)
+    }
+
+    func fetchDriverSessions(workspace: String, problem: String? = nil, driver: String? = nil, includeGui: Bool = true) async throws -> DriverSessionsResponse {
+        var args = ["driver", "sessions", "--workspace", workspace, includeGui ? "--include-gui" : "--no-gui", "--json"]
+        if let problem, !problem.isEmpty { args += ["--problem", problem] }
+        if let driver, !driver.isEmpty { args += ["--driver", driver] }
+        return try await decodeCLI(args, timeout: 10.0, allowNonZeroExit: true)
+    }
+
+    func fetchElfGuardAll(workspace: String) async throws -> ElfBatchResponse {
+        try await decodeCLI(["bench", "elf", "--workspace", workspace, "--json"], timeout: 15.0)
+    }
+
+    func fetchElfGuard(workspace: String, problem: String) async throws -> ElfGuardResult {
+        try await decodeCLI(["bench", "elf", problem, "--workspace", workspace, "--json"], timeout: 12.0)
+    }
+
+    func fetchCold3Probe(workspace: String, problem: String) async throws -> Cold3Result {
+        try await decodeCLI(["bench", "cold3", problem, "--workspace", workspace, "--json"], timeout: 12.0)
+    }
+
+    func fetchPmuTorchCard(workspace: String, problem: String, top: Int = 8) async throws -> PmuTorchCard {
+        try await decodeCLI(["bench", "pmu", problem, "--top", "\(top)", "--workspace", workspace, "--json"], timeout: 15.0)
     }
 }
