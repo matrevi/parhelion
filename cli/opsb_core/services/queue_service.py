@@ -75,13 +75,42 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     outcome_rows = hist_idx["outcome_rows"]
     sha_pass_scores = hist_idx["sha_pass_scores"]
 
-    outcomes_exact = {(o.get("title", ""), o.get("sha", ""), o.get("queued_at", "")): o for o in outcome_rows}
-    outcomes_pair = {(o.get("title", ""), o.get("sha", "")): o for o in outcome_rows}
+    outcomes_exact = {
+        (str(o.get("title", "")), str(o.get("sha", "")).lower(), str(o.get("queued_at", ""))): o
+        for o in outcome_rows
+    }
+    outcomes_pair = {
+        (str(o.get("title", "")), str(o.get("sha", "")).lower()): o
+        for o in outcome_rows
+    }
+    skipped_exact: dict[tuple[str, str], dict[str, Any]] = {}
+    skipped_short: dict[tuple[str, str], dict[str, Any]] = {}
+    for o in outcome_rows:
+        if o.get("status") == "skipped":
+            ot = str(o.get("title") or "")
+            os_low = str(o.get("sha") or "").lower()
+            if ot and os_low:
+                skipped_exact[(ot, os_low)] = o
+                if len(os_low) >= 7:
+                    skipped_short[(ot, os_low[:7])] = o
+
+    def _find_skip_outcome(t_name: str, sha_str: str) -> dict[str, Any] | None:
+        s_low = sha_str.lower()
+        hit = skipped_exact.get((t_name, s_low))
+        if hit is not None:
+            return hit
+        if len(s_low) >= 7:
+            return skipped_short.get((t_name, s_low[:7]))
+        return None
 
     first_pend: tuple[str, str] | None = None
     for q in queue_rows:
-        qt, qs, qq = q.get("title", ""), q.get("sha", ""), q.get("queued_at", "")
-        if (qt, qs, qq) not in outcomes_exact and (q.get("force") or (qt, qs) not in outcomes_pair):
+        qt, qs, qq = str(q.get("title", "")), str(q.get("sha", "")), str(q.get("queued_at", ""))
+        qs_low = qs.lower()
+        skip_o = _find_skip_outcome(qt, qs_low)
+        skip_ts = str((skip_o or {}).get("finished_at") or (skip_o or {}).get("queued_at") or "")
+        is_skipped = bool(skip_o is not None and (not q.get("force") or skip_ts >= qq))
+        if (qt, qs_low, qq) not in outcomes_exact and not is_skipped and (q.get("force") or (qt, qs_low) not in outcomes_pair):
             first_pend = (qt, qs)
             break
 
@@ -105,12 +134,20 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         is_restore_zero: bool,
         safety_ok: bool = True,
         forced: bool = False,
+        sha: str = "",
     ) -> dict[str, Any]:
         p_obj = prob_map.get(title, {})
         cur_sc = float(p_obj.get("current_score", 0.0))
+        best_sc = float(p_obj.get("best_score") or p_obj.get("raw_best_score") or 0.0)
+        best_sha = str(p_obj.get("best_sha") or "")
         diff = int(p_obj.get("difficulty", 2))
         delta_exp = (est_sc - cur_sc) if est_sc is not None else 3.0
-        noise_ok = is_restore_zero or forced or cur_sc == 0.0 or (delta_exp >= noise_floor)
+        is_restore_regime = (not is_restore_zero) and cur_sc > 0.0 and bool(best_sha) and ((best_sc - cur_sc) >= 1.5)
+        is_restoring_best = bool(best_sha and sha and sha.lower().startswith(best_sha.lower()[:7]))
+        if is_restore_regime and not is_restoring_best and not forced:
+            noise_ok = (est_sc is not None) and ((est_sc - best_sc) >= noise_floor)
+        else:
+            noise_ok = is_restore_zero or forced or cur_sc == 0.0 or (delta_exp >= noise_floor)
         quota_ok = is_restore_zero or (avail_shots > 0)
         circuit_ok = is_restore_zero or forced or not bool(p_obj.get("circuit_open", False))
         return {
@@ -125,16 +162,16 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     advisory_items: list[dict[str, Any]] = []
     queued_pairs = {
-        (q.get("title", ""), q.get("sha", ""))
+        (str(q.get("title", "")), str(q.get("sha", "")).lower())
         for q in queue_rows
-        if (q.get("title", ""), q.get("sha", ""), q.get("queued_at", "")) not in outcomes_exact
+        if (str(q.get("title", "")), str(q.get("sha", "")).lower(), str(q.get("queued_at", ""))) not in outcomes_exact
     }
 
     for p_obj in problems_out:
         t = p_obj["title"]
         if p_obj["current_score"] == 0.0 and p_obj["best_score"] > 0.0 and p_obj["best_sha"]:
             b_sha = p_obj["best_sha"]
-            if (t, b_sha) not in queued_pairs:
+            if (t, b_sha.lower()) not in queued_pairs and _find_skip_outcome(t, b_sha) is None:
                 priors = sha_pass_scores.get((t, b_sha), [p_obj["best_score"]])
                 est = round(sum(priors) / len(priors), 2)
                 gates = eval_gates(t, est, is_restore_zero=True)
@@ -235,7 +272,16 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         forced = bool(q.get("force", False))
         p_obj = prob_map.get(t, {"difficulty": DEFAULT_DIFFICULTIES.get(t, 2), "current_score": 0.0, "best_score": 0.0})
 
-        out = outcomes_exact.get((t, sha, q_at)) or (None if forced else outcomes_pair.get((t, sha)))
+        sha_low = str(sha or "").lower()
+        skip_out = _find_skip_outcome(t, sha_low)
+        skip_ts = str((skip_out or {}).get("finished_at") or (skip_out or {}).get("queued_at") or "")
+        out = outcomes_exact.get((t, sha_low, q_at))
+        if out is None:
+            if forced:
+                if skip_out is not None and skip_ts >= str(q_at or ""):
+                    out = skip_out
+            else:
+                out = outcomes_pair.get((t, sha_low)) or skip_out
         prior_sc = prior_board.get(t, 0.0)
         cur_sc = float(p_obj.get("current_score", 0.0))
 
@@ -260,7 +306,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             is_rest = is_known_pass and (cur_sc == 0.0 or "restore" in note.lower())
             esc_hit = escape_lock_info.get(t)
             esc_blocked = bool(esc_hit and not is_known_pass)
-            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked, forced=forced)
+            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked, forced=forced, sha=sha)
             if esc_blocked:
                 badge = "ESCAPE LOCK"
                 esc_s7, esc_st = esc_hit  # type: ignore[misc]
@@ -340,7 +386,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     peak_pass_score[t] = max(peak_p, actual)
                     prior_board[t] = actual
             elif st == "skipped":
-                badge = "HOLD: NOISE"
+                badge = "SKIPPED"
             elif st == "sync_error":
                 badge = "SYNC ERROR"
             elif st in ("Running", "Queued", "Pending"):
@@ -425,6 +471,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "circuit_breaker_limit": cb_limit,
             "queue_lock_held": queue_lock_held,
             "actionable_count": len(active_q),
+            "skipped_keys": sorted(f"{st_t}|{st_s}" for st_t, st_s in skipped_short),
             "pipeline": pipeline,
         },
         "problems": problems_out,

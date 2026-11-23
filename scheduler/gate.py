@@ -53,6 +53,7 @@ STATUS_TAGS: tuple[str, ...] = (
     "HOLD_LOW_GAIN",
     "CIRCUIT_OPEN",
     "REJECTED_GATE",
+    "SKIPPED",
     "ZEROED_ERR",
 )
 
@@ -798,6 +799,29 @@ class SubmissionGate:
             next_reset_utc=next_bj_midnight.astimezone(datetime.timezone.utc).isoformat(),
         )
 
+    def _find_override(self, title: str, canonical_sha: str) -> dict[str, Any]:
+        """Lookup operator override by exact `<title>:<sha>` or 7-char SHA prefix (case-insensitive)."""
+        if not self.overrides or not title or not canonical_sha:
+            return {}
+        c_low = canonical_sha.lower()
+        short_low = c_low[:7]
+        exact_key = f"{title}:{canonical_sha}"
+        if exact_key in self.overrides:
+            return self.overrides[exact_key]
+        prefix_match: dict[str, Any] = {}
+        for k, v in self.overrides.items():
+            if ":" not in k or not isinstance(v, dict):
+                continue
+            kt, ksha = k.split(":", 1)
+            if kt != title:
+                continue
+            k_low = ksha.lower()
+            if k_low == c_low:
+                return v
+            if len(short_low) >= 7 and len(k_low) >= 7 and k_low[:7] == short_low:
+                prefix_match = v
+        return prefix_match
+
     def evaluate(
         self,
         title: str,
@@ -811,16 +835,22 @@ class SubmissionGate:
     ) -> GateVerdict:
         """Run all 4 stages (SAFETY -> NOISE_FLOOR -> CIRCUIT_BREAKER -> QUOTA_RESERVE)."""
         canonical_sha = resolve_sha(self.workspace, title, sha)
-        ov_key = f"{title}:{canonical_sha}"
-        ov = self.overrides.get(ov_key, {})
+        ov = self._find_override(title, canonical_sha)
         ov_action = ov.get("action")
-        effective_force = bool(force or ov_action == "approve")
+        explicit_skip = (ov_action == "skip") and (not force)
+        effective_force = bool(force or (ov_action == "approve"))
 
         estimate = self.estimator.estimate(
             title=title,
             sha=canonical_sha,
             speedup=speedup,
             note=note,
+            as_of=as_of,
+            override_board_score=override_board_score,
+            override_board_status=override_board_status,
+        )
+        ledger = self.estimator.get_problem_ledger(
+            title,
             as_of=as_of,
             override_board_score=override_board_score,
             override_board_status=override_board_status,
@@ -838,13 +868,43 @@ class SubmissionGate:
             and speedup is None
             and estimate.estimation_method == "active_board_identity"
         )
+        ref_best = float(ledger.contemporary_best_score or ledger.raw_historical_best_score or 0.0)
+        is_restore_regime = (
+            (not is_critical_restore)
+            and bool(ledger.historical_best_sha)
+            and (ref_best - estimate.current_score >= 1.5)
+        )
+        is_restoring_best = bool(
+            ledger.historical_best_sha
+            and canonical_sha.lower().startswith(ledger.historical_best_sha.lower()[:7])
+        )
+        delta_vs_best = round(estimate.estimated_score - ref_best, 2)
+        ucb_vs_best = round(
+            estimate.estimated_score + max(0.0, estimate.ucb_delta - estimate.delta_expected) - ref_best,
+            2,
+        )
+        ev = estimate.explore_evidence or {}
+        restore_explore_ok = (
+            delta_vs_best > 0.0
+            and ucb_vs_best >= self.config.noise_floor_pts
+            and not bool(ev.get("veto_pos_corr"))
+            and not bool(ev.get("veto_small_core"))
+        )
 
         # Stage 1: SAFETY
         s1 = self.evaluate_safety(title, canonical_sha, as_of=as_of)
 
         # Stage 2: NOISE_FLOOR (Uncertainty-Aware with `EXPLORE` Anti-Burial Channel)
         is_explore_pass = False
-        if is_critical_restore:
+        if explicit_skip:
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=False,
+                code="OPERATOR_SKIPPED",
+                reason=f"Skipped by operator override: {ov.get('reason', 'manual skip')}",
+                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+            )
+        elif is_critical_restore:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
                 passed=True,
@@ -876,6 +936,73 @@ class SubmissionGate:
                 reason=f"Explicit force/override approved (contemp delta={estimate.delta_expected:+.2f} pts)",
                 metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
             )
+        elif is_restore_regime and not is_restoring_best and not effective_force:
+            if delta_vs_best >= self.config.noise_floor_pts:
+                s2 = StageResult(
+                    stage="NOISE_FLOOR",
+                    passed=True,
+                    code="ABOVE_NOISE_FLOOR",
+                    reason=(
+                        f"New-best gain vs best({(ledger.historical_best_sha or '')[:7]}={ref_best:.2f}): "
+                        f"delta_vs_best={delta_vs_best:+.2f} pts >= +{self.config.noise_floor_pts:.2f} pts "
+                        f"(sigma={estimate.confidence_sigma:.2f}, UCB_vs_best={ucb_vs_best:+.2f})"
+                    ),
+                    metrics={
+                        "delta_expected": estimate.delta_expected,
+                        "ucb_delta": estimate.ucb_delta,
+                        "sigma": estimate.confidence_sigma,
+                        "calibration_trust": estimate.calibration_trust,
+                        "threshold": self.config.noise_floor_pts,
+                        "ref_best": ref_best,
+                        "delta_vs_best": delta_vs_best,
+                        "ucb_vs_best": ucb_vs_best,
+                    },
+                )
+            elif restore_explore_ok:
+                is_explore_pass = True
+                explore_msg = estimate.explore_reason or (
+                    f"new-best upside in [RESTORE] (est={estimate.estimated_score:.2f} > "
+                    f"best={ref_best:.2f}, UCB_vs_best={ucb_vs_best:+.2f} >= +{self.config.noise_floor_pts:.2f})"
+                )
+                s2 = StageResult(
+                    stage="NOISE_FLOOR",
+                    passed=True,
+                    code="EXPLORE_HIGH_UPSIDE",
+                    reason=f"EXPLORE [HIGH-UNCERTAINTY UPSIDE]: {explore_msg}",
+                    metrics={
+                        "delta_expected": estimate.delta_expected,
+                        "ucb_delta": estimate.ucb_delta,
+                        "sigma": estimate.confidence_sigma,
+                        "calibration_trust": estimate.calibration_trust,
+                        "threshold": self.config.noise_floor_pts,
+                        "ref_best": ref_best,
+                        "delta_vs_best": delta_vs_best,
+                        "ucb_vs_best": ucb_vs_best,
+                        "explore_evidence": estimate.explore_evidence,
+                    },
+                )
+            else:
+                s2 = StageResult(
+                    stage="NOISE_FLOOR",
+                    passed=False,
+                    code="BELOW_BEST_IN_RESTORE",
+                    reason=(
+                        f"In [RESTORE] regime (best={ref_best:.2f} vs board={estimate.current_score:.2f}): "
+                        f"est={estimate.estimated_score:.2f} gives delta_vs_best={delta_vs_best:+.2f}, "
+                        f"UCB_vs_best={ucb_vs_best:+.2f} < +{self.config.noise_floor_pts:.2f}; "
+                        f"holding to avoid eating cur->best delta"
+                    ),
+                    metrics={
+                        "delta_expected": estimate.delta_expected,
+                        "ucb_delta": estimate.ucb_delta,
+                        "sigma": estimate.confidence_sigma,
+                        "calibration_trust": estimate.calibration_trust,
+                        "threshold": self.config.noise_floor_pts,
+                        "ref_best": ref_best,
+                        "delta_vs_best": delta_vs_best,
+                        "ucb_vs_best": ucb_vs_best,
+                    },
+                )
         elif estimate.delta_expected >= self.config.noise_floor_pts:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
@@ -1047,9 +1174,9 @@ class SubmissionGate:
 
         stages = [s1, s2, s3, s4]
 
-        if ov_action == "skip":
+        if explicit_skip:
             approved = False
-            status_tag = "REJECTED_GATE"
+            status_tag = "SKIPPED"
             gate_reason = f"Skipped by operator override: {ov.get('reason', 'manual skip')}"
         elif not s1.passed:
             approved = False

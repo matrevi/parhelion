@@ -227,14 +227,20 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     safety_ok = safety_passed and not escape_locked
 
     cur_sc, best_sc = float(prob.get("current_score") or 0.0), float(prob.get("best_score") or 0.0)
+    best_sha = str(prob.get("best_sha") or "")
     est = estimate_score_from_note(note, cur_sc, best_sc)
     if est is None:
-        est = best_sc if (prob.get("best_sha") == sha and best_sc > 0) else round(cur_sc + 3.0, 2)
+        est = best_sc if (best_sha and sha.lower().startswith(best_sha.lower()[:7]) and best_sc > 0) else round(cur_sc + 3.0, 2)
 
     noise_floor = float(snap["scheduler"]["noise_floor_delta"])
     delta_exp = round(est - cur_sc, 2)
     is_restore_zero = cur_sc == 0.0 and est > 0.0
-    noise_ok = is_restore_zero or cur_sc == 0.0 or delta_exp >= noise_floor
+    is_restore_regime = (not is_restore_zero) and cur_sc > 0.0 and bool(best_sha) and ((best_sc - cur_sc) >= 1.5)
+    is_restoring_best = bool(best_sha and sha.lower().startswith(best_sha.lower()[:7]))
+    if is_restore_regime and not is_restoring_best:
+        noise_ok = (est - best_sc) >= noise_floor
+    else:
+        noise_ok = is_restore_zero or cur_sc == 0.0 or delta_exp >= noise_floor
     circuit_ok = is_restore_zero or not bool(prob.get("circuit_open"))
     quota_ok = is_restore_zero or int(snap["scheduler"]["available_normal_shots"]) > 0
     all_pass = safety_ok and noise_ok and circuit_ok and quota_ok
@@ -245,7 +251,10 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     elif not safety_passed:
         reasons.append("G1 Safety failed: commit lacks passing NPU extended validation")
     if not noise_ok:
-        reasons.append(f"G2 Noise Floor: Δexpected={delta_exp:+.2f} < {noise_floor}")
+        if is_restore_regime and not is_restoring_best:
+            reasons.append(f"G2 Noise Floor ([RESTORE]): est={est:.2f} vs best={best_sc:.2f} (Δvs_best={est - best_sc:+.2f} < {noise_floor})")
+        else:
+            reasons.append(f"G2 Noise Floor: Δexpected={delta_exp:+.2f} < {noise_floor}")
     if not circuit_ok:
         reasons.append(f"G3 Circuit Open: 12h pressure={prob.get('pressure_12h')}")
     if not quota_ok:

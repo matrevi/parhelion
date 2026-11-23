@@ -32,6 +32,7 @@ from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
 from .parhelion_paths import (
     ensure_workspace_data_dirs,
+    get_parhelion_home,
     read_parhelion_scheduler_config,
     workspace_bench_specs_dir,
     workspace_state_dir,
@@ -217,20 +218,65 @@ class SchedulerEngine:
             "alerts": alerts,
         }
 
+    def _skipped_short_map(self) -> dict[tuple[str, str], str]:
+        """Map `(title, sha[:7])` -> latest skip timestamp across outcomes and active skip overrides."""
+        out: dict[tuple[str, str], str] = {}
+        for r in self.estimator.outcomes:
+            if r.get("status") != "skipped":
+                continue
+            t_name = str(r.get("title") or "")
+            csha = str(r.get("canonical_sha") or resolve_sha(self.workspace, t_name, r.get("sha")) or r.get("sha") or "").lower()
+            if t_name and len(csha) >= 7:
+                ts = str(r.get("finished_at") or r.get("queued_at") or "")
+                k = (t_name, csha[:7])
+                if k not in out or ts >= out[k]:
+                    out[k] = ts
+        for ov_key, ov in self.overrides.items():
+            if isinstance(ov, dict) and ov.get("action") == "skip" and ":" in ov_key:
+                t_name, o_sha = ov_key.split(":", 1)
+                csha = resolve_sha(self.workspace, t_name, o_sha).lower()
+                s7 = (csha or o_sha.lower())[:7]
+                if t_name and len(s7) >= 7:
+                    ts = str(ov.get("at") or "")
+                    k = (t_name, s7)
+                    if k not in out or ts >= out[k]:
+                        out[k] = ts
+        return out
+
     def _discover_unsubmitted_candidates(self) -> list[dict[str, Any]]:
         """Find newest validated green SHA per problem not yet submitted, and gate-evaluate it."""
-        tried: set[tuple[str, str]] = {
-            (r["title"], r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")))
-            for r in self.estimator.outcomes
-            if r.get("status") not in ("rejected",) or bool(r.get("submission_id"))
-        }
+        tried: set[tuple[str, str]] = set()
+        tried_short: set[tuple[str, str]] = set()
+
+        def _mark_tried(t_name: str, raw_sha: str | None) -> None:
+            if not t_name or not raw_sha:
+                return
+            s_low = str(raw_sha).strip().lower()
+            if not s_low:
+                return
+            tried.add((t_name, s_low))
+            if len(s_low) >= 7:
+                tried_short.add((t_name, s_low[:7]))
+
+        for r in self.estimator.outcomes:
+            if r.get("status") not in ("rejected",) or bool(r.get("submission_id")) or r.get("status") == "skipped":
+                t_name = str(r.get("title") or "")
+                csha = r.get("canonical_sha") or resolve_sha(self.workspace, t_name, r.get("sha"))
+                _mark_tried(t_name, r.get("sha"))
+                _mark_tried(t_name, csha)
         for rec_f in (self.workspace / "results").glob("*/*/submission-receipt.json"):
             try:
                 vc = json.loads(rec_f.read_text()).get("validated_commit")
                 if vc:
-                    tried.add((rec_f.parents[1].name, vc.lower()))
+                    _mark_tried(rec_f.parents[1].name, vc)
             except Exception:
                 continue
+        for ov_key, ov in self.overrides.items():
+            if isinstance(ov, dict) and ov.get("action") == "skip" and ":" in ov_key:
+                t_name, o_sha = ov_key.split(":", 1)
+                csha = resolve_sha(self.workspace, t_name, o_sha)
+                _mark_tried(t_name, o_sha)
+                _mark_tried(t_name, csha)
 
         candidates: list[dict[str, Any]] = []
         for title in sorted(self.estimator.problems_meta):
@@ -262,7 +308,7 @@ class SchedulerEngine:
             if not runs:
                 continue
             _, newest_sha = runs[0]
-            if (title, newest_sha) in tried:
+            if (title, newest_sha) in tried or (len(newest_sha) >= 7 and (title, newest_sha[:7]) in tried_short):
                 continue
             verdict = self.gate.evaluate(title=title, sha=newest_sha, note="unsubmitted latest validation")
             candidates.append(verdict.to_dict())
@@ -275,16 +321,17 @@ class SchedulerEngine:
         queue_path = self.workspace / "results" / "submit-queue.jsonl"
         q_rows = _read_jsonl(queue_path)
         outcomes = self.estimator.outcomes
+        skipped_short = self._skipped_short_map()
 
         # Track pending vs completed queue records
         done_sha = {
-            (r["title"], r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")))
+            (r["title"], (r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha"))).lower())
             for r in outcomes
         }
         done_exact = {
             (
                 r["title"],
-                r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")),
+                (r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha"))).lower(),
                 r.get("queued_at"),
             )
             for r in outcomes
@@ -296,9 +343,12 @@ class SchedulerEngine:
         pending_verdicts: list[tuple[dict[str, Any], Any]] = []
         for rec in q_rows:
             t = rec.get("title", "")
-            csha = resolve_sha(self.workspace, t, rec.get("sha"))
+            csha = resolve_sha(self.workspace, t, rec.get("sha")).lower()
             q_at = rec.get("queued_at")
             if (t, csha, q_at) in done_exact:
+                continue
+            skip_ts = skipped_short.get((t, csha[:7])) if len(csha) >= 7 else None
+            if skip_ts is not None and (not rec.get("force") or skip_ts >= str(q_at or "")):
                 continue
             if not rec.get("force") and (t, csha) in done_sha:
                 continue
@@ -344,8 +394,8 @@ class SchedulerEngine:
         # 2. Held items stored in scheduler_state.json (not yet pushed to submit-queue.jsonl)
         for h_key, h_rec in sorted(self.held_items.items(), key=lambda kv: kv[1].get("held_at", ""), reverse=True):
             t = h_rec["title"]
-            csha = h_rec["sha"]
-            if (t, csha) in done_sha:
+            csha = str(h_rec["sha"]).lower()
+            if (t, csha) in done_sha or (len(csha) >= 7 and (t, csha[:7]) in skipped_short):
                 continue
             verdict = self.gate.evaluate(
                 title=t,
@@ -415,7 +465,7 @@ class SchedulerEngine:
                 reason = f"Submitted (sid={str(rec.get('submission_id') or '')[:8]}) — score sync pending/interrupted"
             elif st in ("rejected", "skipped", "duplicate"):
                 if st == "skipped":
-                    tag = "HOLD_LOW_GAIN"
+                    tag = "SKIPPED"
                     reason = f"Skipped pre-submit: {rec.get('note', '')[:120]}"
                 else:
                     tag = "REJECTED_GATE"
@@ -687,6 +737,8 @@ class SchedulerEngine:
                     "safety": s1.to_dict(),
                 }
             if not dry_run:
+                for k_old in [k for k in self.overrides if k.startswith(f"{title}:{canonical_sha[:7]}")]:
+                    self.overrides.pop(k_old, None)
                 self.overrides[ov_key] = {"action": "approve", "reason": reason or "operator approve", "at": _utc_now()}
                 held = self.held_items.pop(ov_key, {})
                 self._save_state()
@@ -710,6 +762,8 @@ class SchedulerEngine:
         if not dry_run:
             self.overrides[ov_key] = {"action": "skip", "reason": reason or "operator skip", "at": _utc_now()}
             self.held_items.pop(ov_key, None)
+            for k_old in [k for k in self.held_items if k.startswith(f"{title}:{canonical_sha[:7]}")]:
+                self.held_items.pop(k_old, None)
             self._save_state()
             _append_jsonl(
                 self.workspace / "results" / "submit-queue-outcome.jsonl",
@@ -851,14 +905,15 @@ class SchedulerEngine:
             lock_path = self.workspace / "results" / ".submit-queue.lock"
 
             outcomes = self.estimator.outcomes
+            skipped_short = self._skipped_short_map()
             done_sha = {
-                (r["title"], r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")))
+                (r["title"], (r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha"))).lower())
                 for r in outcomes
             }
             done_exact = {
                 (
                     r["title"],
-                    r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")),
+                    (r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha"))).lower(),
                     r.get("queued_at"),
                 )
                 for r in outcomes
@@ -867,17 +922,55 @@ class SchedulerEngine:
             raw_pending: list[dict[str, Any]] = []
             for rec in _read_jsonl(q_path):
                 t = rec.get("title", "")
-                csha = resolve_sha(self.workspace, t, rec.get("sha"))
+                csha = resolve_sha(self.workspace, t, rec.get("sha")).lower()
                 q_at = rec.get("queued_at")
                 if (t, csha, q_at) in done_exact:
+                    continue
+                skip_ts = skipped_short.get((t, csha[:7])) if len(csha) >= 7 else None
+                if skip_ts is not None and (not rec.get("force") or skip_ts >= str(q_at or "")):
                     continue
                 if not rec.get("force") and (t, csha) in done_sha:
                     continue
                 raw_pending.append({**rec, "canonical_sha": csha})
 
+            # Per-operator inflight mutex: do not drain another commit for an operator already inflight
+            inflight_titles: set[str] = set()
+            terminal_sids = {
+                str(r.get("submission_id"))
+                for r in outcomes
+                if r.get("submission_id") and r.get("status") not in ("Running", "Queued", "Pending")
+            }
+            now_ep = time.time()
+            for r_file in (self.workspace / "results").glob("*/*/submission-receipt.json"):
+                try:
+                    rd = json.loads(r_file.read_text())
+                    sid = str(rd.get("submission_id") or "")
+                    dt = _parse_iso(rd.get("submitted_at"))
+                    if sid and sid not in terminal_sids and dt and (now_ep - dt.timestamp()) < 2100:
+                        inflight_titles.add(r_file.parents[1].name)
+                except Exception:
+                    continue
+            for inf_f in get_parhelion_home().glob("inflight*.json"):
+                try:
+                    inf_d = json.loads(inf_f.read_text())
+                    pid = int(inf_d.get("pid") or 0)
+                    if pid > 0 and inf_d.get("title"):
+                        os.kill(pid, 0)
+                        inflight_titles.add(str(inf_d["title"]))
+                except Exception:
+                    continue
+
             approved_plan: list[tuple[dict[str, Any], Any]] = []
             held_plan: list[dict[str, Any]] = []
             for rec in raw_pending:
+                if rec["title"] in inflight_titles:
+                    held_plan.append({
+                        "title": rec["title"],
+                        "sha": rec["canonical_sha"],
+                        "status_tag": "INFLIGHT_MUTEX",
+                        "gate_reason": f"{rec['title']} already has an active inflight submission; keeping queued",
+                    })
+                    continue
                 verdict = self.gate.evaluate(
                     title=rec["title"],
                     sha=rec["canonical_sha"],
@@ -900,6 +993,21 @@ class SchedulerEngine:
                 key=lambda pv: (pv[1].priority_score, -(time.time())),
                 reverse=True,
             )
+            # Enforce at most one queued commit per operator per drain cycle
+            deduped_plan: list[tuple[dict[str, Any], Any]] = []
+            seen_drain_titles: set[str] = set()
+            for rec, verdict in approved_plan:
+                if verdict.title in seen_drain_titles:
+                    held_plan.append({
+                        "title": verdict.title,
+                        "sha": verdict.sha,
+                        "status_tag": "INFLIGHT_MUTEX",
+                        "gate_reason": f"{verdict.title} already queued in current drain batch; keeping queued",
+                    })
+                    continue
+                seen_drain_titles.add(verdict.title)
+                deduped_plan.append((rec, verdict))
+            approved_plan = deduped_plan
 
             if dry_run:
                 return {

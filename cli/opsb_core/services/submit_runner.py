@@ -16,17 +16,21 @@ from typing import Any
 class _CooldownReservationCancelled(BaseException):
     """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
-from ..config import CONFIG_DIR, LOGS_DIR, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..config import CONFIG_DIR, LOGS_DIR, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .auth_service import list_judge_accounts
-from .judge_sync import INFLIGHT_FILE
+from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
 MIN_RATE_GAP_SEC = 190
 POLL_TIMEOUT_SEC = 1800
+_LOCAL_ACTIVE_PHASES = ("waiting_cooldown", "packaging", "preparing", "uploading")
 
 
 def inflight_file_for(account_id: str) -> Path:
-    return INFLIGHT_FILE if account_id == "primary" else (CONFIG_DIR / f"inflight-{account_id}.json")
+    base = _resolve_parhelion_home()
+    if base == CONFIG_DIR and account_id == "primary":
+        return INFLIGHT_FILE
+    return base / ("inflight_submit.json" if account_id == "primary" else f"inflight-{account_id}.json")
 
 
 def lock_file_for(workspace: Path, account_id: str) -> Path:
@@ -229,8 +233,9 @@ def detect_inflight_submission(
     now = utc_now()
 
     # 1. Check Parhelion's own inflight tracker
-    if INFLIGHT_FILE.is_file():
-        data = read_json(INFLIGHT_FILE, {})
+    inf_file = inflight_file_for("primary")
+    if inf_file.is_file():
+        data = read_json(inf_file, {})
         pid = int(data.get("pid") or 0)
         if pid and _pid_alive(pid):
             st_dt = parse_iso(data.get("started_at"))
@@ -243,7 +248,7 @@ def detect_inflight_submission(
                 "elapsed_sec": el,
             }
         else:
-            INFLIGHT_FILE.unlink(missing_ok=True)
+            inf_file.unlink(missing_ok=True)
 
     if not queue_lock_held:
         return {"active": False, "title": None, "sha": None, "phase": None, "elapsed_sec": 0}
@@ -283,6 +288,98 @@ def detect_inflight_submission(
     return {"active": True, "title": "Submission", "sha": "", "phase": "judging", "elapsed_sec": 0}
 
 
+def inflight_titles_from_pipeline(pipeline: dict[str, Any] | None) -> set[str]:
+    """Collect operator titles currently active in `pipeline` (`inflight_keys`, `active_submissions`, `active_title`)."""
+    titles: set[str] = set()
+    if not isinstance(pipeline, dict):
+        return titles
+    for key in pipeline.get("inflight_keys") or []:
+        t = str(key).split("|", 1)[0].strip()
+        if t:
+            titles.add(t)
+    for act in pipeline.get("active_submissions") or []:
+        if isinstance(act, dict):
+            t = str(act.get("title") or "").strip()
+            if t:
+                titles.add(t)
+    act_title = str(pipeline.get("active_title") or "").strip()
+    if act_title:
+        titles.add(act_title)
+    for s in pipeline.get("account_slots") or []:
+        if isinstance(s, dict) and s.get("phase") in _LOCAL_ACTIVE_PHASES:
+            t = str(s.get("active_title") or "").strip()
+            if t:
+                titles.add(t)
+    return titles
+
+
+def find_active_inflight_for_title(
+    workspace: Path,
+    title: str,
+    *,
+    pipeline: dict[str, Any] | None = None,
+    slots: list[dict[str, Any]] | None = None,
+    outcomes_all: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Return active inflight descriptor if `title` already has a live/running submission (any SHA)."""
+    if not title:
+        return None
+    if pipeline is not None and title in inflight_titles_from_pipeline(pipeline):
+        for act in pipeline.get("active_submissions") or []:
+            if isinstance(act, dict) and act.get("title") == title:
+                return {"source": "pipeline", "title": title, "sha": str(act.get("sha") or ""), "phase": str(act.get("phase") or "inflight")}
+        return {"source": "pipeline", "title": title, "sha": str(pipeline.get("active_sha") or ""), "phase": str(pipeline.get("phase") or "inflight")}
+
+    check_slots = slots if slots is not None else compute_account_slots(workspace)
+    for s in check_slots:
+        if s.get("phase") in _LOCAL_ACTIVE_PHASES and s.get("active_title") == title:
+            return {"source": "slot", "title": title, "sha": str(s.get("active_sha") or ""), "phase": str(s.get("phase")), "account_label": s.get("label")}
+
+    results_dir = workspace / "results"
+    title_dir = results_dir / title
+    if title_dir.is_dir():
+        outs = outcomes_all if outcomes_all is not None else collapse_reconciled_outcomes(read_jsonl(results_dir / "submit-queue-outcome.jsonl"))
+        terminal_sids = {
+            str(o.get("submission_id"))
+            for o in outs
+            if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES
+        }
+        now_ep = utc_now().timestamp()
+        for r_file in title_dir.glob("*/submission-receipt.json"):
+            rd = read_json(r_file, {})
+            sid = str(rd.get("submission_id") or "")
+            dt = parse_iso(rd.get("submitted_at"))
+            if sid and sid not in terminal_sids and dt and (now_ep - dt.timestamp()) < 2100:
+                return {"source": "receipt", "title": title, "sha": str(rd.get("validated_commit") or r_file.parent.name), "phase": "remote_running", "submission_id": sid}
+    return None
+
+
+def cancel_waiting_cooldown_for_commit(title: str, sha: str) -> int:
+    """Cancel any `waiting_cooldown` worker for `(title, sha[:7])` when skipped; returns killed count."""
+    prefix = (sha or "")[:7].lower()
+    if not title or not prefix:
+        return 0
+    cancelled = 0
+    for inf_path in _resolve_parhelion_home().glob("inflight*.json"):
+        inf = read_json(inf_path, {})
+        if not isinstance(inf, dict) or inf.get("phase") != "waiting_cooldown":
+            continue
+        if inf.get("title") != title or not str(inf.get("sha") or "").lower().startswith(prefix):
+            continue
+        pid = int(inf.get("pid") or 0)
+        if pid > 0 and pid != os.getpid() and _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGTERM)
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline and _pid_alive(pid):
+                    time.sleep(0.05)
+                inf_path.unlink(missing_ok=True)
+                cancelled += 1
+            except OSError:
+                pass
+    return cancelled
+
+
 def spawn_jump_submit(
     opsb_bin: Path,
     workspace: Path,
@@ -291,6 +388,8 @@ def spawn_jump_submit(
     note: str,
     account_id: str | None = None,
     force: bool = False,
+    enforce_operator_mutex: bool = False,
+    pipeline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     slots = compute_account_slots(workspace)
     # Global anti-collision guard: NEVER let two teammate accounts submit the exact same (title, sha)
@@ -305,6 +404,18 @@ def spawn_jump_submit(
                 }
     results_dir = workspace / "results"
     outcomes_all = collapse_reconciled_outcomes(read_jsonl(results_dir / "submit-queue-outcome.jsonl"))
+    if enforce_operator_mutex:
+        op_inflight = find_active_inflight_for_title(
+            workspace, title, pipeline=pipeline, slots=slots, outcomes_all=outcomes_all
+        )
+        if op_inflight is not None:
+            return {
+                "ok": False,
+                "operator_inflight_mutex": True,
+                "duplicate_inflight": True,
+                "inflight": op_inflight,
+                "error": f"{title} 已有在途提交 ({str(op_inflight.get('sha') or '')[:7]})，按单算子互斥保护保持排队等待",
+            }
     if not force:
         sync_hit = has_pending_sync_error_for_commit(outcomes_all, title, sha)
         if sync_hit is not None:
@@ -441,8 +552,9 @@ def spawn_jump_submit(
 
 def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: str, phase: str, account_id: str = "primary", account_label: str = "主账号") -> None:
     try:
-        CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        inflight_file_for(account_id).write_text(
+        inf_path = inflight_file_for(account_id)
+        inf_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        inf_path.write_text(
             json.dumps(
                 {
                     "pid": os.getpid(),
@@ -564,6 +676,18 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                         time.sleep(wait_s)
                     finally:
                         signal.signal(signal.SIGTERM, prev_handler)
+
+            # Guard against race where `opsb queue skip` landed while sleeping in waiting_cooldown
+            sha7_low = sha[:7].lower()
+            skipped_during_wait = any(
+                o.get("title") == title
+                and o.get("status") == "skipped"
+                and str(o.get("sha") or "").lower().startswith(sha7_low)
+                and str(o.get("finished_at") or o.get("queued_at") or "") >= started_iso
+                for o in read_jsonl(outcome_path)
+            )
+            if skipped_during_wait:
+                raise _CooldownReservationCancelled()
 
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading", aid, acc_label)
             receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file)

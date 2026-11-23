@@ -13,7 +13,12 @@ from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.npu_service import SSH_CONTROL_OPTS
 from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
-from ..services.submit_runner import run_worker_submit_one, spawn_jump_submit
+from ..services.submit_runner import (
+    cancel_waiting_cooldown_for_commit,
+    find_active_inflight_for_title,
+    run_worker_submit_one,
+    spawn_jump_submit,
+)
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
 
 
@@ -57,13 +62,33 @@ def run_submit(args: argparse.Namespace) -> int:
     noise_floor = float(snap["scheduler"]["noise_floor_delta"])
     delta_exp = round(est - prob["current_score"], 2)
     is_restore_zero = prob["current_score"] == 0.0 and est > 0
+    best_sc = float(prob.get("best_score") or 0.0)
+    best_sha = str(prob.get("best_sha") or "")
+    is_restore_regime = (not is_restore_zero) and prob["current_score"] > 0.0 and bool(best_sha) and ((best_sc - prob["current_score"]) >= 1.5)
+    is_restoring_best = bool(best_sha and sha.lower().startswith(best_sha.lower()[:7]))
     explore_ok = bool(
         ((matched_cand or {}).get("gates") or {}).get("explore_eligible")
         or (matched_cand or {}).get("badge") == "EXPLORE"
         or bridge_est.get("explore_eligible")
         or (bridge_eval or {}).get("status_tag") == "EXPLORE"
     )
-    noise_ok = is_restore_zero or prob["current_score"] == 0.0 or delta_exp >= noise_floor or explore_ok
+    bridge_tag = str((bridge_eval or {}).get("status_tag") or "")
+    bridge_stages = {
+        s.get("stage"): s for s in ((bridge_eval or {}).get("stages") or []) if isinstance(s, dict)
+    }
+    bridge_s2 = bridge_stages.get("NOISE_FLOOR")
+    if bridge_tag == "SKIPPED":
+        noise_ok = False
+    elif bridge_s2 is not None and not is_restore_zero:
+        noise_ok = bool(bridge_s2.get("passed"))
+    elif is_restore_regime and not is_restoring_best:
+        cand_noise_ok = (matched_cand or {}).get("gates", {}).get("noise_ok")
+        if matched_cand is not None and cand_noise_ok is not None:
+            noise_ok = bool(cand_noise_ok)
+        else:
+            noise_ok = ((est - best_sc) >= noise_floor) or (explore_ok and (est - best_sc) > 0.0)
+    else:
+        noise_ok = is_restore_zero or prob["current_score"] == 0.0 or delta_exp >= noise_floor or explore_ok
     circuit_ok = is_restore_zero or not prob["circuit_open"]
     quota_ok = is_restore_zero or snap["scheduler"]["available_normal_shots"] > 0
 
@@ -87,7 +112,12 @@ def run_submit(args: argparse.Namespace) -> int:
     if not (noise_ok and circuit_ok and quota_ok) and not args.force:
         reasons = []
         if not noise_ok:
-            reasons.append(f"G2 Noise Floor (Δexpected={delta_exp:+.2f} < {noise_floor})")
+            if bridge_tag == "SKIPPED":
+                reasons.append(str((bridge_eval or {}).get("gate_reason") or "Skipped by operator override"))
+            elif is_restore_regime and not is_restoring_best:
+                reasons.append(f"G2 Noise Floor ([RESTORE]: est={est:.2f} vs best={best_sc:.2f}, Δvs_best={est - best_sc:+.2f} < {noise_floor})")
+            else:
+                reasons.append(f"G2 Noise Floor (Δexpected={delta_exp:+.2f} < {noise_floor})")
         if not circuit_ok:
             reasons.append(f"G3 Circuit Open (pressure={prob['pressure_12h']})")
         if not quota_ok:
@@ -146,10 +176,32 @@ def run_submit(args: argparse.Namespace) -> int:
     verdict.update(enqueued=True, queued_record=record)
 
     # Auto-dispatch unified background worker if `--now` is requested or `auto_consumer_enabled` is ON
-    should_dispatch = getattr(args, "now", False) or bool(snap["scheduler"].get("auto_consumer_enabled", False))
-    if should_dispatch:
+    explicit_now = bool(getattr(args, "now", False))
+    auto_on = bool(snap["scheduler"].get("auto_consumer_enabled", False))
+    if explicit_now:
         disp = spawn_jump_submit(CLI_DIR / "opsb", ws, title, sha, record["note"])
         verdict["dispatched"] = disp
+    elif auto_on:
+        pipeline = snap["scheduler"].get("pipeline") or {}
+        inflight_hit = find_active_inflight_for_title(ws, title, pipeline=pipeline)
+        if inflight_hit is not None:
+            verdict["dispatched"] = {
+                "ok": False,
+                "deferred_operator_inflight": True,
+                "inflight": inflight_hit,
+                "reason": f"{title} already has an active inflight submission; kept queued",
+            }
+        else:
+            disp = spawn_jump_submit(
+                CLI_DIR / "opsb",
+                ws,
+                title,
+                sha,
+                record["note"],
+                enforce_operator_mutex=True,
+                pipeline=pipeline,
+            )
+            verdict["dispatched"] = disp
 
     print(json.dumps(verdict, ensure_ascii=False) if args.json else f"Enqueued {title} {sha[:7]} (est={est:.2f}, WSPT={verdict['wspt_priority']:.1f})")
     return 0
@@ -197,16 +249,39 @@ def run_queue(args: argparse.Namespace) -> int:
         return 0
 
     if args.q_cmd == "skip":
-        invoke_bridge(ws, "override", ["--title", args.problem, "--sha", args.sha, "--action", "skip", "--reason", args.reason or "skipped via Supervisor"])
+        reason = args.reason or "skipped via Supervisor"
+        meta = resolve_workspace_meta(ws)
+        prob = next(
+            (p for p in meta.get("problems", []) if str(p.get("title", "")).lower() == args.problem.lower()),
+            None,
+        )
+        title = str(prob["title"]) if prob else args.problem
+        canonical_sha = (resolve_commit_sha(ws / prob["path"], args.sha) if prob else "") or args.sha
+        cancel_waiting_cooldown_for_commit(title, canonical_sha)
+        bridge_res = invoke_bridge(
+            ws,
+            "override",
+            ["--title", title, "--sha", canonical_sha, "--action", "skip", "--reason", reason],
+        )
+        now_iso = utc_now().isoformat()
         rec = {
-            "title": args.problem,
-            "sha": args.sha,
-            "note": args.reason or "skipped via Supervisor",
-            "queued_at": utc_now().isoformat(),
-            "finished_at": utc_now().isoformat(),
+            "title": title,
+            "sha": canonical_sha,
+            "note": reason,
+            "queued_at": now_iso,
+            "finished_at": now_iso,
             "status": "skipped",
         }
-        append_jsonl_locked(ws / "results" / ".submit-queue.lock", ws / "results" / "submit-queue-outcome.jsonl", rec)
+        already_appended = (
+            isinstance(bridge_res, dict)
+            and bridge_res.get("action") == "skip"
+            and bridge_res.get("status") == "skipped"
+            and not bridge_res.get("dry_run")
+        )
+        if not already_appended:
+            append_jsonl_locked(ws / "results" / ".submit-queue.lock", ws / "results" / "submit-queue-outcome.jsonl", rec)
+        elif bridge_res.get("sha"):
+            rec["sha"] = str(bridge_res["sha"])
         invalidate_ttl_cache("scheduler_bridge")
         print(json.dumps({"ok": True, "skipped": rec}, ensure_ascii=False))
         return 0

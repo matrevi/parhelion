@@ -10,6 +10,7 @@ from typing import Any
 from .config import (
     SUPERVISOR_ROOT,
     invalidate_ttl_cache,
+    read_jsonl,
     read_ttl_cache,
     resolve_python_exe,
     workspace_state_dir,
@@ -132,17 +133,52 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     inflight_short = pipeline.get("active_short_sha") or ""
     inflight_key_set = set(pipeline.get("inflight_keys") or [])
     completed_short_pairs = {
-        (it["title"], str(it.get("sha") or "")[:7])
+        (it["title"], str(it.get("sha") or "").lower()[:7])
         for it in payload["submission_queue"]
-        if it.get("kind") == "completed" and it.get("title") and it.get("sha")
+        if it.get("kind") == "completed" and it.get("title") and len(str(it.get("sha") or "")) >= 7
     }
+    skipped_pairs: set[tuple[str, str]] = set()
+    skipped_short_pairs: set[tuple[str, str]] = set()
+    for sk_key in sched.get("skipped_keys") or []:
+        if "|" in str(sk_key):
+            st_t, st_s7 = str(sk_key).split("|", 1)
+            if st_t and len(st_s7) >= 7:
+                skipped_short_pairs.add((st_t, st_s7.lower()[:7]))
+    for it in payload["submission_queue"]:
+        if it.get("raw_status") == "skipped" and it.get("title") and it.get("sha"):
+            s_low = str(it["sha"]).lower()
+            skipped_pairs.add((it["title"], s_low))
+            if len(s_low) >= 7:
+                skipped_short_pairs.add((it["title"], s_low[:7]))
+    ws_raw = (payload.get("contest") or {}).get("workspace")
+    if ws_raw:
+        out_file = Path(str(ws_raw)) / "results" / "submit-queue-outcome.jsonl"
+        if out_file.is_file():
+            for o in read_jsonl(out_file):
+                if o.get("status") == "skipped" and o.get("title") and o.get("sha"):
+                    s_low = str(o["sha"]).lower()
+                    skipped_pairs.add((str(o["title"]), s_low))
+                    if len(s_low) >= 7:
+                        skipped_short_pairs.add((str(o["title"]), s_low[:7]))
+    for sq in bridge.get("submit_queue") or []:
+        if sq.get("status_tag") == "SKIPPED" and sq.get("title") and sq.get("sha"):
+            s_low = str(sq["sha"]).lower()
+            skipped_pairs.add((str(sq["title"]), s_low))
+            if len(s_low) >= 7:
+                skipped_short_pairs.add((str(sq["title"]), s_low[:7]))
 
     extra_cands: list[dict[str, Any]] = []
     bt_thresh = float(sched.get("breakthrough_threshold", 5.0))
     for uc in bridge.get("unsubmitted_candidates") or []:
         t, sha = uc.get("title", ""), uc.get("sha", "")
-        short_s = sha[:7]
-        if f"{t}|{short_s}" in inflight_key_set:
+        sha_low = sha.lower()
+        short_s = sha_low[:7]
+        raw_tag = str(uc.get("status_tag") or "READY")
+        if raw_tag.upper() == "SKIPPED":
+            continue
+        if (t, sha_low) in skipped_pairs or (len(short_s) >= 7 and (t, short_s) in skipped_short_pairs):
+            continue
+        if f"{t}|{sha[:7]}" in inflight_key_set:
             continue
         if pipeline.get("is_busy") and t == inflight_title and inflight_short and sha.startswith(inflight_short):
             continue
@@ -168,7 +204,6 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             "explore_eligible": bool(est_obj.get("explore_eligible", False)),
             "wspt_score": round(float(uc.get("priority_score") or 0.0), 2),
         }
-        raw_tag = uc.get("status_tag") or "READY"
         badge = badge_norm.get(raw_tag, raw_tag.replace("_", " "))
         note = " · ".join(x for x in (est_obj.get("detail"), uc.get("gate_reason")) if x)
         is_crit_rest = bool(uc.get("is_critical_restore", False))

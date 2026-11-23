@@ -167,6 +167,18 @@ final class ContestStore: ObservableObject {
         // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` / gated items:
         // rollbacks are user-triggered (or closing-time), and escaped ops must pass verify-escape first.
         let inflightSet = Set(pipe?.inflightKeys ?? [])
+        var inflightTitles = Set<String>()
+        for key in pipe?.inflightKeys ?? [] {
+            if let opTitle = key.split(separator: "|", maxSplits: 1).first, !opTitle.isEmpty {
+                inflightTitles.insert(String(opTitle))
+            }
+        }
+        for active in pipe?.activeSubmissions ?? [] where !active.title.isEmpty {
+            inflightTitles.insert(active.title)
+        }
+        if let activeTitle = pipe?.activeTitle, !activeTitle.isEmpty {
+            inflightTitles.insert(activeTitle)
+        }
         guard let top = snap.submissionQueue.first(where: { item in
             let u = item.badge.uppercased()
             let actionableKind = item.kind == "pending" || item.kind == "candidate"
@@ -175,9 +187,11 @@ final class ContestStore: ObservableObject {
                 && !u.contains("CIRCUIT")
                 && !u.contains("REJECTED")
                 && !u.contains("RATE")
+                && !u.contains("SKIP")
             return actionableKind
                 && notBlockedBadge
                 && !inflightSet.contains("\(item.title)|\(item.shortSha)")
+                && !inflightTitles.contains(item.title)
                 && item.gates.allPass
         }) else { return }
 

@@ -22,6 +22,7 @@ from typing import Any
 
 from ..config import (
     CONFIG_DIR,
+    _resolve_parhelion_home,
     parse_iso,
     read_json,
     read_ttl_cache,
@@ -31,6 +32,11 @@ from ..config import (
 )
 
 INFLIGHT_FILE = CONFIG_DIR / "inflight_submit.json"
+
+
+def _active_inflight_file() -> Path:
+    home = _resolve_parhelion_home()
+    return INFLIGHT_FILE if home == CONFIG_DIR else (home / "inflight_submit.json")
 
 TERMINAL_JUDGE_STATUSES = {
     "Pass",
@@ -145,8 +151,9 @@ def _classify_remote_phase(remote_status: str) -> str:
 
 
 def _inspect_local_worker(queue_lock_held: bool) -> dict[str, Any] | None:
-    if INFLIGHT_FILE.is_file():
-        d = read_json(INFLIGHT_FILE, {})
+    inf_file = _active_inflight_file()
+    if inf_file.is_file():
+        d = read_json(inf_file, {})
         pid = int(d.get("pid") or 0)
         if pid and _pid_alive(pid):
             st_dt = parse_iso(d.get("started_at"))
@@ -156,7 +163,7 @@ def _inspect_local_worker(queue_lock_held: bool) -> dict[str, Any] | None:
                 "phase": d.get("phase") or "packaging",
                 "started_epoch": st_dt.timestamp() if st_dt else utc_now().timestamp(),
             }
-        INFLIGHT_FILE.unlink(missing_ok=True)
+        inf_file.unlink(missing_ok=True)
 
     if not queue_lock_held:
         return None
