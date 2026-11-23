@@ -588,7 +588,7 @@ class SubmissionGate:
             if r.get("title") != title:
                 continue
             st = str(r.get("status", ""))
-            if st in ("rejected", "skipped", "duplicate"):
+            if st in ("rejected", "skipped", "duplicate", "sync_error"):
                 continue
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
             if ts is None or ts >= ref_now:

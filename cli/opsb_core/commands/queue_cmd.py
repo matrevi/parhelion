@@ -14,6 +14,7 @@ from ..services.git_fast import resolve_commit_sha
 from ..services.npu_service import SSH_CONTROL_OPTS
 from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
 from ..services.submit_runner import run_worker_submit_one, spawn_jump_submit
+from ..services.sync_reconciler import has_pending_sync_error_for_commit
 
 
 def run_submit(args: argparse.Namespace) -> int:
@@ -117,6 +118,16 @@ def run_submit(args: argparse.Namespace) -> int:
             )
             print(json.dumps(verdict, ensure_ascii=False) if args.json else f"DUPLICATE: {verdict['reason']} (pass --force to override)")
             return 4
+        _sync_err = has_pending_sync_error_for_commit(_o, title, sha) if not args.force else None
+        if _sync_err is not None:
+            _sid = str(_sync_err.get("submission_id") or "")
+            verdict.update(
+                enqueued=False,
+                duplicate_sync_error=True,
+                reason=f"duplicate submitted (sync_error): {title} {sha[:7]} already submitted (sid={_sid[:8]}); awaiting reconciliation",
+            )
+            print(json.dumps(verdict, ensure_ascii=False) if args.json else f"DUPLICATE: {verdict['reason']} (pass --force to override)")
+            return 4
     except Exception:
         pass
 
@@ -209,6 +220,7 @@ def run_queue(args: argparse.Namespace) -> int:
             sha,
             args.note or "jump-queue submit via Parhelion",
             account_id=getattr(args, "account_id", None),
+            force=bool(getattr(args, "force", False)),
         )
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res.get("ok") else 2

@@ -16,10 +16,15 @@ from ..services.breakthrough_service import (
 )
 from ..services.git_fast import resolve_commit_sha
 from ..services.queue_service import compute_workspace_snapshot
+from ..services.sync_reconciler import reconcile_sync_errors
 
 
 def _load_enriched_snapshot(ws_arg: str | None, cfg: dict) -> tuple:
     ws = ConfigRepository.resolve_workspace(ws_arg, cfg)
+    try:
+        reconcile_sync_errors(ws, request_timeout=2.5)
+    except Exception:
+        pass
     snap = compute_workspace_snapshot(ws, cfg)
     bridge = invoke_bridge(ws, "status", ["--offline"], use_cache=True)
     if isinstance(bridge, dict):

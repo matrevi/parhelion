@@ -203,7 +203,7 @@ class SchedulerEngine:
         tried: set[tuple[str, str]] = {
             (r["title"], r.get("canonical_sha") or resolve_sha(self.workspace, r["title"], r.get("sha")))
             for r in self.estimator.outcomes
-            if r.get("status") not in ("rejected",)
+            if r.get("status") not in ("rejected",) or bool(r.get("submission_id"))
         }
         for rec_f in (self.workspace / "results").glob("*/*/submission-receipt.json"):
             try:
@@ -384,7 +384,11 @@ class SchedulerEngine:
                 fast_cached_cal=True,
             )
 
-            if st in ("rejected", "skipped", "duplicate"):
+            raw_detail = str(rec.get("detail") or "")
+            if st == "sync_error" or (st == "rejected" and (raw_detail.lower().startswith("poll error:") or bool(rec.get("submission_id")))):
+                tag = "SYNC_ERROR"
+                reason = f"Submitted (sid={str(rec.get('submission_id') or '')[:8]}) — score sync pending/interrupted"
+            elif st in ("rejected", "skipped", "duplicate"):
                 if st == "skipped":
                     tag = "HOLD_LOW_GAIN"
                     reason = f"Skipped pre-submit: {rec.get('note', '')[:120]}"
@@ -1215,7 +1219,7 @@ class SchedulerEngine:
             )
 
             sc = float(rec["score"]) if isinstance(rec.get("score"), (int, float)) else None
-            is_live_shot = st not in ("rejected", "skipped", "duplicate")
+            is_live_shot = st not in ("rejected", "skipped", "duplicate", "sync_error")
             actual_delta = round(sc - prev_board, 2) if (is_live_shot and sc is not None) else None
 
             blocking_stage = next((s.stage for s in verdict.stages if not s.passed), None)

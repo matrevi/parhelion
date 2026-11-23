@@ -31,6 +31,7 @@ from ..services.judge_sync import (
 from ..services.queue_service import _probe_queue_lock, compute_workspace_snapshot
 from ..services.skills_service import get_skills_status
 from ..services.submit_runner import MIN_RATE_GAP_SEC, inflight_file_for
+from ..services.sync_reconciler import collapse_reconciled_outcomes, reconcile_sync_errors_async
 
 
 def _stat_sig(path: Path) -> tuple[int, int]:
@@ -196,6 +197,7 @@ class _WorkspaceStateEntry:
             payload["skills"] = get_skills_status()
             payload["workspaces"] = cfg.get("workspaces", [str(self.workspace)])
             payload["language"] = cfg.get("language", "zh")
+            reconcile_sync_errors_async(self.workspace, on_reconciled=self.invalidate)
 
             # Compute a deterministic content digest excluding `sampled_at` so periodic timer ticks
             # do not spuriously rotate `cold_etag` when nothing meaningful changed.
@@ -248,7 +250,7 @@ class _WorkspaceStateEntry:
         out_path = self.workspace / "results" / "submit-queue-outcome.jsonl"
         sig = _stat_sig(out_path)
         if sig != self._outcome_sig:
-            rows = read_jsonl(out_path)
+            rows = collapse_reconciled_outcomes(read_jsonl(out_path))
             sids = {
                 str(o.get("submission_id"))
                 for o in rows

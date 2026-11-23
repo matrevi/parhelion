@@ -145,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     q_sn.add_argument("sha")
     q_sn.add_argument("--note", default="")
     q_sn.add_argument("--account-id", default=None)
+    q_sn.add_argument("--force", action="store_true")
     q_sn.add_argument("--workspace", "-w")
     q_sn.set_defaults(func=run_queue)
     q_wk = q_sub.add_parser("_worker-submit-one")

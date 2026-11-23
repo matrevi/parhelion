@@ -10,6 +10,7 @@ from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
 from .judge_sync import compute_synchronized_pipeline
+from .sync_reconciler import reconcile_sync_errors_async
 
 
 def estimate_score_from_note(note: str, base_score: float, best_score: float) -> float | None:
@@ -60,6 +61,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     cb_limit = int(sched_cfg.get("circuit_breaker_limit", 6))
 
     now = utc_now()
+    reconcile_sync_errors_async(workspace)
     meta = resolve_workspace_meta(workspace)
     exp_map = index_experience_by_commit(workspace)
     hist_idx = index_submission_history(workspace)

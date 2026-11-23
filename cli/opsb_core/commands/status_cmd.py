@@ -13,11 +13,17 @@ from ..services.board_refresh_service import refresh_if_stale_async
 from ..services.npu_service import poll_npu_telemetry
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.skills_service import get_skills_status
+from ..services.sync_reconciler import reconcile_sync_errors
 
 
 def run_status(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(args.workspace, cfg)
+    if not getattr(args, "offline_npu", False):
+        try:
+            reconcile_sync_errors(ws, request_timeout=2.5)
+        except Exception:
+            pass
     payload = compute_workspace_snapshot(ws, cfg)
 
     bridge = invoke_bridge(ws, "status", ["--offline"], use_cache=True)

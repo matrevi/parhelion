@@ -8,6 +8,7 @@ from typing import Any
 from ..config import CACHE_DIR, CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
 from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
+from .sync_reconciler import collapse_reconciled_outcomes, is_sync_error_outcome
 
 
 def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
@@ -115,7 +116,7 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
     """Aggregate problem timelines, best SHAs, 24h usage, and 12h circuit-breaker state."""
     results_dir = workspace / "results"
     score_table = read_json(results_dir / "scoring-evidence" / "my-score-table.json", [])
-    outcome_rows = read_jsonl(results_dir / "submit-queue-outcome.jsonl")
+    outcome_rows = collapse_reconciled_outcomes(read_jsonl(results_dir / "submit-queue-outcome.jsonl"))
 
     now = utc_now()
     cutoff_24h = now.timestamp() - 86400
@@ -164,7 +165,7 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
                 last_sub_dt = dt
             if ts >= cutoff_24h:
                 used_24h += 1
-            if ts >= cutoff_12h:
+            if ts >= cutoff_12h and not is_sync_error_outcome(out) and st != "sync_error":
                 val = float(sc or 0.0)
                 if st == "Pass" and val > best_12h.get(t, -1.0):
                     best_12h[t] = val
@@ -208,7 +209,7 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
         for h in h_list:
             sc = h.get("score")
             cur_dt = parse_iso(h.get("at"))
-            if h.get("status") not in ("rejected", "skipped", "duplicate"):
+            if h.get("status") not in ("rejected", "skipped", "duplicate", "sync_error"):
                 latest_sub_by_prob[t] = h
             if sc is not None:
                 # Same-Epoch ΔS @ t_eval: discount prev_pass by ~0.48%/day across multi-day gaps

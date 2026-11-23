@@ -809,7 +809,23 @@ class ScoreEstimator:
                 records.append(rec)
             except ValueError:
                 continue
-        return records
+        best_idx: dict[str, int] = {}
+        best_rank: dict[str, tuple[int, int]] = {}
+        for idx, rec in enumerate(records):
+            sid = str(rec.get("submission_id") or "").strip()
+            if not sid:
+                continue
+            st = str(rec.get("status") or "")
+            is_sync_err = st == "sync_error" or (st == "rejected" and ("poll error:" in str(rec.get("detail") or "").lower() or bool(sid)))
+            rank = (0 if is_sync_err else 1, 1 if rec.get("score") is not None else 0)
+            prev = best_rank.get(sid)
+            if prev is None or rank >= prev:
+                best_rank[sid] = rank
+                best_idx[sid] = idx
+        return [
+            rec for idx, rec in enumerate(records)
+            if not str(rec.get("submission_id") or "").strip() or best_idx.get(str(rec.get("submission_id") or "").strip()) == idx
+        ]
 
     def _load_snapshot(self) -> dict[str, dict[str, Any]]:
         path = self.workspace / "results" / "score-snapshot.json"

@@ -11,6 +11,7 @@ from ..drivers.base import load_parhelion_config
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
+from ..services.sync_reconciler import has_pending_sync_error_for_commit
 
 
 def _find_problem(problems: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
@@ -257,7 +258,8 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
         return verdict
 
     q_path, o_path = workspace / "results" / "submit-queue.jsonl", workspace / "results" / "submit-queue-outcome.jsonl"
-    done_keys = {(o.get("title"), str(o.get("sha") or "")[:7], o.get("queued_at")) for o in _cfg.read_jsonl(o_path)}
+    o_rows = _cfg.read_jsonl(o_path)
+    done_keys = {(o.get("title"), str(o.get("sha") or "")[:7], o.get("queued_at")) for o in o_rows}
     pending = [
         q for q in _cfg.read_jsonl(q_path)
         if q.get("title") == title and str(q.get("sha") or "").startswith(sha[:7])
@@ -266,6 +268,13 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     if pending and not force:
         verdict["reason"] = f"Duplicate in flight: {title} {sha[:7]} already queued"
         return verdict
+    if not force:
+        sync_hit = has_pending_sync_error_for_commit(o_rows, title, sha)
+        if sync_hit is not None:
+            sid = str(sync_hit.get("submission_id") or "")
+            verdict["duplicate_sync_error"] = True
+            verdict["reason"] = f"Duplicate submitted (sync_error): {title} {sha[:7]} already submitted (sid={sid[:8]})"
+            return verdict
 
     record: dict[str, Any] = {
         "title": title, "sha": sha, "note": note or "queued via parhelion-mcp",
