@@ -261,7 +261,7 @@ class AntigravityDriver(BaseDriver):
             if not diag.gui_installed and not diag.installed:
                 raise RuntimeError(f"Antigravity GUI / agy CLI not installed ({diag.detail})")
             launch_macos_deep_link(url, diag.gui_app_path, [], "Antigravity")
-            status = "running"
+            status = "draft"
         return self._finalize_gui_launch(
             ws, wt, problem, brief, session_id=session_id, native_id=resume_id or session_id,
             status=status, launch_mode="gui", url=url, project_id=project_id, brief_path=brief_path,

@@ -217,7 +217,7 @@ class CodexDriver(BaseDriver):
             if not diag.gui_installed and not diag.installed:
                 raise RuntimeError(f"Codex GUI / CLI not installed ({diag.detail})")
             launch_macos_deep_link(url, diag.gui_app_path, [str(wt)], "Codex")
-            status = "running"
+            status = "draft"
         return self._finalize_gui_launch(
             ws, wt, problem, brief, session_id=session_id, native_id=thread_id or session_id,
             status=status, launch_mode=launch_mode, url=url, project_id=project_id, brief_path=brief_path,

@@ -141,6 +141,7 @@ def list_all_sessions(
     driver: str | None = None,
     status: str | None = None,
     include_gui: bool = True,
+    include_drafts: bool = False,
     limit: int = 40,
 ) -> list[dict[str, Any]]:
     """Merge persisted Parhelion sessions with live read-only GUI observer sessions."""
@@ -150,6 +151,11 @@ def list_all_sessions(
     by_native: dict[tuple[str, str], dict[str, Any]] = {}
 
     for rec in tracked:
+        is_unsent_gui_draft = rec.status == "draft" or (
+            rec.launch_mode in ("gui", "gui-preseed") and rec.pid is None and rec.observed_steps == 0 and rec.status == "running"
+        )
+        if not include_drafts and is_unsent_gui_draft and (status or "").lower() != "draft":
+            continue
         item = {**rec.to_dict(), "source": "parhelion"}
         merged.append(item)
         if rec.native_session_id:
