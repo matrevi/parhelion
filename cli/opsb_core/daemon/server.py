@@ -300,14 +300,27 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                 return
             path, q = self._parse_query()
             length = int(self.headers.get("Content-Length") or "0")
+            raw_body = self.rfile.read(min(length, 1024 * 1024)) if length > 0 else b""
             body_obj: dict[str, Any] = {}
-            if length > 0:
+            if raw_body:
                 try:
-                    body_obj = json.loads(self.rfile.read(min(length, 65536)).decode("utf-8"))
+                    parsed_body = json.loads(raw_body.decode("utf-8"))
+                    if isinstance(parsed_body, dict):
+                        body_obj = parsed_body
                 except Exception:
                     body_obj = {}
 
             ws = runtime.resolve_ws(body_obj.get("workspace") or q.get("workspace"))
+
+            if path in ("/v1/mcp", "/mcp"):
+                from ..mcp.server import handle_mcp_http_request
+
+                code, resp_obj = handle_mcp_http_request(raw_body, workspace=ws)
+                if resp_obj is None:
+                    self._send_bytes(code, "application/json; charset=utf-8", b"")
+                else:
+                    self._send_json(code, resp_obj)
+                return
 
             if path == "/v1/invalidate":
                 etag = runtime.state_cache.invalidate(ws)

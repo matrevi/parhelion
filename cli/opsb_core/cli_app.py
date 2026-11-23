@@ -6,9 +6,12 @@ import argparse
 from .commands.admin_cmd import run_auth, run_collab, run_skills, run_ssh, run_workspace
 from .commands.bench_cmd import run_bench
 from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
+from .commands.driver_mcp_cmd import register_driver_and_mcp_subcommands
+from .commands.kb_cmd import register_kb_subcommands
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
 from .commands.status_cmd import run_history, run_status
+from .commands.tools_cmd import register_fast_tools_subcommands
 from .daemon.server import run_daemon
 
 
@@ -178,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     bn_st.add_argument("--workspace", "-w")
     bn_st.add_argument("--json", action="store_true")
     bn_st.set_defaults(func=run_bench)
+
+    register_fast_tools_subcommands(bn_sub)
 
     bn_in = bn_sub.add_parser("init", help="Scaffold stratified bench/ & lock SHA-256 oracle")
     bn_in.add_argument("problem")
@@ -362,6 +367,9 @@ def build_parser() -> argparse.ArgumentParser:
     dm_st = dm_sub.add_parser("status", help="Inspect running Parhelion daemon health")
     dm_st.add_argument("--json", action="store_true")
     dm_st.set_defaults(func=run_daemon)
+
+    register_kb_subcommands(sub)
+    register_driver_and_mcp_subcommands(sub)
 
     return p
 
