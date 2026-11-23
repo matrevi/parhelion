@@ -26,7 +26,7 @@ from .claude_driver import ClaudeDriver
 from .codex_driver import CodexDriver
 from .ext_drivers import DeepSeekDriver, GeminiDriver
 from .pi_driver import PiDriver
-from .session_store import update_session
+from .session_store import list_sessions, update_session
 
 DRIVER_CLASSES: dict[str, type[BaseDriver]] = {
     "antigravity": AntigravityDriver,
@@ -334,6 +334,8 @@ def launch_problem_session(
     goal: str = "",
     resume_id: str | None = None,
     use_main: bool = False,
+    dry_run: bool = False,
+    preseed: bool = False,
 ) -> dict[str, Any]:
     ws = workspace.expanduser().resolve()
     drv = get_driver(driver_kind)
@@ -347,19 +349,79 @@ def launch_problem_session(
         brief=brief,
         mode=mode,
         resume_id=resume_id,
+        dry_run=dry_run,
+        preseed_thread=preseed,
     )
     meta = dict(drv.last_launch_meta)
     return {
         "ok": True,
         "session": record.to_dict(),
         "mode": meta.get("mode", mode),
+        "launch_mode": meta.get("launch_mode", record.launch_mode),
+        "dry_run": bool(meta.get("dry_run", dry_run or mode == "dry-run")),
         "command": meta.get("command", []),
         "env_overrides": meta.get("env", {}),
         "mcp_config_path": meta.get("mcp_config_path"),
         "log_path": meta.get("log_path"),
         "worktree": str(worktree),
+        "deep_link": meta.get("deep_link", record.deep_link),
+        "project_id": meta.get("project_id", record.project_id),
+        "brief_path": meta.get("brief_path", record.brief_path),
+        "clipboard_copied": bool(meta.get("clipboard_copied", False)),
         "brief": brief,
     }
+
+
+def list_all_sessions(
+    workspace: Path,
+    *,
+    problem: str | None = None,
+    driver: str | None = None,
+    status: str | None = None,
+    include_gui: bool = True,
+    limit: int = 40,
+) -> list[dict[str, Any]]:
+    """Merge persisted Parhelion sessions with live read-only GUI observer sessions."""
+    ws = workspace.expanduser().resolve()
+    tracked = list_sessions(ws, problem=problem, driver=driver, status=status)
+    merged: list[dict[str, Any]] = []
+    by_native: dict[tuple[str, str], dict[str, Any]] = {}
+
+    for rec in tracked:
+        item = {**rec.to_dict(), "source": "parhelion"}
+        merged.append(item)
+        if rec.native_session_id:
+            by_native[(rec.driver.lower(), rec.native_session_id)] = item
+
+    if include_gui:
+        target_kinds = [driver.strip().lower()] if driver else list(VALID_DRIVERS)
+        for kind in target_kinds:
+            try:
+                drv = get_driver(kind)
+                gui_rows = drv.observe_gui_sessions(workspace=ws, limit=limit)
+            except Exception:
+                gui_rows = []
+            for g in gui_rows:
+                if problem and str(g.get("problem") or "").lower() != problem.lower():
+                    continue
+                if status and str(g.get("status") or "").lower() != status.lower():
+                    continue
+                key = (str(g.get("driver") or kind).lower(), str(g.get("native_session_id") or ""))
+                existing = by_native.get(key) if key[1] else None
+                if existing is not None:
+                    existing["status"] = g.get("status") or existing["status"]
+                    existing["observed_steps"] = max(int(existing.get("observed_steps") or 0), int(g.get("observed_steps") or 0))
+                    existing["tokens_used"] = max(int(existing.get("tokens_used") or 0), int(g.get("tokens_used") or 0))
+                    if g.get("updated_at") and str(g["updated_at"]) > str(existing.get("updated_at") or ""):
+                        existing["updated_at"] = g["updated_at"]
+                    if g.get("deep_link") and not existing.get("deep_link"):
+                        existing["deep_link"] = g["deep_link"]
+                    existing["gui_live"] = True
+                else:
+                    merged.append(g)
+
+    merged.sort(key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True)
+    return merged[: max(1, int(limit))]
 
 
 def _run_worker_job(job_path: Path) -> int:

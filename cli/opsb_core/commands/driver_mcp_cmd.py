@@ -14,10 +14,10 @@ from ..drivers.registry import (
     doctor_drivers,
     get_driver,
     launch_problem_session,
+    list_all_sessions,
     list_drivers,
     select_active_driver,
 )
-from ..drivers.session_store import list_sessions
 from ..mcp.server import serve_stdio
 from ..mcp.tools import call_tool, list_tool_schemas
 
@@ -62,9 +62,14 @@ def run_driver(args: argparse.Namespace) -> int:
                 inst = "OK" if diag["installed"] else "MISSING"
                 auth = "AUTH" if diag["auth_ok"] else "NOAUTH"
                 ver = diag["version"] or "—"
+                gui_s = (
+                    f" gui={diag.get('gui_version') or 'app'} ({diag.get('url_scheme') or 'app'}://)"
+                    if diag.get("gui_installed")
+                    else ""
+                )
                 print(
                     f"  {mark} {diag['kind']:<12} [{inst:<7}/{auth:<6}]  "
-                    f"proto={diag['protocol']:<15} ver={ver}  ({diag['detail']})"
+                    f"proto={diag['protocol']:<15} ver={ver}{gui_s}  ({diag['detail']})"
                 )
             return 0
 
@@ -100,35 +105,47 @@ def run_driver(args: argparse.Namespace) -> int:
                 goal=getattr(args, "goal", "") or "",
                 resume_id=getattr(args, "resume", None),
                 use_main=bool(getattr(args, "use_main", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                preseed=bool(getattr(args, "preseed", False)),
             )
             if as_json:
                 print(json.dumps(res, ensure_ascii=False, indent=2))
             else:
                 sess = res["session"]
+                extra = []
+                if res.get("deep_link"):
+                    extra.append(f"  Deep Link: {res['deep_link']}")
+                if res.get("brief_path"):
+                    extra.append(f"  Brief    : {res['brief_path']} (clipboard={res.get('clipboard_copied')})")
+                extra_s = ("\n" + "\n".join(extra)) if extra else ""
                 print(
-                    f"Session {sess['session_id']} [{sess['driver']} · {res['mode']} · {sess['status']}]\n"
+                    f"Session {sess['session_id']} [{sess['driver']} · {res['launch_mode']} · {sess['status']}]\n"
                     f"  Worktree : {sess['worktree']}\n"
                     f"  Native ID: {sess['native_session_id']}\n"
-                    f"  Command  : {' '.join(res.get('command') or [])}"
+                    f"  Command  : {' '.join(res.get('command') or [])}{extra_s}"
                 )
             return 0
 
         if sub == "sessions":
             ws = _resolve_ws(getattr(args, "workspace", None))
-            recs = list_sessions(
+            include_gui = bool(getattr(args, "include_gui", True))
+            recs = list_all_sessions(
                 ws,
                 problem=getattr(args, "problem", None),
                 driver=getattr(args, "driver", None),
+                include_gui=include_gui,
             )
-            payload = {"workspace": str(ws), "sessions": [r.to_dict() for r in recs]}
+            payload = {"workspace": str(ws), "include_gui": include_gui, "sessions": recs}
             if as_json:
                 print(json.dumps(payload, ensure_ascii=False, indent=2))
                 return 0
             print(f"=== Driver Sessions ({ws}) · {len(recs)} record(s) ===")
             for r in recs:
+                steps_s = f" steps={r.get('observed_steps')}" if r.get("observed_steps") else ""
+                dl_s = f" [{r.get('deep_link')}]" if r.get("deep_link") else ""
                 print(
-                    f"  {r.session_id:<28} {r.driver:<12} {r.problem:<22} "
-                    f"{r.status:<10} pid={r.pid or '—'}  {r.worktree}"
+                    f"  {str(r.get('session_id')):<28} {str(r.get('driver')):<12} {str(r.get('problem')):<22} "
+                    f"{str(r.get('status')):<10} pid={r.get('pid') or '—'}{steps_s}  {r.get('worktree')}{dl_s}"
                 )
             return 0
 
@@ -215,13 +232,17 @@ def register_driver_and_mcp_subcommands(sub: argparse._SubParsersAction) -> None
     d_la.add_argument("--goal", default="")
     d_la.add_argument("--resume", default=None)
     d_la.add_argument("--use-main", action="store_true")
+    d_la.add_argument("--dry-run", action="store_true")
+    d_la.add_argument("--preseed", action="store_true")
     d_la.add_argument("--workspace", "-w")
     d_la.add_argument("--json", action="store_true")
     d_la.set_defaults(func=run_driver)
 
-    d_se = drv_sub.add_parser("sessions", help="List persisted Harness Driver sessions for workspace")
+    d_se = drv_sub.add_parser("sessions", help="List persisted & live GUI Harness Driver sessions for workspace")
     d_se.add_argument("--problem", "-p", default=None)
     d_se.add_argument("--driver", choices=VALID_DRIVERS, default=None)
+    d_se.add_argument("--include-gui", dest="include_gui", action="store_true", default=True)
+    d_se.add_argument("--no-gui", dest="include_gui", action="store_false")
     d_se.add_argument("--workspace", "-w")
     d_se.add_argument("--json", action="store_true")
     d_se.set_defaults(func=run_driver)

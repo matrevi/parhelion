@@ -1,11 +1,16 @@
-"""Base abstractions, data models, and workspace projection helpers for Parhelion Harness Drivers."""
+"""Base abstractions, data models, and workspace/GUI helpers for Parhelion Harness Drivers."""
 from __future__ import annotations
 
+import errno
+import fcntl
 import json
 import os
+import plistlib
 import shlex
 import shutil
+import sqlite3
 import subprocess
+import urllib.parse
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -116,9 +121,145 @@ def probe_binary_version(binary_path: str, args: tuple[str, ...] = ("--version",
         return ""
 
 
+def inspect_macos_app_bundle(
+    candidates: list[Path],
+    expected_bundle_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """Read macOS `.app/Contents/Info.plist` via stdlib `plistlib` (zero subprocess overhead)."""
+    empty = {
+        "gui_installed": False,
+        "gui_app_path": "",
+        "gui_bundle_id": "",
+        "gui_version": "",
+        "url_scheme": "",
+    }
+    for bundle in candidates:
+        plist_path = bundle / "Contents" / "Info.plist"
+        if not plist_path.is_file():
+            continue
+        try:
+            with plist_path.open("rb") as fh:
+                info = plistlib.load(fh)
+        except Exception:
+            continue
+        if not isinstance(info, dict):
+            continue
+        bundle_id = str(info.get("CFBundleIdentifier") or "").strip()
+        if expected_bundle_ids and bundle_id not in expected_bundle_ids:
+            continue
+        version = str(info.get("CFBundleShortVersionString") or info.get("CFBundleVersion") or "").strip()
+        url_scheme = ""
+        url_types = info.get("CFBundleURLTypes") or []
+        if isinstance(url_types, list):
+            for ut in url_types:
+                if not isinstance(ut, dict):
+                    continue
+                schemes = ut.get("CFBundleURLSchemes") or []
+                if isinstance(schemes, list) and schemes:
+                    cand_s = str(schemes[0] or "").strip()
+                    if cand_s and cand_s not in ("http", "https"):
+                        url_scheme = cand_s
+                        break
+                    if not url_scheme and cand_s:
+                        url_scheme = cand_s
+        return {
+            "gui_installed": True,
+            "gui_app_path": str(bundle),
+            "gui_bundle_id": bundle_id,
+            "gui_version": version,
+            "url_scheme": url_scheme,
+        }
+    return empty
+
+
+def open_sqlite_readonly_wal(db_path: Path, timeout: float = 1.0) -> sqlite3.Connection:
+    """Open a WAL-mode SQLite DB read-only (`mode=ro` first so uncheckpointed `-wal` is visible)."""
+    resolved = Path(os.path.realpath(db_path))
+    quoted = urllib.parse.quote(str(resolved), safe="/:")
+    uri_ro = f"file:{quoted}?mode=ro"
+    try:
+        conn = sqlite3.connect(uri_ro, uri=True, timeout=timeout)
+        conn.execute("PRAGMA query_only = ON;")
+        conn.execute("SELECT 1 FROM sqlite_master LIMIT 1;").fetchone()
+        return conn
+    except sqlite3.OperationalError:
+        try:
+            conn.close()  # type: ignore[possibly-undefined]
+        except Exception:
+            pass
+        uri_imm = f"file:{quoted}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri_imm, uri=True, timeout=timeout)
+        conn.execute("PRAGMA query_only = ON;")
+        return conn
+
+
+def is_flock_held(lock_path: Path) -> bool:
+    """Non-blocking `fcntl.flock` probe returning True if an exclusive lock is held elsewhere."""
+    if not lock_path.exists():
+        return False
+    fd: int | None = None
+    try:
+        fd = os.open(str(lock_path), os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                return True
+            return False
+    except OSError:
+        return False
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def stage_brief_and_clipboard(
+    worktree: Path,
+    brief: str,
+    copy_clipboard: bool = True,
+) -> tuple[Path, bool]:
+    """Atomically write `<worktree>/.parhelion/brief.md` and optionally copy via `pbcopy`."""
+    wt = Path(os.path.realpath(worktree))
+    brief_dir = wt / ".parhelion"
+    brief_dir.mkdir(parents=True, exist_ok=True)
+    brief_path = brief_dir / "brief.md"
+    tmp = brief_path.with_suffix(".tmp")
+    tmp.write_text(brief, encoding="utf-8")
+    os.replace(tmp, brief_path)
+
+    copied = False
+    if copy_clipboard and shutil.which("pbcopy"):
+        try:
+            proc = subprocess.run(["pbcopy"], input=brief, text=True, timeout=1.5, check=False)
+            copied = proc.returncode == 0
+        except Exception:
+            copied = False
+    return brief_path, copied
+
+
+def compact_prompt_for_url(
+    brief: str,
+    brief_path: Path,
+    base_url_len: int,
+    max_url_len: int = 6000,
+) -> str:
+    """Return URL-safe prompt within `max_url_len`, falling back to `.parhelion/brief.md` pointer."""
+    if not brief:
+        return ""
+    encoded = urllib.parse.quote(brief, safe="")
+    if base_url_len + len("&prompt=") + len(encoded) <= max_url_len:
+        return brief
+    return f"Read {brief_path} for the full Parhelion brief and execute."
+
+
 def build_parhelion_mcp_command(workspace: Path) -> tuple[str, list[str], dict[str, str]]:
     """Return `(command, args, env)` to run `opsb mcp serve` for a workspace."""
-    ws = workspace.expanduser().resolve()
+    ws = Path(os.path.realpath(workspace.expanduser()))
     py_exe = _cfg.resolve_python_exe(ws)
     opsb_script = str(_cfg.CLI_DIR / "opsb")
     env = {"PARHELION_HOME": str(resolve_parhelion_home())}
@@ -193,7 +334,6 @@ def open_gui_or_terminal(binary_path: str, app_names: tuple[str, ...], worktree:
     brief_path = log_dir / f"{session_id}.brief.md"
     brief_path.write_text(brief, encoding="utf-8")
 
-    # Best-effort clipboard handoff on macOS without failing headless/Linux tests
     if shutil.which("pbcopy"):
         try:
             subprocess.run(["pbcopy"], input=brief, text=True, timeout=1.5, check=False)
@@ -213,18 +353,17 @@ def open_gui_or_terminal(binary_path: str, app_names: tuple[str, ...], worktree:
                 )
                 return proc.pid
 
-    if binary_path:
-        if shutil.which("osascript"):
-            cmd_line = f"cd {shlex.quote(str(worktree))} && {shlex.quote(binary_path)}"
-            osa = f'tell application "Terminal" to do script {json.dumps(cmd_line)}'
-            proc = subprocess.Popen(
-                ["osascript", "-e", osa],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
-            return proc.pid
+    if binary_path and shutil.which("osascript"):
+        cmd_line = f"cd {shlex.quote(str(worktree))} && {shlex.quote(binary_path)}"
+        osa = f'tell application "Terminal" to do script {json.dumps(cmd_line)}'
+        proc = subprocess.Popen(
+            ["osascript", "-e", osa],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return proc.pid
     return None
 
 
@@ -238,6 +377,11 @@ class DriverDiagnostic:
     auth_ok: bool
     protocol: str              # "acp-stdio" | "app-server-rpc" | "stream-json" | "pi-rpc" | "cli-exec"
     detail: str
+    gui_installed: bool = False
+    gui_app_path: str = ""
+    gui_bundle_id: str = ""
+    gui_version: str = ""
+    url_scheme: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -256,6 +400,12 @@ class SessionRecord:
     created_at: str
     updated_at: str
     brief_preview: str
+    launch_mode: str = "headless"   # "headless" | "gui" | "gui-preseed" | "dry-run"
+    deep_link: str = ""
+    project_id: str = ""
+    brief_path: str = ""
+    observed_steps: int = 0
+    tokens_used: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -274,6 +424,12 @@ class SessionRecord:
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             brief_preview=str(data.get("brief_preview") or ""),
+            launch_mode=str(data.get("launch_mode") or "headless"),
+            deep_link=str(data.get("deep_link") or ""),
+            project_id=str(data.get("project_id") or ""),
+            brief_path=str(data.get("brief_path") or ""),
+            observed_steps=int(data.get("observed_steps") or 0),
+            tokens_used=int(data.get("tokens_used") or 0),
         )
 
 
@@ -290,6 +446,34 @@ class BaseDriver(ABC):
 
     @abstractmethod
     def discover(self) -> DriverDiagnostic: ...
+
+    def discover_gui(self) -> dict[str, Any]:
+        """Inspect installed macOS GUI bundle via Info.plist (read-only)."""
+        return {
+            "gui_installed": False,
+            "gui_app_path": "",
+            "gui_bundle_id": "",
+            "gui_version": "",
+            "url_scheme": "",
+        }
+
+    def build_gui_deep_link(
+        self,
+        worktree: Path,
+        prompt: str = "",
+        project_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> str:
+        """Build native URL scheme deep link (`codex://` or `antigravity://`)."""
+        return ""
+
+    def observe_gui_sessions(
+        self,
+        workspace: Path | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Read-only observation of live & recent GUI sessions from native local stores."""
+        return []
 
     @abstractmethod
     def sync_workspace(self, workspace: Path, mcp_url: str | None = None) -> dict[str, Any]: ...
@@ -352,6 +536,8 @@ class BaseDriver(ABC):
         brief: str,
         mode: str = "background",
         resume_id: str | None = None,
+        dry_run: bool = False,
+        preseed_thread: bool = False,
     ) -> SessionRecord:
         from .session_store import save_session
 
@@ -360,6 +546,7 @@ class BaseDriver(ABC):
         norm_mode = "dry-run" if mode in ("dry-run", "dry_run") else mode
         if norm_mode not in ("dry-run", "headless", "background", "gui"):
             raise ValueError(f"Unsupported launch mode '{mode}'. Use headless, gui, background, or dry-run.")
+        is_dry = dry_run or norm_mode == "dry-run"
 
         sync_res = self.sync_workspace(ws)
         mcp_cfg_path_str = sync_res.get("mcp_config_path")
@@ -377,11 +564,13 @@ class BaseDriver(ABC):
         now_iso = _cfg.utc_now().isoformat()
         log_dir = resolve_session_logs_dir()
         log_path = log_dir / f"{session_id}.jsonl"
+        brief_path, copied = stage_brief_and_clipboard(wt, brief, copy_clipboard=(not is_dry and norm_mode == "gui"))
 
         pid: int | None = None
         status = "idle"
+        launch_mode = "dry-run" if norm_mode == "dry-run" else norm_mode
 
-        if norm_mode == "dry-run":
+        if is_dry:
             status = "idle"
         elif norm_mode == "gui":
             diag = self.discover()
@@ -448,15 +637,23 @@ class BaseDriver(ABC):
             created_at=now_iso,
             updated_at=now_iso,
             brief_preview=brief.strip().replace("\n", " ")[:180],
+            launch_mode=launch_mode,
+            brief_path=str(brief_path),
         )
         save_session(ws, record)
         self.last_launch_meta = {
             "mode": norm_mode,
+            "launch_mode": launch_mode,
+            "dry_run": is_dry,
             "command": cmd,
             "env": env_overrides,
             "mcp_config_path": str(mcp_cfg_path),
             "log_path": str(log_path),
             "worktree": str(wt),
+            "brief_path": str(brief_path),
+            "clipboard_copied": copied,
+            "deep_link": "",
+            "project_id": "",
             "sync": sync_res,
         }
         return record

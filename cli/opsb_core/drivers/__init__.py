@@ -2,7 +2,16 @@
 from __future__ import annotations
 
 from .antigravity_driver import AcpSessionClient, AntigravityDriver
-from .base import BaseDriver, DriverDiagnostic, SessionRecord
+from .base import (
+    BaseDriver,
+    DriverDiagnostic,
+    SessionRecord,
+    compact_prompt_for_url,
+    inspect_macos_app_bundle,
+    is_flock_held,
+    open_sqlite_readonly_wal,
+    stage_brief_and_clipboard,
+)
 from .claude_driver import ClaudeDriver, ClaudeStreamJsonClient, coerce_claude_uuid
 from .codex_driver import CodexAppServerClient, CodexDriver, render_codex_config_toml
 from .ext_drivers import DeepSeekDriver, GeminiDriver
@@ -16,6 +25,7 @@ from .registry import (
     get_active_driver_kind,
     get_driver,
     launch_problem_session,
+    list_all_sessions,
     list_drivers,
     prepare_session_worktree,
     select_active_driver,
@@ -40,19 +50,25 @@ __all__ = [
     "SessionRecord",
     "VALID_DRIVERS",
     "coerce_claude_uuid",
+    "compact_prompt_for_url",
     "compose_session_brief",
     "doctor_drivers",
     "get_active_driver_kind",
     "get_driver",
     "get_session",
+    "inspect_macos_app_bundle",
+    "is_flock_held",
     "launch_problem_session",
+    "list_all_sessions",
     "list_drivers",
     "list_sessions",
     "load_sessions",
+    "open_sqlite_readonly_wal",
     "prepare_session_worktree",
     "render_codex_config_toml",
     "save_session",
     "select_active_driver",
     "sessions_file_path",
+    "stage_brief_and_clipboard",
     "update_session",
 ]
