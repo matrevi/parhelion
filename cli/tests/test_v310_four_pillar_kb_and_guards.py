@@ -39,8 +39,8 @@ class FourPillarKBAndV31Tests(unittest.TestCase):
     def test_four_pillars_and_v310_version_alignment(self) -> None:
         self.assertEqual(VALID_PILLARS, ("breakthrough", "snippets", "hardware", "community"))
         self.assertEqual(WRITABLE_PILLARS, ("snippets", "hardware", "community"))
-        self.assertEqual(opsb_core.__version__, "3.1.0")
-        self.assertEqual(SERVER_INFO["version"], "3.1.0")
+        self.assertEqual(opsb_core.__version__, "3.1.1")
+        self.assertEqual(SERVER_INFO["version"], opsb_core.__version__)
 
     def test_record_query_feedback_and_legacy_id_lookup_on_hardware_pillar(self) -> None:
         with tempfile.TemporaryDirectory() as td:

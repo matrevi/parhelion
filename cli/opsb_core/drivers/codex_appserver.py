@@ -126,7 +126,7 @@ class CodexAppServerClient:
         return self._read_until_id(req_id)
 
     def initialize(self) -> dict[str, Any]:
-        resp = self.request("initialize", {"clientInfo": {"name": "parhelion", "title": "Parhelion", "version": "3.1.0"}})
+        resp = self.request("initialize", {"clientInfo": {"name": "parhelion", "title": "Parhelion", "version": "3.1.1"}})
         if "error" in resp:
             raise RuntimeError(f"Codex initialize failed: {resp['error']}")
         self._write_msg({"jsonrpc": "2.0", "method": "initialized", "params": {}})

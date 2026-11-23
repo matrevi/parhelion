@@ -93,7 +93,7 @@ class AcpSessionClient:
             {
                 "protocolVersion": 1,
                 "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
-                "clientInfo": {"name": "parhelion", "version": "3.1.0"},
+                "clientInfo": {"name": "parhelion", "version": "3.1.1"},
             },
         )
         if "error" in resp:

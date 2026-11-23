@@ -11,7 +11,7 @@ from ..drivers.base import load_parhelion_config
 from .tools import TOOL_HANDLERS, call_tool, list_tool_schemas
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "parhelion-mcp", "version": "3.1.0"}
+SERVER_INFO = {"name": "parhelion-mcp", "version": "3.1.1"}
 
 
 def _resolve_workspace(workspace: Path | str | None) -> Path:
