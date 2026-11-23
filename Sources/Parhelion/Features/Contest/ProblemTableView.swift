@@ -53,6 +53,20 @@ struct ProblemTableView: View {
 
                 Spacer()
 
+                Button {
+                    Task { await store.launchContestSubagentSession(mode: "gui") }
+                } label: {
+                    Label(lang.tr("新开对话", "New 10-Op Chat"), systemImage: "plus.bubble.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(store.isLaunchingSession || store.selectedWorkspace.isEmpty)
+                .help(lang.tr(
+                    "在工作区根目录新开对话，以 Subagent 编排形式并行优化全部 10 道题",
+                    "Launch workspace-root session to optimize all 10 operators via parallel subagents"
+                ))
+
                 Toggle(isOn: $sortByROI) {
                     Label(lang.tr("按 WSPT 收益排序", "Sort by WSPT ROI"), systemImage: "arrow.up.right.circle")
                         .font(.system(size: 11, weight: .medium))

@@ -329,7 +329,7 @@ class AntigravityDriver(BaseDriver):
                 "workspace": str(real_ws) if real_ws else wt_str,
                 "problem": infer_problem_from_worktree(wt_str, real_ws), "worktree": wt_str,
                 "native_session_id": cid_s, "status": norm_status, "pid": None,
-                "created_at": str(last_input or last_mod or ""), "updated_at": str(last_mod or ""),
+                "created_at": str(last_input or last_mod or "").replace(" ", "T", 1), "updated_at": str(last_mod or "").replace(" ", "T", 1),
                 "brief_preview": str(title or preview or "")[:180], "launch_mode": "gui",
                 "deep_link": f"antigravity://open?project={urllib.parse.quote(proj_id_s, safe='')}" if proj_id_s else "antigravity://open",
                 "project_id": proj_id_s, "brief_path": "", "observed_steps": int(step_count or 0),

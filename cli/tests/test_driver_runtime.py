@@ -501,8 +501,8 @@ def test_build_launch_command_all_six_drivers(isolated_env: Path, tmp_path: Path
     assert env_gm["PARHELION_MCP_CONFIG"] == str(mcp_cfg)
 
     cmd_ds, env_ds = get_driver("deepseek").build_launch_command(ws, "tune", "sess-6", mcp_config_path=mcp_cfg)
-    assert "--cwd" in cmd_ds and str(ws.resolve()) in cmd_ds
-    assert "-p" in cmd_ds and "tune" in cmd_ds
+    assert "--profile" in cmd_ds and "acp" in cmd_ds
+    assert env_ds["PARHELION_WORKTREE"] == str(ws.resolve())
     assert env_ds["PARHELION_MCP_CONFIG"] == str(mcp_cfg)
 
 
@@ -641,20 +641,20 @@ def test_headless_worker_job_updates_session_status(isolated_env: Path, tmp_path
     ws, op_dir = _make_git_workspace(tmp_path)
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
-    dsh = fake_bin / "dsh"
-    dsh.write_text("#!/bin/sh\necho '{\"ok\": true}'\nexit 0\n", encoding="utf-8")
-    dsh.chmod(0o755)
+    gem = fake_bin / "gemini"
+    gem.write_text("#!/bin/sh\necho '{\"ok\": true}'\nexit 0\n", encoding="utf-8")
+    gem.chmod(0o755)
     monkeypatch.setenv("PATH", str(fake_bin))
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "k")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
 
-    drv = get_driver("deepseek")
+    drv = get_driver("gemini")
     rec = drv.launch_session(ws, "DemoOp", op_dir, "optimize", mode="dry-run")
     log_path = isolated_env / "logs" / "sessions" / f"{rec.session_id}.jsonl"
     job_path = tmp_path / "job.json"
     job_path.write_text(
         json.dumps(
             {
-                "driver": "deepseek",
+                "driver": "gemini",
                 "workspace": str(ws),
                 "problem": "DemoOp",
                 "worktree": str(op_dir),
@@ -662,7 +662,7 @@ def test_headless_worker_job_updates_session_status(isolated_env: Path, tmp_path
                 "session_id": rec.session_id,
                 "native_session_id": rec.native_session_id,
                 "resume_id": None,
-                "cmd": [str(dsh), "--cwd", str(op_dir), "-p", "optimize"],
+                "cmd": [str(gem), "-p", "optimize"],
                 "env": {},
                 "log_path": str(log_path),
             }

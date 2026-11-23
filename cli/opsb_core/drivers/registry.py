@@ -14,7 +14,13 @@ from .base import (
     load_parhelion_config,
     save_parhelion_config,
 )
-from .brief import MAX_BRIEF_BYTES, compose_session_brief, prepare_session_worktree, resolve_problem_repo
+from .brief import (
+    MAX_BRIEF_BYTES,
+    compose_contest_subagent_brief,
+    compose_session_brief,
+    prepare_session_worktree,
+    resolve_problem_repo,
+)
 from .claude_driver import ClaudeDriver
 from .codex_driver import CodexDriver
 from .ext_drivers import DeepSeekDriver, GeminiDriver
@@ -104,9 +110,15 @@ def launch_problem_session(
 ) -> dict[str, Any]:
     ws = workspace.expanduser().resolve()
     drv = get_driver(driver_kind)
-    title, _, _ = resolve_problem_repo(ws, problem)
-    worktree = prepare_session_worktree(ws, title, track_name=track_name, use_main=use_main)
-    brief = compose_session_brief(ws, title, goal=goal)
+    prob_key = str(problem or "").strip()
+    if prob_key.upper() in ("ALL", "ALL-10", "ALL_OPS", "CONTEST", "__ALL__"):
+        title = "ALL-10"
+        worktree = ws
+        brief = compose_contest_subagent_brief(ws, goal=goal)
+    else:
+        title, _, _ = resolve_problem_repo(ws, prob_key)
+        worktree = prepare_session_worktree(ws, title, track_name=track_name, use_main=use_main)
+        brief = compose_session_brief(ws, title, goal=goal)
     record: SessionRecord = drv.launch_session(
         workspace=ws, problem=title, worktree=worktree, brief=brief,
         mode=mode, resume_id=resume_id, dry_run=dry_run, preseed_thread=preseed,
@@ -179,7 +191,7 @@ def list_all_sessions(
                     existing["status"] = g.get("status") or existing["status"]
                     existing["observed_steps"] = max(int(existing.get("observed_steps") or 0), int(g.get("observed_steps") or 0))
                     existing["tokens_used"] = max(int(existing.get("tokens_used") or 0), int(g.get("tokens_used") or 0))
-                    if g.get("updated_at") and str(g["updated_at"]) > str(existing.get("updated_at") or ""):
+                    if g.get("updated_at") and str(g["updated_at"]).replace(" ", "T", 1) > str(existing.get("updated_at") or "").replace(" ", "T", 1):
                         existing["updated_at"] = g["updated_at"]
                     if g.get("deep_link") and not existing.get("deep_link"):
                         existing["deep_link"] = g["deep_link"]
@@ -187,8 +199,33 @@ def list_all_sessions(
                 else:
                     merged.append(g)
 
-    merged.sort(key=lambda r: str(r.get("updated_at") or r.get("created_at") or ""), reverse=True)
-    return merged[: max(1, int(limit))]
+    def _sort_ts(row: dict[str, Any]) -> str:
+        return str(row.get("updated_at") or row.get("created_at") or "").strip().replace(" ", "T", 1)
+
+    merged.sort(key=_sort_ts, reverse=True)
+    cap = max(1, int(limit))
+    if driver is None and len(merged) > cap:
+        present_drivers = sorted({str(r.get("driver") or "").lower() for r in merged})
+        if len(present_drivers) > 1:
+            per_driver_quota = max(4, min(10, cap // len(present_drivers)))
+            selected: list[dict[str, Any]] = []
+            selected_idx: set[int] = set()
+            counts: dict[str, int] = {}
+            for idx, item in enumerate(merged):
+                dk = str(item.get("driver") or "").lower()
+                if counts.get(dk, 0) < per_driver_quota:
+                    selected.append(item)
+                    selected_idx.add(idx)
+                    counts[dk] = counts.get(dk, 0) + 1
+            for idx, item in enumerate(merged):
+                if len(selected) >= cap:
+                    break
+                if idx not in selected_idx:
+                    selected.append(item)
+                    selected_idx.add(idx)
+            selected.sort(key=_sort_ts, reverse=True)
+            return selected[:cap]
+    return merged[:cap]
 
 
 def _run_worker_job(job_path: Path) -> int:

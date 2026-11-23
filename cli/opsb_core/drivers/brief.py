@@ -213,3 +213,60 @@ def compose_session_brief(workspace: Path, problem: str, goal: str = "") -> str:
         "- Record verified wins/anti-patterns with SHA + `profiler`/online evidence via `parhelion_kb_record`."
     )
     return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+
+
+def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
+    """Compose a `< 3 KB` workspace-wide 10-operator subagent orchestration brief."""
+    ws = workspace.expanduser().resolve()
+    meta = resolve_workspace_meta(ws)
+    probs = meta.get("problems") or []
+    snapshot = _cfg.read_json(ws / "results" / "score-snapshot.json", {})
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    boards = load_slim_boards(ws / "results" / "scoring-evidence" / "board-summary.json")
+    hist_idx = index_submission_history(ws)
+
+    rows: list[tuple[float, int, str, float, float, float, str]] = []
+    weighted_total = 0.0
+    for p in probs:
+        title = str(p.get("title") or "").strip()
+        if not title:
+            continue
+        diff = int(p.get("difficulty") or _cfg.DEFAULT_DIFFICULTIES.get(title, 2))
+        srow = snapshot.get(title) if isinstance(snapshot.get(title), dict) else {}
+        cur = float(srow.get("score") or 0.0)
+        weighted_total += diff * cur
+        b_rows = (boards.get(title) or {}).get("rows") or [] if isinstance(boards, dict) else []
+        leader = float((b_rows[0] or {}).get("score") or 0.0) if b_rows else 0.0
+        best_sc = float((hist_idx["raw_best_by_prob"].get(title) or (cur, "", ""))[0] or cur)
+        gap = max(0.0, leader - cur) if leader > 0 else max(0.0, 100.0 - cur)
+        prio = diff * (gap + max(0.0, best_sc - cur) * 1.5)
+        st = str(srow.get("status") or "—")
+        rows.append((prio, diff, title, cur, best_sc, leader, st))
+
+    rows.sort(key=lambda x: (-x[0], -x[1], x[2]))
+    lines: list[str] = [
+        f"# Parhelion 10-Operator Subagent Sprint · {ws.name}",
+        f"- Workspace: `{ws}` | Weighted Total: **{weighted_total:.2f}** ({len(rows)} ops)",
+    ]
+    if goal.strip():
+        lines.append(f"- Goal: {goal.strip()}")
+
+    lines.extend([
+        "",
+        "## Live Operator Priorities (Tier x Diff · Cur / Best / Leader)",
+        "| Op | Tier | Score | Best | Leader | Status |",
+        "|---|---:|---:|---:|---:|---|",
+    ])
+    for _prio, diff, title, cur, best_sc, leader, st in rows[:12]:
+        lines.append(f"| `{title}` | x{diff} | {cur:.2f} | {best_sc:.2f} | {leader:.2f} | {st} |")
+
+    lines.extend([
+        "",
+        "## Subagent Orchestration Protocol",
+        "1. **Coordinate via Subagents**: Spawn isolated subagents (1 per high-ROI operator in dedicated git worktrees under `<op>/.worktrees/<track>`) to optimize all 10 operators in parallel, prioritizing Tier x3 & largest leader/restore gaps.",
+        "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 4-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
+        "3. **Lock-Safe Validation & Gated Submission**: Use `opsb test --build-only` / `--fast` / full (respecting Die 0 lock) and enqueue only gate-approved gains via `parhelion_submit_gate` / `opsb submit`.",
+        "4. **Shared Memory**: Record verified silicon findings into `pillar=hardware` and reusable blocks into `pillar=snippets` via `parhelion_kb_record`.",
+    ])
+    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)

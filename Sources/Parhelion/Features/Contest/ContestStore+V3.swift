@@ -170,11 +170,16 @@ extension ContestStore {
         }
     }
 
+    func launchContestSubagentSession(driver: String? = nil, mode: String = "gui", preseed: Bool = false) async {
+        await launchOperatorSession(problem: "ALL", driver: driver, mode: mode, preseed: preseed)
+    }
+
     func launchOperatorSession(problem: String, driver: String? = nil, mode: String = "gui", preseed: Bool = false) async {
         guard !selectedWorkspace.isEmpty, !isLaunchingSession else { return }
         isLaunchingSession = true
         defer { isLaunchingSession = false }
         let chosen = driver ?? activeDriver
+        let isAllOps = problem.uppercased() == "ALL"
         do {
             let res = try await repository.launchDriverSession(
                 workspace: selectedWorkspace,
@@ -189,10 +194,15 @@ extension ContestStore {
                 let clipNote = (res.clipboardCopied == true)
                     ? tr("（Brief 已写入并复制到剪贴板）", " (brief saved & copied)")
                     : ""
-                bannerMessage = tr(
-                    "已通过 \(drvName) 为 \(problem) 新开调优对话 [\(wtName)]\(clipNote)",
-                    "Launched \(drvName) session for \(problem) [\(wtName)]\(clipNote)"
-                )
+                bannerMessage = isAllOps
+                    ? tr(
+                        "已通过 \(drvName) 新开 10 题 Subagent 并行优化对话 [\(wtName)]\(clipNote)",
+                        "Launched \(drvName) 10-op subagent orchestration session [\(wtName)]\(clipNote)"
+                    )
+                    : tr(
+                        "已通过 \(drvName) 为 \(problem) 新开调优对话 [\(wtName)]\(clipNote)",
+                        "Launched \(drvName) session for \(problem) [\(wtName)]\(clipNote)"
+                    )
                 await reloadDriverSessions()
             } else {
                 errorMessage = res.error ?? tr("启动调优会话失败", "Failed to launch session")

@@ -1,9 +1,54 @@
+import AppKit
 import SwiftUI
 
 struct DriverSessionsPopoverView: View {
     @EnvironmentObject var store: ContestStore
+    @UIState private var selectedDriverFilter: String = "all"
 
     private var lang: AppLanguage { store.lang }
+
+    private var availableDrivers: [String] {
+        let found = Set(store.driverSessions.map { $0.driver.lowercased() })
+        return ["all"] + found.sorted()
+    }
+
+    private var effectiveDriverFilter: String {
+        availableDrivers.contains(selectedDriverFilter) ? selectedDriverFilter : "all"
+    }
+
+    private func driverCount(_ drv: String) -> Int {
+        drv == "all"
+            ? store.driverSessions.count
+            : store.driverSessions.filter { $0.driver.lowercased() == drv }.count
+    }
+
+    private var visibleSessions: [DriverSessionModel] {
+        let filtered = effectiveDriverFilter == "all"
+            ? store.driverSessions
+            : store.driverSessions.filter { $0.driver.lowercased() == effectiveDriverFilter }
+        return Array(filtered.prefix(25))
+    }
+
+    private func supportsDirectThreadJump(_ session: DriverSessionModel) -> Bool {
+        let dl = session.deepLink.lowercased()
+        return dl.hasPrefix("codex://threads/") && !dl.hasPrefix("codex://threads/new")
+    }
+
+    private func openSession(_ session: DriverSessionModel) {
+        let direct = supportsDirectThreadJump(session)
+        if !direct && !session.displayTitle.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(session.displayTitle, forType: .string)
+        }
+        SystemNavigator.openURL(session.deepLink)
+        if !direct {
+            let shortcut = session.driver.lowercased() == "deepseek" ? "⌘K 粘贴" : "搜索粘贴"
+            store.bannerMessage = lang.tr(
+                "已唤起 \(session.driver)（桌面端暂不支持直达指定对话深链，已复制标题「\(session.displayTitle)」方便\(shortcut)定位）",
+                "Focused \(session.driver) (app lacks per-thread deep link; copied title \"\(session.displayTitle)\" to clipboard)"
+            )
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -40,7 +85,26 @@ struct DriverSessionsPopoverView: View {
 
             Divider()
 
-            if store.driverSessions.isEmpty {
+            if availableDrivers.count > 2 {
+                HStack(spacing: 5) {
+                    ForEach(availableDrivers, id: \.self) { drv in
+                        let active = effectiveDriverFilter == drv
+                        let count = driverCount(drv)
+                        let label = drv == "all"
+                            ? "\(lang.tr("全部", "All")) (\(count))"
+                            : "\(drv) (\(count))"
+                        Button(label) {
+                            selectedDriverFilter = drv
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .tint(active ? .accentColor : .secondary)
+                    }
+                    Spacer()
+                }
+            }
+
+            if visibleSessions.isEmpty {
                 VStack(spacing: 6) {
                     Text(lang.tr("当前工作区暂无观测到的会话", "No active or recent sessions found for workspace"))
                         .font(.system(size: 11.5))
@@ -55,7 +119,7 @@ struct DriverSessionsPopoverView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 7) {
-                        ForEach(store.driverSessions.prefix(25)) { session in
+                        ForEach(visibleSessions) { session in
                             sessionRow(session)
                         }
                     }
@@ -124,15 +188,24 @@ struct DriverSessionsPopoverView: View {
                     }
 
                     if !session.deepLink.isEmpty {
+                        let direct = supportsDirectThreadJump(session)
                         Button {
-                            SystemNavigator.openURL(session.deepLink)
+                            openSession(session)
                         } label: {
-                            Label(lang.tr("打开", "Open"), systemImage: "arrow.up.forward.app.fill")
-                                .font(.system(size: 10.5, weight: .semibold))
+                            Label(
+                                direct ? lang.tr("直达对话", "Open") : lang.tr("唤起+复制", "Focus"),
+                                systemImage: direct ? "arrow.up.forward.app.fill" : "macwindow"
+                            )
+                            .font(.system(size: 10.5, weight: .semibold))
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
-                        .help(session.deepLink)
+                        .help(direct
+                            ? session.deepLink
+                            : lang.tr(
+                                "\(session.deepLink)（该桌面端不支持直达具体对话 ID，点击将唤起应用并复制会话标题）",
+                                "\(session.deepLink) (app lacks thread deep link; focuses app & copies title)"
+                            ))
                     }
                 }
             }
