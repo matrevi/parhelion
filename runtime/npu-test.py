@@ -91,6 +91,7 @@ cfg = json.load(sys.stdin)
 title = cfg['title']
 sha = cfg['sha']
 fast = bool(cfg.get('fast', False))
+cold3 = bool(cfg.get('cold3', False))
 build_only = bool(cfg.get('build_only', False))
 sync_only = bool(cfg.get('sync_only', False))
 mlfq = cfg.get('mlfq') or ('Q0' if fast else 'Q1')
@@ -287,6 +288,9 @@ fi
     kernel_o_sum_bytes = 0
     kernel_o_max_text_bytes = 0
     kernel_o_files = {}
+    template_instantiations = 0
+    template_instantiation_source = 'none'
+    obj_template_syms = set()
     try:
         o_paths = sorted(glob.glob(str(repo / 'build/packages/vendors/*_custom/op_impl/ai_core/tbe/kernel/**/*.o'), recursive=True))
         if not o_paths:
@@ -312,12 +316,61 @@ fi
                                 kernel_o_max_text_bytes = tb
             except Exception:
                 pass
-        if kernel_o_count > 0:
+            # Count compiled template / tiling-key symbols via nm or objdump
+            try:
+                nm_p = subprocess.run(['nm', '-C', '--defined-only', op], capture_output=True, text=True, timeout=2.0)
+                if nm_p.returncode == 0 and nm_p.stdout:
+                    template_instantiation_source = 'nm'
+                    for nml in nm_p.stdout.splitlines():
+                        cols = nml.strip().split(None, 2)
+                        if len(cols) == 3 and cols[1] in ('T', 'W', 't', 'w'):
+                            sym = cols[2]
+                            if '<' in sym or 'tiling' in sym.lower() or 'kernel' in sym.lower() or '_Z' in sym:
+                                obj_template_syms.add(sym)
+                else:
+                    od_p = subprocess.run(['objdump', '-t', op], capture_output=True, text=True, timeout=2.0)
+                    if od_p.returncode == 0 and od_p.stdout:
+                        template_instantiation_source = 'objdump'
+                        for odl in od_p.stdout.splitlines():
+                            if '.text' in odl and ('_Z' in odl or 'tiling' in odl.lower() or 'kernel' in odl.lower()):
+                                obj_template_syms.add(odl.strip().split()[-1])
+            except Exception:
+                pass
+
+        if obj_template_syms:
+            template_instantiations = len(obj_template_syms)
+        else:
+            # Source scan fallback in op_kernel/
+            ok_dir = repo / 'op_kernel'
+            if ok_dir.is_dir():
+                tk_set = set()
+                macro_cnt = 0
+                tmpl_cnt = 0
+                for kp in sorted(ok_dir.rglob('*')):
+                    if not kp.is_file() or kp.suffix.lower() not in ('.h', '.hpp', '.cpp', '.cc', '.cxx', '.c'):
+                        continue
+                    try:
+                        ktxt = kp.read_text(encoding='utf-8', errors='replace')
+                    except OSError:
+                        continue
+                    ktxt = re.sub(r'/\*.*?\*/', '', ktxt, flags=re.S)
+                    ktxt = re.sub(r'//.*?$', '', ktxt, flags=re.M)
+                    for km in re.finditer(r'\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)', ktxt):
+                        tk_set.add(re.sub(r'\s+', '', km.group(1)))
+                        macro_cnt += 1
+                    macro_cnt += len(re.findall(r'\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL)\s*\(', ktxt))
+                    tmpl_cnt += len(re.findall(r'\btemplate\s*<', ktxt))
+                template_instantiations = max(len(tk_set), macro_cnt) if (tk_set or macro_cnt) else tmpl_cnt
+                template_instantiation_source = 'source_scan'
+
+        if kernel_o_count > 0 or template_instantiations > 0:
             emit('KERNEL_BINARY_STATS ' + json.dumps({
                 'count': kernel_o_count,
                 'max_bytes': kernel_o_max_bytes,
                 'sum_bytes': kernel_o_sum_bytes,
                 'max_text_bytes': kernel_o_max_text_bytes,
+                'template_instantiations': template_instantiations,
+                'template_source': template_instantiation_source,
                 'files': dict(sorted(kernel_o_files.items(), key=lambda kv: kv[1], reverse=True)[:8]),
             }, sort_keys=True))
     except Exception:
@@ -366,6 +419,7 @@ fi
             'kernel_o_max_bytes': kernel_o_max_bytes,
             'kernel_o_sum_bytes': kernel_o_sum_bytes,
             'kernel_o_max_text_bytes': kernel_o_max_text_bytes,
+            'template_instantiations': template_instantiations,
             'finished_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         (logdir / res_name).write_text(json.dumps(build_res, indent=2) + '\n')
@@ -481,6 +535,10 @@ if (runtime_dir / 'sitecustomize.py').is_file() and env.get('OPSB_ARENA_ACCEL', 
     env['OPSB_ARENA_STATS_FILE'] = str(arena_stats_file)
     cur_pp = env.get('PYTHONPATH', '')
     env['PYTHONPATH'] = f"{runtime_dir}:{cur_pp}" if cur_pp else str(runtime_dir)
+
+if cold3:
+    env['OPSB_COLD3'] = '1'
+    emit('COLD3_MODE=1')
 
 if fast:
     env['FAST_LANE'] = '1'
@@ -600,6 +658,8 @@ profiler_us_sum = 0.0
 profiler_launches = 0
 cold_first_samples = []
 cold_spread_samples = []
+cold3_per_case = {}
+cold3_warm_samples = []
 
 def _scan_perf_line(line):
     global profiler_us_sum, profiler_launches
@@ -611,6 +671,21 @@ def _scan_perf_line(line):
         except ValueError:
             pass
     s = line.strip()
+    if s.startswith('COLD3_CASE '):
+        try:
+            cobj = json.loads(s[len('COLD3_CASE '):].strip())
+            if isinstance(cobj, dict):
+                cname = str(cobj.get('case') or cobj.get('label') or '')
+                runs = cobj.get('runs') or cobj.get('runs_us') or cobj.get('cold3_runs')
+                if cname and isinstance(runs, list) and len(runs) >= 3:
+                    vals = [float(x) for x in runs[:3]]
+                    cold3_per_case[cname] = vals
+                    cold_first_samples.append(vals[0])
+                    cold_spread_samples.append(max(vals) - min(vals))
+                    cold3_warm_samples.append(min(vals[1], vals[2]))
+        except Exception:
+            pass
+        return
     if s.startswith(('KPERF_JSON ', 'KERNEL_JSON ', 'KERNEL_PERF ', 'PERF ')):
         try:
             payload = json.loads(s.split(' ', 1)[1].strip())
@@ -618,6 +693,7 @@ def _scan_perf_line(line):
             for it in items:
                 if not isinstance(it, dict) or it.get('mode') == 'torch' or it.get('source') == 'torch':
                     continue
+                cname = str(it.get('case') or it.get('label') or '')
                 if isinstance(it.get('ops'), dict) and it['ops']:
                     it = next(iter(it['ops'].values()))
                     if not isinstance(it, dict):
@@ -625,17 +701,39 @@ def _scan_perf_line(line):
                 fi = it.get('first_iter_us') or it.get('cold_us')
                 mx = it.get('max_us') or it.get('kernel_max_us')
                 mn = it.get('min_us') or it.get('kernel_min_us')
-                if isinstance(fi, (int, float)) and fi > 0:
-                    cold_first_samples.append(float(fi))
-                elif isinstance(mx, (int, float)) and mx > 0:
-                    cold_first_samples.append(float(mx))
-                if isinstance(mx, (int, float)) and isinstance(mn, (int, float)) and mx >= mn > 0:
-                    cold_spread_samples.append(float(mx) - float(mn))
+                med = it.get('median_us') or it.get('kernel_median_us')
+                runs = it.get('cold3_runs') or it.get('runs_us') or it.get('runs')
+                if isinstance(runs, list) and len(runs) >= 3 and cname:
+                    vals = [float(x) for x in runs[:3]]
+                    cold3_per_case[cname] = vals
+                    cold_first_samples.append(vals[0])
+                    cold_spread_samples.append(max(vals) - min(vals))
+                    cold3_warm_samples.append(float(med) if isinstance(med, (int, float)) and med > 0 else min(vals[1], vals[2]))
+                else:
+                    if isinstance(fi, (int, float)) and fi > 0:
+                        cold_first_samples.append(float(fi))
+                    elif isinstance(mx, (int, float)) and mx > 0:
+                        cold_first_samples.append(float(mx))
+                    if isinstance(mx, (int, float)) and isinstance(mn, (int, float)) and mx >= mn > 0:
+                        cold_spread_samples.append(float(mx) - float(mn))
+                    if isinstance(med, (int, float)) and med > 0:
+                        cold3_warm_samples.append(float(med))
+                        if cold3 and cname and cname not in cold3_per_case:
+                            r1 = float(fi) if isinstance(fi, (int, float)) and fi > 0 else (float(mx) if isinstance(mx, (int, float)) and mx > 0 else float(med))
+                            r3 = float(mn) if isinstance(mn, (int, float)) and mn > 0 else float(med)
+                            cold3_per_case[cname] = [round(r1, 3), round(float(med), 3), round(r3, 3)]
         except Exception:
             pass
     elif s.startswith(('MS_PROF ', 'KPERF ')):
+        m_cname = re.search(r'^(?:MS_PROF\s+case=|KPERF\s+)(\S+)', s)
+        m_med = re.search(r'\bmedian=\s*([\d.]+)', s)
         m_mn = re.search(r'\bmin=\s*([\d.]+)', s)
         m_mx = re.search(r'\bmax=\s*([\d.]+)', s)
+        if m_med:
+            try:
+                cold3_warm_samples.append(float(m_med.group(1)))
+            except ValueError:
+                pass
         if m_mx:
             try:
                 mx_v = float(m_mx.group(1))
@@ -644,6 +742,9 @@ def _scan_perf_line(line):
                     mn_v = float(m_mn.group(1))
                     if mx_v >= mn_v > 0:
                         cold_spread_samples.append(mx_v - mn_v)
+                    if cold3 and m_cname and m_med and m_cname.group(1) not in cold3_per_case:
+                        med_v = float(m_med.group(1))
+                        cold3_per_case[m_cname.group(1)] = [round(mx_v, 3), round(med_v, 3), round(mn_v, 3)]
             except ValueError:
                 pass
 
@@ -785,6 +886,32 @@ if first_iter_us is not None or cold_spread_median_us is not None:
         'first_iter_us': first_iter_us,
         'cold_spread_median_us': cold_spread_median_us,
     }, sort_keys=True))
+
+cold_3run_mean_us = None
+cold3_stats_payload = None
+if cold3 or cold3_per_case:
+    c3_means = sorted((v[0] + v[1] + v[2]) / 3.0 for v in cold3_per_case.values()) if cold3_per_case else []
+    warm_med_us = round(sorted(cold3_warm_samples)[len(cold3_warm_samples) // 2], 3) if cold3_warm_samples else None
+    if c3_means:
+        cold_3run_mean_us = round(c3_means[len(c3_means) // 2], 3)
+    elif first_iter_us is not None and warm_med_us is not None:
+        cold_3run_mean_us = round((first_iter_us + 2.0 * warm_med_us) / 3.0, 3)
+    bimodal_spike = any(
+        (v[2] > 0 and (v[0] / v[2]) >= 1.45 and (v[0] - v[2]) >= 1.5)
+        for v in cold3_per_case.values()
+    )
+    if not bimodal_spike and first_iter_us is not None and warm_med_us is not None and warm_med_us > 0:
+        bimodal_spike = ((first_iter_us / warm_med_us) >= 1.45 and (first_iter_us - warm_med_us) >= 1.5)
+    cold3_stats_payload = {
+        'cases': len(cold3_per_case) or len(cold_first_samples),
+        'first_iter_us': first_iter_us,
+        'cold_3run_mean_us': cold_3run_mean_us,
+        'warm_median_us': warm_med_us,
+        'cold_spread_median_us': cold_spread_median_us,
+        'bimodal_spike_detected': bimodal_spike,
+        'per_case': cold3_per_case,
+    }
+    emit('COLD3_STATS ' + json.dumps(cold3_stats_payload, sort_keys=True))
 emit(f'[PHASE-C] Lock-free verify + profiler parse finished in {phase_c_sec:.2f}s (Phase-B Die-0 hold was {phase_b_sec:.2f}s)')
 log_f.close()
 
@@ -838,6 +965,7 @@ res_payload = {
     'sha': sha,
     'exit_code': code,
     'fast_lane': fast,
+    'cold3': cold3,
     'phase_a_cpu_sec': phase_a_sec,
     'phase_b_die_sec': phase_b_sec,
     'phase_c_cpu_sec': phase_c_sec,
@@ -849,8 +977,11 @@ res_payload = {
     'kernel_o_max_bytes': kernel_o_max_bytes,
     'kernel_o_sum_bytes': kernel_o_sum_bytes,
     'kernel_o_max_text_bytes': kernel_o_max_text_bytes,
+    'template_instantiations': template_instantiations,
     'first_iter_us': first_iter_us,
+    'cold_3run_mean_us': cold_3run_mean_us,
     'cold_spread_median_us': cold_spread_median_us,
+    'cold3_stats': cold3_stats_payload,
     'finished_at': end_iso,
 }
 (logdir / res_name).write_text(json.dumps(res_payload, indent=2) + '\n')
@@ -865,6 +996,7 @@ def run_3phase_validation(
     sync_only: bool = False,
     fast: bool = False,
     build_only: bool = False,
+    cold3: bool = False,
     npu_host: str = "npu",
     workspace: Path = ROOT,
     stream_stdout: bool = True,
@@ -890,6 +1022,7 @@ def run_3phase_validation(
             raise RuntimeError("Push local HEAD to origin/main before validation")
 
     fast_mode = bool(fast or os.environ.get("OPSB_FAST_LANE") == "1")
+    cold3_mode = bool(cold3 or os.environ.get("OPSB_COLD3") == "1")
     wspt_base, mlfq, aging_tau = _compute_scheduler_priority(problem["title"], fast=fast_mode, workspace=workspace)
 
     credential = subprocess.check_output(
@@ -907,6 +1040,7 @@ def run_3phase_validation(
         password=fields["password"],
         sync_only=sync_only,
         fast=fast_mode,
+        cold3=cold3_mode,
         build_only=build_only,
         mlfq=mlfq,
         wspt_base=wspt_base,
@@ -971,7 +1105,8 @@ def run_3phase_validation(
         "phase_a_cpu_sec", "phase_b_die_sec", "phase_c_cpu_sec", "hold_sec",
         "npu_exec_sec", "acl_host_sec", "arena_cases_inproc",
         "kernel_o_count", "kernel_o_max_bytes", "kernel_o_sum_bytes", "kernel_o_max_text_bytes",
-        "first_iter_us", "cold_spread_median_us",
+        "template_instantiations",
+        "first_iter_us", "cold_3run_mean_us", "cold_spread_median_us", "cold3", "cold3_stats",
     ):
         if k in remote_metrics and remote_metrics[k] is not None:
             result[k] = remote_metrics[k]
@@ -986,6 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sync-only", action="store_true", help="Pull and verify SHA without building or running NPU")
     parser.add_argument("--build-only", action="store_true", help="Run Phase A 32-core CPU compile only (0.0s NPU lock)")
     parser.add_argument("--fast", action="store_true", help="Run Q0 fast-lane subset after Phase A CPU build")
+    parser.add_argument("--cold3", action="store_true", help="Record explicit un-warmed 3-run cold-start timings (COLD3_STATS)")
     parser.add_argument("--npu-host", default="npu", help="SSH host alias (default: npu)")
     parser.add_argument("--workspace", "-w", default=None, help="Contest workspace root (default: OPSB_WORKSPACE or cwd)")
     args = parser.parse_args(argv)
@@ -997,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
         sync_only=args.sync_only,
         fast=args.fast,
         build_only=args.build_only,
+        cold3=args.cold3,
         npu_host=args.npu_host,
         workspace=ws,
         stream_stdout=True,
