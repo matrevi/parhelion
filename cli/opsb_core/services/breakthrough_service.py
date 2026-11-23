@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read_json, utc_now
+from ..config import DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, breakthrough_dir, read_json, utc_now
 from .git_fast import read_commit_subject
 
 VALID_CATEGORIES = (
@@ -24,20 +24,22 @@ VALID_CATEGORIES = (
 
 
 def resolve_breakthrough_dir(workspace: Path) -> Path:
-    ws_bt = workspace / "breakthrough"
-    if (ws_bt / "index.json").is_file() or (workspace / "opsb.workspace.json").is_file():
-        return ws_bt
-    return SUPERVISOR_ROOT / "breakthrough"
+    """Resolve cross-contest shared breakthrough playbook under `~/.parhelion/breakthrough/`."""
+    return breakthrough_dir()
 
 
-def scaffold_breakthrough_dir(target_root: Path) -> Path:
-    bt_dir = target_root / "breakthrough"
+def scaffold_breakthrough_dir(target_root: Path | None = None) -> Path:
+    bt_dir = (target_root / "breakthrough") if target_root is not None else breakthrough_dir()
     entries_dir = bt_dir / "entries"
     entries_dir.mkdir(parents=True, exist_ok=True)
 
-    src_schema = SUPERVISOR_ROOT / "breakthrough" / "schema.json"
-    if src_schema.is_file() and not (bt_dir / "schema.json").is_file():
-        (bt_dir / "schema.json").write_text(src_schema.read_text(encoding="utf-8"), encoding="utf-8")
+    for src_schema in (
+        SUPERVISOR_ROOT / "templates" / "breakthrough" / "schema.json",
+        SUPERVISOR_ROOT / "breakthrough" / "schema.json",
+    ):
+        if src_schema.is_file() and not (bt_dir / "schema.json").is_file():
+            (bt_dir / "schema.json").write_text(src_schema.read_text(encoding="utf-8"), encoding="utf-8")
+            break
 
     idx_path = bt_dir / "index.json"
     if not idx_path.is_file():

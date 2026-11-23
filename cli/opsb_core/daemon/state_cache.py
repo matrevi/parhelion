@@ -86,10 +86,11 @@ class _WorkspaceStateEntry:
         return self._problem_paths
 
     def compute_cold_fingerprint(self) -> str:
+        from ..config import breakthrough_dir, workspace_state_dir
+
         ws = self.workspace
-        sup = ws / "ops-supervisor"
-        if not sup.is_dir():
-            sup = Path(__file__).resolve().parents[3]
+        ws_state = workspace_state_dir(ws)
+        bt_root = breakthrough_dir()
         h = hashlib.sha256()
 
         def _feed(tag: str, p: Path) -> None:
@@ -104,10 +105,10 @@ class _WorkspaceStateEntry:
         _feed("board", ws / "results" / "scoring-evidence" / "board-summary.json")
         _feed("mtable", ws / "results" / "scoring-evidence" / "my-score-table.json")
         _feed("esc", ws / "results" / "verified-escapes.json")
-        _feed("bt", sup / "breakthrough" / "index.json")
-        _feed("sstate", sup / "scheduler" / ".state" / "scheduler_state.json")
-        _feed("bledger", sup / "scheduler" / ".state" / "backfill_ledger.jsonl")
-        _feed("bcfg", sup / "scheduler" / ".state" / "backfill_config.json")
+        _feed("bt", bt_root / "index.json")
+        _feed("sstate", ws_state / "scheduler_state.json")
+        _feed("bledger", ws_state / "backfill_ledger.jsonl")
+        _feed("bcfg", ws_state / "backfill_config.json")
         _feed("cfg", CONFIG_DIR / "config.json")
         _feed("accts", CONFIG_DIR / "cj_accounts.json")
         _feed("psess", SESSIONS_DIR)

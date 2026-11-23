@@ -9,7 +9,7 @@ private func activateExistingInstanceAndExitIfDuplicate() -> Bool {
         if let bid = myBundleId, !bid.isEmpty, app.bundleIdentifier == bid {
             return true
         }
-        return app.executableURL?.lastPathComponent == "OpsSupervisor"
+        return app.executableURL?.lastPathComponent == "Parhelion"
     }
     if let existing = others.first {
         existing.unhide()
@@ -40,7 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct OpsSupervisorApp: App {
+struct ParhelionApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var hotStore: HotTelemetryStore
     @StateObject private var store: ContestStore

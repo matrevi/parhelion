@@ -308,14 +308,15 @@ def compact_backfill(rich: dict[str, Any]) -> dict[str, Any]:
 
 
 def _state_paths(ledger_path: str | None, workspace: Path | None) -> list[Path]:
+    from ..config import workspace_state_dir
+
     out: list[Path] = []
     if ledger_path:
         out.append(Path(ledger_path))
     if workspace:
-        ws = Path(workspace)
-        out.append(ws / "ops-supervisor" / "scheduler" / ".state" / LEDGER_NAME)
-        out.append(ws / "scheduler" / ".state" / LEDGER_NAME)
-    out.append(SUPERVISOR_ROOT / "scheduler" / ".state" / LEDGER_NAME)
+        out.append(workspace_state_dir(workspace) / LEDGER_NAME)
+    if not out:
+        out.append(SUPERVISOR_ROOT / "scheduler" / ".state" / LEDGER_NAME)
     return out
 
 

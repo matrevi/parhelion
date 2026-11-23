@@ -110,7 +110,10 @@ def scaffold_workspace(
 
     results_dir = target_dir / "results"
     results_dir.mkdir(exist_ok=True)
-    scaffold_breakthrough_dir(target_dir)
+    scaffold_breakthrough_dir()
+    from ..config import workspace_bench_specs_dir, workspace_state_dir
+    workspace_bench_specs_dir(target_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
+    workspace_state_dir(target_dir).mkdir(mode=0o700, parents=True, exist_ok=True)
     if not (results_dir / "score-snapshot.json").exists():
         snap = {p["title"]: {"rank": None, "status": "no-submission", "score": 0.0, "public_times_us": []} for p in normalized}
         (results_dir / "score-snapshot.json").write_text(json.dumps(snap, indent=2) + "\n", encoding="utf-8")

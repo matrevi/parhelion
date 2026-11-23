@@ -1,7 +1,7 @@
 # Build & Packaged Artifacts
+.build/
+.swiftpm/
 dist/
-macos-app/.build/
-macos-app/.swiftpm/
 
 # Python Caches & Runtime State
 __pycache__/

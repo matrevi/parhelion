@@ -259,9 +259,14 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
+from .parhelion_paths import get_parhelion_home
+
 _FP_CACHE: dict[str, str | None] = {}
 _FP_CACHE_LOADED: bool = False
-_FP_CACHE_FILE = pathlib.Path(__file__).resolve().parent / ".state" / "code_fp_cache.json"
+
+
+def _fp_cache_file() -> pathlib.Path:
+    return get_parhelion_home() / "cache" / "code_fp_cache.json"
 
 
 def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
@@ -269,11 +274,12 @@ def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
     global _FP_CACHE_LOADED
     if not (repo / ".git").exists() or not sha:
         return None
+    fp_file = _fp_cache_file()
     if not _FP_CACHE_LOADED:
         _FP_CACHE_LOADED = True
-        if _FP_CACHE_FILE.is_file():
+        if fp_file.is_file():
             try:
-                _FP_CACHE.update(json.loads(_FP_CACHE_FILE.read_text()))
+                _FP_CACHE.update(json.loads(fp_file.read_text()))
             except Exception:
                 pass
     cache_key = f"{repo.name}:{sha}"
@@ -304,10 +310,10 @@ def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
     digest = h.hexdigest()
     _FP_CACHE[cache_key] = digest
     try:
-        _FP_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = _FP_CACHE_FILE.with_suffix(".tmp")
+        fp_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp = fp_file.with_suffix(".tmp")
         tmp.write_text(json.dumps(_FP_CACHE, separators=(",", ":")))
-        tmp.replace(_FP_CACHE_FILE)
+        tmp.replace(fp_file)
     except Exception:
         pass
     return digest

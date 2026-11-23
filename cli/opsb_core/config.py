@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import datetime
 import fcntl
+import hashlib
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -27,9 +29,34 @@ CONFIG_PATH = PARHELION_HOME / "config.json"
 CACHE_DIR = PARHELION_HOME / "cache"
 LOGS_DIR = PARHELION_HOME / "logs"
 SESSIONS_DIR = PARHELION_HOME / "sessions"
+BREAKTHROUGH_DIR = PARHELION_HOME / "breakthrough"
+WORKSPACES_DATA_DIR = PARHELION_HOME / "workspaces"
 DAEMON_STATE_PATH = PARHELION_HOME / "daemon.json"
 DAEMON_LOCK_PATH = PARHELION_HOME / "daemon.lock"
 DAEMON_LOG_PATH = LOGS_DIR / "daemon.log"
+
+
+def workspace_id(workspace: Path | str) -> str:
+    resolved = Path(workspace).expanduser().resolve()
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", resolved.name).strip("-") or "workspace"
+    digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:8]
+    return f"{slug}-{digest}"
+
+
+def workspace_data_dir(workspace: Path | str) -> Path:
+    return PARHELION_HOME / "workspaces" / workspace_id(workspace)
+
+
+def workspace_bench_specs_dir(workspace: Path | str) -> Path:
+    return workspace_data_dir(workspace) / "bench-specs"
+
+
+def workspace_state_dir(workspace: Path | str) -> Path:
+    return workspace_data_dir(workspace) / "state"
+
+
+def breakthrough_dir() -> Path:
+    return PARHELION_HOME / "breakthrough"
 
 
 def _is_workspace_root(path: Path) -> bool:

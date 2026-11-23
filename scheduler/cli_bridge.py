@@ -30,6 +30,7 @@ from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
+from .parhelion_paths import ensure_workspace_data_dirs, workspace_bench_specs_dir, workspace_state_dir
 
 def _detect_default_workspace() -> pathlib.Path:
     env_ws = os.environ.get("OPSB_WORKSPACE")
@@ -47,7 +48,7 @@ def _detect_default_workspace() -> pathlib.Path:
 
 DEFAULT_WORKSPACE = _detect_default_workspace()
 PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
-DEFAULT_STATE_DIR = PACKAGE_DIR / ".state"
+DEFAULT_STATE_DIR = workspace_state_dir(DEFAULT_WORKSPACE)
 
 
 def _utc_now() -> str:
@@ -83,7 +84,11 @@ class SchedulerEngine:
         npu_host: str = "npu",
     ) -> None:
         self.workspace = workspace.resolve()
-        self.state_dir = (state_dir or DEFAULT_STATE_DIR).resolve()
+        if state_dir is not None:
+            self.state_dir = pathlib.Path(state_dir).resolve()
+        else:
+            ensure_workspace_data_dirs(self.workspace)
+            self.state_dir = workspace_state_dir(self.workspace).resolve()
         self.state_file = self.state_dir / "scheduler_state.json"
         self.npu_host = npu_host
         self._raw_state = self._load_state()
@@ -98,6 +103,7 @@ class SchedulerEngine:
         self.calibrator = BenchmarkCalibrator(
             self.workspace,
             estimator=self.estimator,
+            specs_root=workspace_bench_specs_dir(self.workspace),
             verified_escapes=self.verified_escapes,
             state_dir=self.state_dir,
         )

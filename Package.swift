@@ -2,17 +2,17 @@
 import PackageDescription
 
 let package = Package(
-    name: "OpsSupervisor",
+    name: "Parhelion",
     platforms: [
         .macOS(.v14)
     ],
     products: [
-        .executable(name: "OpsSupervisor", targets: ["OpsSupervisor"])
+        .executable(name: "Parhelion", targets: ["Parhelion"])
     ],
     targets: [
         .executableTarget(
-            name: "OpsSupervisor",
-            path: "Sources/OpsSupervisor"
+            name: "Parhelion",
+            path: "Sources/Parhelion"
         )
     ]
 )

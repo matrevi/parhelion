@@ -1324,7 +1324,7 @@ class StreamProbeSession:
                 stage, detail = classify_stage(tree, procs, holds_die=False)
                 is_boosted = int(tk.get("tier") or 0) >= 50
                 if is_boosted:
-                    detail = "Priority boosted by OpsSupervisor"
+                    detail = "Priority boosted by Parhelion"
                 lane_str = "Q0" if tk.get("fast") else "Q1"
             tk_created = float(tk.get("created") or 0)
             wait_elapsed = int(max(0, round(now_epoch - tk_created))) if tk_created > 0 else procs[w_pid]["elapsed_sec"]

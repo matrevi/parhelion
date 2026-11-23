@@ -955,7 +955,8 @@ class BackfillScheduler:
         runner: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = pathlib.Path(workspace).resolve()
-        self.state_dir = (pathlib.Path(state_dir) if state_dir else self.workspace / "ops-supervisor" / "scheduler" / ".state").resolve()
+        from .parhelion_paths import workspace_state_dir
+        self.state_dir = (pathlib.Path(state_dir) if state_dir else workspace_state_dir(self.workspace)).resolve()
         self.npu_host = npu_host
         self.clock = clock
         self._estimator = estimator

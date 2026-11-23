@@ -54,6 +54,7 @@ from .estimator import (
     parse_validation_perf,
     resolve_sha,
 )
+from .parhelion_paths import workspace_bench_specs_dir
 
 STRATA_ORDER: tuple[tuple[str, str, float], ...] = (
     ("PUBLIC", "Public", 0.10),
@@ -172,8 +173,9 @@ class BenchmarkCalibrator:
         self.workspace = workspace.resolve()
         self.estimator = estimator or ScoreEstimator(self.workspace)
         self.specs_root = (
-            specs_root
-            or (pathlib.Path(__file__).resolve().parents[1] / "bench-specs")
+            pathlib.Path(specs_root)
+            if specs_root is not None
+            else workspace_bench_specs_dir(self.workspace)
         )
         self.verified_escapes = verified_escapes if verified_escapes is not None else {}
         # B0 backfill lane store (`<state>/backfill_timings.json`); built lazily on first use

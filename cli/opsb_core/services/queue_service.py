@@ -160,12 +160,14 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     }
                 )
 
+    from ..config import workspace_state_dir
+
     # Compute per-operator ESCAPE_LOCK state (prefer calibration.json single source of truth; fallback to outcome scan)
     verified_escapes: dict[str, Any] = {}
     for ve_cand in (
         results_dir / "verified-escapes.json",
         results_dir / "escape-verifications.json",
-        workspace / "ops-supervisor" / "scheduler" / ".state" / "verified_escapes.json",
+        workspace_state_dir(workspace) / "verified_escapes.json",
     ):
         if ve_cand.is_file():
             ve_doc = read_json(ve_cand, {})

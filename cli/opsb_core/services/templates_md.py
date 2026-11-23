@@ -2,7 +2,7 @@
 
 WORKSPACE_AGENTS_MD = """# {contest_title} · Agent Protocol (`AGENTS.md`-First · 3-Phase NPU Pipeline)
 
-This workspace uses a **zero-noise directory layout** powered by **`opsb`** and **`Parhelion` (`OpsSupervisor.app`)**:
+This workspace uses a **zero-noise directory layout** powered by **`opsb`** and **`Parhelion.app`** (`~/.parhelion/`):
 - **Phase A (32-Core Lock-Free CPU Build, `0s` NPU lock)**: Up to `8–10` operators compile concurrently without touching `device0.lock`.
 - **Phase B (`PersistentArenaRunner` + Single-Session `profiler`, `~13–24s` NPU lock)**: Sub-minute WSPT `Q0`/`Q1` ticket execution on Die 0.
 - **Phase C (Lock-Free Golden Diff & Simplex MAP Calibration, `0s` NPU lock)**: Out-of-tree `results/<Op>/calibration.json` updates automatically on every online evaluation.

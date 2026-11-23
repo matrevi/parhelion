@@ -37,19 +37,29 @@ from scheduler.backfill import (  # noqa: E402
     ticket_rank,
 )
 
-SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]  # ops-supervisor/ (or a git worktree of it)
+from scheduler.parhelion_paths import workspace_bench_specs_dir
+
+SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
-    """Walk up to the contest workspace (robust to running from a `git worktree`)."""
+    """Resolve real workspace if configured in ~/.parhelion/config.json or ancestors."""
     for cand in (start, *start.parents):
         if (cand / "bench" / "problems.json").is_file():
             return cand
+    cfg_path = pathlib.Path.home() / ".parhelion" / "config.json"
+    if cfg_path.is_file():
+        try:
+            ws = json.loads(cfg_path.read_text()).get("active_workspace")
+            if ws and pathlib.Path(ws).is_dir():
+                return pathlib.Path(ws).resolve()
+        except Exception:
+            pass
     return start.parent
 
 
 REAL_WORKSPACE = _find_workspace(pathlib.Path(__file__).resolve())
-BENCH_SPECS = SUP_ROOT / "bench-specs"
+BENCH_SPECS = workspace_bench_specs_dir(REAL_WORKSPACE)
 SHA = "a" * 40
 
 

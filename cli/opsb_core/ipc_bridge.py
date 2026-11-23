@@ -7,7 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .config import SUPERVISOR_ROOT, invalidate_ttl_cache, read_ttl_cache, resolve_python_exe, write_ttl_cache
+from .config import (
+    SUPERVISOR_ROOT,
+    invalidate_ttl_cache,
+    read_ttl_cache,
+    resolve_python_exe,
+    workspace_state_dir,
+    write_ttl_cache,
+)
 
 
 def _queue_fingerprint(workspace: Path) -> str:
@@ -15,7 +22,7 @@ def _queue_fingerprint(workspace: Path) -> str:
     for rel in ("results/submit-queue.jsonl", "results/submit-queue-outcome.jsonl", "results/score-snapshot.json"):
         p = workspace / rel
         parts.append(str(p.stat().st_mtime_ns) if p.is_file() else "0")
-    st_file = SUPERVISOR_ROOT / "scheduler" / ".state" / "scheduler_state.json"
+    st_file = workspace_state_dir(workspace) / "scheduler_state.json"
     parts.append(str(st_file.stat().st_mtime_ns) if st_file.is_file() else "0")
     return "|".join(parts)
 

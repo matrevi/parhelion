@@ -71,6 +71,24 @@ class ConfigMigrationTests(unittest.TestCase):
                     self.assertEqual(loaded["active_workspace"], "")
                     self.assertEqual(loaded["workspaces"], [])
 
+    def test_workspace_scoped_bench_specs_state_and_shared_breakthrough(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            fake_home = Path(td)
+            p_home = fake_home / "parhelion_home"
+            ws_a = fake_home / "contest_a"
+            ws_b = fake_home / "contest_b"
+            ws_a.mkdir()
+            ws_b.mkdir()
+            with mock.patch.dict(os.environ, {"PARHELION_HOME": str(p_home)}, clear=False):
+                import opsb_core.config as cfg_mod
+
+                cfg_mod = importlib.reload(cfg_mod)
+                self.assertEqual(cfg_mod.breakthrough_dir(), p_home.resolve() / "breakthrough")
+                self.assertEqual(cfg_mod.workspace_bench_specs_dir(ws_a).parent.parent, p_home.resolve() / "workspaces")
+                self.assertNotEqual(cfg_mod.workspace_data_dir(ws_a), cfg_mod.workspace_data_dir(ws_b))
+                self.assertTrue(cfg_mod.workspace_state_dir(ws_a).name == "state")
+                self.assertTrue(cfg_mod.workspace_bench_specs_dir(ws_a).name == "bench-specs")
+
 
 if __name__ == "__main__":
     unittest.main()
