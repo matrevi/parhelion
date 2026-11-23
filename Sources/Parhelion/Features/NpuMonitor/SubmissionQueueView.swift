@@ -29,7 +29,13 @@ struct SubmissionQueueView: View {
             || u.contains("CIRCUIT")
             || u.contains("ESCAPE")
             || u.contains("REJECTED")
+            || u.contains("QUOTA")
+            || u.contains("EXHAUSTED")
             || !item.gates.allPass
+    }
+
+    private var coldInflightItems: [SubmissionQueueItem] {
+        items.filter { $0.kind == "inflight" }
     }
 
     private var waitingItems: [SubmissionQueueItem] {
@@ -56,12 +62,18 @@ struct SubmissionQueueView: View {
                     let ta = a.finishedAt ?? a.queuedAt
                     let tb = b.finishedAt ?? b.queuedAt
                     if ta != tb { return ta > tb }
-                    return (a.breakthroughDelta ?? 0) > (b.breakthroughDelta ?? 0)
+                    let da = a.breakthroughDelta ?? 0
+                    let db = b.breakthroughDelta ?? 0
+                    if da != db { return da > db }
+                    return a.id < b.id
                 }
                 let aPend = a.kind != "completed"
                 let bPend = b.kind != "completed"
                 if aPend != bPend { return aPend && !bPend }
-                return (a.breakthroughDelta ?? 0) > (b.breakthroughDelta ?? 0)
+                let da = a.breakthroughDelta ?? 0
+                let db = b.breakthroughDelta ?? 0
+                if da != db { return da > db }
+                return a.id < b.id
             }
     }
 
@@ -74,7 +86,14 @@ struct SubmissionQueueView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            headerTabs
+            SubmissionQueueHeaderTabs(
+                selectedTab: $selectedTab,
+                waitingItems: waitingItems,
+                heldItems: heldItems,
+                breakthroughCount: breakthroughItems.count,
+                completedCount: completedItems.count,
+                fallbackPipeline: pipeline
+            )
             Divider()
             if selectedTab == .breakthrough {
                 breakthroughThresholdBar
@@ -82,59 +101,63 @@ struct SubmissionQueueView: View {
             }
 
             ScrollView {
-                LazyVStack(spacing: 9) {
-                    if selectedTab == .waiting {
-                        WaitingQueueContentView(
-                            waitingItems: waitingItems,
-                            heldItems: heldItems,
-                            fallbackPipeline: pipeline,
-                            clock: clock,
-                            emptyText: lang.tr("当前没有待提交的候选版本", "No pending candidates in queue")
-                        )
-                    } else {
-                        switch selectedTab {
-                        case .waiting:
-                            EmptyView()
-                        case .breakthrough:
-                            if breakthroughItems.isEmpty {
-                                emptyHint(lang.tr(
-                                    String(format: "当前阈值 (Δ ≥ %.1f pts) 下暂无突破提交，可调低阈值查看", btThreshold),
-                                    String(format: "No breakthrough submissions at Δ ≥ %.1f pts", btThreshold)
-                                ))
-                            } else {
-                                ForEach(Array(breakthroughItems.enumerated()), id: \.element.id) { idx, item in
-                                    if item.kind == "completed" {
-                                        CompletedSubmissionCardView(
-                                            item: item,
-                                            experience: matchedExperience(for: item),
-                                            onInspectExperience: { inspectedExperience = $0 }
-                                        )
-                                    } else {
-                                        CandidateSubmissionCardView(item: item, rankIndex: idx + 1, clock: clock)
-                                    }
-                                }
-                            }
-                        case .history:
-                            HistoryQueueContentView(
-                                completedItems: completedItems,
-                                fallbackPipeline: pipeline,
-                                clock: clock,
-                                emptyText: lang.tr("暂无历史评测记录", "No historical evaluations yet"),
-                                matchedExperience: matchedExperience(for:),
-                                onInspectExperience: { inspectedExperience = $0 }
-                            )
-                        case .held:
-                            if heldItems.isEmpty {
-                                emptyHint(lang.tr("没有被防抖门禁暂缓的候选版本", "No candidates currently held by noise gate"))
-                            } else {
-                                ForEach(Array(heldItems.enumerated()), id: \.element.id) { idx, item in
-                                    CandidateSubmissionCardView(item: item, rankIndex: idx + 1, clock: clock)
+                switch selectedTab {
+                case .waiting:
+                    // VStack (not LazyVStack) lets matchedGeometryEffect glide candidate → active.
+                    WaitingQueueContentView(
+                        waitingItems: waitingItems,
+                        heldItems: heldItems,
+                        coldInflightItems: coldInflightItems,
+                        fallbackPipeline: pipeline,
+                        clock: clock,
+                        emptyText: lang.tr("当前没有待提交的候选版本", "No pending candidates in queue"),
+                        onOpenHeldTab: { selectedTab = .held }
+                    )
+                    .padding(10)
+                case .held:
+                    HeldQueueContentView(
+                        heldItems: heldItems,
+                        coldInflightItems: coldInflightItems,
+                        fallbackPipeline: pipeline,
+                        clock: clock,
+                        emptyText: lang.tr("没有被防抖门禁暂缓的候选版本", "No candidates currently held by noise gate")
+                    )
+                    .padding(10)
+                case .breakthrough:
+                    LazyVStack(spacing: 9) {
+                        let keyed = deduplicatedByItemId(breakthroughItems)
+                        if keyed.isEmpty {
+                            emptyHint(lang.tr(
+                                String(format: "当前阈值 (Δ ≥ %.1f pts) 下暂无突破提交，可调低阈值查看", btThreshold),
+                                String(format: "No breakthrough submissions at Δ ≥ %.1f pts", btThreshold)
+                            ))
+                        } else {
+                            ForEach(Array(keyed.enumerated()), id: \.element.id) { idx, entry in
+                                if entry.item.kind == "completed" {
+                                    CompletedSubmissionCardView(
+                                        item: entry.item,
+                                        experience: matchedExperience(for: entry.item),
+                                        onInspectExperience: { inspectedExperience = $0 }
+                                    )
+                                } else {
+                                    CandidateSubmissionCardView(item: entry.item, rankIndex: idx + 1, clock: clock)
                                 }
                             }
                         }
                     }
+                    .padding(10)
+                case .history:
+                    HistoryQueueContentView(
+                        completedItems: completedItems,
+                        coldInflightItems: coldInflightItems,
+                        fallbackPipeline: pipeline,
+                        clock: clock,
+                        emptyText: lang.tr("暂无历史评测记录", "No historical evaluations yet"),
+                        matchedExperience: matchedExperience(for:),
+                        onInspectExperience: { inspectedExperience = $0 }
+                    )
+                    .padding(10)
                 }
-                .padding(10)
             }
         }
         .sheet(item: $inspectedExperience) { entry in
@@ -157,25 +180,6 @@ struct SubmissionQueueView: View {
             }
             .frame(width: 680, height: 520)
         }
-    }
-
-    private var headerTabs: some View {
-        HStack {
-            Label(lang.tr("提交与判题队列", "Submission & Judge Queue"), systemImage: "paperplane.circle.fill")
-                .font(.system(size: 13, weight: .bold))
-            Spacer()
-            Picker("", selection: $selectedTab) {
-                Text(lang.tr("待提交 (\(waitingItems.count))", "Queue (\(waitingItems.count))")).tag(QueueViewTab.waiting)
-                Text(lang.tr("突破 (\(breakthroughItems.count))", "Breakthrough (\(breakthroughItems.count))")).tag(QueueViewTab.breakthrough)
-                Text(lang.tr("历史 (\(completedItems.count))", "History (\(completedItems.count))")).tag(QueueViewTab.history)
-                Text(lang.tr("暂缓 (\(heldItems.count))", "Held (\(heldItems.count))")).tag(QueueViewTab.held)
-            }
-            .pickerStyle(.segmented)
-            .controlSize(.small)
-            .frame(width: 365)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
     }
 
     private var breakthroughThresholdBar: some View {
@@ -244,89 +248,5 @@ struct SubmissionQueueView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)
-    }
-}
-
-/// Isolated hot-subscribed section for active inflight submissions & waiting queue cards.
-private struct WaitingQueueContentView: View {
-    @EnvironmentObject var hotStore: HotTelemetryStore
-    let waitingItems: [SubmissionQueueItem]
-    let heldItems: [SubmissionQueueItem]
-    let fallbackPipeline: LivePipelineState?
-    @ObservedObject var clock: WallClockTicker
-    let emptyText: String
-
-    private var livePipeline: LivePipelineState? {
-        hotStore.pipeline ?? fallbackPipeline
-    }
-
-    var body: some View {
-        let pipe = livePipeline
-        let inflightSet = Set(pipe?.inflightKeys ?? [])
-        let visibleWaiting = waitingItems.filter { !inflightSet.contains("\($0.title)|\($0.shortSha)") }
-        let visibleHeld = heldItems.filter { !inflightSet.contains("\($0.title)|\($0.shortSha)") }
-        let combined = visibleWaiting.isEmpty ? visibleHeld : visibleWaiting
-
-        ActiveSubmissionsDeckView(fallbackPipeline: fallbackPipeline, clock: clock)
-
-        if combined.isEmpty && !(pipe?.isBusy ?? false) {
-            VStack(spacing: 8) {
-                Image(systemName: "tray")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary)
-                Text(emptyText)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
-        } else {
-            ForEach(Array(combined.enumerated()), id: \.element.id) { idx, item in
-                CandidateSubmissionCardView(item: item, rankIndex: idx + 1, clock: clock)
-            }
-        }
-    }
-}
-
-/// Isolated hot-subscribed section for History tab: renders active judging cards above completed outcomes.
-private struct HistoryQueueContentView: View {
-    @EnvironmentObject var hotStore: HotTelemetryStore
-    let completedItems: [SubmissionQueueItem]
-    let fallbackPipeline: LivePipelineState?
-    @ObservedObject var clock: WallClockTicker
-    let emptyText: String
-    let matchedExperience: (SubmissionQueueItem) -> BreakthroughEntry?
-    let onInspectExperience: (BreakthroughEntry) -> Void
-
-    private var livePipeline: LivePipelineState? {
-        hotStore.pipeline ?? fallbackPipeline
-    }
-
-    var body: some View {
-        let pipe = livePipeline
-        let hasActives = !(pipe?.activeSubmissions?.isEmpty ?? true) || (pipe?.isBusy ?? false)
-
-        ActiveSubmissionsDeckView(fallbackPipeline: fallbackPipeline, clock: clock)
-
-        if completedItems.isEmpty && !hasActives {
-            VStack(spacing: 8) {
-                Image(systemName: "tray")
-                    .font(.system(size: 24))
-                    .foregroundStyle(.secondary)
-                Text(emptyText)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 40)
-        } else {
-            ForEach(completedItems) { item in
-                CompletedSubmissionCardView(
-                    item: item,
-                    experience: matchedExperience(item),
-                    onInspectExperience: onInspectExperience
-                )
-            }
-        }
     }
 }

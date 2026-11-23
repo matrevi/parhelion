@@ -154,14 +154,10 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case headSubject = "head_subject"
         case headAgeMin = "head_age_min"
     }
-
-    static func == (lhs: ProblemItem, rhs: ProblemItem) -> Bool {
-        lhs.title == rhs.title && lhs.currentScore == rhs.currentScore && lhs.headSha == rhs.headSha
-    }
-
-    func hash(into hasher: inout Hasher) {
-        hasher.combine(title)
-    }
+    // NOTE: Equatable/Hashable are synthesized over ALL fields on purpose. A hand-written `==`
+    // that only compared title/currentScore/headSha let SwiftUI skip re-rendering views holding a
+    // `ProblemItem` (inspector, banners) when status/rank/calibration/history changed, leaving
+    // stale badges that contradicted the table.
 }
 
 struct TestcaseItem: Codable, Identifiable, Hashable {
@@ -188,7 +184,7 @@ struct TestcaseItem: Codable, Identifiable, Hashable {
 }
 
 struct ProblemHistoryItem: Codable, Identifiable, Hashable {
-    var id: String { "\(at)-\(sha)" }
+    var id: String { "\(submissionId ?? "")-\(at)-\(sha)-\(status)" }
     let at: String
     let sha: String
     let status: String

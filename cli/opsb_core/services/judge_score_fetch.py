@@ -88,6 +88,51 @@ def resolve_problem_id(workspace: Path, title: str) -> str | None:
     return None
 
 
+def _row_team_name(row: dict[str, Any]) -> str:
+    direct = row.get("team_name")
+    if direct:
+        return str(direct).strip()
+    team = row.get("team")
+    if isinstance(team, dict) and team.get("team_name"):
+        return str(team["team_name"]).strip()
+    return ""
+
+
+def _row_belongs_to_team(row: dict[str, Any], team_user_ids: set[str], team_name: str = "") -> bool:
+    uid = str(row.get("user_id") or "").strip()
+    if uid and team_user_ids and uid in team_user_ids:
+        return True
+    wanted = (team_name or "").strip()
+    if wanted:
+        r_team = _row_team_name(row)
+        if r_team and r_team == wanted:
+            return True
+    return False
+
+
+def pick_best_team_ranking_row(
+    rows: Any,
+    team_user_ids: set[str],
+    team_name: str = "",
+) -> dict[str, Any] | None:
+    """Return the highest-scoring ranking row belonging to our team across all teammate accounts."""
+    if not isinstance(rows, list):
+        return None
+    best: dict[str, Any] | None = None
+    best_score = -1.0
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if not _row_belongs_to_team(row, team_user_ids, team_name=team_name):
+            continue
+        sc = extract_numeric_score(row)
+        sc_val = sc if sc is not None else 0.0
+        if best is None or sc_val > best_score:
+            best = row
+            best_score = sc_val
+    return best
+
+
 def match_ranking_row_by_sid(rows: Any, sid: str) -> dict[str, Any] | None:
     """Strictly match a ranking row by `submission_id`/`sid`/`_id` (never fallback to `user_id`)."""
     target = str(sid or "").strip()
@@ -156,6 +201,57 @@ def scan_ranking_pages(
     return None
 
 
+def scan_ranking_for_sid_and_team(
+    fetch_page: Callable[[int], Any],
+    sid: str,
+    team_user_ids: set[str],
+    team_name: str = "",
+    *,
+    max_pages: int = 7,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Scan ranking pages for both the exact `sid` row AND the team's highest-scoring active row.
+
+    Ranking pages are ordered by `score` descending, so once we locate `sid` (or finish pages),
+    we have already inspected every higher-scoring page and therefore know the team's best active
+    board row across all teammate accounts.
+    """
+    sid_row: dict[str, Any] | None = None
+    best_team_row: dict[str, Any] | None = None
+    best_team_score = -1.0
+    for page in range(1, max_pages + 1):
+        try:
+            payload = fetch_page(page)
+        except Exception:
+            break
+        if not isinstance(payload, dict):
+            break
+        rows = payload.get("rows") or []
+        cand_team = pick_best_team_ranking_row(rows, team_user_ids, team_name=team_name)
+        if cand_team is not None:
+            sc = extract_numeric_score(cand_team)
+            sc_val = sc if sc is not None else 0.0
+            if best_team_row is None or sc_val > best_team_score:
+                best_team_row = cand_team
+                best_team_score = sc_val
+        matched = match_ranking_row_by_sid(rows, sid)
+        if matched is not None:
+            sid_row = matched
+            break
+        try:
+            total_pages = int(payload.get("pages") or 1)
+        except (TypeError, ValueError):
+            total_pages = 1
+        if page >= total_pages:
+            break
+    if best_team_row is None:
+        best_team_row = sid_row
+    elif sid_row is not None:
+        sid_sc = extract_numeric_score(sid_row)
+        if sid_sc is not None and sid_sc > best_team_score:
+            best_team_row = sid_row
+    return sid_row, best_team_row
+
+
 def fetch_ranking_row_with_retry(
     fetch_page: Callable[[int], Any],
     sid: str,
@@ -176,6 +272,34 @@ def fetch_ranking_row_with_retry(
         if row is not None:
             return row
     return None
+
+
+def fetch_ranking_sid_and_team_with_retry(
+    fetch_page: Callable[[int], Any],
+    sid: str,
+    team_user_ids: set[str],
+    team_name: str = "",
+    *,
+    status: str = "Pass",
+    retry_delays: tuple[float, ...] = DEFAULT_RANKING_RETRY_DELAYS,
+    max_pages: int = 7,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Fetch both exact `sid` row and team-best board row with retry on `Pass` async ranking lag."""
+    sid_row, team_row = scan_ranking_for_sid_and_team(
+        fetch_page, sid, team_user_ids, team_name=team_name, max_pages=max_pages
+    )
+    if sid_row is not None or status != "Pass":
+        return sid_row, team_row
+    for delay in retry_delays:
+        if delay > 0:
+            sleep_fn(delay)
+        sid_row, team_row = scan_ranking_for_sid_and_team(
+            fetch_page, sid, team_user_ids, team_name=team_name, max_pages=max_pages
+        )
+        if sid_row is not None:
+            return sid_row, team_row
+    return sid_row, team_row
 
 
 def resolve_score_and_times(

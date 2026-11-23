@@ -9,8 +9,9 @@ extension ContestStore {
     ) async {
         let pipe = livePipeline ?? hotStore.pipeline ?? snap.scheduler.pipeline
         let cdRem = liveCooldownRem ?? pipe?.cooldownRemainingSec ?? snap.scheduler.cooldownRemainingSec
-        let autoEnabled = hotStore.schedulerHot?.autoConsumerEnabled ?? snap.scheduler.autoConsumerEnabled
-        guard autoEnabled,
+        // Optimistic toggle wins: switching auto-submit off must stop dispatch immediately,
+        // not after the next hot frame confirms it.
+        guard effectiveAutoConsumer(),
               (pipe?.canSubmit ?? true),
               !(pipe?.isLocalBusy ?? false),
               cdRem == 0,
@@ -19,21 +20,12 @@ extension ContestStore {
         let now = Date()
         autoConsumeBackoffUntil = autoConsumeBackoffUntil.filter { $0.value > now }
 
-        let inflightSet = Set(pipe?.inflightKeys ?? [])
-        var inflightTitles = Set<String>()
-        for key in pipe?.inflightKeys ?? [] {
-            if let opTitle = key.split(separator: "|", maxSplits: 1).first, !opTitle.isEmpty {
-                inflightTitles.insert(String(opTitle))
-            }
-        }
-        for active in pipe?.activeSubmissions ?? [] where !active.title.isEmpty {
-            inflightTitles.insert(active.title)
-        }
-        if let activeTitle = pipe?.activeTitle, !activeTitle.isEmpty {
-            inflightTitles.insert(activeTitle)
-        }
+        let busyKeys = activeDeckKeys(pipe)
+        let busyTitles = Set(busyKeys.map(SubmissionKey.title(of:)))
 
         // Never auto-consume `advisory` restore cards or `ESCAPE LOCK` / gated / backed-off items.
+        // "RATE" is not excluded by badge: cooldown is checked live above and quota exhaustion
+        // is already reflected in `gates.all_pass == false`.
         guard let top = snap.submissionQueue.first(where: { item in
             let u = item.badge.uppercased()
             let actionableKind = item.kind == "pending" || item.kind == "candidate"
@@ -41,19 +33,19 @@ extension ContestStore {
                 && !u.contains("HOLD")
                 && !u.contains("CIRCUIT")
                 && !u.contains("REJECTED")
-                && !u.contains("RATE")
+                && !u.contains("QUOTA")
                 && !u.contains("SKIP")
-            let key = "\(item.title)|\(item.shortSha)"
+            let key = SubmissionKey.of(item)
             let notBackedOff = (autoConsumeBackoffUntil[key] ?? .distantPast) <= now
             return actionableKind
                 && notBlockedBadge
                 && notBackedOff
-                && !inflightSet.contains(key)
-                && !inflightTitles.contains(item.title)
+                && !busyKeys.contains(key)
+                && !busyTitles.contains(item.title)
                 && item.gates.allPass
         }) else { return }
 
-        autoConsumeBackoffUntil["\(top.title)|\(top.shortSha)"] = now.addingTimeInterval(45.0)
+        autoConsumeBackoffUntil[SubmissionKey.of(top)] = now.addingTimeInterval(45.0)
         await jumpSubmitNow(problem: top.title, sha: top.sha, note: top.note, isAuto: true, force: false)
     }
 
@@ -69,7 +61,9 @@ extension ContestStore {
         defer { isLaunchingSubmit = false }
 
         let effectiveForce = !isAuto && force
-        let key = "\(problem)|\(String(sha.prefix(7)))"
+        let key = SubmissionKey.make(problem, sha)
+        // Keep the card visible as "submitting" until the hot pipeline picks it up.
+        markLaunching(problem: problem, sha: sha)
         do {
             let res = try await repository.jumpSubmitNow(
                 workspace: selectedWorkspace,
@@ -85,16 +79,21 @@ extension ContestStore {
                 )
                 await daemonClient.invalidate(workspace: selectedWorkspace)
                 await refreshLocal(force: true)
+                await refreshNpu(silent: true)
             } else if isAuto && res.isDuplicateOrMutex {
+                clearLaunching(key)
                 autoConsumeBackoffUntil[key] = Date().addingTimeInterval(180.0)
                 await daemonClient.invalidate(workspace: selectedWorkspace)
                 await refreshLocal(force: true)
             } else if isAuto {
+                clearLaunching(key)
                 autoConsumeBackoffUntil[key] = Date().addingTimeInterval(45.0)
             } else {
+                clearLaunching(key)
                 errorMessage = res.message
             }
         } catch {
+            clearLaunching(key)
             if isAuto {
                 autoConsumeBackoffUntil[key] = Date().addingTimeInterval(45.0)
             } else {

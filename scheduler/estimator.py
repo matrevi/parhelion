@@ -259,10 +259,11 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from .parhelion_paths import get_parhelion_home
+from .parhelion_paths import atomic_write_json, get_parhelion_home, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
 _FP_CACHE_LOADED: bool = False
+_FP_CACHE_CORRUPT: bool = False
 
 
 def _fp_cache_file() -> pathlib.Path:
@@ -271,17 +272,17 @@ def _fp_cache_file() -> pathlib.Path:
 
 def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
     """Compute comment-stripped SHA-256 fingerprint of `op_host/` + `op_kernel/` at `sha`."""
-    global _FP_CACHE_LOADED
+    global _FP_CACHE_LOADED, _FP_CACHE_CORRUPT
     if not (repo / ".git").exists() or not sha:
         return None
     fp_file = _fp_cache_file()
     if not _FP_CACHE_LOADED:
         _FP_CACHE_LOADED = True
-        if fp_file.is_file():
-            try:
-                _FP_CACHE.update(json.loads(fp_file.read_text()))
-            except Exception:
-                pass
+        data, ok = read_json_safe(fp_file)
+        if not ok or (data is not None and not isinstance(data, dict)):
+            _FP_CACHE_CORRUPT = True
+        elif isinstance(data, dict):
+            _FP_CACHE.update(data)
     cache_key = f"{repo.name}:{sha}"
     if cache_key in _FP_CACHE:
         return _FP_CACHE[cache_key]
@@ -309,13 +310,11 @@ def _code_fingerprint(repo: pathlib.Path, sha: str) -> str | None:
         h.update(f"{rel}:{txt}\n".encode("utf-8"))
     digest = h.hexdigest()
     _FP_CACHE[cache_key] = digest
-    try:
-        fp_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = fp_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_FP_CACHE, separators=(",", ":")))
-        tmp.replace(fp_file)
-    except Exception:
-        pass
+    if not _FP_CACHE_CORRUPT:
+        try:
+            atomic_write_json(fp_file, _FP_CACHE, indent=None, separators=(",", ":"), trailing_newline=False)
+        except Exception:
+            pass
     return digest
 
 
@@ -1237,7 +1236,7 @@ class ScoreEstimator:
         if not same_soc_runs:
             return default_base_sha, base_perf
 
-        same_soc_runs.sort(key=lambda x: x[0])
+        same_soc_runs.sort(key=lambda x: (x[0], str(x[1])))
         repo = self.workspace / "bench" / title
         target_fp = _code_fingerprint(repo, default_base_sha)
         if target_fp:

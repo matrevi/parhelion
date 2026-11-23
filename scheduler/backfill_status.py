@@ -43,6 +43,7 @@ import sys
 from typing import Any
 
 from .backfill import LANE_BACKFILL, BackfillScheduler, offline_npu_sentinel
+from .parhelion_paths import sanitize_json_value
 
 def _detect_default_workspace() -> pathlib.Path:
     env_ws = os.environ.get("OPSB_WORKSPACE")
@@ -133,7 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = sched.status(hydrate=True, npu=npu)
         payload["dispatch"] = out
         if args.json:
-            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
         else:
             print(_human(payload))
             d = out
@@ -146,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
     npu = _probe(sched, args.offline)
     payload = sched.status(hydrate=not args.no_hydrate, npu=npu)
     if args.json:
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
     else:
         print(_human(payload))
     return 0

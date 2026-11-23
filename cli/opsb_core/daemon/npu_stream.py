@@ -9,10 +9,11 @@ import threading
 import time
 from typing import Any, Callable
 
-from ..services.npu_service import deploy_probe, enrich_npu_payload, read_mac_npu_waiters
+from ..services.npu_service import deploy_probe, enrich_npu_payload, read_mac_npu_waiters, sort_npu_payload
 
 PROBE_VERSION_MARKER = "OPSB_STREAM_PROBE_V1"
 RECONNECT_BACKOFFS = (1.0, 2.0, 5.0)
+TASK_TRANSITION_GRACE_SEC = 1.8
 
 
 class NpuStreamManager:
@@ -40,6 +41,9 @@ class NpuStreamManager:
 
         self._mac_waiters_cache: list[dict[str, Any]] = []
         self._mac_waiters_ts: float = 0.0
+        self._grace_sec: float = TASK_TRANSITION_GRACE_SEC
+        self._recent_tasks: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._recent_builds: dict[str, tuple[float, dict[str, Any]]] = {}
 
         self._proc: subprocess.Popen[str] | None = None
         self._stop_event = threading.Event()
@@ -91,6 +95,8 @@ class NpuStreamManager:
                     self._host = clean_h
                     self._latest_frame = None
                     self._stream_connected = False
+                    self._recent_tasks.clear()
+                    self._recent_builds.clear()
                     changed = True
             if interval is not None and interval > 0:
                 clamped = max(0.5, min(10.0, float(interval)))
@@ -148,6 +154,82 @@ class NpuStreamManager:
                     proc.wait(timeout=0.5)
         except Exception:
             pass
+
+    def _smooth_lane_handoffs(self, enriched: dict[str, Any], now_m: float | None = None) -> dict[str, Any]:
+        """Absorb 1-frame handoff gaps between Phase A CPU build -> ticket -> die lock.
+
+        If a problem/PID moves directly to another lane in the new frame, emit the new state
+        immediately (zero lag). Only if it disappears from BOTH `tasks` and `parallel_cpu_builds`
+        on a tick do we hold its last-seen entry for up to `self._grace_sec` (~1.8s).
+        """
+        t_now = time.monotonic() if now_m is None else now_m
+        tasks = list(enriched.get("tasks") or [])
+        builds = list(enriched.get("parallel_cpu_builds") or [])
+
+        cur_task_probs = {str(t.get("problem")) for t in tasks if t.get("problem")}
+        cur_task_pids = {int(t.get("pid") or 0) for t in tasks if t.get("pid")}
+        cur_build_probs = {str(b.get("title")) for b in builds if b.get("title")}
+        cur_build_pids = {int(b.get("pid") or 0) for b in builds if b.get("pid")}
+        all_cur_probs = cur_task_probs | cur_build_probs
+        all_cur_pids = cur_task_pids | cur_build_pids
+
+        # Refresh active entries & drop superseded entries across lanes
+        for t in tasks:
+            prob = str(t.get("problem") or "")
+            pid = int(t.get("pid") or 0)
+            key = f"p:{prob}" if prob else f"pid:{pid}"
+            self._recent_tasks[key] = (t_now, dict(t))
+        for b in builds:
+            title = str(b.get("title") or "")
+            pid = int(b.get("pid") or 0)
+            key = f"b:{title}" if title else f"pid:{pid}"
+            self._recent_builds[key] = (t_now, dict(b))
+
+        # Prune cross-lane transitions immediately
+        for k, (_, prev_t) in list(self._recent_tasks.items()):
+            p_prob = str(prev_t.get("problem") or "")
+            p_pid = int(prev_t.get("pid") or 0)
+            if (p_prob and p_prob in cur_build_probs) or (p_pid and p_pid in cur_build_pids):
+                self._recent_tasks.pop(k, None)
+        for k, (_, prev_b) in list(self._recent_builds.items()):
+            b_title = str(prev_b.get("title") or "")
+            b_pid = int(prev_b.get("pid") or 0)
+            if (b_title and b_title in cur_task_probs) or (b_pid and b_pid in cur_task_pids):
+                self._recent_builds.pop(k, None)
+
+        # Retain vanished tasks/builds briefly during transition grace window
+        added = False
+        for k, (seen_m, prev_t) in list(self._recent_tasks.items()):
+            p_prob = str(prev_t.get("problem") or "")
+            p_pid = int(prev_t.get("pid") or 0)
+            present = (p_prob and p_prob in all_cur_probs) or (p_pid and p_pid in all_cur_pids)
+            if present:
+                continue
+            if (t_now - seen_m) <= self._grace_sec:
+                tasks.append(dict(prev_t))
+                added = True
+            else:
+                self._recent_tasks.pop(k, None)
+
+        for k, (seen_m, prev_b) in list(self._recent_builds.items()):
+            b_title = str(prev_b.get("title") or "")
+            b_pid = int(prev_b.get("pid") or 0)
+            present = (b_title and b_title in all_cur_probs) or (b_pid and b_pid in all_cur_pids)
+            if present:
+                continue
+            if (t_now - seen_m) <= self._grace_sec:
+                builds.append(dict(prev_b))
+                added = True
+            else:
+                self._recent_builds.pop(k, None)
+
+        if added:
+            enriched["tasks"] = tasks
+            if "parallel_cpu_builds" in enriched or builds:
+                enriched["parallel_cpu_builds"] = builds
+            # Re-apply deterministic ordering after grace reinjection
+            sort_npu_payload(enriched)
+        return enriched
 
     def _get_mac_waiters_throttled(self) -> list[dict[str, Any]]:
         now = time.monotonic()
@@ -235,6 +317,7 @@ class NpuStreamManager:
                         probs_map = self._problems_provider() if self._problems_provider else None
                         waiters = self._get_mac_waiters_throttled()
                         enriched = enrich_npu_payload(frame, host, problems_by_title=probs_map, mac_waiters=waiters)
+                        enriched = self._smooth_lane_handoffs(enriched)
                         sample_ms = float(enriched.get("sample_ms") or enriched.get("probe_latency_ms") or 0.0)
                         enriched["rtt_ms"] = round(sample_ms, 2)
                         backend = str(enriched.get("probe_backend") or "dcmi")

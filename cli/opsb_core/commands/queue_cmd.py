@@ -171,7 +171,7 @@ def run_submit(args: argparse.Namespace) -> int:
     }
     if args.force:
         record["force"] = True
-    append_jsonl_locked(ws / "results" / ".submit-queue.lock", ws / "results" / "submit-queue.jsonl", record)
+    append_jsonl_locked(ws / "results" / ".submit-queue-io.lock", ws / "results" / "submit-queue.jsonl", record)
     invalidate_ttl_cache("scheduler_bridge")
     verdict.update(enqueued=True, queued_record=record)
 
@@ -281,7 +281,7 @@ def run_queue(args: argparse.Namespace) -> int:
             and not bridge_res.get("dry_run")
         )
         if not already_appended:
-            append_jsonl_locked(ws / "results" / ".submit-queue.lock", ws / "results" / "submit-queue-outcome.jsonl", rec)
+            append_jsonl_locked(ws / "results" / ".submit-queue-io.lock", ws / "results" / "submit-queue-outcome.jsonl", rec)
         elif bridge_res.get("sha"):
             rec["sha"] = str(bridge_res["sha"])
         invalidate_ttl_cache("scheduler_bridge")

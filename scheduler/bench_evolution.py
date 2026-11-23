@@ -37,6 +37,7 @@ import statistics
 from typing import Any
 
 from .estimator import SIGMA_HIDDEN_JITTER
+from .parhelion_paths import atomic_write_json
 
 MODEL_VERSION = "2.0"
 
@@ -750,8 +751,8 @@ def evaluate_explore_eligibility(
         if strata.get(k) == "S_SMALL_CORE" and ratio < 0.78 and not is_anti_corr:
             severe_small_regs.append(f"{k}({ratio:.2f}x)")
 
-    strong_improved.sort(key=lambda x: x["ratio"], reverse=True)
-    top_regressed.sort(key=lambda x: x["ratio"])
+    strong_improved.sort(key=lambda x: (-float(x["ratio"]), str(x.get("bucket") or "")))
+    top_regressed.sort(key=lambda x: (float(x["ratio"]), str(x.get("bucket") or "")))
 
     pos_corr_geo = (
         round(math.exp(sum(math.log(max(0.2, min(4.0, r))) for r in pos_corr_ratios) / len(pos_corr_ratios)), 3)
@@ -949,7 +950,9 @@ def build_evolution_plan(
                 meta["description"] = f"Promoted by bench evolve (active logged bucket, {meta['dtype']}, {meta['stratum']})"
             promote.append(meta)
 
-    promote.sort(key=lambda x: (x.get("empirical_corr", 0.0), x.get("empirical_pairs", 0)), reverse=True)
+    promote.sort(
+        key=lambda x: (-float(x.get("empirical_corr", 0.0)), -int(x.get("empirical_pairs", 0)), str(x.get("id") or ""))
+    )
     return {
         "title": title,
         "existing_bucket_count": len(existing_buckets),
@@ -1001,9 +1004,7 @@ def append_buckets_to_spec(
         doc["hidden_buckets"] = existing
         doc["evolved_at"] = _utc_now()
         doc["version"] = "2.0"
-        tmp = spec_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(spec_path)
+        atomic_write_json(spec_path, doc, indent=2, ensure_ascii=False)
 
     return {
         "spec_path": str(spec_path),

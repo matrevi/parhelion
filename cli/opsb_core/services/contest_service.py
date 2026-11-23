@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -106,7 +108,12 @@ def load_slim_boards(board_path: Path) -> dict[str, Any]:
         }
     try:
         CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps({"mtime": mtime, "boards": slim}, separators=(",", ":")), encoding="utf-8")
+        tmp = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps({"mtime": mtime, "boards": slim}, separators=(",", ":")), encoding="utf-8")
+            os.replace(tmp, cache_path)
+        finally:
+            tmp.unlink(missing_ok=True)
     except Exception:
         pass
     return slim
@@ -266,7 +273,7 @@ def build_problem_models(
 
     for p in meta["problems"]:
         title = p["title"]
-        diff = int(p.get("difficulty", DEFAULT_DIFFICULTIES.get(title, 2)))
+        diff = int(p.get("difficulty") or DEFAULT_DIFFICULTIES.get(title, 2))
         max_weighted += diff * 100
 
         snap_row = snapshot.get(title, {})

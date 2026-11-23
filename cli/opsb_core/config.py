@@ -325,9 +325,12 @@ class ConfigRepository:
         ph = _resolve_parhelion_home()
         ph.mkdir(mode=0o700, parents=True, exist_ok=True)
         cfg_path = ph / "config.json"
-        tmp = cfg_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        os.replace(tmp, cfg_path)
+        tmp = cfg_path.with_name(f".{cfg_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            os.replace(tmp, cfg_path)
+        finally:
+            tmp.unlink(missing_ok=True)
 
     @staticmethod
     def resolve_workspace(explicit: str | None, cfg: dict[str, Any]) -> Path:

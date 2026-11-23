@@ -31,9 +31,12 @@ from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
 from .npu_scheduler import NpuTaskScheduler
 from .parhelion_paths import (
+    atomic_write_json,
     ensure_workspace_data_dirs,
     get_parhelion_home,
+    read_json_safe,
     read_parhelion_scheduler_config,
+    sanitize_json_value,
     workspace_bench_specs_dir,
     workspace_state_dir,
     write_parhelion_scheduler_config,
@@ -77,8 +80,49 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
 
 def _append_jsonl(path: pathlib.Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(sanitize_json_value(record), ensure_ascii=False, allow_nan=False) + "\n"
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            fh.write(line)
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _opt_float(val: Any) -> float | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        return f if math.isfinite(f) else None
+    return None
+
+
+def _opt_int(val: Any) -> int | None:
+    if isinstance(val, bool) or val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float) and math.isfinite(val):
+        return int(val)
+    return None
+
+
+def _valid_coverage_grid(raw: Any) -> dict[str, Any] | None:
+    """Return a Swift-decodable `BenchCoverageGrid` dict, or `None` if empty/incomplete."""
+    if not isinstance(raw, dict):
+        return None
+    rows = raw.get("rows")
+    cols = raw.get("cols")
+    cells = raw.get("cells")
+    if not (isinstance(rows, list) and isinstance(cols, list) and isinstance(cells, list)):
+        return None
+    return raw
 
 
 class SchedulerEngine:
@@ -98,6 +142,7 @@ class SchedulerEngine:
             self.state_dir = workspace_state_dir(self.workspace).resolve()
         self.state_file = self.state_dir / "scheduler_state.json"
         self.npu_host = npu_host
+        self._state_corrupt: bool = False
         self._raw_state = self._load_state()
         cfg_dict = dict(self._raw_state.get("config", {}))
         ph_sched = read_parhelion_scheduler_config()
@@ -153,14 +198,27 @@ class SchedulerEngine:
         self.calibrator.backfill = self.backfill_lane
 
     def _load_state(self) -> dict[str, Any]:
-        if not self.state_file.is_file():
-            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}, "verified_escapes": {}}
-        try:
-            return json.loads(self.state_file.read_text())
-        except Exception:
-            return {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}, "verified_escapes": {}}
+        default_state = {"config": GateConfig().to_dict(), "overrides": {}, "held_items": {}, "verified_escapes": {}}
+        data, ok = read_json_safe(self.state_file)
+        if not ok:
+            # File exists on disk but is empty/half-written/corrupt: do NOT treat as absent
+            # and refuse subsequent `_save_state()` overwrites so user state is never wiped.
+            self._state_corrupt = True
+            return default_state
+        if data is None:
+            self._state_corrupt = False
+            return default_state
+        if not isinstance(data, dict):
+            self._state_corrupt = True
+            return default_state
+        self._state_corrupt = False
+        return data
 
     def _save_state(self) -> None:
+        if self._state_corrupt:
+            raise RuntimeError(
+                f"Refusing to overwrite corrupt or unreadable scheduler state file: {self.state_file}"
+            )
         self.state_dir.mkdir(parents=True, exist_ok=True)
         payload = {
             "updated_at": _utc_now(),
@@ -169,9 +227,13 @@ class SchedulerEngine:
             "held_items": self.held_items,
             "verified_escapes": self.verified_escapes,
         }
-        tmp = self.state_file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-        tmp.replace(self.state_file)
+        lock_file = self.state_dir / ".scheduler_state.lock"
+        with lock_file.open("a", encoding="utf-8") as lk:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+            try:
+                atomic_write_json(self.state_file, payload, indent=2, ensure_ascii=False)
+            finally:
+                fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
 
     def inspect_daemon(self) -> dict[str, Any]:
         """Read-only check of running supervision / consumer daemons and alert files."""
@@ -187,6 +249,7 @@ class SchedulerEngine:
                         daemons.append({"pid": int(parts[0]), "etime": parts[1], "cmd": parts[2][:120]})
         except Exception:
             pass
+        daemons.sort(key=lambda d: (int(d["pid"]), str(d["cmd"])))
 
         alert_file = self.workspace / "results" / "SUPERVISION-ALERT.md"
         alerts: list[str] = []
@@ -313,7 +376,14 @@ class SchedulerEngine:
             verdict = self.gate.evaluate(title=title, sha=newest_sha, note="unsubmitted latest validation")
             candidates.append(verdict.to_dict())
 
-        candidates.sort(key=lambda c: (c["approved"], c["priority_score"]), reverse=True)
+        candidates.sort(
+            key=lambda c: (
+                0 if c["approved"] else 1,
+                -float(c["priority_score"]),
+                str(c["title"]),
+                str(c["sha"]),
+            )
+        )
         return candidates
 
     def build_submit_queue_view(self, limit_history: int = 25) -> list[dict[str, Any]]:
@@ -339,8 +409,8 @@ class SchedulerEngine:
 
         items: list[dict[str, Any]] = []
 
-        # 1. Pending items in results/submit-queue.jsonl
-        pending_verdicts: list[tuple[dict[str, Any], Any]] = []
+        # 1. Pending items in results/submit-queue.jsonl (deduped by (title, canonical_sha))
+        pending_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         for rec in q_rows:
             t = rec.get("title", "")
             csha = resolve_sha(self.workspace, t, rec.get("sha")).lower()
@@ -352,6 +422,18 @@ class SchedulerEngine:
                 continue
             if not rec.get("force") and (t, csha) in done_sha:
                 continue
+            pk = (t, csha)
+            prev_rec = pending_by_key.get(pk)
+            if prev_rec is None:
+                pending_by_key[pk] = rec
+            else:
+                prev_rank = (1 if prev_rec.get("force") else 0, str(prev_rec.get("queued_at") or ""))
+                cur_rank = (1 if rec.get("force") else 0, str(q_at or ""))
+                if cur_rank >= prev_rank:
+                    pending_by_key[pk] = rec
+
+        pending_verdicts: list[tuple[dict[str, Any], Any]] = []
+        for (t, csha), rec in sorted(pending_by_key.items()):
             verdict = self.gate.evaluate(
                 title=t,
                 sha=csha,
@@ -361,7 +443,16 @@ class SchedulerEngine:
             )
             pending_verdicts.append((rec, verdict))
 
-        pending_verdicts.sort(key=lambda pv: pv[1].priority_score, reverse=True)
+        pending_verdicts.sort(
+            key=lambda pv: (
+                -float(pv[1].priority_score),
+                str(pv[1].title),
+                str(pv[1].sha),
+                str(pv[0].get("queued_at") or ""),
+            )
+        )
+        pending_shas = {(v.title, v.sha.lower()) for _, v in pending_verdicts}
+        pending_short = {(v.title, v.sha.lower()[:7]) for _, v in pending_verdicts if len(v.sha) >= 7}
         for rec, verdict in pending_verdicts:
             est = verdict.estimate
             items.append({
@@ -392,10 +483,20 @@ class SchedulerEngine:
             })
 
         # 2. Held items stored in scheduler_state.json (not yet pushed to submit-queue.jsonl)
-        for h_key, h_rec in sorted(self.held_items.items(), key=lambda kv: kv[1].get("held_at", ""), reverse=True):
+        # Stable deterministic order: held_at DESC, then title ASC, sha ASC.
+        held_sorted = sorted(
+            self.held_items.items(),
+            key=lambda kv: (str(kv[1].get("title") or ""), str(kv[1].get("sha") or "").lower(), kv[0]),
+        )
+        held_sorted.sort(key=lambda kv: str(kv[1].get("held_at") or ""), reverse=True)
+        for h_key, h_rec in held_sorted:
             t = h_rec["title"]
             csha = str(h_rec["sha"]).lower()
-            if (t, csha) in done_sha or (len(csha) >= 7 and (t, csha[:7]) in skipped_short):
+            if (
+                (t, csha) in done_sha
+                or (t, csha) in pending_shas
+                or (len(csha) >= 7 and ((t, csha[:7]) in skipped_short or (t, csha[:7]) in pending_short))
+            ):
                 continue
             verdict = self.gate.evaluate(
                 title=t,
@@ -541,27 +642,27 @@ class SchedulerEngine:
             cal_docs[title] = cdoc
             cal_summaries[title] = {
                 "model_version": cdoc.get("model_version"),
-                "mae_pts": cdoc.get("mae_pts"),
-                "rmse_pts": cdoc.get("rmse_pts"),
-                "loocv_mae_pts": cdoc.get("loocv_mae_pts"),
-                "loocv_spearman": cdoc.get("loocv_spearman"),
-                "loocv_dir_acc": cdoc.get("loocv_dir_acc"),
-                "calibration_trust": cdoc.get("calibration_trust"),
-                "transfer_gamma": cdoc.get("transfer_gamma"),
-                "beta_tightness": cdoc.get("beta_tightness"),
-                "observations_m": cdoc.get("observations_m"),
-                "paired_observations_m": cdoc.get("paired_observations_m"),
-                "last_predicted_score": cdoc.get("last_predicted_score"),
-                "last_actual_score": cdoc.get("last_actual_score"),
-                "last_residual_pts": cdoc.get("last_residual_pts"),
+                "mae_pts": _opt_float(cdoc.get("mae_pts")),
+                "rmse_pts": _opt_float(cdoc.get("rmse_pts")),
+                "loocv_mae_pts": _opt_float(cdoc.get("loocv_mae_pts")),
+                "loocv_spearman": _opt_float(cdoc.get("loocv_spearman")),
+                "loocv_dir_acc": _opt_float(cdoc.get("loocv_dir_acc")),
+                "calibration_trust": _opt_float(cdoc.get("calibration_trust")),
+                "transfer_gamma": _opt_float(cdoc.get("transfer_gamma")),
+                "beta_tightness": _opt_float(cdoc.get("beta_tightness")),
+                "observations_m": _opt_int(cdoc.get("observations_m")),
+                "paired_observations_m": _opt_int(cdoc.get("paired_observations_m")),
+                "last_predicted_score": _opt_float(cdoc.get("last_predicted_score")),
+                "last_actual_score": _opt_float(cdoc.get("last_actual_score")),
+                "last_residual_pts": _opt_float(cdoc.get("last_residual_pts")),
                 "escape_lock": bool(cdoc.get("escape_lock", False)),
-                "escape_sha": cdoc.get("escape_sha"),
-                "unpaired_bucket_count": int(cdoc.get("unpaired_bucket_count") or 0),
+                "escape_sha": str(cdoc["escape_sha"]) if cdoc.get("escape_sha") is not None else None,
+                "unpaired_bucket_count": _opt_int(cdoc.get("unpaired_bucket_count")) or 0,
                 "extra_discovered_count": len(cdoc.get("extra_discovered_buckets") or []),
                 "high_residual_count": len(cdoc.get("high_residual_events") or []),
                 "diagnostics": cdoc.get("diagnostics") or [],
                 "strata": cdoc.get("strata") or [],
-                "coverage_grid": cdoc.get("coverage_grid") or {},
+                "coverage_grid": _valid_coverage_grid(cdoc.get("coverage_grid")),
             }
 
         for p_row in priorities:
@@ -572,7 +673,7 @@ class SchedulerEngine:
         maes = [float(v["mae_pts"]) for v in cal_summaries.values() if isinstance(v.get("mae_pts"), (int, float))]
         mean_mae = round(sum(maes) / len(maes), 2) if maes else None
 
-        return {
+        return sanitize_json_value({
             "generated_at": _utc_now(),
             "workspace": str(self.workspace),
             "contest_totals": {
@@ -586,12 +687,12 @@ class SchedulerEngine:
             "daemon": self.inspect_daemon(),
             "npu_hardware": {
                 "sampled_at": npu_live.get("sampled_at"),
-                "probe_latency_ms": npu_live.get("probe_latency_ms"),
-                "offline": npu_live.get("offline"),
-                "ssh_error": npu_live.get("ssh_error"),
-                "cpu_cores": npu_live.get("cpu_cores"),
-                "load_1m": npu_live.get("load_1m"),
-                "load_5m": npu_live.get("load_5m"),
+                "probe_latency_ms": _opt_float(npu_live.get("probe_latency_ms")),
+                "offline": bool(npu_live.get("offline", False)),
+                "ssh_error": str(npu_live["ssh_error"]) if npu_live.get("ssh_error") is not None else None,
+                "cpu_cores": _opt_int(npu_live.get("cpu_cores")) or 0,
+                "load_1m": _opt_float(npu_live.get("load_1m")),
+                "load_5m": _opt_float(npu_live.get("load_5m")),
                 "devices": npu_live.get("devices", []),
                 "die_locks": npu_live.get("die_locks", []),
                 "die_duty_10m": npu_live.get("die_duty_10m"),
@@ -602,9 +703,9 @@ class SchedulerEngine:
             "unsubmitted_candidates": self._discover_unsubmitted_candidates(),
             "quota": {
                 **quota.to_dict(),
-                "used": quota.used_today,
-                "remaining": quota.remaining_today,
-                "reserved": quota.reserved_for_closing,
+                "used": int(quota.used_today),
+                "remaining": int(quota.remaining_today),
+                "reserved": int(quota.reserved_for_closing),
             },
             "circuit_breakers": cbs,
             "calibrations": cal_summaries,
@@ -612,7 +713,7 @@ class SchedulerEngine:
             "backfill": self.backfill_lane.summary(cal_docs),
             "problem_priorities": [p.to_dict() for p in priorities],
             "config": self.config.to_dict(),
-        }
+        })
 
     def evaluate(
         self,
@@ -643,8 +744,8 @@ class SchedulerEngine:
         enqueued = False
         if verdict.approved:
             if not dry_run:
-                self.held_items.pop(h_key, None)
-                self._save_state()
+                # Write-before-remove: append to submit-queue.jsonl BEFORE removing from held_items
+                # so a concurrent status reader never observes the item transiently vanish.
                 q_rec: dict[str, Any] = {
                     "title": verdict.title,
                     "sha": verdict.sha,
@@ -660,6 +761,9 @@ class SchedulerEngine:
                 if verdict.forced or verdict.is_critical_restore:
                     q_rec["force"] = True
                 _append_jsonl(self.workspace / "results" / "submit-queue.jsonl", q_rec)
+                if h_key in self.held_items:
+                    self.held_items.pop(h_key, None)
+                    self._save_state()
             enqueued = True
         else:
             if not dry_run and verdict.status_tag in ("HOLD_LOW_GAIN", "CIRCUIT_OPEN"):
@@ -704,9 +808,7 @@ class SchedulerEngine:
                 raise RuntimeError(f"Rollback target {title} {target_sha[:7]} failed Stage 1 SAFETY: {s1.reason}")
             ov_key = f"{title}:{target_sha}"
             if not dry_run:
-                self.overrides[ov_key] = {"action": "approve", "reason": reason or "manual rollback", "at": _utc_now()}
-                self.held_items.pop(ov_key, None)
-                self._save_state()
+                # Append to submit-queue.jsonl BEFORE clearing held_items (no disappear window).
                 _append_jsonl(
                     self.workspace / "results" / "submit-queue.jsonl",
                     {
@@ -718,6 +820,9 @@ class SchedulerEngine:
                         "force": True,
                     },
                 )
+                self.overrides[ov_key] = {"action": "approve", "reason": reason or "manual rollback", "at": _utc_now()}
+                self.held_items.pop(ov_key, None)
+                self._save_state()
             self.refresh_models()
             verdict = self.gate.evaluate(title=title, sha=target_sha, note=reason or "rollback", force=True)
             return {"action": "rollback", "dry_run": dry_run, "enqueued": True, "verdict": verdict.to_dict()}
@@ -737,11 +842,8 @@ class SchedulerEngine:
                     "safety": s1.to_dict(),
                 }
             if not dry_run:
-                for k_old in [k for k in self.overrides if k.startswith(f"{title}:{canonical_sha[:7]}")]:
-                    self.overrides.pop(k_old, None)
-                self.overrides[ov_key] = {"action": "approve", "reason": reason or "operator approve", "at": _utc_now()}
-                held = self.held_items.pop(ov_key, {})
-                self._save_state()
+                held = dict(self.held_items.get(ov_key) or {})
+                # Append to submit-queue.jsonl BEFORE updating scheduler_state.json (no disappear window).
                 _append_jsonl(
                     self.workspace / "results" / "submit-queue.jsonl",
                     {
@@ -753,6 +855,11 @@ class SchedulerEngine:
                         "force": True,
                     },
                 )
+                for k_old in [k for k in self.overrides if k.startswith(f"{title}:{canonical_sha[:7]}")]:
+                    self.overrides.pop(k_old, None)
+                self.overrides[ov_key] = {"action": "approve", "reason": reason or "operator approve", "at": _utc_now()}
+                self.held_items.pop(ov_key, None)
+                self._save_state()
             else:
                 self.gate.overrides[ov_key] = {"action": "approve", "reason": reason or "operator approve"}
             verdict = self.gate.evaluate(title=title, sha=canonical_sha, note=reason, force=True)
@@ -760,22 +867,25 @@ class SchedulerEngine:
 
         # action == "skip"
         if not dry_run:
-            self.overrides[ov_key] = {"action": "skip", "reason": reason or "operator skip", "at": _utc_now()}
-            self.held_items.pop(ov_key, None)
-            for k_old in [k for k in self.held_items if k.startswith(f"{title}:{canonical_sha[:7]}")]:
-                self.held_items.pop(k_old, None)
-            self._save_state()
+            now_iso = _utc_now()
+            # Append terminal skipped outcome BEFORE writing skip override / removing held_items
+            # so a concurrent status poll sees an atomic PENDING/HELD -> COMPLETED(SKIPPED) step.
             _append_jsonl(
                 self.workspace / "results" / "submit-queue-outcome.jsonl",
                 {
                     "title": title,
                     "sha": canonical_sha,
                     "note": reason or "skipped via scheduler override",
-                    "queued_at": _utc_now(),
-                    "finished_at": _utc_now(),
+                    "queued_at": now_iso,
+                    "finished_at": now_iso,
                     "status": "skipped",
                 },
             )
+            self.overrides[ov_key] = {"action": "skip", "reason": reason or "operator skip", "at": now_iso}
+            self.held_items.pop(ov_key, None)
+            for k_old in [k for k in self.held_items if k.startswith(f"{title}:{canonical_sha[:7]}")]:
+                self.held_items.pop(k_old, None)
+            self._save_state()
         return {
             "action": "skip",
             "dry_run": dry_run,
@@ -988,11 +1098,15 @@ class SchedulerEngine:
                         "gate_reason": verdict.gate_reason,
                     })
 
-            # Order approved submissions by CRITICAL_RESTORE -> difficulty * delta_expected -> FIFO
+            # Order approved submissions deterministically: priority_score DESC -> FIFO (queued_at ASC) -> (title, sha) ASC
             approved_plan.sort(
-                key=lambda pv: (pv[1].priority_score, -(time.time())),
-                reverse=True,
+                key=lambda pv: (
+                    str(pv[0].get("queued_at") or ""),
+                    str(pv[1].title),
+                    str(pv[1].sha),
+                )
             )
+            approved_plan.sort(key=lambda pv: float(pv[1].priority_score), reverse=True)
             # Enforce at most one queued commit per operator per drain cycle
             deduped_plan: list[tuple[dict[str, Any], Any]] = []
             seen_drain_titles: set[str] = set()
@@ -1008,6 +1122,7 @@ class SchedulerEngine:
                 seen_drain_titles.add(verdict.title)
                 deduped_plan.append((rec, verdict))
             approved_plan = deduped_plan
+            held_plan.sort(key=lambda h: (str(h["title"]), str(h["sha"]), str(h["status_tag"])))
 
             if dry_run:
                 return {
@@ -1673,7 +1788,7 @@ def main(argv: list[str] | None = None) -> int:
                 # can exist yet -> strictly bounded, silent, never raises.
                 if not args.build_only:
                     engine.backfill_auto()
-                print(json.dumps(res, ensure_ascii=False))
+                print(json.dumps(sanitize_json_value(res), ensure_ascii=False, allow_nan=False))
                 return int(res.get("exit_code", 0))
         elif args.command == "backfill":
             payload = engine.backfill(
@@ -1700,7 +1815,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "verify-escape":
             payload = engine.verify_escape(title=args.title, bad_sha=args.bad_sha, good_sha=args.good_sha)
             if not payload.get("ok", True):
-                print(json.dumps(payload, indent=2, ensure_ascii=False))
+                print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
                 return 1
         elif args.command == "retrospect":
             payload = engine.retrospect()
@@ -1709,10 +1824,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     except Exception as exc:
         err_payload = {"ok": False, "command": args.command, "error": str(exc)}
-        print(json.dumps(err_payload, indent=2, ensure_ascii=False))
+        print(json.dumps(sanitize_json_value(err_payload), indent=2, ensure_ascii=False, allow_nan=False))
         return 1
 
-    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
     return 0
 
 

@@ -1,63 +1,137 @@
 import SwiftUI
 
-/// Shared animated deck displaying live local packaging/uploading & remote judging cards.
+struct ResolvedActiveCard: Identifiable {
+    let id: String // Canonical SubmissionKey ("title|sha7") — stable across local → remote → syncing
+    let active: ActiveSubmissionItem
+}
+
+/// Shared animated deck displaying live local packaging/uploading, optimistic launching,
+/// settling (syncing score), and remote judging cards with continuous view identity.
 struct ActiveSubmissionsDeckView: View {
+    @EnvironmentObject var store: ContestStore
     @EnvironmentObject var hotStore: HotTelemetryStore
     let fallbackPipeline: LivePipelineState?
+    let coldInflightItems: [SubmissionQueueItem]
     @ObservedObject var clock: WallClockTicker
+    var namespace: Namespace.ID? = nil
 
     private var livePipeline: LivePipelineState? {
         hotStore.pipeline ?? fallbackPipeline
     }
 
-    var body: some View {
-        let pipe = livePipeline
-        let activeIds = (pipe?.activeSubmissions ?? []).map(\.id)
-        Group {
-            if let pipe {
-                if let actives = pipe.activeSubmissions, !actives.isEmpty {
-                    ForEach(actives) { active in
-                        ActiveSubmissionCardView(active: active, pipe: pipe, clock: clock)
-                            .transition(.asymmetric(
-                                insertion: .move(edge: .top).combined(with: .opacity),
-                                removal: .opacity
-                            ))
-                    }
-                } else if pipe.isBusy {
-                    InflightJudgeCardView(pipe: pipe, clock: clock)
-                        .transition(.opacity)
-                }
+    private func resolvedCards(pipe: LivePipelineState?) -> [ResolvedActiveCard] {
+        var seen = Set<String>()
+        var out: [ResolvedActiveCard] = []
+
+        for active in pipe?.activeSubmissions ?? [] where !active.title.isEmpty {
+            let key = SubmissionKey.of(active)
+            if seen.insert(key).inserted {
+                out.append(ResolvedActiveCard(id: key, active: active))
             }
         }
-        .animation(.snappy(duration: 0.28), value: activeIds)
-        .animation(.snappy(duration: 0.28), value: pipe?.isBusy ?? false)
+
+        // Optimistic cards immediately bridge click → hot-SSE pickup with zero disappearance.
+        let now = Date()
+        let launching = store.launchingSubmits.values
+            .filter { $0.expiresAt > now }
+            .sorted { $0.startedEpoch < $1.startedEpoch }
+        for item in launching where seen.insert(item.key).inserted {
+            out.append(ResolvedActiveCard(id: item.key, active: item.asActiveItem()))
+        }
+
+        // Settling cards stay visible as "Syncing Score" until the post-finish cold snapshot lands.
+        for key in store.settlingInflightKeys.sorted() where !seen.contains(key) {
+            if let settling = store.settlingActive(for: key), seen.insert(key).inserted {
+                out.append(ResolvedActiveCard(id: key, active: settling))
+            }
+        }
+
+        // Fallback for cold `inflight` entries when hot pipeline hasn't populated `activeSubmissions`.
+        for item in coldInflightItems {
+            let key = SubmissionKey.of(item)
+            guard seen.insert(key).inserted else { continue }
+            let synthesized = ActiveSubmissionItem(
+                id: item.id,
+                title: item.title,
+                sha: item.sha,
+                shortSha: item.shortSha,
+                phase: item.rawStatus.isEmpty ? "remote_running" : item.rawStatus,
+                accountId: "primary",
+                accountLabel: "Primary",
+                remoteSubmissionId: item.submissionId,
+                remoteJudgeId: nil,
+                remoteStatus: item.detail,
+                startedEpoch: 0,
+                elapsedSec: 0
+            )
+            out.append(ResolvedActiveCard(id: key, active: synthesized))
+        }
+
+        return out
+    }
+
+    var body: some View {
+        let pipe = livePipeline
+        let cards = resolvedCards(pipe: pipe)
+        let cardIds = cards.map(\.id)
+
+        Group {
+            if !cards.isEmpty {
+                ForEach(cards) { entry in
+                    cardView(entry: entry, pipe: pipe)
+                }
+            } else if let pipe, pipe.isBusy {
+                InflightJudgeCardView(pipe: pipe, clock: clock)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.snappy(duration: 0.28, extraBounce: 0.0), value: cardIds)
+        .animation(.snappy(duration: 0.28, extraBounce: 0.0), value: pipe?.isBusy ?? false)
+    }
+
+    @ViewBuilder
+    private func cardView(entry: ResolvedActiveCard, pipe: LivePipelineState?) -> some View {
+        if let namespace {
+            ActiveSubmissionCardView(active: entry.active, pipe: pipe, clock: clock)
+                .matchedGeometryEffect(id: entry.id, in: namespace)
+                .transition(.opacity)
+        } else {
+            ActiveSubmissionCardView(active: entry.active, pipe: pipe, clock: clock)
+                .transition(.opacity)
+        }
     }
 }
 
 struct ActiveSubmissionCardView: View {
     @EnvironmentObject var store: ContestStore
     let active: ActiveSubmissionItem
-    let pipe: LivePipelineState
+    let pipe: LivePipelineState?
     @ObservedObject var clock: WallClockTicker
 
     private var lang: AppLanguage { store.lang }
 
     var body: some View {
-        let judgeEl = clock.elapsedSince(startedAt: active.startedEpoch)
-        let matchedSlot = pipe.accountSlots?.first(where: { $0.id == active.accountId })
-        let slotCd = clock.cooldownRemaining(endsAt: matchedSlot?.cooldownEndsEpoch ?? pipe.cooldownEndsEpoch)
+        let judgeEl = active.startedEpoch > 0
+            ? clock.elapsedSince(startedAt: active.startedEpoch)
+            : max(0, active.elapsedSec)
+        let matchedSlot = pipe?.accountSlots?.first(where: { $0.id == active.accountId })
+        let slotCd = clock.cooldownRemaining(endsAt: matchedSlot?.cooldownEndsEpoch ?? pipe?.cooldownEndsEpoch)
         let slotColor: Color = {
+            if active.phase == "launching" { return .accentColor }
             if active.accountId == "primary" { return .blue }
             if active.accountId.hasSuffix("-2") { return .teal }
             if active.accountId.hasSuffix("-3") { return .purple }
             return .indigo
         }()
+        let accountTag = active.phase == "launching"
+            ? lang.tr("提交中", "Submitting")
+            : active.accountLabel
 
         SurfaceCard(highlighted: true, highlightColor: slotColor, padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 7) {
                     ProgressView().controlSize(.small)
-                    Text(active.accountLabel)
+                    Text(accountTag)
                         .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(slotColor)
                         .padding(.horizontal, 6.5)
@@ -89,14 +163,16 @@ struct ActiveSubmissionCardView: View {
                         .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(slotColor)
 
-                    Label(
-                        slotCd > 0
-                            ? lang.tr("\(active.accountLabel) 冷却剩余: \(slotCd)s", "\(active.accountLabel) cooldown: \(slotCd)s")
-                            : lang.tr("\(active.accountLabel) 190s 冷却已就绪", "\(active.accountLabel) Ready"),
-                        systemImage: "timer"
-                    )
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(slotCd > 0 ? .orange : .green)
+                    if active.phase != "launching" {
+                        Label(
+                            slotCd > 0
+                                ? lang.tr("\(active.accountLabel) 冷却剩余: \(slotCd)s", "\(active.accountLabel) cooldown: \(slotCd)s")
+                                : lang.tr("\(active.accountLabel) 190s 冷却已就绪", "\(active.accountLabel) Ready"),
+                            systemImage: "timer"
+                        )
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(slotCd > 0 ? .orange : .green)
+                    }
 
                     Spacer()
                 }
@@ -107,6 +183,7 @@ struct ActiveSubmissionCardView: View {
     private func elapsedLabel(phase: String, sec: Int) -> String {
         let dur = Formatters.duration(sec)
         switch phase {
+        case "launching": return lang.tr("正在进入发送通道: \(dur)", "Dispatching submit: \(dur)")
         case "waiting_cooldown": return lang.tr("本地排队等待: \(dur)", "Waiting cooldown: \(dur)")
         case "packaging", "uploading": return lang.tr("本地处理耗时: \(dur)", "Local stage: \(dur)")
         case "fetching_score": return lang.tr("总耗时: \(dur) (同步榜单中)", "Elapsed: \(dur) (Syncing)")
@@ -116,6 +193,7 @@ struct ActiveSubmissionCardView: View {
 
     private func phaseLabel(_ phase: String, remoteStatus: String?) -> String {
         switch phase {
+        case "launching": return lang.tr("正在启动提交…", "Launching Submit")
         case "waiting_cooldown": return lang.tr("本地等待限流冷却", "Waiting Cooldown")
         case "packaging": return lang.tr("本地校验打包中", "Packaging")
         case "uploading": return lang.tr("正在上传代码", "Uploading")
@@ -253,4 +331,3 @@ struct QueueScoreCell: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
-

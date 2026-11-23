@@ -18,6 +18,13 @@ class _CooldownReservationCancelled(BaseException):
 
 from ..config import CLI_DIR, CONFIG_DIR, LOGS_DIR, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .auth_service import list_judge_accounts
+from .inflight_io import (
+    inflight_pid,
+    read_inflight,
+    reap_inflight_if_stale,
+    write_inflight_atomic,
+    write_inflight_unless_owned,
+)
 from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STATUSES
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
@@ -104,15 +111,16 @@ def compute_account_slots(
         active_sha = None
         worker_pid = 0
         if inf_path.is_file():
-            inf = read_json(inf_path, {})
-            pid = int(inf.get("pid") or 0)
-            if pid > 0 and _pid_alive(pid):
+            inf = read_inflight(inf_path)
+            pid = inflight_pid(inf)
+            if inf is not None and pid > 0 and _pid_alive(pid):
                 phase = str(inf.get("phase") or "packaging")
                 active_title = inf.get("title")
                 active_sha = inf.get("sha")
                 worker_pid = pid
             else:
-                inf_path.unlink(missing_ok=True)
+                # Never unlink on a torn/unreadable read; only reap a provably dead, unchanged tracker.
+                reap_inflight_if_stale(inf_path, inf)
         used_today = len(today_sids_by_aid.get(aid, set()))
         rem_today = max(0, daily_limit - used_today)
         slots.append(
@@ -236,8 +244,9 @@ def detect_inflight_submission(
     # 1. Check Parhelion's own inflight tracker
     inf_file = inflight_file_for("primary")
     if inf_file.is_file():
-        data = read_json(inf_file, {})
-        pid = int(data.get("pid") or 0)
+        raw_inf = read_inflight(inf_file)
+        data = raw_inf or {}
+        pid = inflight_pid(data)
         if pid and _pid_alive(pid):
             st_dt = parse_iso(data.get("started_at"))
             el = max(0, int((now - st_dt).total_seconds())) if st_dt else 0
@@ -249,7 +258,7 @@ def detect_inflight_submission(
                 "elapsed_sec": el,
             }
         else:
-            inf_file.unlink(missing_ok=True)
+            reap_inflight_if_stale(inf_file, raw_inf)
 
     if not queue_lock_held:
         return {"active": False, "title": None, "sha": None, "phase": None, "elapsed_sec": 0}
@@ -537,20 +546,19 @@ def spawn_jump_submit(
             close_fds=True,
         )
 
-    inf_path.write_text(
-        json.dumps(
-            {
-                "pid": proc.pid,
-                "workspace": str(workspace),
-                "title": title,
-                "sha": sha,
-                "account_id": aid,
-                "account_label": chosen["label"],
-                "started_at": utc_now().isoformat(),
-                "phase": "packaging",
-            }
-        ),
-        encoding="utf-8",
+    # Atomic + owner-aware: the worker (same pid) may already have advanced past `packaging`.
+    write_inflight_unless_owned(
+        inf_path,
+        {
+            "pid": proc.pid,
+            "workspace": str(workspace),
+            "title": title,
+            "sha": sha,
+            "account_id": aid,
+            "account_label": chosen["label"],
+            "started_at": utc_now().isoformat(),
+            "phase": "packaging",
+        },
     )
     invalidate_ttl_cache("scheduler_bridge")
     invalidate_ttl_cache("remote_judge")
@@ -568,21 +576,18 @@ def spawn_jump_submit(
 def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: str, phase: str, account_id: str = "primary", account_label: str = "主账号") -> None:
     try:
         inf_path = inflight_file_for(account_id)
-        inf_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        inf_path.write_text(
-            json.dumps(
-                {
-                    "pid": os.getpid(),
-                    "workspace": str(workspace),
-                    "title": title,
-                    "sha": sha,
-                    "account_id": account_id,
-                    "account_label": account_label,
-                    "started_at": started_iso,
-                    "phase": phase,
-                }
-            ),
-            encoding="utf-8",
+        write_inflight_atomic(
+            inf_path,
+            {
+                "pid": os.getpid(),
+                "workspace": str(workspace),
+                "title": title,
+                "sha": sha,
+                "account_id": account_id,
+                "account_label": account_label,
+                "started_at": started_iso,
+                "phase": phase,
+            },
         )
     except Exception:
         pass
@@ -755,8 +760,11 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
 
     # Phase 2 (lock-free): poll remote Judge to terminal status using the submitting account's session
     sub_id = receipt["submission_id"]
+    submitted_at = str(receipt.get("submitted_at") or utc_now().isoformat())
     try:
-        status, score, pub_times, pub_tbest = _wait_and_fetch_score(workspace, title, sub_id, session_file=session_file)
+        status, score, pub_times, pub_tbest = _wait_and_fetch_score(
+            workspace, title, sub_id, session_file=session_file, submitted_at=submitted_at
+        )
         out_rec = {
             **record,
             "finished_at": utc_now().isoformat(),
@@ -765,7 +773,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             "score": score,
             "account_id": aid,
             "account_label": acc_label,
-            "submitted_at": receipt.get("submitted_at") or utc_now().isoformat(),
+            "submitted_at": submitted_at,
             **({"public_times_us": pub_times} if pub_times else {}),
             **({"public_tbest_us": pub_tbest} if pub_tbest else {}),
         }
@@ -891,12 +899,19 @@ def _wait_and_fetch_score(
     submission_id: str,
     session_file: str = "",
     ranking_retry_delays: tuple[float, ...] = DEFAULT_RANKING_RETRY_DELAYS,
+    submitted_at: str = "",
 ) -> tuple[str, float | None, list[float], list[float]]:
     py_exe = resolve_python_exe(workspace)
     env = dict(os.environ)
     if session_file:
         env["JUDGE_SESSION_FILE"] = session_file
     from ..config import SUPERVISOR_ROOT
+    from .board_refresh_service import _resolve_team_name
+
+    team_user_ids = sorted(
+        {str(a.get("user_id") or "").strip() for a in list_judge_accounts() if a.get("user_id")}
+    )
+    team_name = _resolve_team_name(workspace)
     judge_dir = SUPERVISOR_ROOT / "runtime" / "judge"
     if not (judge_dir / "ict_cli.py").is_file():
         judge_dir = workspace / "skills" / "problem-submit" / "scripts"
@@ -907,7 +922,9 @@ def _wait_and_fetch_score(
         f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from ict_cli import ICTClient\n"
         "from opsb_core.services.judge_score_fetch import (\n"
-        "    fetch_ranking_row_with_retry,\n"
+        "    extract_numeric_score,\n"
+        "    extract_public_times,\n"
+        "    fetch_ranking_sid_and_team_with_retry,\n"
         "    resolve_problem_id,\n"
         "    resolve_score_and_times,\n"
         "    update_score_snapshot,\n"
@@ -935,6 +952,9 @@ def _wait_and_fetch_score(
         "if status in NON_TERM:\n"
         "    raise RuntimeError(f'poll timeout after {POLL_TIMEOUT_SEC}s (last status={status})')\n"
         "rank_row = None\n"
+        "team_best_row = None\n"
+        f"team_uids = set({team_user_ids!r})\n"
+        f"team_name = {team_name!r}\n"
         "try:\n"
         f"    pid = resolve_problem_id(root, {title!r})\n"
         "    if pid:\n"
@@ -947,18 +967,37 @@ def _wait_and_fetch_score(
         "                    if attempt == 3: return {}\n"
         "                    time.sleep(2 * (attempt + 1))\n"
         "            return {}\n"
-        "        rank_row = fetch_ranking_row_with_retry(\n"
-        f"            _fetch_page, {submission_id!r}, status=status, retry_delays={tuple(ranking_retry_delays)!r}\n"
+        "        rank_row, team_best_row = fetch_ranking_sid_and_team_with_retry(\n"
+        f"            _fetch_page, {submission_id!r}, team_uids, team_name=team_name, status=status, retry_delays={tuple(ranking_retry_delays)!r}\n"
         "        )\n"
         "except Exception:\n"
         "    rank_row = None\n"
+        "    team_best_row = None\n"
         "score, pub_times, pub_tbest = resolve_score_and_times(sub_detail, rank_row, status)\n"
         "try:\n"
-        "    if rank_row is not None or (status == 'Pass' and score is not None):\n"
+        "    snap_row = team_best_row if team_best_row is not None else rank_row\n"
+        "    if snap_row is not None:\n"
+        "        snap_sid = str(snap_row.get('submission_id') or snap_row.get('sid') or snap_row.get('_id') or '') or "
+        f"{submission_id!r}\n"
+        "        snap_sc = extract_numeric_score(snap_row)\n"
+        "        if snap_sid == "
+        f"{submission_id!r}:\n"
+        "            snap_status = status\n"
+        "            snap_times, snap_tbest = pub_times, pub_tbest\n"
+        "            snap_score = score if snap_sc is None else snap_sc\n"
+        "        else:\n"
+        "            snap_status = str(snap_row.get('status') or ('Pass' if (snap_sc is not None and snap_sc > 0) else status))\n"
+        "            snap_times, snap_tbest = extract_public_times(None, snap_row)\n"
+        "            snap_score = snap_sc\n"
+        "        update_score_snapshot(\n"
+        f"            root, {title!r}, snap_sid, snap_status, snap_score,\n"
+        "            snap_row.get('rank'),\n"
+        f"            snap_times, snap_tbest, submitted_at={submitted_at!r}, require_current_check=False,\n"
+        "        )\n"
+        "    elif status == 'Pass' and score is not None:\n"
         "        update_score_snapshot(\n"
         f"            root, {title!r}, {submission_id!r}, status, score,\n"
-        "            rank_row.get('rank') if rank_row is not None else None,\n"
-        "            pub_times, pub_tbest, require_current_check=False,\n"
+        f"            None, pub_times, pub_tbest, submitted_at={submitted_at!r}, require_current_check=False,\n"
         "        )\n"
         "except Exception:\n"
         "    pass\n"

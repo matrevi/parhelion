@@ -206,12 +206,15 @@ extension ContestStore {
 
     func loadFastFeedback(for problem: String) async {
         guard !selectedWorkspace.isEmpty, !loadingFastFeedbackProblems.contains(problem) else { return }
+        let ws = selectedWorkspace
         loadingFastFeedbackProblems.insert(problem)
         fastFeedbackErrorByProblem[problem] = nil
         defer { loadingFastFeedbackProblems.remove(problem) }
 
         do {
-            let card = try await repository.fetchPmuTorchCard(workspace: selectedWorkspace, problem: problem, top: 8)
+            let card = try await repository.fetchPmuTorchCard(workspace: ws, problem: problem, top: 8)
+            // Drop results that land after a workspace switch (same title, different contest).
+            guard ws == selectedWorkspace else { return }
             pmuCardsByProblem[problem] = card
             if let eg = card.elfGuard {
                 elfByProblem[problem] = ElfGuardResult(title: problem, sha: card.sha, status: eg.status, metrics: eg.metrics, alerts: eg.alerts)
@@ -221,13 +224,17 @@ extension ContestStore {
             }
             return
         } catch {
+            guard ws == selectedWorkspace else { return }
             fastFeedbackErrorByProblem[problem] = error.localizedDescription
         }
 
         // Graceful fallback to individual ELF + Cold3 probes if PMU card fails
-        async let elfReq = repository.fetchElfGuard(workspace: selectedWorkspace, problem: problem)
-        async let cold3Req = repository.fetchCold3Probe(workspace: selectedWorkspace, problem: problem)
-        if let elf = try? await elfReq { elfByProblem[problem] = elf }
-        if let cold3 = try? await cold3Req { cold3ByProblem[problem] = cold3 }
+        async let elfReq = repository.fetchElfGuard(workspace: ws, problem: problem)
+        async let cold3Req = repository.fetchCold3Probe(workspace: ws, problem: problem)
+        let elf = try? await elfReq
+        let cold3 = try? await cold3Req
+        guard ws == selectedWorkspace else { return }
+        if let elf { elfByProblem[problem] = elf }
+        if let cold3 { cold3ByProblem[problem] = cold3 }
     }
 }

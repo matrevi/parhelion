@@ -3,35 +3,41 @@ import SwiftUI
 struct NpuServerQueueView: View {
     @EnvironmentObject var store: ContestStore
     @EnvironmentObject var hotStore: HotTelemetryStore
+    @StateObject private var laneModel = NpuLaneModel()
     @Namespace private var laneNamespace
     let npu: NpuTelemetry
 
     private var lang: AppLanguage { store.lang }
     private var liveNpu: NpuTelemetry { hotStore.npu ?? npu }
 
-    private func taskAnimID(_ task: NpuTaskItem) -> String {
-        let prob = task.problem ?? "pid-\(task.pid)"
-        let lane = (task.lane ?? (task.isBackfillTask ? "B0" : "Q1")).uppercased()
-        return "\(prob)|\(lane)"
+    /// Lightweight Equatable signature so `laneModel` ingests on every meaningful hot NPU change.
+    private var taskFingerprint: [String] {
+        liveNpu.tasks.map {
+            "\($0.pid)|\($0.state)|\($0.stage)|\($0.lane ?? "")|\($0.problem ?? "")|\($0.shortSha ?? "")|\($0.die ?? -1)|\($0.elapsedSec)|\($0.boosted == true)|\($0.detail)"
+        }
     }
 
-    private var taskMotionSignature: [String] {
-        liveNpu.tasks.map { "\($0.state)|\($0.problem ?? "")|\($0.lane ?? "")|\($0.pid)" }
+    private var activeCards: [NpuLaneCard] {
+        laneModel.hasIngested ? laneModel.cards : NpuLaneModel.preview(liveNpu.tasks)
     }
 
-    private var dieExecTasks: [NpuTaskItem] {
-        liveNpu.tasks.filter { $0.state == "ACTIVE" }
+    private var dieExecCards: [NpuLaneCard] {
+        activeCards.filter { $0.lane == .active }
     }
 
-    private var cpuBuildTasks: [NpuTaskItem] {
-        liveNpu.tasks.filter { $0.state == "CPU_BUILD" }
+    private var cpuBuildCards: [NpuLaneCard] {
+        activeCards.filter { $0.lane == .build }
     }
 
-    private var waitingTickets: [NpuTaskItem] {
-        liveNpu.tasks.filter { $0.state == "WAITING" }
+    private var waitingCards: [NpuLaneCard] {
+        activeCards.filter { $0.lane == .waiting }
     }
 
     var body: some View {
+        let liveDieCount = dieExecCards.filter { !$0.lingering }.count
+        let liveBuildCount = cpuBuildCards.filter { !$0.lingering }.count
+        let liveWaitCount = waitingCards.filter { !$0.lingering }.count
+
         VStack(spacing: 0) {
             HStack {
                 Label(lang.tr("NPU 三车道验证队列", "NPU 3-Lane Pipeline Queue"), systemImage: "server.rack")
@@ -39,8 +45,8 @@ struct NpuServerQueueView: View {
                 Spacer()
                 SemanticPill(
                     text: lang.tr(
-                        "\(dieExecTasks.count) 占卡 · \(cpuBuildTasks.count) 编译 · \(waitingTickets.count) 候票",
-                        "\(dieExecTasks.count) Die · \(cpuBuildTasks.count) Build · \(waitingTickets.count) Wait"
+                        "\(liveDieCount) 占卡 · \(liveBuildCount) 编译 · \(liveWaitCount) 候票",
+                        "\(liveDieCount) Die · \(liveBuildCount) Build · \(liveWaitCount) Wait"
                     ),
                     compact: true
                 )
@@ -50,43 +56,54 @@ struct NpuServerQueueView: View {
 
             Divider()
 
-            if !liveNpu.online {
+            if !liveNpu.online && activeCards.isEmpty {
                 emptyState(lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    // Use VStack (not LazyVStack) so matchedGeometryEffect tracks cards cleanly
+                    // across all three lanes without destroying views or leaving slot gaps.
+                    VStack(alignment: .leading, spacing: 10) {
                         laneSection(
                             title: lang.tr("① DIE 0 硬件独占执行区", "① DIE 0 EXECUTING"),
-                            badge: "\(dieExecTasks.count)",
+                            badge: "\(liveDieCount)",
                             tint: .blue,
-                            items: dieExecTasks,
+                            items: dieExecCards,
                             emptyText: lang.tr("Die 0 空闲 · 可立即进入 Phase B", "Die 0 Free · Ready for Phase B")
                         )
 
                         laneSection(
                             title: lang.tr("② 32核无锁并行编译区 (0s 占卡)", "② 32-CORE CPU BUILD (0s Lock)"),
-                            badge: "\(cpuBuildTasks.count)",
+                            badge: "\(liveBuildCount)",
                             tint: .teal,
-                            items: cpuBuildTasks,
+                            items: cpuBuildCards,
                             emptyText: lang.tr("当前无后台编译任务", "No active Phase A builds")
                         )
 
                         laneSection(
                             title: lang.tr("③ WSPT 待锁票据队列", "③ WSPT DIE TICKET QUEUE"),
-                            badge: "\(waitingTickets.count)",
+                            badge: "\(liveWaitCount)",
                             tint: .orange,
-                            items: waitingTickets,
+                            items: waitingCards,
                             emptyText: lang.tr("无排队等待任务", "Zero queue wait")
                         )
                     }
                     .padding(10)
-                    .animation(.snappy(duration: 0.28), value: taskMotionSignature)
+                    .animation(.snappy(duration: 0.30, extraBounce: 0.0), value: laneModel.layoutSignature)
                 }
             }
         }
+        .onAppear {
+            laneModel.ingest(liveNpu.tasks)
+        }
+        .onChange(of: taskFingerprint) { _, _ in
+            laneModel.ingest(liveNpu.tasks)
+        }
+        .onChange(of: store.activeSSHHost) { _, _ in
+            laneModel.reset()
+        }
     }
 
-    private func laneSection(title: String, badge: String, tint: Color, items: [NpuTaskItem], emptyText: String) -> some View {
+    private func laneSection(title: String, badge: String, tint: Color, items: [NpuLaneCard], emptyText: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle().fill(tint).frame(width: 6, height: 6)
@@ -111,22 +128,22 @@ struct NpuServerQueueView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 7)
                     .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.025)))
+                    .transition(.opacity)
             } else {
-                ForEach(items) { task in
-                    taskCard(task)
-                        .matchedGeometryEffect(id: taskAnimID(task), in: laneNamespace)
-                        .transition(.asymmetric(
-                            insertion: .opacity.combined(with: .move(edge: .top)),
-                            removal: .opacity
-                        ))
+                ForEach(items) { card in
+                    taskCard(card)
+                        .opacity(card.lingering ? 0.68 : 1.0)
+                        .matchedGeometryEffect(id: card.id, in: laneNamespace)
+                        .transition(.opacity)
                 }
             }
         }
     }
 
-    private func taskCard(_ task: NpuTaskItem) -> some View {
-        let active = task.state == "ACTIVE"
-        let isBuild = task.state == "CPU_BUILD"
+    private func taskCard(_ card: NpuLaneCard) -> some View {
+        let task = card.task
+        let active = card.lane == .active
+        let isBuild = card.lane == .build
         let isBackfill = task.isBackfillTask
         let highlightCol: Color = isBackfill
             ? .orange
@@ -147,14 +164,8 @@ struct NpuServerQueueView: View {
                             .foregroundStyle(Color(red: 0.78, green: 0.42, blue: 0.04))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(
-                                Capsule(style: .continuous)
-                                    .fill(Color.orange.opacity(0.16))
-                            )
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.6)
-                            )
+                            .background(Capsule(style: .continuous).fill(Color.orange.opacity(0.16)))
+                            .overlay(Capsule(style: .continuous).strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.6))
                     }
                     Text(task.problem ?? lang.tr("排队验证任务", "Queued Worker"))
                         .font(.system(size: 13, weight: .bold))
@@ -179,18 +190,18 @@ struct NpuServerQueueView: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                     if task.pid > 0 {
-                        Text(String("PID \(task.pid)"))
+                        Text("PID \(task.pid)")
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    Text("· \(Formatters.shortTimestamp(epoch: Date().timeIntervalSince1970 - Double(max(0, task.elapsedSec))))")
+                    Text("· \(Formatters.shortTimestamp(epoch: card.startedEpoch))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
                     if let die = task.die {
                         Text(lang.tr("\(die)号卡 (Die \(die))", "Die \(die)"))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.green)
-                    } else if let estWait = task.estimatedWaitSec, task.state == "WAITING" {
+                    } else if let estWait = task.estimatedWaitSec, card.lane == .waiting {
                         Text(lang.tr("预计等 ~\(Formatters.duration(estWait))", "Est. ~\(Formatters.duration(estWait))"))
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.orange)
@@ -209,7 +220,7 @@ struct NpuServerQueueView: View {
 
                     Spacer()
 
-                    if task.state == "WAITING" && task.boosted != true && task.pid > 0 {
+                    if card.lane == .waiting && task.boosted != true && task.pid > 0 && !card.lingering {
                         Button {
                             Task {
                                 await store.boostNpuTicket(
@@ -227,7 +238,7 @@ struct NpuServerQueueView: View {
                         .controlSize(.mini)
                     }
 
-                    if (task.state == "WAITING" || task.state == "CPU_BUILD") && task.pid > 0 {
+                    if (card.lane == .waiting || card.lane == .build) && task.pid > 0 && !card.lingering {
                         Button {
                             Task {
                                 await store.cancelNpuTicket(pid: task.pid, problem: task.problem ?? "Task")

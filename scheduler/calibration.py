@@ -52,7 +52,7 @@ from .estimator import (
     parse_validation_perf,
     resolve_sha,
 )
-from .parhelion_paths import workspace_bench_specs_dir
+from .parhelion_paths import atomic_write_json, read_json_safe, workspace_bench_specs_dir
 
 STRATA_ORDER: tuple[tuple[str, str, float], ...] = (
     ("PUBLIC", "Public", 0.10),
@@ -1326,7 +1326,7 @@ class BenchmarkCalibrator:
 
         anti_corr_buckets = sorted(
             [(k, c) for k, c in b_corr.items() if b_npairs.get(k, 0) >= 4 and c <= -0.25],
-            key=lambda x: x[1],
+            key=lambda x: (float(x[1]), str(x[0])),
         )
         if anti_corr_buckets:
             diagnostics.append({
@@ -1383,7 +1383,10 @@ class BenchmarkCalibrator:
                 ),
             })
 
-        buckets_ranked = sorted(buckets_out, key=lambda x: (x["headroom_pts"], x["marginal_pts_per_2x"]), reverse=True)
+        buckets_ranked = sorted(
+            buckets_out,
+            key=lambda x: (-float(x["headroom_pts"]), -float(x["marginal_pts_per_2x"]), str(x["id"])),
+        )
         active_regime = regime_by_sha.get(active_sha or "", "none")
 
         cal_doc = {
@@ -1441,10 +1444,7 @@ class BenchmarkCalibrator:
 
         if persist and as_of is None:
             out_file = self.workspace / "results" / title / "calibration.json"
-            out_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = out_file.with_suffix(".tmp")
-            tmp.write_text(json.dumps(cal_doc, indent=2, ensure_ascii=False) + "\n")
-            tmp.replace(out_file)
+            atomic_write_json(out_file, cal_doc, indent=2, ensure_ascii=False)
             # Auto-persist structured bench feedback whenever high-residual events are detected
             if high_residual_events:
                 try:
@@ -1470,19 +1470,16 @@ class BenchmarkCalibrator:
             return doc
         cal_file = self.workspace / "results" / title / "calibration.json"
         if cal_file.is_file():
-            try:
-                doc = json.loads(cal_file.read_text())
-                if doc.get("model_version") == MODEL_VERSION:
-                    esc = self.inspect_escape_state(title)
-                    doc["escape_lock"] = esc["escape_lock"]
-                    doc["escape_sha"] = esc["escape_short_sha"]
-                    doc["escape_full_sha"] = esc["escape_sha"]
-                    doc["escape_status"] = esc["escape_status"]
-                    doc["escaped_commits"] = esc["escaped_commits"]
-                    self._cal_cache[c_key] = doc
-                    return doc
-            except Exception:
-                pass
+            doc, ok = read_json_safe(cal_file)
+            if ok and isinstance(doc, dict) and doc.get("model_version") == MODEL_VERSION:
+                esc = self.inspect_escape_state(title)
+                doc["escape_lock"] = esc["escape_lock"]
+                doc["escape_sha"] = esc["escape_short_sha"]
+                doc["escape_full_sha"] = esc["escape_sha"]
+                doc["escape_status"] = esc["escape_status"]
+                doc["escaped_commits"] = esc["escaped_commits"]
+                self._cal_cache[c_key] = doc
+                return doc
         doc = self.calibrate_problem(title, persist=True)
         self._cal_cache[c_key] = doc
         return doc
@@ -1587,8 +1584,7 @@ class BenchmarkCalibrator:
                 for k, c in b_corr.items()
                 if c >= 0.35 and b_npairs.get(k, 0) >= 3
             ],
-            key=lambda x: (x["corr"], x["pairs"]),
-            reverse=True,
+            key=lambda x: (-float(x["corr"]), -int(x["pairs"]), str(x["bucket"])),
         )
 
         misleading_anti = sorted(
@@ -1605,7 +1601,7 @@ class BenchmarkCalibrator:
                 for k, c in b_corr.items()
                 if c <= -0.20 and b_npairs.get(k, 0) >= 3
             ],
-            key=lambda x: x["corr"],
+            key=lambda x: (float(x["corr"]), str(x["bucket"])),
         )
 
         all_discovered: dict[str, float] = {}
@@ -1711,10 +1707,7 @@ class BenchmarkCalibrator:
     ) -> pathlib.Path:
         payload = self._build_feedback_payload(title, cal, perf_spec, observed_samples=observed_samples)
         fb_path = self.specs_root / title / "bench_feedback.json"
-        fb_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = fb_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(fb_path)
+        atomic_write_json(fb_path, payload, indent=2, ensure_ascii=False)
         return fb_path
 
     def _inspect_commit_validation(self, title: str, sha: str) -> dict[str, Any]:
@@ -1770,10 +1763,7 @@ class BenchmarkCalibrator:
         perf_spec = self.load_perf_spec(title)
         fb_payload = self._build_feedback_payload(title, cal, perf_spec)
         fb_path = self.specs_root / title / "bench_feedback.json"
-        fb_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = fb_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(fb_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        tmp.replace(fb_path)
+        atomic_write_json(fb_path, fb_payload, indent=2, ensure_ascii=False)
 
         # Static scan of C++ kernel/tiling for uncovered slow/fallback branches (read-only)
         repo = self.workspace / "bench" / title

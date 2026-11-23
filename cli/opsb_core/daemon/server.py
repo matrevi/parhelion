@@ -106,10 +106,13 @@ def probe_daemon_health(state: dict[str, Any] | None = None, timeout: float = 1.
 
 def _write_daemon_state(state: dict[str, Any]) -> None:
     DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    tmp = DAEMON_STATE_PATH.with_suffix(".tmp")
-    tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, DAEMON_STATE_PATH)
+    tmp = DAEMON_STATE_PATH.with_name(f".{DAEMON_STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, DAEMON_STATE_PATH)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _remove_daemon_state(expected_pid: int | None = None) -> None:
@@ -284,7 +287,10 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
 
             if path == "/v1/snapshot":
                 inm = self.headers.get("If-None-Match")
-                code, etag, raw_bytes = runtime.state_cache.get_snapshot(ws, if_none_match=inm)
+                live_npu = runtime.stream_mgr.snapshot(compact_history=False)
+                code, etag, raw_bytes = runtime.state_cache.get_snapshot(
+                    ws, if_none_match=inm, live_npu=live_npu
+                )
                 if code == 304:
                     self.send_response(304)
                     self.send_header("ETag", f'"{etag}"')

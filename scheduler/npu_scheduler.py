@@ -255,13 +255,15 @@ try:
         for ikey, bname in inodes.items():
             if ikey in line:
                 parts = line.split()
-                if len(parts) >= 5 and parts[4].isdigit():
-                    pid = int(parts[4])
-                    mode = parts[3].upper()
+                is_blocked = len(parts) > 1 and parts[1] == "->"
+                off = 1 if is_blocked else 0
+                if len(parts) >= 5 + off and parts[4 + off].isdigit():
+                    pid = int(parts[4 + off])
+                    mode = parts[3 + off].upper()
                     m_die = re.search(r"device(\d+)\.lock$", bname)
                     if m_die:
                         d_idx = int(m_die.group(1))
-                        if "WRITE" in mode and "->" not in line:
+                        if "WRITE" in mode and not is_blocked:
                             die_holders[d_idx] = pid
                         else:
                             waiting_roots.add(pid)
@@ -359,7 +361,7 @@ for d_idx in range(max_dies):
     else:
         die_locks.append({"die": d_idx, "state": "FREE", "holder_pid": None, "problem": None, "sha": None, "tag": None, "elapsed_sec": 0})
 
-for w_pid in sorted(waiting_roots, key=lambda x: procs[x]["elapsed_sec"], reverse=True):
+for w_pid in sorted(waiting_roots, key=lambda x: (-procs[x]["elapsed_sec"], x)):
     tree = descendants(w_pid)
     covered_pids.update(tree)
     prob, sha = infer_meta(tree)
@@ -382,7 +384,7 @@ if cpu_builds_dir.is_dir():
         try:
             bd = json.loads(bf.read_text())
             bpid = int(bd.get("pid") or 0)
-            if bd.get("finished_at") or (bpid and bpid not in procs):
+            if bd.get("finished_at") or bpid <= 0 or bpid not in procs or bpid in covered_pids:
                 continue
             bprob = bd.get("title") or bd.get("problem")
             bsha = bd.get("sha")
@@ -397,7 +399,8 @@ if cpu_builds_dir.is_dir():
         except Exception:
             pass
 
-for pid, p in procs.items():
+for pid in sorted(procs):
+    p = procs[pid]
     if pid in covered_pids:
         continue
     low = p["cmd"].lower()
@@ -417,15 +420,34 @@ for pid, p in procs.items():
                 "fast": True, "detail": "Decoupled 32-core CPU compile (no NPU die lock held)",
             })
 
-# Enrich active die lock with `~/.opsb/die_session.json` and 10m `~/.opsb/die_ledger.jsonl`
+# Enrich active die lock AND matching ACTIVE task with `~/.opsb/die_session.json` only if pid matches holder tree
 sess_file = opsb_home / "die_session.json"
-if sess_file.is_file() and die_locks and die_locks[0]["state"] == "HELD":
+if sess_file.is_file() and die_locks:
     try:
         ds = json.loads(sess_file.read_text())
-        if ds.get("title") and not die_locks[0].get("problem"):
-            die_locks[0]["problem"] = ds["title"]
-        if ds.get("phase"):
-            die_locks[0]["phase"] = ds["phase"]
+        ds_die = int(ds.get("die", 0))
+        ds_pid = int(ds.get("pid") or 0)
+        if 0 <= ds_die < len(die_locks) and die_locks[ds_die]["state"] == "HELD":
+            h_pid = die_locks[ds_die]["holder_pid"]
+            tree_pids = set(holder_trees.get(ds_die, [h_pid]))
+            if h_pid in procs and procs[h_pid].get("ppid"):
+                tree_pids.add(procs[h_pid]["ppid"])
+            if ds_pid > 0 and ds_pid in tree_pids:
+                if ds.get("title") and not die_locks[ds_die].get("problem"):
+                    die_locks[ds_die]["problem"] = ds["title"]
+                if ds.get("sha") and not die_locks[ds_die].get("sha"):
+                    die_locks[ds_die]["sha"] = ds["sha"]
+                if ds.get("phase"):
+                    die_locks[ds_die]["phase"] = ds["phase"]
+                for rt in raw_tasks:
+                    if rt.get("state") == "ACTIVE" and rt.get("die") == ds_die and rt.get("pid") == h_pid:
+                        if ds.get("title") and not rt.get("problem"):
+                            rt["problem"] = ds["title"]
+                        if ds.get("sha") and not rt.get("sha"):
+                            rt["sha"] = ds["sha"]
+                        if ds.get("mode") == "B0" and rt.get("tag") != "BACKFILL":
+                            rt["tag"] = "BACKFILL"
+                        break
     except Exception:
         pass
 
@@ -493,6 +515,9 @@ if ticket_dir.is_dir():
             'waiting_sec': round(max(0.0, now_ep - created), 1) if created else 0.0,
             'alive': bool(alive),
         })
+
+devices.sort(key=lambda d: (int(d.get("npu_id", 0)), int(d.get("chip_id", 0))))
+npu_tickets.sort(key=lambda t: (-int(t.get("tier", 1)), -float(t.get("prio", 0.0)), float(t.get("created", 0.0)), int(t.get("pid", 0))))
 
 print(json.dumps({
     "sampled_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -641,6 +666,7 @@ class NpuTaskScheduler:
                 inflight_sha_by_title[title] = candidates[0][1]
 
         # 2. Check local macOS `ps` for active `npu-test.py <Title>` or `opsb test <Title>` callers
+        ordered_titles = sorted(self.estimator.problems_meta, key=lambda x: (-len(x), x))
         try:
             out = subprocess.check_output(["ps", "-eo", "pid,etime,args"], text=True, timeout=2.0)
             seen_titles: set[str] = set()
@@ -654,7 +680,7 @@ class NpuTaskScheduler:
                     continue
                 el_sec = _parse_ps_etime(parts[1])
                 cmd = parts[2]
-                matched_title = next((t for t in self.estimator.problems_meta if re.search(rf"\b{t}\b", cmd)), None)
+                matched_title = next((t for t in ordered_titles if re.search(rf"\b{t}\b", cmd)), None)
                 if matched_title and matched_title not in seen_titles:
                     seen_titles.add(matched_title)
                     local_waiters.append({
@@ -667,6 +693,7 @@ class NpuTaskScheduler:
         except Exception:
             pass
 
+        local_waiters.sort(key=lambda lw: (-int(lw["elapsed_sec"]), str(lw["title"]), int(lw["local_pid"])))
         return local_waiters, inflight_sha_by_title
 
     def inspect_live_queue(self, offline: bool = False) -> dict[str, Any]:
@@ -743,7 +770,10 @@ class NpuTaskScheduler:
         for rt in remote_data.get("raw_tasks", []):
             if not rt.get("problem") and rt.get("state") == "WAITING" and unmatched_local:
                 r_el = int(rt.get("elapsed_sec", 0))
-                best_lw = min(unmatched_local, key=lambda lw: abs(lw["elapsed_sec"] - r_el))
+                best_lw = min(
+                    unmatched_local,
+                    key=lambda lw: (abs(lw["elapsed_sec"] - r_el), str(lw["title"]), int(lw["local_pid"])),
+                )
                 if abs(best_lw["elapsed_sec"] - r_el) <= 45:
                     rt["problem"] = best_lw["title"]
                     rt["sha"] = best_lw["sha"]
@@ -761,13 +791,28 @@ class NpuTaskScheduler:
             sha = resolve_sha(self.workspace, title, rt.get("sha")) if title != "Unknown" and rt.get("sha") else rt.get("sha")
             short_sha = sha[:7] if sha else None
             state = str(rt.get("state", "WAITING"))
+            if state not in ("ACTIVE", "CPU_BUILD", "WAITING"):
+                state = "WAITING"
             tag = str(rt.get("tag", "WAITING-DIE"))
-            el_sec = int(rt.get("elapsed_sec", 0))
+            el_sec = max(0, int(rt.get("elapsed_sec", 0)))
             is_fast = bool(rt.get("fast", False) or tag == "FAST-LANE")
+
+            # Enforce valid (state, tag) combinations so UI never sees contradictory badges
+            if state == "CPU_BUILD":
+                canonical_tag = "BUILD"
+            elif state == "WAITING":
+                canonical_tag = "BACKFILL" if tag == "BACKFILL" else "WAITING-DIE"
+            else:  # ACTIVE
+                canonical_tag = tag if (tag in NPU_TASK_TAGS and tag != "WAITING-DIE") else "PRECISION"
 
             if state == "CPU_BUILD":
                 mlfq = "CPU"
                 est_s = 35.0
+                w_base, age_b, w_prio = 0.0, 0.0, 0.0
+                starved = False
+            elif canonical_tag == "BACKFILL":
+                mlfq = "B0"
+                est_s = 25.0
                 w_base, age_b, w_prio = 0.0, 0.0, 0.0
                 starved = False
             elif title in self.estimator.problems_meta:
@@ -798,7 +843,7 @@ class NpuTaskScheduler:
                     sha=sha,
                     short_sha=short_sha,
                     state=state,
-                    tag=tag if tag in NPU_TASK_TAGS else "PRECISION",
+                    tag=canonical_tag,
                     mlfq_level=mlfq,
                     die=rt.get("die"),
                     elapsed_sec=el_sec,
@@ -812,19 +857,23 @@ class NpuTaskScheduler:
                 )
             )
 
-        # Order queue: ACTIVE first -> CPU_BUILD -> Q0 / Q0* by wspt_priority desc -> Q1 by wspt_priority desc
-        def _sort_key(t: NpuTask) -> tuple[int, float, int]:
+        # Deterministic queue order: ACTIVE -> CPU_BUILD -> Q0/Q0* -> Q1 -> B0,
+        # then wspt_priority DESC, elapsed_sec DESC, title ASC, sha ASC, pid ASC.
+        def _sort_key(t: NpuTask) -> tuple[int, float, int, str, str, int]:
             if t.state == "ACTIVE":
-                tier = 4
+                tier = 5
             elif t.state == "CPU_BUILD":
-                tier = 3
+                tier = 4
             elif t.mlfq_level in ("Q0", "Q0*"):
-                tier = 2
-            else:
+                tier = 3
+            elif t.mlfq_level == "B0":
                 tier = 1
-            return (tier, t.wspt_priority, t.elapsed_sec)
+            else:
+                tier = 2
+            return (-tier, -float(t.wspt_priority), -int(t.elapsed_sec), str(t.title), str(t.sha or ""), int(t.pid))
 
-        enriched.sort(key=_sort_key, reverse=True)
+        enriched.sort(key=_sort_key)
+        starvation_warnings.sort()
         w_rank = 0
         for item in enriched:
             if item.state == "WAITING":
@@ -913,7 +962,14 @@ class NpuTaskScheduler:
             )
 
         # Rank by Q0/effective WSPT priority (with CRITICAL_RESTORE boosted natively via compute_wspt)
-        rows.sort(key=lambda r: (r.current_score <= 0.0, r.wspt_q1, r.weighted_headroom), reverse=True)
+        rows.sort(
+            key=lambda r: (
+                0 if r.current_score <= 0.0 else 1,
+                -float(r.wspt_q1),
+                -float(r.weighted_headroom),
+                str(r.title),
+            )
+        )
         for idx, row in enumerate(rows, 1):
             row.rank = idx
         return rows

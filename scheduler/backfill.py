@@ -72,6 +72,7 @@ import time
 from typing import Any, Callable
 
 from .estimator import _parse_iso, parse_validation_perf
+from .parhelion_paths import atomic_write_json, read_json_safe, sanitize_json_value
 
 # --------------------------------------------------------------------------------------
 # Lane / ticket constants — shared vocabulary with `npu_scheduler.py` and `tools/npu-test.py`
@@ -265,6 +266,25 @@ class BackfillLedger:
             if rec.get("event") == "started" and rec.get("session_key"):
                 out[str(rec["session_key"])] = rec
         return out
+
+    def open_started_sessions(self) -> list[dict[str, Any]]:
+        """Chronologically unclosed `started` records (not closed by a subsequent terminal record).
+
+        Replaying in ledger order ensures that retrying a previously failed `session_key`
+        is still recognized as running/open while active, instead of being shadowed by an
+        earlier attempt's `finished`/`aborted` record.
+        """
+        open_map: dict[str, dict[str, Any]] = {}
+        for rec in self.records():
+            sk = str(rec.get("session_key") or "")
+            if not sk:
+                continue
+            ev = rec.get("event")
+            if ev == "started":
+                open_map[sk] = rec
+            elif ev in ("finished", "aborted"):
+                open_map.pop(sk, None)
+        return list(open_map.values())
 
     def successful_bucket_keys(self) -> set[str]:
         """`(title, bucket, baseline_sha)` keys with a terminal `ok` measurement."""
@@ -514,6 +534,26 @@ def emit(obj):
     print('BACKFILL_RESULT ' + json.dumps(obj), flush=True)
 
 
+def _atomic_write_json(path, obj, indent=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / ('.%s.%d.tmp' % (path.name, os.getpid()))
+    try:
+        with tmp.open('w', encoding='utf-8') as fh:
+            fh.write(json.dumps(obj, indent=indent))
+            fh.flush()
+            try:
+                os.fsync(fh.fileno())
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
 def sh(argv, cwd=None, timeout=60.0, env=None, shell=False):
     try:
         p = subprocess.run(argv, cwd=cwd, env=env, shell=shell, capture_output=True, text=True, timeout=timeout)
@@ -685,10 +725,10 @@ else:
     cpu_hb_dir.mkdir(parents=True, exist_ok=True)
     cpu_hb = cpu_hb_dir / ('%d.json' % os.getpid())
     try:
-        cpu_hb.write_text(json.dumps({
+        _atomic_write_json(cpu_hb, {
             'pid': os.getpid(), 'title': title, 'sha': sha,
             'lane': 'B0', 'kind': 'BACKFILL', 'started_epoch': round(b_t0, 3),
-        }))
+        })
     except Exception:
         pass
     build_cmd = (
@@ -715,9 +755,9 @@ else:
         res['phase_a_sec'] = round(time.time() - phase_a_t0, 1)
         emit(res); sys.exit(0)
     try:
-        marker.write_text(json.dumps({'sha': sha, 'soc': soc, 'target': target, 'rc': 0,
-                                      'build_sec': b_sec, 'at': time.time(),
-                                      'wt_method': res.get('wt_method')}, indent=1))
+        _atomic_write_json(marker, {'sha': sha, 'soc': soc, 'target': target, 'rc': 0,
+                                    'build_sec': b_sec, 'at': time.time(),
+                                    'wt_method': res.get('wt_method')}, indent=1)
     except Exception:
         pass
 res['phase_a_sec'] = round(time.time() - phase_a_t0, 1)
@@ -780,10 +820,10 @@ created = time.time()
 
 def write_ticket():
     try:
-        ticket_path.write_text(json.dumps({
+        _atomic_write_json(ticket_path, {
             'pid': my_pid, 'title': title, 'sha': sha, 'tier': 0, 'prio': 0.0,
             'fast': False, 'lane': 'B0', 'kind': 'BACKFILL', 'created': created,
-        }))
+        })
     except Exception:
         pass
 
@@ -847,12 +887,12 @@ die_t0 = time.time()
 res.update(acquired=True, die=die_idx, lock_wait_sec=round(die_t0 - wait_t0, 2))
 sess_file = opsb_home / 'die_session.json'
 try:
-    sess_file.write_text(json.dumps({
+    _atomic_write_json(sess_file, {
         'die': die_idx, 'pid': my_pid, 'title': title, 'sha': sha, 'mode': 'B0',
         'phase': 'backfill_perf', 'substage': 'backfill_perf',
         'started_epoch': round(die_t0, 3),
         'started_ts': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }))
+    })
 except Exception:
     pass
 
@@ -997,38 +1037,44 @@ class BackfillScheduler:
 
     # -- config ------------------------------------------------------------------
     def config(self) -> BackfillConfig:
-        if self.config_path.is_file():
+        data, ok = read_json_safe(self.config_path)
+        if ok and isinstance(data, dict):
             try:
-                return BackfillConfig.from_dict(json.loads(self.config_path.read_text()))
+                return BackfillConfig.from_dict(data)
             except (ValueError, TypeError):
                 pass
         return BackfillConfig()
 
     def save_config(self, **kwargs: Any) -> BackfillConfig:
-        cfg = self.config()
+        data, ok = read_json_safe(self.config_path)
+        if not ok or (data is not None and not isinstance(data, dict)):
+            raise RuntimeError(f"Refusing to overwrite corrupt backfill config: {self.config_path}")
+        cfg = BackfillConfig.from_dict(data) if isinstance(data, dict) else BackfillConfig()
         for k, v in kwargs.items():
             if v is not None and hasattr(cfg, k):
                 setattr(cfg, k, v)
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.config_path.write_text(json.dumps(cfg.to_dict(), indent=2) + "\n")
+        atomic_write_json(self.config_path, cfg.to_dict(), indent=2)
         return cfg
 
     # -- timings store (consumed by `calibration._extract_bucket_timings`) -------
-    def _load_timings_doc(self) -> dict[str, Any]:
+    def _load_timings_doc(self, *, strict: bool = False) -> dict[str, Any]:
         try:
             st = self.timings_path.stat()
             stamp = (st.st_mtime_ns, st.st_size)
         except OSError:
             stamp = None
-        if stamp is not None and self._timings_stamp == stamp and self._timings_doc is not None:
+        if not strict and stamp is not None and self._timings_stamp == stamp and self._timings_doc is not None:
             return self._timings_doc
-        if not self.timings_path.is_file():
+        data, ok = read_json_safe(self.timings_path)
+        if not ok or (data is not None and not isinstance(data, dict)):
+            if strict:
+                raise RuntimeError(f"Refusing to overwrite corrupt backfill timings store: {self.timings_path}")
+            # Never cache a corrupt stamp as empty — allow recovery on next read
+            return {"version": 1, "entries": {}}
+        if data is None:
             self._timings_doc, self._timings_stamp = {"version": 1, "entries": {}}, None
             return self._timings_doc
-        try:
-            doc = json.loads(self.timings_path.read_text())
-        except ValueError:
-            doc = {"version": 1, "entries": {}}
+        doc = dict(data)
         if not isinstance(doc.get("entries"), dict):
             doc["entries"] = {}
         self._timings_doc, self._timings_stamp = doc, stamp
@@ -1045,36 +1091,45 @@ class BackfillScheduler:
         source: str = "backfill",
         profiler_regime: str | None = None,
     ) -> dict[str, Any]:
-        """Merge measured bucket timings into `<state>/backfill_timings.json` (idempotent)."""
-        doc = self._load_timings_doc()
-        key = f"{title}|{sha}"
-        entry = doc["entries"].get(key) or {"title": title, "sha": sha, "cases": {}}
-        merged = dict(entry.get("cases") or {})
-        added = 0
-        for bid, us in cases.items():
-            if not isinstance(us, (int, float)) or us <= 0:
-                continue
-            if bid not in merged:
-                added += 1
-            merged[bid] = round(float(us), 4)
-        upd = {
-            "title": title,
-            "sha": sha,
-            "cases": merged,
-            "source": source,
-            "modality": modality,
-            "runtime_soc": runtime_soc or entry.get("runtime_soc"),
-            "updated_at": _utc_now(),
-        }
-        if profiler_regime:
-            upd["profiler_regime"] = profiler_regime
-        entry.update(upd)
-        doc["entries"][key] = entry
+        """Merge measured bucket timings into `<state>/backfill_timings.json` (idempotent, locked, atomic)."""
         self.state_dir.mkdir(parents=True, exist_ok=True)
-        tmp = self.timings_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
-        tmp.replace(self.timings_path)
-        return {"added": added, "total": len(merged)}
+        lock_file = self.state_dir / ".backfill_timings.lock"
+        with lock_file.open("a", encoding="utf-8") as lk:
+            fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
+            try:
+                doc = self._load_timings_doc(strict=True)
+                key = f"{title}|{sha}"
+                entry = dict(doc["entries"].get(key) or {"title": title, "sha": sha, "cases": {}})
+                merged = dict(entry.get("cases") or {})
+                added = 0
+                for bid, us in cases.items():
+                    if not isinstance(us, (int, float)) or us <= 0:
+                        continue
+                    if bid not in merged:
+                        added += 1
+                    merged[bid] = round(float(us), 4)
+                upd = {
+                    "title": title,
+                    "sha": sha,
+                    "cases": merged,
+                    "source": source,
+                    "modality": modality,
+                    "runtime_soc": runtime_soc or entry.get("runtime_soc"),
+                    "updated_at": _utc_now(),
+                }
+                if profiler_regime:
+                    upd["profiler_regime"] = profiler_regime
+                entry.update(upd)
+                doc["entries"][key] = entry
+                atomic_write_json(self.timings_path, doc, indent=2, sort_keys=True)
+                try:
+                    st = self.timings_path.stat()
+                    self._timings_doc, self._timings_stamp = doc, (st.st_mtime_ns, st.st_size)
+                except OSError:
+                    self._timings_doc, self._timings_stamp = doc, None
+                return {"added": added, "total": len(merged)}
+            finally:
+                fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
 
     def timings_for(self, title: str, sha: str | None) -> dict[str, Any] | None:
         """Return `{cases: {bucket: us}, runtime_soc}` for a pinned baseline, else `None`."""
@@ -1229,7 +1284,12 @@ class BackfillScheduler:
             for b in ids:
                 if b not in row["buckets"]:
                     row["buckets"].append(b)
-        return list(agg.values())
+        for row in agg.values():
+            row["buckets"].sort()
+        return sorted(
+            agg.values(),
+            key=lambda x: (str(x.get("title") or ""), str(x.get("baseline_short") or "")),
+        )
 
     def plan(self, now: float | None = None, force: bool = False) -> list[dict[str, Any]]:
         """Unpaired → coalesced sessions, with attempt/backoff bookkeeping attached."""
@@ -1375,27 +1435,17 @@ class BackfillScheduler:
 
     # -- in-flight ---------------------------------------------------------------
     def inflight_running(self) -> dict[str, Any] | None:
-        """Latest `started` record without a terminal record, if its pid is still alive."""
-        terminal = self.ledger.terminal_by_session()
-        rows = [r for r in self.ledger.records() if r.get("event") == "started"]
-        for rec in reversed(rows):
-            if str(rec.get("session_key") or "") in terminal:
-                continue
+        """Latest chronologically unclosed `started` record whose pid is still alive."""
+        for rec in reversed(self.ledger.open_started_sessions()):
             pid = rec.get("pid")
             if isinstance(pid, int) and _pid_alive(pid):
                 return rec
         return None
 
     def stale_inflight(self) -> list[dict[str, Any]]:
-        """`started` records with a dead pid and no terminal record (crash recovery)."""
-        terminal = self.ledger.terminal_by_session()
+        """Chronologically unclosed `started` records with a dead pid (crash recovery)."""
         out: list[dict[str, Any]] = []
-        for rec in self.ledger.records():
-            if rec.get("event") != "started":
-                continue
-            sk = str(rec.get("session_key") or "")
-            if sk in terminal:
-                continue
+        for rec in self.ledger.open_started_sessions():
             pid = rec.get("pid")
             if isinstance(pid, int) and not _pid_alive(pid):
                 out.append(rec)
@@ -1454,6 +1504,27 @@ class BackfillScheduler:
                 "queued": jobs,
             }
 
+        # Guard admission-check + `started` append under a non-blocking single-flight lock
+        # so two concurrent dispatchers sdkot race into running the same B0 session.
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        dispatch_lock_path = self.state_dir / ".backfill_dispatch.lock"
+        dispatch_lk = dispatch_lock_path.open("a", encoding="utf-8")
+        try:
+            fcntl.flock(dispatch_lk.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            dispatch_lk.close()
+            adm_busy = {**adm, "allowed": False, "reasons": sorted(set(adm.get("reasons") or []) | {"backfill_inflight"})}
+            return {
+                "action": "backfill",
+                "dispatched": False,
+                "dry_run": False,
+                "reason": "admission_blocked",
+                "blocked_by": adm_busy["reasons"],
+                "admission": adm_busy,
+                "queued": jobs,
+            }
+
+        terminal_written = False
         started_epoch = self.clock()
         base = {
             "session_key": job["session_key"],
@@ -1469,111 +1540,148 @@ class BackfillScheduler:
         import os as _os
 
         base["pid"] = _os.getpid()
-        self.ledger.append({"event": "started", "started_epoch": round(started_epoch, 3), "started_at": _utc_now(), **base})
-
         try:
-            res = self.runner(runner_plan)
-        except Exception as exc:  # never let a transport failure break the caller
-            res = {"ok": False, "reason": f"runner_exception: {exc}"}
+            # Re-check inflight inside the lock in case a concurrent caller just started one.
+            if self.inflight_running():
+                adm_busy = {**adm, "allowed": False, "reasons": sorted(set(adm.get("reasons") or []) | {"backfill_inflight"})}
+                return {
+                    "action": "backfill",
+                    "dispatched": False,
+                    "dry_run": False,
+                    "reason": "admission_blocked",
+                    "blocked_by": adm_busy["reasons"],
+                    "admission": adm_busy,
+                    "queued": jobs,
+                }
+            self.ledger.append({"event": "started", "started_epoch": round(started_epoch, 3), "started_at": _utc_now(), **base})
 
-        ended_epoch = self.clock()
-        parsed = parse_validation_perf("\n".join(res.get("timing_lines") or []))
-        soc = parsed.get("runtime_soc") or res.get("runtime_soc")
-        # Modality ladder mirrors `BenchmarkCalibrator._extract_bucket_timings`:
-        # hardware profiler wins; host-enqueue proxies are only usable after floor removal.
-        pool: dict[str, float] = {}
-        modality = "none"
-        if parsed.get("profiler_cases"):
-            pool = dict(parsed["profiler_cases"])
-            modality = "profiler"
-        elif parsed.get("has_hw_evidence"):
-            # `profiler` ran but only kernel-level aggregates came back (`PROF_SUMMARY`): they name
-            # no case, so nothing here can pair `job["buckets"]`.  Never substitute the
-            # host-enqueue / `dev_us` floors for hardware evidence (§6.5.1).
-            modality = "profiler"
-        elif parsed.get("same_soc_exec_cases"):
-            ovh = 7.2 if soc == "soc-a" else 3.2
-            pool = {k: max(3.6, v - ovh) for k, v in parsed["same_soc_exec_cases"].items()}
-            modality = "exec_normalized"
-        elif parsed.get("dev_event_cases"):
-            ovh = 5.2 if soc == "soc-a" else 1.8
-            pool = {k: max(3.6, v - ovh) for k, v in parsed["dev_event_cases"].items()}
-            modality = "dev_normalized"
-        measured = {b: pool[b] for b in job["buckets"] if b in pool and pool[b] > 0}
-
-        if measured:
-            raw_timing_blob = "\n".join(res.get("timing_lines") or [])
-            bf_profiler_regime: str | None = None
-            if modality == "profiler":
-                if (
-                    "KPERF_JSON" in raw_timing_blob
-                    or "fast_profiler" in raw_timing_blob
-                    or "profiler_bench" in str((runner_plan or {}).get("tool") or "")
-                ):
-                    bf_profiler_regime = "fast_single_session_l0"
-                else:
-                    bf_profiler_regime = "legacy_multiproc_pmu"
-            self.store_timings(
-                job["title"],
-                str(job["baseline_sha"]),
-                measured,
-                runtime_soc=soc,
-                modality=modality,
-                profiler_regime=bf_profiler_regime,
-            )
-            # Re-fit the affected operator so `results/<Title>/calibration.json` (and thus the
-            # app banner via `status.backfill`) reflects the fresh pairings immediately.
             try:
-                self.calibrator.calibrate_problem(job["title"], persist=True)
-            except Exception:
-                pass
+                res = self.runner(runner_plan)
+            except Exception as exc:  # never let a transport failure break the caller
+                res = {"ok": False, "reason": f"runner_exception: {exc}"}
 
-        result = "ok" if measured else str(res.get("reason") or "no_timing_evidence")
-        terminal = {
-            "event": "finished",
-            "result": result,
-            "started_epoch": round(started_epoch, 3),
-            "ended_epoch": round(ended_epoch, 3),
-            "duration_sec": round(max(0.0, ended_epoch - started_epoch), 2),
-            "measured": {k: round(float(v), 3) for k, v in measured.items()},
-            "measured_count": len(measured),
-            "requested_count": len(job["buckets"]),
-            "unmeasured_buckets": [] if not measured else [b for b in job["buckets"] if b not in measured],
-            "unmeasured_keys": [] if not measured else [
-                bucket_key(job["title"], b, job["baseline_sha"])
-                for b in job["buckets"]
-                if b not in measured
-            ],
-            "runtime_soc": soc,
-            "modality": modality,
-            "tool": (runner_plan or {}).get("tool"),
-            "worktree": res.get("worktree"),
-            "wt_method": res.get("wt_method"),
-            "built": res.get("built"),
-            "build_ok": bool(res.get("built") or res.get("build_cached")) and res.get("build_rc") in (0, None),
-            "build_sec": res.get("build_sec"),
-            "build_cached": res.get("build_cached"),
-            "perf_sec": res.get("perf_sec"),
-            "harness_source": res.get("harness_source"),
-            "log": res.get("log"),
-            "die": res.get("die"),
-            "lock_wait_sec": res.get("lock_wait_sec"),
-            "head_used": res.get("head_used"),
-            "cpp_identical_head": res.get("cpp_identical_head"),
-            "accepted": bool(res.get("ok")),
-        }
-        self.ledger.append({**base, **terminal})
+            ended_epoch = self.clock()
+            parsed = parse_validation_perf("\n".join(res.get("timing_lines") or []))
+            soc = parsed.get("runtime_soc") or res.get("runtime_soc")
+            # Modality ladder mirrors `BenchmarkCalibrator._extract_bucket_timings`:
+            # hardware profiler wins; host-enqueue proxies are only usable after floor removal.
+            pool: dict[str, float] = {}
+            modality = "none"
+            if parsed.get("profiler_cases"):
+                pool = dict(parsed["profiler_cases"])
+                modality = "profiler"
+            elif parsed.get("has_hw_evidence"):
+                # `profiler` ran but only kernel-level aggregates came back (`PROF_SUMMARY`): they name
+                # no case, so nothing here can pair `job["buckets"]`.  Never substitute the
+                # host-enqueue / `dev_us` floors for hardware evidence (§6.5.1).
+                modality = "profiler"
+            elif parsed.get("same_soc_exec_cases"):
+                ovh = 7.2 if soc == "soc-a" else 3.2
+                pool = {k: max(3.6, v - ovh) for k, v in parsed["same_soc_exec_cases"].items()}
+                modality = "exec_normalized"
+            elif parsed.get("dev_event_cases"):
+                ovh = 5.2 if soc == "soc-a" else 1.8
+                pool = {k: max(3.6, v - ovh) for k, v in parsed["dev_event_cases"].items()}
+                modality = "dev_normalized"
+            measured = {b: pool[b] for b in job["buckets"] if b in pool and pool[b] > 0}
 
-        return {
-            "action": "backfill",
-            "dispatched": True,
-            "dry_run": False,
-            "result": result,
-            "session": job,
-            "measured": {k: round(float(v), 3) for k, v in measured.items()},
-            "admission": adm,
-            "remote": {k: v for k, v in res.items() if k != "timing_lines"},
-        }
+            if measured:
+                raw_timing_blob = "\n".join(res.get("timing_lines") or [])
+                bf_profiler_regime: str | None = None
+                if modality == "profiler":
+                    if (
+                        "KPERF_JSON" in raw_timing_blob
+                        or "fast_profiler" in raw_timing_blob
+                        or "profiler_bench" in str((runner_plan or {}).get("tool") or "")
+                    ):
+                        bf_profiler_regime = "fast_single_session_l0"
+                    else:
+                        bf_profiler_regime = "legacy_multiproc_pmu"
+                self.store_timings(
+                    job["title"],
+                    str(job["baseline_sha"]),
+                    measured,
+                    runtime_soc=soc,
+                    modality=modality,
+                    profiler_regime=bf_profiler_regime,
+                )
+                # Re-fit the affected operator so `results/<Title>/calibration.json` (and thus the
+                # app banner via `status.backfill`) reflects the fresh pairings immediately.
+                try:
+                    self.calibrator.calibrate_problem(job["title"], persist=True)
+                except Exception:
+                    pass
+
+            result = "ok" if measured else str(res.get("reason") or "no_timing_evidence")
+            terminal = {
+                "event": "finished",
+                "result": result,
+                "started_epoch": round(started_epoch, 3),
+                "ended_epoch": round(ended_epoch, 3),
+                "duration_sec": round(max(0.0, ended_epoch - started_epoch), 2),
+                "measured": {k: round(float(v), 3) for k, v in measured.items()},
+                "measured_count": len(measured),
+                "requested_count": len(job["buckets"]),
+                "unmeasured_buckets": [] if not measured else [b for b in job["buckets"] if b not in measured],
+                "unmeasured_keys": [] if not measured else [
+                    bucket_key(job["title"], b, job["baseline_sha"])
+                    for b in job["buckets"]
+                    if b not in measured
+                ],
+                "runtime_soc": soc,
+                "modality": modality,
+                "tool": (runner_plan or {}).get("tool"),
+                "worktree": res.get("worktree"),
+                "wt_method": res.get("wt_method"),
+                "built": res.get("built"),
+                "build_ok": bool(res.get("built") or res.get("build_cached")) and res.get("build_rc") in (0, None),
+                "build_sec": res.get("build_sec"),
+                "build_cached": res.get("build_cached"),
+                "perf_sec": res.get("perf_sec"),
+                "harness_source": res.get("harness_source"),
+                "log": res.get("log"),
+                "die": res.get("die"),
+                "lock_wait_sec": res.get("lock_wait_sec"),
+                "head_used": res.get("head_used"),
+                "cpp_identical_head": res.get("cpp_identical_head"),
+                "accepted": bool(res.get("ok")),
+            }
+            self.ledger.append({**base, **terminal})
+            terminal_written = True
+
+            return {
+                "action": "backfill",
+                "dispatched": True,
+                "dry_run": False,
+                "result": result,
+                "session": job,
+                "measured": {k: round(float(v), 3) for k, v in measured.items()},
+                "admission": adm,
+                "remote": {k: v for k, v in res.items() if k != "timing_lines"},
+            }
+        except Exception as exc:
+            if not terminal_written:
+                ended_epoch = self.clock()
+                try:
+                    self.ledger.append({
+                        **base,
+                        "event": "aborted",
+                        "result": f"dispatch_exception: {str(exc)[:160]}",
+                        "started_epoch": round(started_epoch, 3),
+                        "ended_epoch": round(ended_epoch, 3),
+                        "duration_sec": round(max(0.0, ended_epoch - started_epoch), 2),
+                        "measured": {},
+                        "measured_count": 0,
+                        "requested_count": len(job["buckets"]),
+                    })
+                except Exception:
+                    pass
+            raise
+        finally:
+            try:
+                fcntl.flock(dispatch_lk.fileno(), fcntl.LOCK_UN)
+            finally:
+                dispatch_lk.close()
 
     # -- status ------------------------------------------------------------------
     def status(self, *, hydrate: bool = True, npu: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1667,7 +1775,7 @@ class BackfillScheduler:
         ph_per: dict[str, int] = {}
         ph_keys: list[str] = []
         attempted = self._attempted_pairs()
-        for title, doc in (cal_docs or {}).items():
+        for title, doc in sorted((cal_docs or {}).items(), key=lambda kv: kv[0]):
             ids = [str(x) for x in (doc.get("unpaired_buckets") or [])]
             if not ids:  # doc without the id list: fall back to the raw count (no split possible)
                 n = int(doc.get("unpaired_bucket_count") or 0)
@@ -1689,27 +1797,29 @@ class BackfillScheduler:
         last = None
         for rec in reversed(self.ledger.records()):
             if rec.get("event") == "finished":
+                mc_raw = rec.get("measured_count")
+                mc_int = int(mc_raw) if isinstance(mc_raw, (int, float)) and not isinstance(mc_raw, bool) else None
                 last = {
-                    "title": rec.get("title"),
-                    "result": rec.get("result"),
+                    "title": str(rec["title"]) if rec.get("title") is not None else None,
+                    "result": str(rec["result"]) if rec.get("result") is not None else None,
                     "finished_at": _iso_from_epoch(rec.get("ended_epoch")),
-                    "measured_count": rec.get("measured_count"),
+                    "measured_count": mc_int,
                 }
                 break
         cfg = self.config()
         return {
             "lane": LANE_BACKFILL,
-            "tier": TICKET_TIER[LANE_BACKFILL],
+            "tier": int(TICKET_TIER[LANE_BACKFILL]),
             "auto_enabled": bool(cfg.enabled and cfg.auto_dispatch),
             "unpaired_by_operator": per,
-            "unpaired_total": sum(per.values()),
+            "unpaired_total": int(sum(per.values())),
             "spec_placeholder_by_operator": ph_per,
-            "spec_placeholder_total": sum(ph_per.values()),
+            "spec_placeholder_total": int(sum(ph_per.values())),
             "spec_placeholder_keys": sorted(ph_keys),
             "running": bool(inflight),
-            "running_title": (inflight or {}).get("title"),
+            "running_title": str(inflight["title"]) if (inflight and inflight.get("title") is not None) else None,
             "last_run": last,
-            "est_session_sec": self.est_session_sec(),
+            "est_session_sec": float(self.est_session_sec()),
             "ledger_sha": self.ledger.sha256(),
         }
 
@@ -1810,7 +1920,7 @@ def _placeholder_by_operator(rows: list[dict[str, Any]]) -> dict[str, int]:
     for row in rows:
         title = str(row.get("title"))
         out[title] = out.get(title, 0) + 1
-    return out
+    return {k: out[k] for k in sorted(out)}
 
 
 def _pid_alive(pid: int) -> bool:

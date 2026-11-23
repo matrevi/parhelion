@@ -167,7 +167,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     else:
         team_daily_limit = daily_limit
         team_used_today = hist_idx["used_24h"]
-        avail_shots = max(0, daily_limit - hist_idx["used_24h"] - eff_closing_reserve)
+        team_remaining = max(0, daily_limit - hist_idx["used_24h"])
+        avail_shots = max(0, team_remaining - eff_closing_reserve)
 
     def eval_gates(
         title: str,
@@ -222,7 +223,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 gates = eval_gates(t, est, is_restore_zero=True)
                 advisory_items.append(
                     {
-                        "id": f"advisory-restore-{t}-{b_sha[:7]}",
+                        "id": f"live-{t}-{b_sha[:7].lower()}",
                         "kind": "advisory",
                         "title": t,
                         "difficulty": p_obj["difficulty"],
@@ -231,7 +232,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                         "note": f"Board is 0 ({p_obj['status']}); validated SHA scored {p_obj['best_score']:.2f}",
                         "detail": "",
                         "submission_id": None,
-                        "queued_at": now.isoformat(),
+                        "queued_at": str(p_obj.get("raw_best_at") or ""),
                         "finished_at": None,
                         "badge": "CRITICAL RESTORE",
                         "raw_status": "advisory_restore",
@@ -312,12 +313,18 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     seen_pass_shas: set[tuple[str, str]] = set()
     chron_items: list[dict[str, Any]] = []
     matched_outcome_sids: set[str] = set()
+    inflight_q = build_inflight_queue_items(pipeline, prob_map, queue_rows, exp_map, now.isoformat())
+    inflight_emitted = {
+        (str(it.get("title") or ""), str(it.get("short_sha") or "").lower()[:7])
+        for it in inflight_q
+        if it.get("title") and it.get("short_sha")
+    }
     inflight_set = set(pipeline.get("inflight_keys") or [])
     inflight_lower = {
         (k.split("|", 1)[0], k.split("|", 1)[1].lower()[:7])
         for k in inflight_set
         if "|" in str(k)
-    }
+    } | inflight_emitted
 
     def _append_completed_item(item_id: str, t: str, sha: str, q_at: str, note: str, est: float, out: dict[str, Any]) -> None:
         p_obj = prob_map.get(t, {"difficulty": DEFAULT_DIFFICULTIES.get(t, 2), "current_score": 0.0, "best_score": 0.0})
@@ -424,9 +431,15 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             s7_low = sha_low[:7]
             if (
                 f"{t}|{sha[:7]}" in inflight_set
-                or (t, s7_low) in inflight_lower
+                or (bool(s7_low) and (t, s7_low) in inflight_lower)
                 or (len(s7_low) >= 7 and (t, s7_low) in unreconciled_pairs)
-                or (pipeline["is_busy"] and pipeline.get("active_title") == t and str(pipeline.get("active_sha") or "").lower().startswith(s7_low))
+                or (
+                    bool(s7_low)
+                    and (t, s7_low) in inflight_emitted
+                    and pipeline["is_busy"]
+                    and pipeline.get("active_title") == t
+                    and str(pipeline.get("active_sha") or "").lower().startswith(s7_low)
+                )
             ):
                 continue
             is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
@@ -440,6 +453,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 esc_detail = f"ESCAPE_LOCK active ({esc_s7} {esc_st}); add reproducer & verify-escape before submitting new SHA"
             elif is_rest and cur_sc == 0.0:
                 badge = "CRITICAL RESTORE"
+                esc_detail = ""
+            elif not gates["quota_ok"]:
+                badge = "QUOTA EXHAUSTED" if team_remaining <= 0 else "HOLD: RESERVE"
                 esc_detail = ""
             elif not gates["circuit_ok"] and not forced:
                 badge = "CIRCUIT OPEN"
@@ -457,7 +473,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             )
             chron_items.append(
                 {
-                    "id": f"queued-{idx}-{t}-{sha[:7]}",
+                    "id": f"live-{t}-{sha[:7].lower()}" if sha[:7] else f"queued-{idx}-{t}",
                     "kind": "pending",
                     "title": t,
                     "difficulty": int(p_obj.get("difficulty", 2)),
@@ -504,19 +520,33 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         _append_completed_item(f"done-orphan-{r_idx}-{t}-{sha[:7]}", t, sha, q_at, note, est, out)
 
     raw_active = [x for x in (advisory_items + chron_items) if x["kind"] != "completed"]
-    raw_active.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)
+    raw_active.sort(
+        key=lambda x: (
+            0 if x["badge"] == "CRITICAL RESTORE" else 1,
+            -float(x.get("wspt_priority") or 0.0),
+            str(x.get("title") or ""),
+            str(x.get("short_sha") or "").lower(),
+        )
+    )
     # Deduplicate waiting items by (title, short_sha)
     seen_active: set[tuple[str, str]] = set()
     active_q: list[dict[str, Any]] = []
     for item in raw_active:
-        k = (item["title"], item["short_sha"])
+        k = (item["title"], str(item["short_sha"]).lower())
         if k not in seen_active:
             seen_active.add(k)
             active_q.append(item)
 
     done_q = [x for x in chron_items if x["kind"] == "completed"]
-    done_q.sort(key=lambda x: x.get("finished_at") or x.get("queued_at") or "", reverse=True)
-    inflight_q = build_inflight_queue_items(pipeline, prob_map, queue_rows, exp_map, now.isoformat())
+    done_q.sort(
+        key=lambda x: (
+            str(x.get("finished_at") or x.get("queued_at") or ""),
+            str(x.get("title") or ""),
+            str(x.get("short_sha") or "").lower(),
+            str(x.get("submission_id") or ""),
+        ),
+        reverse=True,
+    )
 
     return {
         "sampled_at": now.isoformat(),

@@ -34,7 +34,10 @@ struct ProblemTableView: View {
             }
         }
         if sortByROI {
-            list.sort { $0.wsptPriority > $1.wsptPriority }
+            list.sort {
+                if $0.wsptPriority != $1.wsptPriority { return $0.wsptPriority > $1.wsptPriority }
+                return $0.title < $1.title
+            }
         }
         return list
     }

@@ -78,7 +78,7 @@ def build_inflight_queue_items(
         )
         out.append(
             {
-                "id": str(act.get("id") or f"inflight-{t}-{s7}"),
+                "id": f"live-{t}-{s7.lower()}" if s7 else str(act.get("id") or f"live-{t}"),
                 "kind": "inflight",
                 "title": t,
                 "difficulty": diff,

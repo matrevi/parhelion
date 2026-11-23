@@ -30,6 +30,7 @@ from ..config import (
     utc_now,
     write_ttl_cache,
 )
+from .inflight_io import inflight_pid, read_inflight, reap_inflight_if_stale
 
 INFLIGHT_FILE = CONFIG_DIR / "inflight_submit.json"
 
@@ -153,9 +154,9 @@ def _classify_remote_phase(remote_status: str) -> str:
 def _inspect_local_worker(queue_lock_held: bool) -> dict[str, Any] | None:
     inf_file = _active_inflight_file()
     if inf_file.is_file():
-        d = read_json(inf_file, {})
-        pid = int(d.get("pid") or 0)
-        if pid and _pid_alive(pid):
+        d = read_inflight(inf_file)
+        pid = inflight_pid(d)
+        if d is not None and pid and _pid_alive(pid):
             st_dt = parse_iso(d.get("started_at"))
             return {
                 "title": d.get("title") or "",
@@ -163,7 +164,8 @@ def _inspect_local_worker(queue_lock_held: bool) -> dict[str, Any] | None:
                 "phase": d.get("phase") or "packaging",
                 "started_epoch": st_dt.timestamp() if st_dt else utc_now().timestamp(),
             }
-        inf_file.unlink(missing_ok=True)
+        # Never unlink on a torn/unreadable read; only reap a provably dead, unchanged tracker.
+        reap_inflight_if_stale(inf_file, d)
 
     if not queue_lock_held:
         return None
@@ -332,13 +334,13 @@ def compute_synchronized_pipeline(
     for s in account_slots:
         if s.get("phase") in ("waiting_cooldown", "packaging", "uploading") and s.get("active_title"):
             a_sha = str(s.get("active_sha") or "")
-            k = (str(s["active_title"]), a_sha[:7], str(s["id"]))
+            k = (str(s["active_title"]), a_sha[:7].lower(), str(s["id"]))
             if k not in seen_active_pairs:
                 seen_active_pairs.add(k)
                 st_ep = float(local_worker["started_epoch"]) if (local_worker and s["id"] == "primary") else now_epoch
                 active_submissions.append(
                     {
-                        "id": f"local-{s['id']}-{s['active_title']}-{a_sha[:7]}",
+                        "id": f"act-{s['id']}-{s['active_title']}-{a_sha[:7].lower()}",
                         "title": str(s["active_title"]),
                         "sha": a_sha,
                         "short_sha": a_sha[:7],
@@ -352,13 +354,39 @@ def compute_synchronized_pipeline(
                         "elapsed_sec": max(0, int(now_epoch - st_ep)),
                     }
                 )
+    if local_worker is not None and local_worker.get("title"):
+        lw_title = str(local_worker.get("title") or "")
+        lw_sha = str(local_worker.get("sha") or "")
+        lw_s7 = lw_sha[:7]
+        lw_k = (lw_title, lw_s7.lower(), "primary")
+        if lw_k not in seen_active_pairs and not any(x["title"] == lw_title and x["short_sha"].lower() == lw_s7.lower() for x in active_submissions):
+            seen_active_pairs.add(lw_k)
+            st_ep = float(local_worker.get("started_epoch") or now_epoch)
+            raw_p = str(local_worker.get("phase") or "packaging")
+            mapped_p = "packaging" if raw_p in ("preparing", "consumer_locked") else raw_p
+            active_submissions.append(
+                {
+                    "id": f"act-primary-{lw_title}-{lw_s7.lower()}",
+                    "title": lw_title,
+                    "sha": lw_sha,
+                    "short_sha": lw_s7,
+                    "phase": mapped_p,
+                    "account_id": "primary",
+                    "account_label": str((slot_by_id.get("primary") or {}).get("label") or "主账号"),
+                    "remote_submission_id": None,
+                    "remote_judge_id": None,
+                    "remote_status": None,
+                    "started_epoch": round(st_ep, 2),
+                    "elapsed_sec": max(0, int(now_epoch - st_ep)),
+                }
+            )
     for ar in active_remotes:
-        k = (ar["title"], ar["short_sha"], ar["account_id"])
+        k = (ar["title"], ar["short_sha"].lower(), ar["account_id"])
         if k not in seen_active_pairs:
             seen_active_pairs.add(k)
             active_submissions.append(
                 {
-                    "id": ar["id"],
+                    "id": f"act-{ar['account_id']}-{ar['title']}-{ar['short_sha'].lower()}",
                     "title": ar["title"],
                     "sha": ar["sha"],
                     "short_sha": ar["short_sha"],
@@ -373,12 +401,12 @@ def compute_synchronized_pipeline(
                 }
             )
     for fs in finishing_syncs:
-        k = (fs["title"], fs["short_sha"], fs["account_id"])
+        k = (fs["title"], fs["short_sha"].lower(), fs["account_id"])
         if k not in seen_active_pairs:
             seen_active_pairs.add(k)
             active_submissions.append(
                 {
-                    "id": fs["id"],
+                    "id": f"act-{fs['account_id']}-{fs['title']}-{fs['short_sha'].lower()}",
                     "title": fs["title"],
                     "sha": fs["sha"],
                     "short_sha": fs["short_sha"],
@@ -554,7 +582,7 @@ def compute_synchronized_pipeline(
     return {
         "is_busy": False,
         "local_busy": False,
-        "can_submit": (cooldown_rem == 0),
+        "can_submit": (cooldown_rem == 0) and (not all_exhausted),
         "phase": "idle",
         "active_title": None,
         "active_sha": None,

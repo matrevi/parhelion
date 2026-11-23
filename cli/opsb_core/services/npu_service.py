@@ -114,6 +114,38 @@ def enrich_npu_payload(
         lk["sha"] = sha or None
         lk["short_sha"] = sha[:7] if sha else None
 
+    return sort_npu_payload(data)
+
+
+def sort_npu_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Deterministically sort die_locks, parallel_cpu_builds, and tasks in-place."""
+    if isinstance(data.get("die_locks"), list):
+        data["die_locks"].sort(key=lambda lk: int(lk.get("die") or 0))
+    if isinstance(data.get("parallel_cpu_builds"), list):
+        data["parallel_cpu_builds"].sort(
+            key=lambda b: (
+                str(b.get("title") or ""),
+                str(b.get("short_sha") or ""),
+                int(b.get("pid") or 0),
+            )
+        )
+    if isinstance(data.get("tasks"), list):
+        lane_order = {"Q0": 0, "FAST": 0, "Q1": 1, "FULL": 1, "B0": 2, "BACKFILL": 2}
+
+        def _task_sort_key(t: dict[str, Any]) -> tuple[int, int, int, float, str, int]:
+            st = str(t.get("state") or "").upper()
+            is_running = 0 if st == "RUNNING" else 1
+            die_val = int(t["die"]) if isinstance(t.get("die"), int) else 99
+            lane_raw = str(t.get("lane") or "").upper()
+            if not lane_raw and (t.get("is_backfill") or str(t.get("stage") or "").upper().startswith("BACKFILL")):
+                lane_raw = "B0"
+            lane_rk = lane_order.get(lane_raw, 1)
+            wspt = -float(t.get("wspt_priority") or 0.0)
+            prob = str(t.get("problem") or "")
+            pid = int(t.get("pid") or 0)
+            return (is_running, die_val if is_running == 0 else lane_rk, lane_rk, wspt, prob, pid)
+
+        data["tasks"].sort(key=_task_sort_key)
     return data
 
 

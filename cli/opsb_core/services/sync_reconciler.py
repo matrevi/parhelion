@@ -18,11 +18,14 @@ from ..config import (
     workspace_id,
     write_ttl_cache,
 )
+from .board_refresh_service import _resolve_team_name
 from .judge_score_fetch import (
     NON_TERMINAL_JUDGE_STATUSES,
     TERMINAL_JUDGE_STATUSES,
+    extract_numeric_score,
+    extract_public_times,
     fetch_json_with_cookie,
-    fetch_ranking_row_with_retry,
+    fetch_ranking_sid_and_team_with_retry,
     resolve_problem_id,
     resolve_score_and_times,
     update_score_snapshot,
@@ -210,12 +213,17 @@ def _reconcile_one_candidate(
         return None
 
     rank_row: dict[str, Any] | None = None
+    team_best_row: dict[str, Any] | None = None
     pid = resolve_problem_id(workspace, title)
     if status == "Pass" and pid:
         base_url, cookie, _ = used_session
-        rank_row = fetch_ranking_row_with_retry(
+        team_uids = {uid for _, _, uid in sessions if uid}
+        team_name = _resolve_team_name(workspace)
+        rank_row, team_best_row = fetch_ranking_sid_and_team_with_retry(
             lambda page: _fetch_json(base_url, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100", timeout=request_timeout),
             sid,
+            team_uids,
+            team_name=team_name,
             status=status,
             retry_delays=(),
         )
@@ -251,14 +259,45 @@ def _reconcile_one_candidate(
             with outcome_path.open("a", encoding="utf-8") as of:
                 of.write(json.dumps(new_row, ensure_ascii=False) + "\n")
             is_latest = is_latest_submission_for_title(latest_rows + [new_row], workspace, title, sid)
-            if rank_row is not None or (status == "Pass" and score is not None and is_latest):
+            snap_row = team_best_row if team_best_row is not None else rank_row
+            if snap_row is not None:
+                snap_sid = str(snap_row.get("submission_id") or snap_row.get("sid") or snap_row.get("_id") or "").strip() or sid
+                snap_sc = extract_numeric_score(snap_row)
+                if snap_sid == sid:
+                    update_score_snapshot(
+                        workspace,
+                        title,
+                        sid,
+                        status,
+                        score if snap_sc is None else snap_sc,
+                        snap_row.get("rank"),
+                        pub_times,
+                        pub_tbest,
+                        submitted_at,
+                    )
+                else:
+                    # Another teammate account holds a higher active row on the ranking board; keep snapshot aligned with team board.
+                    snap_status = str(snap_row.get("status") or ("Pass" if (snap_sc is not None and snap_sc > 0) else status))
+                    snap_times, snap_tbest = extract_public_times(None, snap_row)
+                    update_score_snapshot(
+                        workspace,
+                        title,
+                        snap_sid,
+                        snap_status,
+                        snap_sc,
+                        snap_row.get("rank"),
+                        snap_times,
+                        snap_tbest,
+                        require_current_check=False,
+                    )
+            elif status == "Pass" and score is not None and is_latest:
                 update_score_snapshot(
                     workspace,
                     title,
                     sid,
                     status,
                     score,
-                    rank_row.get("rank") if rank_row is not None else None,
+                    None,
                     pub_times,
                     pub_tbest,
                     submitted_at,

@@ -14,12 +14,13 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from ..config import CONFIG_DIR, DEFAULT_CONFIG, SESSIONS_DIR, ConfigRepository, parse_iso, read_json, read_jsonl, utc_now
+from ..config import CONFIG_DIR, DEFAULT_CONFIG, SESSIONS_DIR, ConfigRepository, _resolve_parhelion_home, parse_iso, read_json, read_jsonl, utc_now
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.auth_service import get_auth_status, list_judge_accounts
 from ..services.backfill_status_service import probe_backfill_compact
 from ..services.board_refresh_service import refresh_if_stale_async
 from ..services.contest_service import resolve_workspace_meta
+from ..services.inflight_io import inflight_pid, read_inflight, reap_inflight_if_stale
 from ..services.judge_sync import (
     TERMINAL_JUDGE_STATUSES,
     TERMINAL_OUTCOME_STATUSES,
@@ -43,11 +44,64 @@ def _stat_sig(path: Path) -> tuple[int, int]:
         return (0, 0)
 
 
+def _strip_volatile_for_digest(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build a canonical copy of `payload` excluding purely tick-volatile counters for `cold_etag`."""
+    out: dict[str, Any] = {}
+    for k, v in payload.items():
+        if k == "sampled_at":
+            continue
+        if k == "problems" and isinstance(v, list):
+            out[k] = [
+                {pk: pv for pk, pv in p.items() if pk != "head_age_min"} if isinstance(p, dict) else p
+                for p in v
+            ]
+        elif k == "scheduler" and isinstance(v, dict):
+            s_copy: dict[str, Any] = {}
+            for sk, sv in v.items():
+                if sk == "cooldown_remaining_sec":
+                    continue
+                if sk == "pipeline" and isinstance(sv, dict):
+                    p_copy = {
+                        pk: pv
+                        for pk, pv in sv.items()
+                        if pk not in ("cooldown_remaining_sec", "judge_elapsed_sec")
+                    }
+                    if isinstance(p_copy.get("active_submissions"), list):
+                        p_copy["active_submissions"] = [
+                            {ak: av for ak, av in a.items() if ak != "elapsed_sec"} if isinstance(a, dict) else a
+                            for a in p_copy["active_submissions"]
+                        ]
+                    if isinstance(p_copy.get("account_slots"), list):
+                        p_copy["account_slots"] = [
+                            {ak: av for ak, av in a.items() if ak != "cooldown_remaining_sec"} if isinstance(a, dict) else a
+                            for a in p_copy["account_slots"]
+                        ]
+                    s_copy[sk] = p_copy
+                elif sk == "board_freshness" and isinstance(sv, dict):
+                    s_copy[sk] = {
+                        bk: bv
+                        for bk, bv in sv.items()
+                        if bk not in ("refresh_age_hours", "hours_since_last_submit")
+                    }
+                else:
+                    s_copy[sk] = sv
+            out[k] = s_copy
+        elif k == "submission_queue" and isinstance(v, list):
+            out[k] = [
+                {qk: qv for qk, qv in q.items() if qk != "elapsed_sec"} if isinstance(q, dict) else q
+                for q in v
+            ]
+        else:
+            out[k] = v
+    return out
+
+
 class _WorkspaceStateEntry:
     def __init__(self, workspace: Path, on_cold_updated: Callable[[], None] | None = None) -> None:
         self.workspace = workspace.expanduser().resolve()
         self._on_cold_updated = on_cold_updated
         self._lock = threading.Lock()
+        self._hot_cache_lock = threading.Lock()
 
         self.cold_etag: str = ""
         self.cold_fingerprint: str = ""
@@ -58,6 +112,10 @@ class _WorkspaceStateEntry:
         self.problems_by_title: dict[str, dict[str, Any]] = {}
         self.invalidated_gen: int = 0
         self._recomputing: bool = False
+        self._recomputing_count: int = 0
+        self._recompute_seq: int = 0
+        self._applied_seq: int = 0
+        self._last_good_bridge: dict[str, Any] | None = None
 
         # Cached git HEAD ref paths per problem so fingerprint stat avoids opening .git/HEAD if unchanged
         self._problem_paths: list[str] | None = None
@@ -107,6 +165,8 @@ class _WorkspaceStateEntry:
         _feed("board", ws / "results" / "scoring-evidence" / "board-summary.json")
         _feed("mtable", ws / "results" / "scoring-evidence" / "my-score-table.json")
         _feed("esc", ws / "results" / "verified-escapes.json")
+        _feed("esc2", ws / "results" / "escape-verifications.json")
+        _feed("esc3", ws_state / "verified_escapes.json")
         _feed("bt", bt_root / "index.json")
         _feed("sstate", ws_state / "scheduler_state.json")
         _feed("bledger", ws_state / "backfill_ledger.jsonl")
@@ -116,6 +176,39 @@ class _WorkspaceStateEntry:
         _feed("psess", SESSIONS_DIR)
         _feed("cj", Path.home() / ".judge" / "session.json")
         _feed("cjs", Path.home() / ".judge" / "sessions")
+
+        # Include live per-account inflight trackers so clicking submit immediately refreshes cold snapshot.
+        ph = _resolve_parhelion_home()
+        try:
+            for inf_p in sorted(ph.glob("inflight*.json")):
+                _feed(f"inf:{inf_p.name}", inf_p)
+        except OSError:
+            pass
+
+        # Include submission-receipt.json stats directly (writing a receipt into an existing <sha> dir
+        # does NOT bump `results/<title>` mtime, so scanning <sha> dirs prevents stale snapshots).
+        results_dir = ws / "results"
+        if results_dir.is_dir():
+            rec_sigs: list[str] = []
+            try:
+                for p_entry in os.scandir(results_dir):
+                    if not p_entry.is_dir():
+                        continue
+                    try:
+                        for sha_entry in os.scandir(p_entry.path):
+                            if not sha_entry.is_dir():
+                                continue
+                            rec_p = Path(sha_entry.path) / "submission-receipt.json"
+                            rm, rsz = _stat_sig(rec_p)
+                            if rm or rsz:
+                                rec_sigs.append(f"{p_entry.name}/{sha_entry.name}:{rm}:{rsz}")
+                    except OSError:
+                        continue
+            except OSError:
+                pass
+            if rec_sigs:
+                rec_sigs.sort()
+                h.update(("recs:" + ";".join(rec_sigs) + ";").encode("utf-8"))
 
         for rel_p in self._discover_problem_paths():
             title = Path(rel_p).name
@@ -165,44 +258,74 @@ class _WorkspaceStateEntry:
             if not needs:
                 return
             if synchronous:
+                self._recompute_seq += 1
+                my_seq = self._recompute_seq
+                start_gen = self.invalidated_gen
+                self._recomputing_count += 1
                 self._recomputing = True
             elif self._recomputing:
                 return
             else:
+                self._recompute_seq += 1
+                my_seq = self._recompute_seq
+                start_gen = self.invalidated_gen
+                self._recomputing_count += 1
                 self._recomputing = True
 
         if synchronous:
-            self._do_recompute_cold(fp)
+            self._do_recompute_cold(fp, my_seq, start_gen)
         else:
             threading.Thread(
                 target=self._do_recompute_cold,
-                args=(fp,),
+                args=(fp, my_seq, start_gen),
                 daemon=True,
                 name="opsb-cold-recompute",
             ).start()
 
-    def _do_recompute_cold(self, target_fp: str) -> None:
+    def _do_recompute_cold(self, target_fp: str, seq: int = 0, start_gen: int | None = None) -> None:
         t0 = time.monotonic()
         try:
             cfg = ConfigRepository.load()
             payload = compute_workspace_snapshot(self.workspace, cfg)
             bridge = invoke_bridge(self.workspace, "status", ["--offline"], use_cache=True)
             if isinstance(bridge, dict):
+                with self._lock:
+                    self._last_good_bridge = bridge
                 merge_bridge_enrichment(payload, bridge)
+            else:
+                # Transient bridge timeout/error must not wipe `candidate` cards from submission_queue.
+                with self._lock:
+                    fallback_bridge = self._last_good_bridge
+                if isinstance(fallback_bridge, dict):
+                    merge_bridge_enrichment(payload, fallback_bridge)
 
             ssh_host = cfg.get("npu_ssh_host") or payload["contest"].get("npu_ssh_host") or "npu"
             payload["npu"] = {"online": False, "ssh_host": ssh_host, "skipped": True, "die_locks": [], "tasks": []}
             payload["scheduler"]["backfill"] = probe_backfill_compact(self.workspace)
-            payload["scheduler"]["board_freshness"] = refresh_if_stale_async(self.workspace)
+
+            contest_obj = payload.get("contest") or {}
+            score_drift: float | None = None
+            if contest_obj.get("team_rank_score") is not None:
+                try:
+                    score_drift = abs(float(contest_obj.get("weighted_score") or 0.0) - float(contest_obj["team_rank_score"]))
+                except (TypeError, ValueError):
+                    score_drift = None
+            try:
+                payload["scheduler"]["board_freshness"] = refresh_if_stale_async(
+                    self.workspace, score_drift=score_drift, on_refreshed=self.invalidate
+                )
+            except TypeError:
+                payload["scheduler"]["board_freshness"] = refresh_if_stale_async(self.workspace)
+
             payload["auth"] = get_auth_status(use_cache=True)
             payload["skills"] = get_skills_status()
             payload["workspaces"] = cfg.get("workspaces", [str(self.workspace)])
             payload["language"] = cfg.get("language", "zh")
             reconcile_sync_errors_async(self.workspace, on_reconciled=self.invalidate)
 
-            # Compute a deterministic content digest excluding `sampled_at` so periodic timer ticks
+            # Compute a deterministic content digest excluding tick-volatile fields so periodic timer ticks
             # do not spuriously rotate `cold_etag` when nothing meaningful changed.
-            digest_obj = {k: v for k, v in payload.items() if k != "sampled_at"}
+            digest_obj = _strip_volatile_for_digest(payload)
             digest_bytes = json.dumps(digest_obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
             content_hash = hashlib.sha256(digest_bytes).hexdigest()[:16]
             etag = f"{target_fp[:12]}-{content_hash}"
@@ -212,14 +335,21 @@ class _WorkspaceStateEntry:
 
             changed = False
             with self._lock:
-                changed = etag != self.cold_etag
-                self.cold_payload = payload
-                self.cold_json_bytes = raw_bytes
-                self.cold_etag = etag
-                self.cold_fingerprint = target_fp
-                self.cold_recompute_ms = recompute_ms
-                self.cold_computed_at = time.monotonic()
-                self.problems_by_title = probs_map
+                # Monotonic commit guard: never let an older/pre-invalidation background recompute roll back
+                # a newer `cold_etag` / `cold_payload`.
+                superseded_seq = seq > 0 and seq < self._applied_seq
+                superseded_gen = start_gen is not None and start_gen != self.invalidated_gen
+                if not superseded_seq and (not superseded_gen or self.cold_payload is None):
+                    changed = etag != self.cold_etag
+                    self.cold_payload = payload
+                    self.cold_json_bytes = raw_bytes
+                    self.cold_etag = etag
+                    self.cold_fingerprint = "" if superseded_gen else target_fp
+                    self.cold_recompute_ms = recompute_ms
+                    self.cold_computed_at = time.monotonic()
+                    self.problems_by_title = probs_map
+                    if seq > 0:
+                        self._applied_seq = seq
 
             if changed and self._on_cold_updated is not None:
                 try:
@@ -230,13 +360,20 @@ class _WorkspaceStateEntry:
             pass
         finally:
             with self._lock:
-                self._recomputing = False
+                self._recomputing_count = max(0, self._recomputing_count - 1)
+                self._recomputing = self._recomputing_count > 0
 
-    def get_snapshot_response(self, if_none_match: str | None = None) -> tuple[int, str, bytes]:
+    def get_snapshot_response(
+        self,
+        if_none_match: str | None = None,
+        *,
+        live_npu: dict[str, Any] | None = None,
+    ) -> tuple[int, str, bytes]:
         self.ensure_cold_fresh(synchronous=(self.cold_json_bytes is None))
         with self._lock:
             etag = self.cold_etag
             data = self.cold_json_bytes or b"{}"
+            payload = self.cold_payload
 
         if if_none_match:
             cleaned = if_none_match.strip()
@@ -245,88 +382,80 @@ class _WorkspaceStateEntry:
             cleaned = cleaned.strip('"')
             if cleaned == etag and etag:
                 return 304, etag, b""
+        if live_npu is not None and payload is not None and (live_npu.get("online") or live_npu.get("tasks") or live_npu.get("die_locks")):
+            enriched = dict(payload)
+            enriched["npu"] = live_npu
+            data = json.dumps(enriched, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         return 200, etag, data
 
     def _get_outcomes_cached(self) -> tuple[list[dict[str, Any]], set[str]]:
         out_path = self.workspace / "results" / "submit-queue-outcome.jsonl"
         sig = _stat_sig(out_path)
-        if sig != self._outcome_sig:
-            rows = collapse_reconciled_outcomes(read_jsonl(out_path))
-            sids = {
-                str(o.get("submission_id"))
-                for o in rows
-                if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES
-            }
-            self._outcome_rows = rows
-            self._outcome_sids = sids
-            self._outcome_sig = sig
-        return self._outcome_rows, self._outcome_sids
+        with self._hot_cache_lock:
+            if sig != self._outcome_sig:
+                rows = collapse_reconciled_outcomes(read_jsonl(out_path))
+                sids = {
+                    str(o.get("submission_id"))
+                    for o in rows
+                    if o.get("submission_id") and o.get("status") in TERMINAL_OUTCOME_STATUSES
+                }
+                self._outcome_rows = rows
+                self._outcome_sids = sids
+                self._outcome_sig = sig
+            return list(self._outcome_rows), set(self._outcome_sids)
 
     def _get_receipts_cached(self) -> list[dict[str, Any]]:
         results_dir = self.workspace / "results"
         if not results_dir.is_dir():
             return []
 
-        dir_sigs: dict[str, int] = {}
-        try:
-            for p_entry in os.scandir(results_dir):
-                if p_entry.is_dir():
+        with self._hot_cache_lock:
+            receipts: list[dict[str, Any]] = []
+            new_cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
+            try:
+                for p_entry in os.scandir(results_dir):
+                    if not p_entry.is_dir():
+                        continue
+                    prob_name = p_entry.name
                     try:
-                        dir_sigs[p_entry.name] = int(p_entry.stat().st_mtime_ns)
+                        for sha_entry in os.scandir(p_entry.path):
+                            if not sha_entry.is_dir():
+                                continue
+                            rec_path = Path(sha_entry.path) / "submission-receipt.json"
+                            sig = _stat_sig(rec_path)
+                            if sig == (0, 0):
+                                continue
+                            key = str(rec_path)
+                            cached = self._receipt_cache.get(key)
+                            if cached is not None and cached[0] == sig:
+                                parsed_rec = cached[1]
+                            else:
+                                data = read_json(rec_path)
+                                if not isinstance(data, dict) or not data.get("submission_id") or not data.get("submitted_at"):
+                                    continue
+                                dt = parse_iso(data["submitted_at"])
+                                if not dt:
+                                    continue
+                                parsed_rec = {
+                                    "title": prob_name,
+                                    "sha": data.get("validated_commit") or sha_entry.name,
+                                    "submission_id": str(data["submission_id"]),
+                                    "account_id": str(data.get("account_id") or "primary"),
+                                    "user_id": str(data.get("user_id") or ""),
+                                    "submitted_dt": dt,
+                                    "submitted_epoch": dt.timestamp(),
+                                }
+                            new_cache[key] = (sig, parsed_rec)
+                            receipts.append(parsed_rec)
                     except OSError:
                         continue
-        except OSError:
-            return self._cached_receipts
+            except OSError:
+                return list(self._cached_receipts)
 
-        # Fast-path: rescan files only if directory mtimes changed or cache empty
-        if dir_sigs == self._receipt_dir_sigs and self._cached_receipts:
-            return self._cached_receipts
-
-        receipts: list[dict[str, Any]] = []
-        new_cache: dict[str, tuple[tuple[int, int], dict[str, Any]]] = {}
-        try:
-            for prob_name in dir_sigs:
-                prob_dir = results_dir / prob_name
-                try:
-                    for sha_entry in os.scandir(prob_dir):
-                        if not sha_entry.is_dir():
-                            continue
-                        rec_path = Path(sha_entry.path) / "submission-receipt.json"
-                        sig = _stat_sig(rec_path)
-                        if sig == (0, 0):
-                            continue
-                        key = str(rec_path)
-                        cached = self._receipt_cache.get(key)
-                        if cached is not None and cached[0] == sig:
-                            parsed_rec = cached[1]
-                        else:
-                            data = read_json(rec_path)
-                            if not isinstance(data, dict) or not data.get("submission_id") or not data.get("submitted_at"):
-                                continue
-                            dt = parse_iso(data["submitted_at"])
-                            if not dt:
-                                continue
-                            parsed_rec = {
-                                "title": prob_name,
-                                "sha": data.get("validated_commit") or sha_entry.name,
-                                "submission_id": str(data["submission_id"]),
-                                "account_id": str(data.get("account_id") or "primary"),
-                                "user_id": str(data.get("user_id") or ""),
-                                "submitted_dt": dt,
-                                "submitted_epoch": dt.timestamp(),
-                            }
-                        new_cache[key] = (sig, parsed_rec)
-                        receipts.append(parsed_rec)
-                except OSError:
-                    continue
-        except OSError:
-            pass
-
-        receipts.sort(key=lambda x: x["submitted_epoch"], reverse=True)
-        self._receipt_dir_sigs = dir_sigs
-        self._receipt_cache = new_cache
-        self._cached_receipts = receipts
-        return receipts
+            receipts.sort(key=lambda x: (x["submitted_epoch"], x["title"], x["submission_id"]), reverse=True)
+            self._receipt_cache = new_cache
+            self._cached_receipts = receipts
+            return list(receipts)
 
     def _get_remote_info_nonblocking(self, submission_id: str, session_file: str) -> dict[str, Any] | None:
         now = time.monotonic()
@@ -420,14 +549,14 @@ class _WorkspaceStateEntry:
             active_title = None
             active_sha = None
             if inf_path.is_file():
-                inf = read_json(inf_path, {})
-                pid = int(inf.get("pid") or 0)
-                if pid > 0 and _pid_alive(pid):
+                inf = read_inflight(inf_path)
+                pid = inflight_pid(inf)
+                if inf is not None and pid > 0 and _pid_alive(pid):
                     phase = str(inf.get("phase") or "packaging")
                     active_title = inf.get("title")
                     active_sha = inf.get("sha")
                 else:
-                    inf_path.unlink(missing_ok=True)
+                    reap_inflight_if_stale(inf_path, inf)
             used_today = len(today_sids_by_aid.get(aid, set()))
             rem_today = max(0, daily_limit - used_today)
             account_slots.append(
@@ -550,13 +679,13 @@ class _WorkspaceStateEntry:
         for s in account_slots:
             if s.get("phase") in ("waiting_cooldown", "packaging", "uploading") and s.get("active_title"):
                 a_sha = str(s.get("active_sha") or "")
-                k = (str(s["active_title"]), a_sha[:7], str(s["id"]))
+                k = (str(s["active_title"]), a_sha[:7].lower(), str(s["id"]))
                 if k not in seen_active_pairs:
                     seen_active_pairs.add(k)
                     st_ep = float(local_worker["started_epoch"]) if (local_worker and s["id"] == "primary") else now_epoch
                     active_submissions.append(
                         {
-                            "id": f"local-{s['id']}-{s['active_title']}-{a_sha[:7]}",
+                            "id": f"act-{s['id']}-{s['active_title']}-{a_sha[:7].lower()}",
                             "title": str(s["active_title"]),
                             "sha": a_sha,
                             "short_sha": a_sha[:7],
@@ -570,13 +699,39 @@ class _WorkspaceStateEntry:
                             "elapsed_sec": max(0, int(now_epoch - st_ep)),
                         }
                     )
+        if local_worker is not None and local_worker.get("title"):
+            lw_title = str(local_worker.get("title") or "")
+            lw_sha = str(local_worker.get("sha") or "")
+            lw_s7 = lw_sha[:7]
+            lw_k = (lw_title, lw_s7.lower(), "primary")
+            if lw_k not in seen_active_pairs and not any(x["title"] == lw_title and x["short_sha"].lower() == lw_s7.lower() for x in active_submissions):
+                seen_active_pairs.add(lw_k)
+                st_ep = float(local_worker.get("started_epoch") or now_epoch)
+                raw_p = str(local_worker.get("phase") or "packaging")
+                mapped_p = "packaging" if raw_p in ("preparing", "consumer_locked") else raw_p
+                active_submissions.append(
+                    {
+                        "id": f"act-primary-{lw_title}-{lw_s7.lower()}",
+                        "title": lw_title,
+                        "sha": lw_sha,
+                        "short_sha": lw_s7,
+                        "phase": mapped_p,
+                        "account_id": "primary",
+                        "account_label": str((slot_by_id.get("primary") or {}).get("label") or "主账号"),
+                        "remote_submission_id": None,
+                        "remote_judge_id": None,
+                        "remote_status": None,
+                        "started_epoch": round(st_ep, 2),
+                        "elapsed_sec": max(0, int(now_epoch - st_ep)),
+                    }
+                )
         for ar in active_remotes:
-            k = (ar["title"], ar["short_sha"], ar["account_id"])
+            k = (ar["title"], ar["short_sha"].lower(), ar["account_id"])
             if k not in seen_active_pairs:
                 seen_active_pairs.add(k)
                 active_submissions.append(
                     {
-                        "id": ar["id"],
+                        "id": f"act-{ar['account_id']}-{ar['title']}-{ar['short_sha'].lower()}",
                         "title": ar["title"],
                         "sha": ar["sha"],
                         "short_sha": ar["short_sha"],
@@ -591,12 +746,12 @@ class _WorkspaceStateEntry:
                     }
                 )
         for fs in finishing_syncs:
-            k = (fs["title"], fs["short_sha"], fs["account_id"])
+            k = (fs["title"], fs["short_sha"].lower(), fs["account_id"])
             if k not in seen_active_pairs:
                 seen_active_pairs.add(k)
                 active_submissions.append(
                     {
-                        "id": fs["id"],
+                        "id": f"act-{fs['account_id']}-{fs['title']}-{fs['short_sha'].lower()}",
                         "title": fs["title"],
                         "sha": fs["sha"],
                         "short_sha": fs["short_sha"],
@@ -832,8 +987,14 @@ class WorkspaceStateCache:
         with ent._lock:
             return ent.cold_etag, ent.cold_recompute_ms
 
-    def get_snapshot(self, workspace: Path | None = None, if_none_match: str | None = None) -> tuple[int, str, bytes]:
-        return self._entry(workspace).get_snapshot_response(if_none_match=if_none_match)
+    def get_snapshot(
+        self,
+        workspace: Path | None = None,
+        if_none_match: str | None = None,
+        *,
+        live_npu: dict[str, Any] | None = None,
+    ) -> tuple[int, str, bytes]:
+        return self._entry(workspace).get_snapshot_response(if_none_match=if_none_match, live_npu=live_npu)
 
     def build_hot_frame(
         self,

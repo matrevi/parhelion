@@ -45,7 +45,7 @@ def invoke_bridge(workspace: Path, subcmd: str = "status", extra: list[str] | No
     if extra:
         cmd.extend(extra)
     try:
-        proc = subprocess.run(cmd, cwd=str(SUPERVISOR_ROOT), capture_output=True, text=True, timeout=3.5)
+        proc = subprocess.run(cmd, cwd=str(SUPERVISOR_ROOT), capture_output=True, text=True, timeout=8.0)
         if proc.returncode == 0 and proc.stdout.strip():
             parsed = json.loads(proc.stdout.strip())
             if use_cache and isinstance(parsed, dict):
@@ -124,6 +124,8 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     badge_norm = {
         "EXPLORE": "EXPLORE",
         "HOLD_NOISE": "HOLD: NOISE",
+        "HOLD_LOW_GAIN": "HOLD: RESERVE",
+        "QUOTA_EXHAUSTED": "QUOTA EXHAUSTED",
         "CIRCUIT_OPEN": "CIRCUIT OPEN",
         "RATE_WAIT": "RATE WAIT",
         "CRITICAL_RESTORE": "CRITICAL RESTORE",
@@ -231,8 +233,16 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                         fg["circuit_ok"] = True
                         fg["all_pass"] = bool(fg.get("safety_ok", True) and fg.get("quota_ok", True))
                         item["gates"] = fg
+                        if not fg.get("safety_ok", True):
+                            item["badge"] = "ESCAPE LOCK" if "ESCAPE" in badge else item.get("badge", "ESCAPE LOCK")
+                        elif not fg.get("quota_ok", True):
+                            item["badge"] = "QUOTA EXHAUSTED" if raw_tag == "QUOTA_EXHAUSTED" else "HOLD: RESERVE"
                     else:
                         item["gates"] = gates
+                        # Synchronize badge with bridge's 4-stage gates so badge never contradicts `gates`.
+                        if item.get("badge") not in ("ESCAPE LOCK", "CRITICAL RESTORE"):
+                            item["badge"] = badge
+                            item["can_approve"] = badge in ("HOLD: NOISE", "CIRCUIT OPEN", "HOLD: RESERVE", "HOLD LOW GAIN")
                     item["wspt_priority"] = gates["wspt_score"]
                     if note and not item.get("forced"):
                         item["note"] = note
@@ -240,7 +250,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             existing.add((t, sha))
             extra_cands.append(
                 {
-                    "id": f"bridge-{t}-{sha[:7]}",
+                    "id": f"live-{t}-{sha[:7].lower()}" if sha[:7] else f"bridge-{t}",
                     "kind": "candidate",
                     "title": t,
                     "difficulty": prob_diff.get(t, int(est_obj.get("difficulty") or 2)),
@@ -288,11 +298,17 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                 if item["gates"].get("calibration_trust") is None and sq_m.get("calibration_trust") is not None:
                     item["gates"]["calibration_trust"] = round(float(sq_m["calibration_trust"]), 3)
 
-    if extra_cands:
-        inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]
-        active = [x for x in payload["submission_queue"] if x["kind"] not in ("completed", "inflight")] + extra_cands
-        active.sort(key=lambda x: (x["badge"] == "CRITICAL RESTORE", x["wspt_priority"]), reverse=True)
-        done = [x for x in payload["submission_queue"] if x["kind"] == "completed"]
-        payload["submission_queue"] = inflight + active + done
-        sched["actionable_count"] = len(active)
+    inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]
+    active = [x for x in payload["submission_queue"] if x["kind"] not in ("completed", "inflight")] + extra_cands
+    active.sort(
+        key=lambda x: (
+            0 if x["badge"] == "CRITICAL RESTORE" else 1,
+            -float(x.get("wspt_priority") or 0.0),
+            str(x.get("title") or ""),
+            str(x.get("short_sha") or "").lower(),
+        )
+    )
+    done = [x for x in payload["submission_queue"] if x["kind"] == "completed"]
+    payload["submission_queue"] = inflight + active + done
+    sched["actionable_count"] = len(active)
     sched["breakthrough_count"] = sum(1 for x in payload["submission_queue"] if x.get("is_breakthrough"))

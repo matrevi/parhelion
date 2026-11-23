@@ -12,7 +12,7 @@ struct SchedulerBarView: View {
     @UIState private var showGatePopover: Bool = false
     @UIState private var reserveVal: Double = 12
     @UIState private var noiseVal: Double = 2.7
-    @UIState private var initialized: Bool = false
+    @UIState private var syncingGateValues: Bool = false
 
     private var lang: AppLanguage { store.lang }
     private var pipeline: LivePipelineState? { hotStore.pipeline ?? scheduler.pipeline }
@@ -20,7 +20,16 @@ struct SchedulerBarView: View {
     private var dailyQuotaLimit: Int { hotStore.schedulerHot?.dailyQuotaLimit ?? scheduler.dailyQuotaLimit }
     private var rateLimitGapSec: Int { hotStore.schedulerHot?.rateLimitGapSec ?? scheduler.rateLimitGapSec }
     private var cooldownEndsEpoch: Double? { hotStore.schedulerHot?.cooldownEndsEpoch ?? scheduler.cooldownEndsEpoch }
-    private var autoConsumerEnabled: Bool { hotStore.schedulerHot?.autoConsumerEnabled ?? scheduler.autoConsumerEnabled }
+    private var autoConsumerEnabled: Bool {
+        store.effectiveAutoConsumer(hot: hotStore.schedulerHot?.autoConsumerEnabled)
+    }
+
+    private func syncGateValuesFromStore() {
+        syncingGateValues = true
+        reserveVal = Double(hotStore.schedulerHot?.closingReserve ?? scheduler.closingReserve)
+        noiseVal = hotStore.schedulerHot?.noiseFloorDelta ?? scheduler.noiseFloorDelta
+        syncingGateValues = false
+    }
 
     var body: some View {
         let cdRem = clock.cooldownRemaining(endsAt: pipeline?.cooldownEndsEpoch ?? cooldownEndsEpoch)
@@ -129,16 +138,24 @@ struct SchedulerBarView: View {
         .padding(.vertical, 8)
         .background(Color.primary.opacity(0.025))
         .onAppear {
-            if !initialized {
-                reserveVal = Double(scheduler.closingReserve)
-                noiseVal = scheduler.noiseFloorDelta
-                initialized = true
-            }
+            syncGateValuesFromStore()
+        }
+        .onChange(of: showGatePopover) { _, open in
+            if open { syncGateValuesFromStore() }
+        }
+        .onChange(of: store.selectedWorkspace) { _, _ in
+            syncGateValuesFromStore()
         }
     }
 
     @ViewBuilder
     private func judgeStatusPill(judgeElapsed: Int) -> some View {
+        let now = Date()
+        let optimisticLaunching = store.launchingSubmits.values
+            .filter { $0.expiresAt > now }
+            .sorted { $0.startedEpoch < $1.startedEpoch }
+            .first
+
         if let pipe = pipeline, pipe.isBusy {
             let title = pipe.activeTitle ?? lang.tr("当前任务", "Active Op")
             let jid = pipe.remoteJudgeId.map { "#\($0) · " } ?? ""
@@ -161,6 +178,17 @@ struct SchedulerBarView: View {
             default:
                 SemanticPill(text: "\(title) (\(pipe.phase))", icon: "gearshape.2.fill")
             }
+        } else if let launching = optimisticLaunching {
+            SemanticPill(
+                text: lang.tr("正在启动提交: \(launching.title)…", "Launching Submit: \(launching.title)…"),
+                icon: "paperplane.fill"
+            )
+        } else if let settlingKey = store.settlingInflightKeys.sorted().first,
+                  let settling = store.settlingActive(for: settlingKey) {
+            SemanticPill(
+                text: lang.tr("判题完成 · 同步榜单中: \(settling.title)…", "Judge Done · Syncing Score: \(settling.title)…"),
+                icon: "chart.bar.fill"
+            )
         } else {
             SemanticPill(text: lang.tr("提交通道空闲", "Submit Channel Idle"), icon: "checkmark.circle.fill")
         }
@@ -212,6 +240,7 @@ struct SchedulerBarView: View {
                     Stepper(String(format: "Δ ≥ %.1f", noiseVal), value: $noiseVal, in: 0.5...8.0, step: 0.2)
                         .font(.system(size: 11.5, weight: .bold, design: .monospaced))
                         .onChange(of: noiseVal) { _, nv in
+                            guard !syncingGateValues else { return }
                             Task { await store.updateScheduler(noiseFloor: nv) }
                         }
                 }

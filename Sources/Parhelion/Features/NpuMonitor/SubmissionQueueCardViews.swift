@@ -6,16 +6,21 @@ struct CandidateSubmissionCardView: View {
     let item: SubmissionQueueItem
     let rankIndex: Int
     @ObservedObject var clock: WallClockTicker
+    @UIState private var confirmRiskySubmit: Bool = false
 
     private var lang: AppLanguage { store.lang }
     private var pipeline: LivePipelineState? { hotStore.pipeline ?? store.snapshot?.scheduler.pipeline }
     private var isWaitingCooldown: Bool { pipeline?.phase == "waiting_cooldown" }
     private var isLocalUploading: Bool { ((pipeline?.isLocalBusy ?? false) && !isWaitingCooldown) || store.isLaunchingSubmit }
+    private var needsForceConfirm: Bool {
+        let b = item.badge.uppercased()
+        return b.contains("CIRCUIT") || b.contains("REJECTED")
+    }
 
     var body: some View {
         let isCrit = item.badge == "CRITICAL RESTORE"
         let expDelta = (item.estimatedScore ?? item.currentScore) - item.currentScore
-        let noiseFloor = store.snapshot?.scheduler.noiseFloorDelta ?? 1.9
+        let noiseFloor = hotStore.schedulerHot?.noiseFloorDelta ?? store.snapshot?.scheduler.noiseFloorDelta ?? 1.9
         let exploreOn = (item.gates.exploreEligible ?? false) || item.badge.uppercased().contains("EXPLORE")
         let ucbLabel: String? = {
             guard let ucb = item.gates.ucbDelta, item.estimatedScore != nil else { return nil }
@@ -48,7 +53,7 @@ struct CandidateSubmissionCardView: View {
                             compact: true
                         )
                     }
-                    SemanticPill(text: readableCandidateBadge(item))
+                    SemanticPill(text: readableCandidateBadge(item, cdRem: cdRem))
                 }
 
                 HStack(spacing: 8) {
@@ -87,9 +92,9 @@ struct CandidateSubmissionCardView: View {
                 }
 
                 HStack(spacing: 8) {
-                    Text(gateSummaryText(item))
+                    Text(gateSummaryText(item, cdRem: cdRem))
                         .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(gateSummaryColor(item))
+                        .foregroundStyle(gateSummaryColor(item, cdRem: cdRem))
 
                     Spacer()
 
@@ -102,7 +107,11 @@ struct CandidateSubmissionCardView: View {
                     }
 
                     Button {
-                        Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
+                        if needsForceConfirm {
+                            confirmRiskySubmit = true
+                        } else {
+                            Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
+                        }
                     } label: {
                         if isLocalUploading {
                             Label(lang.tr("打包上传中，请稍候", "Uploading, please wait"), systemImage: "hourglass")
@@ -140,30 +149,44 @@ struct CandidateSubmissionCardView: View {
                 }
             }
         }
+        .alert(lang.tr("确认强制覆盖门禁提交？", "Force Submit Blocked Candidate?"), isPresented: $confirmRiskySubmit) {
+            Button(lang.tr("取消", "Cancel"), role: .cancel) {}
+            Button(lang.tr("确认强制提交", "Force Submit"), role: .destructive) {
+                Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
+            }
+        } message: {
+            Text("\(item.title) (\(item.shortSha)) · \(item.badge)")
+        }
     }
 
-    private func readableCandidateBadge(_ item: SubmissionQueueItem) -> String {
+    private func readableCandidateBadge(_ item: SubmissionQueueItem, cdRem: Int) -> String {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") { return lang.tr("逃逸硬锁 · 禁止提交", "ESCAPE LOCK") }
+        if !item.gates.safetyOk { return lang.tr("缺少精度记录 · HELD", "SAFETY HELD") }
         if u.contains("REJECTED") { return lang.tr("门禁拒绝 · REJECTED", "REJECTED") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
-        if u.contains("CIRCUIT") { return lang.tr("连6发无突破", "CIRCUIT OPEN") }
-        if u.contains("HOLD") || u.contains("LOW") { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
-        if u.contains("RATE") { return lang.tr("冷却等待 · RATE WAIT", "RATE WAIT") }
+        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk {
+            return lang.tr("今日配额已满 · QUOTA", "QUOTA EXHAUSTED")
+        }
+        if u.contains("CIRCUIT") || !item.gates.circuitOk { return lang.tr("连6发无突破", "CIRCUIT OPEN") }
+        if u.contains("HOLD") || u.contains("LOW") || !item.gates.noiseOk { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
         if !item.gates.allPass { return lang.tr("门禁未通过 · HELD", "GATE HELD") }
+        // Live cooldown overrides stale cold "RATE WAIT" so badge never contradicts Submit button.
+        if cdRem > 0 && u.contains("RATE") { return lang.tr("冷却等待 (\(cdRem)s) · RATE", "RATE WAIT (\(cdRem)s)") }
         if u.contains("EXPLORE") { return lang.tr("探索通道 · EXPLORE", "EXPLORE") }
         return lang.tr("待提交 · READY", "READY")
     }
 
-    private func gateSummaryColor(_ item: SubmissionQueueItem) -> Color {
+    private func gateSummaryColor(_ item: SubmissionQueueItem, cdRem: Int) -> Color {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") || u.contains("REJECTED") || !item.gates.safetyOk { return .red }
         if u.contains("CRITICAL") { return Color(red: 0.12, green: 0.70, blue: 0.42) }
-        if !item.gates.allPass || u.contains("RATE") { return .orange }
+        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk { return .red }
+        if !item.gates.allPass || (cdRem > 0 && u.contains("RATE")) { return .orange }
         return Color(red: 0.12, green: 0.70, blue: 0.42)
     }
 
-    private func gateSummaryText(_ item: SubmissionQueueItem) -> String {
+    private func gateSummaryText(_ item: SubmissionQueueItem, cdRem: Int) -> String {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") {
             return lang.tr(
@@ -176,20 +199,20 @@ struct CandidateSubmissionCardView: View {
         if u.contains("REJECTED") {
             return lang.tr("⛔ 门禁拒绝提交（收益/熔断/配额未通过）", "⛔ Rejected by submission gate")
         }
+        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk {
+            return lang.tr("⚠ 今日常规额度已用尽（保留收官恢复配额）", "⚠ Daily normal quota exhausted (reserve protected)")
+        }
         if !item.gates.circuitOk {
             return lang.tr("⚠ 12h 连续未突破（熔断开启 · 请切换基线或插队覆盖）", "⚠ Circuit breaker open (switch baseline or override)")
         }
         if !item.gates.noiseOk {
             return lang.tr("✓ 精度通过 · 预计涨幅低于自动阈值 (可手动插队)", "✓ Precision OK · Below noise floor (Jump Queue allowed)")
         }
-        if !item.gates.quotaOk {
-            return lang.tr("⚠ 今日常规额度已用尽（保留收官恢复配额）", "⚠ Daily normal quota exhausted (reserve protected)")
-        }
-        if u.contains("RATE") {
-            return lang.tr("⏳ 4项门禁通过 · 等待 190s 平台冷却就绪", "⏳ All 4 gates passed · Waiting 190s cooldown")
-        }
         if !item.gates.allPass {
             return lang.tr("⚠ 未通过全部提交门禁", "⚠ Not all gate stages passed")
+        }
+        if cdRem > 0 && u.contains("RATE") {
+            return lang.tr("⏳ 4项门禁通过 · 等待冷却剩余 \(cdRem)s", "⏳ All 4 gates passed · Cooldown \(cdRem)s left")
         }
         return lang.tr("✓ 本地精度与防抖门禁全部通过", "✓ All 4 gate stages passed")
     }
@@ -197,12 +220,15 @@ struct CandidateSubmissionCardView: View {
 
 struct CompletedSubmissionCardView: View {
     @EnvironmentObject var store: ContestStore
+    @EnvironmentObject var hotStore: HotTelemetryStore
     let item: SubmissionQueueItem
     let experience: BreakthroughEntry?
     let onInspectExperience: (BreakthroughEntry) -> Void
 
     private var lang: AppLanguage { store.lang }
-    private var isLocalUploading: Bool { (store.snapshot?.scheduler.pipeline?.isLocalBusy ?? false) || store.isLaunchingSubmit }
+    private var isLocalUploading: Bool {
+        ((hotStore.pipeline ?? store.snapshot?.scheduler.pipeline)?.isLocalBusy ?? false) || store.isLaunchingSubmit
+    }
 
     var body: some View {
         let beforeScore = item.priorScore ?? 0.0
@@ -229,26 +255,11 @@ struct CompletedSubmissionCardView: View {
                 }
 
                 HStack(spacing: 8) {
-                    QueueScoreCell(
-                        title: lang.tr("提交前分数", "Before"),
-                        main: String(format: "%.2f", beforeScore),
-                        delta: nil,
-                        mainColor: .secondary
-                    )
+                    QueueScoreCell(title: lang.tr("提交前分数", "Before"), main: String(format: "%.2f", beforeScore), delta: nil, mainColor: .secondary)
                     QueueArrowSeparator()
-                    QueueScoreCell(
-                        title: lang.tr("预计得分", "Estimated"),
-                        main: item.estimatedScore.map { String(format: "~%.2f", $0) } ?? "—",
-                        delta: nil,
-                        mainColor: .blue
-                    )
+                    QueueScoreCell(title: lang.tr("预计得分", "Estimated"), main: item.estimatedScore.map { String(format: "~%.2f", $0) } ?? "—", delta: nil, mainColor: .blue)
                     QueueArrowSeparator()
-                    QueueScoreCell(
-                        title: lang.tr("评测得分 (本次结果)", "Judged Score"),
-                        main: item.actualScore.map { String(format: "%.2f", $0) } ?? readableRawStatus(item.rawStatus),
-                        delta: item.deltaScore,
-                        mainColor: passed ? .primary : .red
-                    )
+                    QueueScoreCell(title: lang.tr("评测得分 (本次结果)", "Judged Score"), main: item.actualScore.map { String(format: "%.2f", $0) } ?? readableRawStatus(item.rawStatus), delta: item.deltaScore, mainColor: passed ? .primary : .red)
                 }
                 .padding(.vertical, 6)
                 .padding(.horizontal, 10)

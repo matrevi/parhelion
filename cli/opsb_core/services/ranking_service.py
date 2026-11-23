@@ -53,11 +53,16 @@ def _read_cache(path: Path) -> dict[str, Any] | None:
 
 
 def _write_cache(path: Path, payload: dict[str, Any]) -> None:
+    import os
+
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(path)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
     except Exception:
         pass
 

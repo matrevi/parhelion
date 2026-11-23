@@ -20,7 +20,8 @@ Stages:
   4. QUOTA_RESERVE:
      - Dual Token Bucket: 190s inter-submission rate limit (`RATE_WAIT`) + 50/day Beijing-day
        (`UTC+8` 00:00 reset) hard cap reserving `N_restore` slots strictly for genuine
-       decay-discounted closing restores (`true_restore_gain >= noise_floor_pts` or `S_live == 0`)
+       decay-discounted closing restores (`true_restore_gain >= noise_floor_pts` or `S_live == 0`);
+       a hard-cap hit yields `QUOTA_EXHAUSTED` (never `RATE_WAIT`)
      - Orders approved submissions by `(CRITICAL_RESTORE desc, difficulty * delta_expected desc)`
 """
 from __future__ import annotations
@@ -47,6 +48,7 @@ STATUS_TAGS: tuple[str, ...] = (
     "EXPLORE",
     "CRITICAL_RESTORE",
     "RATE_WAIT",
+    "QUOTA_EXHAUSTED",
     "JUDGING",
     "PASS_UP",
     "PASS_DOWN",
@@ -754,7 +756,14 @@ class SubmissionGate:
                     "weighted_gain": round(ledger.difficulty * gain, 2),
                     "critical": needs_zero_fix,
                 })
-        restore_targets.sort(key=lambda x: (x["critical"], x["weighted_gain"]), reverse=True)
+        restore_targets.sort(
+            key=lambda x: (
+                0 if x["critical"] else 1,
+                -float(x["weighted_gain"]),
+                str(x["title"]),
+                str(x.get("best_sha") or ""),
+            )
+        )
 
         # Dynamic closing reserve: exact needed restores + 1 safety buffer (floored by min_closing_reserve)
         reserve_cap = max(12, self.config.min_closing_reserve)
@@ -1192,7 +1201,15 @@ class SubmissionGate:
             gate_reason = f"[S2:NOISE_FLOOR] {s2.reason}"
         elif not s4.passed:
             approved = False
-            status_tag = "HOLD_LOW_GAIN" if s4.code == "RESERVED_FOR_CLOSING" else "RATE_WAIT"
+            # `RATE_WAIT` strictly means "approved, pacing the 190s inter-submit gap". A Beijing-day
+            # hard-cap hit (`DAILY_LIMIT_REACHED`) is NOT submittable until reset, so it gets its own
+            # tag; conflating it with RATE_WAIT made the UI treat an exhausted quota as a countdown.
+            if s4.code == "RESERVED_FOR_CLOSING":
+                status_tag = "HOLD_LOW_GAIN"
+            elif s4.code == "DAILY_LIMIT_REACHED":
+                status_tag = "QUOTA_EXHAUSTED"
+            else:
+                status_tag = "RATE_WAIT"
             gate_reason = f"[S4:QUOTA_RESERVE] {s4.reason}"
         else:
             approved = True

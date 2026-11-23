@@ -40,8 +40,12 @@ final class HotTelemetryStore: ObservableObject {
         }
     }
 
+    /// Cold snapshots only *seed* hot state; they never override a live hot frame. While the
+    /// daemon is offline there is no hot source, so the cold pipeline must keep flowing in
+    /// (otherwise the first seeded pipeline would freeze forever). Cold `npu` is a placeholder
+    /// (`online == false`) and is never allowed to replace hot NPU data.
     func applyColdSeed(from snap: SupervisorSnapshot) {
-        if pipeline == nil, let p = snap.scheduler.pipeline {
+        if let p = snap.scheduler.pipeline, pipeline == nil || !daemonOnline {
             pipeline = p
         }
         if npu == nil && snap.npu.online {
@@ -57,6 +61,13 @@ final class HotTelemetryStore: ObservableObject {
     func markDaemonOffline() {
         daemonOnline = false
         streamConnected = false
+        schedulerHot = nil
+    }
+
+    /// Workspace switch: drop the previous workspace's submit pipeline / scheduler hot state.
+    func resetPipelineState() {
+        pipeline = nil
+        schedulerHot = nil
     }
 
     func clearForHostSwitch() {

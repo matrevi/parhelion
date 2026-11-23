@@ -215,7 +215,9 @@ actor DaemonClient {
         interval: Double
     ) -> AsyncThrowingStream<(HotStreamFrame, Double), Error> {
         let session = self.sseSession
-        return AsyncThrowingStream { continuation in
+        // Keep only the newest frame: if the consumer is momentarily busy, replaying a backlog of
+        // stale frames would make cards/lanes jump through outdated states in quick succession.
+        return AsyncThrowingStream(bufferingPolicy: .bufferingNewest(1)) { continuation in
             let runner = Task.detached(priority: .utility) { [weak self] in
                 guard let self else {
                     continuation.finish()

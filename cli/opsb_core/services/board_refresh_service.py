@@ -22,16 +22,17 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..config import SUPERVISOR_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 
 DEFAULT_STALE_HOURS = 24.0
+DEFAULT_SCORE_DRIFT_PTS = 0.5
 ATTEMPT_THROTTLE_SEC = 300.0
 REQUEST_TIMEOUT_SEC = 10.0
 
 _bg_lock = threading.Lock()
-_bg_running = False
+_bg_running: set[Path] = set()
 
 
 def live_board_path(workspace: Path) -> Path:
@@ -132,7 +133,25 @@ def _latest_submit_epoch(workspace: Path) -> float:
     return latest
 
 
-def inspect_board_freshness(workspace: Path, max_age_hours: float = DEFAULT_STALE_HOURS) -> dict[str, Any]:
+def _resolve_team_name(workspace: Path) -> str:
+    tr = read_json(workspace / "results" / "scoring-evidence" / "team-ranking.json", {})
+    if isinstance(tr, dict) and tr.get("team_name"):
+        return str(tr["team_name"]).strip()
+    cd = read_json(workspace / "results" / "scoring-evidence" / "contest-detail.json", {})
+    if isinstance(cd, dict):
+        tname = (cd.get("signup_status") or {}).get("team_name")
+        if tname:
+            return str(tname).strip()
+    return ""
+
+
+def inspect_board_freshness(
+    workspace: Path,
+    max_age_hours: float = DEFAULT_STALE_HOURS,
+    *,
+    score_drift: float | None = None,
+    drift_threshold: float = DEFAULT_SCORE_DRIFT_PTS,
+) -> dict[str, Any]:
     now_ep = utc_now().timestamp()
     bp = live_board_path(workspace)
     data = read_json(bp, {}) if bp.is_file() else {}
@@ -149,6 +168,9 @@ def inspect_board_freshness(workspace: Path, max_age_hours: float = DEFAULT_STAL
     if fetched_dt is None:
         stale = True
         reason = "never_refreshed"
+    elif score_drift is not None and abs(float(score_drift)) >= float(drift_threshold):
+        stale = True
+        reason = f"score_drift={abs(float(score_drift)):.2f}pts"
     elif refresh_age_hrs is not None and refresh_age_hrs >= max_age_hours:
         stale = True
         reason = f"refresh_age={refresh_age_hrs:.1f}h>={max_age_hours:.0f}h"
@@ -176,9 +198,12 @@ def inspect_board_freshness(workspace: Path, max_age_hours: float = DEFAULT_STAL
 
 def _atomic_write_json(path: Path, obj: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def refresh_board_and_recalibrate(
@@ -187,9 +212,10 @@ def refresh_board_and_recalibrate(
     force: bool = False,
     max_age_hours: float = DEFAULT_STALE_HOURS,
     recalibrate: bool = True,
+    score_drift: float | None = None,
 ) -> dict[str, Any]:
     """Fetch live tbest / frontier / board scores for all 10 problems and recalibrate models."""
-    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
+    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours, score_drift=score_drift)
     if not force and not fresh["should_refresh"]:
         return {"ok": True, "skipped": True, **fresh}
 
@@ -203,7 +229,7 @@ def refresh_board_and_recalibrate(
 
         try:
             # Re-check after lock acquisition
-            fresh2 = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
+            fresh2 = inspect_board_freshness(workspace, max_age_hours=max_age_hours, score_drift=score_drift)
             if not force and not fresh2["should_refresh"]:
                 return {"ok": True, "skipped": True, **fresh2}
 
@@ -225,8 +251,13 @@ def refresh_board_and_recalibrate(
             team_user_ids = {uid for _, _, uid in team_sessions if uid}
             if user_id:
                 team_user_ids.add(user_id)
+            team_name = _resolve_team_name(workspace)
             probs_path = workspace / "bench" / "problems.json"
             problems = read_json(probs_path, [])
+            if not isinstance(problems, list) or not problems:
+                manifest = read_json(workspace / "opsb.workspace.json", {})
+                if isinstance(manifest, dict) and isinstance(manifest.get("problems"), list):
+                    problems = manifest["problems"]
             if not isinstance(problems, list) or not problems:
                 return {"ok": False, "error": f"missing or empty {probs_path}"}
 
@@ -264,7 +295,18 @@ def refresh_board_and_recalibrate(
                             frontier_top5 = round(float(rows1[min(4, len(rows1) - 1)].get("score") or 0.0), 2)
                     rows = d.get("rows") or []
                     for r in rows:
-                        if team_user_ids and str(r.get("user_id") or "") in team_user_ids:
+                        if not isinstance(r, dict):
+                            continue
+                        r_uid = str(r.get("user_id") or "").strip()
+                        r_tname = str(
+                            r.get("team_name")
+                            or ((r.get("team") or {}).get("team_name") if isinstance(r.get("team"), dict) else "")
+                            or ""
+                        ).strip()
+                        is_team_row = (bool(team_user_ids) and bool(r_uid) and r_uid in team_user_ids) or (
+                            bool(team_name) and bool(r_tname) and r_tname == team_name
+                        )
+                        if is_team_row:
                             # Prefer highest-scoring / lowest-rank team row across all teammate accounts
                             if our_row is None or float(r.get("score") or 0.0) > float(our_row.get("score") or 0.0):
                                 our_row = r
@@ -308,8 +350,15 @@ def refresh_board_and_recalibrate(
 
                     prev_snap = snap.get(title) if isinstance(snap.get(title), dict) else {}
                     prev_score = prev_snap.get("score")
-                    live_status = str(our_row.get("status") or prev_snap.get("status") or "")
-                    live_score = round(float(our_row.get("score") or 0.0), 2) if live_status == "Pass" else 0.0
+                    raw_row_score = our_row.get("score")
+                    has_pos_score = (
+                        isinstance(raw_row_score, (int, float))
+                        and not isinstance(raw_row_score, bool)
+                        and float(raw_row_score) > 0.0
+                    )
+                    # Ranking rows may omit `"status"`; a positive ranking score is always a live Pass.
+                    live_status = str(our_row.get("status") or ("Pass" if has_pos_score else (prev_snap.get("status") or "")))
+                    live_score = round(float(raw_row_score or 0.0), 2) if live_status == "Pass" else 0.0
                     snap[title] = {
                         **prev_snap,
                         "rank": our_row.get("rank"),
@@ -392,25 +441,37 @@ def refresh_board_and_recalibrate(
                 pass
 
 
-def refresh_if_stale_async(workspace: Path, max_age_hours: float = DEFAULT_STALE_HOURS) -> dict[str, Any]:
-    """Non-blocking 24h drift check for `opsb status` / agent startup."""
-    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours)
-    if not fresh["should_refresh"]:
+def refresh_if_stale_async(
+    workspace: Path,
+    max_age_hours: float = DEFAULT_STALE_HOURS,
+    *,
+    score_drift: float | None = None,
+    on_refreshed: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Non-blocking drift check (24h OR weighted-vs-team-board divergence) for `opsb status` / daemon."""
+    fresh = inspect_board_freshness(workspace, max_age_hours=max_age_hours, score_drift=score_drift)
+    if os.environ.get("OPSB_DISABLE_BOARD_REFRESH") == "1" or not fresh["should_refresh"]:
         return {**fresh, "auto_triggered": False}
 
-    global _bg_running
+    ws = workspace.expanduser().resolve()
     with _bg_lock:
-        if _bg_running:
+        if ws in _bg_running:
             return {**fresh, "auto_triggered": False}
-        _bg_running = True
+        _bg_running.add(ws)
 
     def _run() -> None:
-        global _bg_running
         try:
-            refresh_board_and_recalibrate(workspace, force=False, max_age_hours=max_age_hours, recalibrate=True)
+            res = refresh_board_and_recalibrate(
+                ws, force=False, max_age_hours=max_age_hours, recalibrate=True, score_drift=score_drift
+            )
+            if isinstance(res, dict) and res.get("ok") and not res.get("skipped") and on_refreshed is not None:
+                try:
+                    on_refreshed()
+                except Exception:
+                    pass
         finally:
             with _bg_lock:
-                _bg_running = False
+                _bg_running.discard(ws)
 
     threading.Thread(target=_run, daemon=True, name="opsb-board-refresh-24h").start()
     return {**fresh, "auto_triggered": True}
