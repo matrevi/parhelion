@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DriverSettingsTab: View {
     @EnvironmentObject var store: ContestStore
+    @UIState private var isInstallingSkills: Bool = false
 
     private var lang: AppLanguage { store.lang }
 
@@ -13,6 +14,7 @@ struct DriverSettingsTab: View {
                     ForEach(store.driverDiagnostics) { diag in
                         driverRowCard(diag)
                     }
+                    fallbackSkillsCard
                 }
             }
         }
@@ -160,6 +162,53 @@ struct DriverSettingsTab: View {
                     .controlSize(.mini)
                     .disabled(store.isSyncingDriver || store.selectedWorkspace.isEmpty)
                 }
+            }
+        }
+    }
+
+    private var fallbackSkillsCard: some View {
+        let dshOk = store.snapshot?.skills.targets["dsh"]?.allInstalled ?? false
+        let codexOk = store.snapshot?.skills.targets["codex"]?.allInstalled ?? false
+        return SurfaceCard(padding: 11) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(lang.tr("兜底参考 Skill (`kernelc-deep-reference`)", "Fallback Skill (`kernelc-deep-reference`)"))
+                            .font(.system(size: 12.5, weight: .bold))
+                        SemanticPill(text: dshOk ? "dsh OK" : "dsh —", compact: true)
+                        SemanticPill(text: codexOk ? "Codex OK" : "Codex —", compact: true)
+                    }
+                    Text(lang.tr(
+                        "soc-a 硬件对齐与 PipeBarrier 手册；常规已由 `AGENTS.md` + MCP + 三元库覆盖，按需注册至 `~/.dsh/skills` 与 `~/.codex/skills`。",
+                        "Optional soc-a reference manual; standard workflows use `AGENTS.md` + MCP + Triad KB."
+                    ))
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    isInstallingSkills = true
+                    Task {
+                        do {
+                            try await store.repository.installFallbackSkills()
+                            store.bannerMessage = lang.tr("已注册兜底 Skill 至 dsh / Codex", "Registered fallback skill to dsh / Codex")
+                            await store.refreshLocal()
+                        } catch {
+                            store.errorMessage = error.localizedDescription
+                        }
+                        isInstallingSkills = false
+                    }
+                } label: {
+                    if isInstallingSkills {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label(lang.tr("注册 Skill", "Register"), systemImage: "square.and.arrow.down")
+                            .font(.system(size: 11))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(isInstallingSkills)
             }
         }
     }

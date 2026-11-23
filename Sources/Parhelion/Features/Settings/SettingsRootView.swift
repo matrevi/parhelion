@@ -15,9 +15,6 @@ struct SettingsRootView: View {
 
             AccountsSettingsTab()
                 .tabItem { Label(lang.tr("平台账号认证", "Accounts"), systemImage: "person.badge.key.fill") }
-
-            ToolchainSettingsTab()
-                .tabItem { Label(lang.tr("Agent 工具链", "Agent Toolchain"), systemImage: "cpu") }
         }
         .padding(14)
     }
