@@ -739,12 +739,17 @@ class SchedulerEngine:
         )
         if added.returncode != 0:
             raise RuntimeError(f"worktree add failed for {title} {sha[:7]}: {added.stderr.strip()}")
+        submit_runner_py = PACKAGE_DIR.parent / "runtime" / "submit-validated.py"
+        if not submit_runner_py.is_file():
+            submit_runner_py = self.workspace / "tools" / "submit-validated.py"
         try:
             res = subprocess.run(
                 [
                     sys.executable,
-                    str(self.workspace / "tools" / "submit-validated.py"),
+                    str(submit_runner_py),
                     title,
+                    "--workspace",
+                    str(self.workspace),
                     "--sha",
                     sha,
                     "--project-dir",
@@ -766,7 +771,11 @@ class SchedulerEngine:
         return json.loads(res.stdout.strip().splitlines()[-1])
 
     def _wait_and_score(self, title: str, submission_id: str) -> tuple[str, float | None]:
-        sys.path.insert(0, str(self.workspace / "skills" / "problem-submit" / "scripts"))
+        judge_dir = PACKAGE_DIR.parent / "runtime" / "judge"
+        if not (judge_dir / "ict_cli.py").is_file():
+            judge_dir = self.workspace / "skills" / "problem-submit" / "scripts"
+        if str(judge_dir) not in sys.path:
+            sys.path.insert(0, str(judge_dir))
         from ict_cli import ICTClient  # type: ignore
 
         client = ICTClient()

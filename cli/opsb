@@ -24,6 +24,8 @@ def _ensure_venv_python() -> None:
     for i, arg in enumerate(sys.argv):
         if arg in ("--workspace", "-w") and i + 1 < len(sys.argv):
             candidates.insert(0, Path(sys.argv[i + 1]).expanduser() / ".venv" / "bin" / "python")
+    parhelion_home = Path(os.environ.get("PARHELION_HOME") or os.environ.get("OPSB_HOME") or (Path.home() / ".parhelion")).expanduser()
+    candidates.append(parhelion_home / "venv" / "bin" / "python")
     candidates.append(BENCH_ROOT / ".venv" / "bin" / "python")
 
     for venv_py in candidates:

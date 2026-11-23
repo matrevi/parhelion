@@ -706,8 +706,12 @@ def _submit_via_worktree(
     if added.returncode != 0:
         raise RuntimeError(f"worktree add failed: {added.stderr.strip()}")
     try:
+        from ..config import SUPERVISOR_ROOT
+        runner = SUPERVISOR_ROOT / "runtime" / "submit-validated.py"
+        if not runner.is_file():
+            runner = workspace / "tools" / "submit-validated.py"
         res = subprocess.run(
-            [py_exe, str(workspace / "tools" / "submit-validated.py"), title, "--sha", sha, "--project-dir", str(worktree), "--force"],
+            [py_exe, str(runner), title, "--workspace", str(workspace), "--sha", sha, "--project-dir", str(worktree), "--force"],
             stdin=subprocess.DEVNULL,
             env=env,
             capture_output=True,
@@ -731,10 +735,13 @@ def _wait_and_fetch_score(
     env = dict(os.environ)
     if session_file:
         env["JUDGE_SESSION_FILE"] = session_file
+    from ..config import SUPERVISOR_ROOT
+    judge_dir = SUPERVISOR_ROOT / "runtime" / "judge"
+    if not (judge_dir / "ict_cli.py").is_file():
+        judge_dir = workspace / "skills" / "problem-submit" / "scripts"
     poll_code = (
         "import json, os, sys, time, pathlib\n"
-        f"root = pathlib.Path({str(workspace)!r})\n"
-        "sys.path.insert(0, str(root / 'skills/problem-submit/scripts'))\n"
+        f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from ict_cli import ICTClient\n"
         "client = ICTClient(session_file=os.environ.get('JUDGE_SESSION_FILE') or None)\n"
         "if not client.load_session(): raise RuntimeError('Judge session expired; sign in via Settings')\n"

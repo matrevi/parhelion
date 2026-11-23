@@ -33,7 +33,7 @@ chmod +x "$APP_BUNDLE/Contents/MacOS/Parhelion"
 
 # Bundle ONLY generic runtime code & templates inside Contents/Resources/.
 # All user/contest data (bench-specs, breakthrough, state, config) lives strictly under ~/.parhelion/.
-for subdir in cli scheduler templates skills; do
+for subdir in cli scheduler runtime templates skills; do
     rm -rf "$APP_BUNDLE/Contents/Resources/$subdir"
     if [[ -d "$REPO_ROOT/$subdir" ]]; then
         mkdir -p "$APP_BUNDLE/Contents/Resources/$subdir"

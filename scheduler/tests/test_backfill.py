@@ -83,7 +83,7 @@ class _FakeScheduler(BackfillScheduler):
     """BackfillScheduler with the raw census injected (no repo/log scanning)."""
 
     def __init__(self, state_dir: pathlib.Path, rows: list[dict], **kw) -> None:
-        super().__init__(REAL_WORKSPACE, state_dir=state_dir, **kw)
+        super().__init__(state_dir, state_dir=state_dir, **kw)
         self.rows = list(rows)
         self.executed: list[dict] = []
 

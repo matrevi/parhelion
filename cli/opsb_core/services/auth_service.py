@@ -32,7 +32,9 @@ ACCOUNTS_REGISTRY = CONFIG_DIR / "cj_accounts.json"
 
 
 def _resolve_judge_submit_dir() -> Path:
-    candidates: list[Path] = []
+    candidates: list[Path] = [
+        SUPERVISOR_ROOT / "runtime" / "judge",
+    ]
     ws = discover_default_workspace()
     if ws is not None:
         candidates.append(ws / "skills" / "judge-submit")

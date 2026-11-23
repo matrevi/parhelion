@@ -1024,7 +1024,9 @@ class NpuTaskScheduler:
 
         import importlib.util
 
-        npu_test_path = self.workspace / "tools" / "npu-test.py"
+        npu_test_path = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "npu-test.py"
+        if not npu_test_path.is_file():
+            npu_test_path = self.workspace / "tools" / "npu-test.py"
         spec = importlib.util.spec_from_file_location("opsb_npu_test", str(npu_test_path))
         if spec is None or spec.loader is None:
             raise RuntimeError(f"Missing 3-Phase runner at {npu_test_path}")

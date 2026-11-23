@@ -91,10 +91,13 @@ def _query_remote_submission_cached(workspace: Path, submission_id: str, session
     env = dict(os.environ)
     if session_file:
         env["JUDGE_SESSION_FILE"] = session_file
+    from ..config import SUPERVISOR_ROOT
+    judge_dir = SUPERVISOR_ROOT / "runtime" / "judge"
+    if not (judge_dir / "ict_cli.py").is_file():
+        judge_dir = workspace / "skills" / "problem-submit" / "scripts"
     probe = (
         "import datetime, email.utils, json, os, pathlib, sys\n"
-        f"root = pathlib.Path({str(workspace)!r})\n"
-        "sys.path.insert(0, str(root / 'skills/problem-submit/scripts'))\n"
+        f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from ict_cli import ICTClient\n"
         "c = ICTClient(session_file=os.environ.get('JUDGE_SESSION_FILE') or None)\n"
         "if not c.load_session():\n"

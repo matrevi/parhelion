@@ -241,11 +241,13 @@ def run_test(args: argparse.Namespace) -> int:
     py_exe = resolve_python_exe(ws)
     bridge_py = CLI_DIR.parent / "scheduler" / "cli_bridge.py"
 
-    # Sync-only mode stays compatible with legacy `npu-test.py --sync-only`
+    # Sync-only mode stays compatible with `npu-test.py --sync-only`
     if getattr(args, "sync_only", False):
-        legacy_npu_test = ws / "tools" / "npu-test.py"
-        if legacy_npu_test.is_file():
-            return subprocess.call([py_exe, str(legacy_npu_test), args.problem, "--sync-only"], cwd=str(ws))
+        npu_runner = CLI_DIR.parent / "runtime" / "npu-test.py"
+        if not npu_runner.is_file():
+            npu_runner = ws / "tools" / "npu-test.py"
+        if npu_runner.is_file():
+            return subprocess.call([py_exe, str(npu_runner), args.problem, "--workspace", str(ws), "--sync-only"], cwd=str(ws))
 
     # Route 3-Phase Pipeline (`--build-only` Phase A / `--fast` Q0 / full Q1) through `scheduler.cli_bridge schedule-test`
     if bridge_py.is_file():
@@ -290,9 +292,11 @@ def run_test(args: argparse.Namespace) -> int:
                 return subprocess.call(["ssh", *SSH_CONTROL_OPTS, host, remote_sh])
         return subprocess.call(b_cmd, cwd=str(CLI_DIR.parent))
 
-    legacy_npu_test = ws / "tools" / "npu-test.py"
-    if legacy_npu_test.is_file():
-        cmd = [py_exe, str(legacy_npu_test), args.problem]
+    npu_runner = CLI_DIR.parent / "runtime" / "npu-test.py"
+    if not npu_runner.is_file():
+        npu_runner = ws / "tools" / "npu-test.py"
+    if npu_runner.is_file():
+        cmd = [py_exe, str(npu_runner), args.problem, "--workspace", str(ws)]
         env = {**os.environ, **({"OPSB_FAST_LANE": "1"} if args.fast else {})}
         return subprocess.call(cmd, cwd=str(ws), env=env)
     return 1
