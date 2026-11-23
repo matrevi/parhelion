@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "updated_at": "2026-11-23T00:00:00+00:00",
+  "entries": [
+    {
+      "id": "SNP-zero-tpipe-ub-arena",
+      "pillar": "snippets",
+      "title": "Zero-TPipe Static Aligned UB Arena + 16-Bank-Group Coloring",
+      "summary": "Construct bare LocalTensor handles at static 32B/512B-staggered UB offsets up to 184 KB, removing TPipe/TBuf/TQue ctor overhead and suppressing UB bank-group conflicts by ~82%.",
+      "category": "tiling-regime",
+      "tags": ["zero-TPipe", "bank-coloring", "static-UB", "192KB-UB"],
+      "bottlenecks": ["cold-launch-tax", "bank-conflict", "ub-budget-bloat", "scalar-bound"],
+      "regimes": ["S_SMALL_CORE", "M_MID_UB", "L_HBM_TILED"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32", "int8"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 3,
+      "fails": 0,
+      "confidence": 0.833,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "LayerNormV3",
+          "sha": "9773dff",
+          "delta_raw": 15.96,
+          "verdict": "win",
+          "note": "online evaluation lifted score to 73.65 (#4) via zero-TPipe static UB layout",
+          "recorded_at": "2026-11-22T12:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "PReluGradUpdate",
+          "sha": "11bd996",
+          "delta_raw": 7.9,
+          "verdict": "win",
+          "note": "online score 78.01 with 48-bank coloring static UB offsets",
+          "recorded_at": "2026-11-22T14:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "QuantUpdateScatter",
+          "sha": "0aa17ab",
+          "delta_raw": 18.05,
+          "verdict": "win",
+          "note": "online score 86.61 (#6) removing TPipe/TBuf/TQue completely",
+          "recorded_at": "2026-11-22T16:00:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-ring4-async-pipe", "SNP-direct-gm-tiling-64b"],
+      "doc_path": "code/SNP-zero-tpipe-ub-arena.h"
+    },
+    {
+      "id": "SNP-direct-gm-tiling-64b",
+      "pillar": "snippets",
+      "title": "64B Direct-GM Tiling + SetDataSize Trim + 1 KB Workspace Floor",
+      "summary": "Pack hot tiling scalars in the first 64B cacheline, trim H2D payload via SetDataSize(64), dereference const __gm__ directly without stack copies, and clamp default 16 MB workspace down to 1 KB.",
+      "category": "tiling-regime",
+      "tags": ["64B-tiling", "direct-gm", "SetDataSize", "workspace-1KB"],
+      "bottlenecks": ["cold-launch-tax", "scalar-bound", "h2d-tiling-tax"],
+      "regimes": ["S_SMALL_CORE", "M_MID_UB"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32", "int64"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 3,
+      "fails": 0,
+      "confidence": 0.833,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "StridedSliceGrad",
+          "sha": "3267c09",
+          "delta_raw": 5.88,
+          "delta_us": -23.08,
+          "verdict": "win",
+          "note": "profiler median 110.18->88.36us and cold max -23.08us by removing 184B stack copy",
+          "recorded_at": "2026-11-22T11:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "ConcatD",
+          "sha": "7919dcb",
+          "delta_raw": 4.2,
+          "verdict": "win",
+          "note": "online & profiler improvement shrinking tiling H2D 1704B->64B",
+          "recorded_at": "2026-11-22T13:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "PReluGradUpdate",
+          "sha": "03998e4",
+          "delta_raw": 5.1,
+          "verdict": "win",
+          "note": "online score gain using 56B compact SetDataSize tiling",
+          "recorded_at": "2026-11-22T15:00:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-zero-tpipe-ub-arena", "SNP-noinline-cold-pad"],
+      "doc_path": "code/SNP-direct-gm-tiling-64b.h"
+    },
+    {
+      "id": "SNP-ring4-async-pipe",
+      "pillar": "snippets",
+      "title": "4-Slot Async Ring Buffer (MTE2 <-> PIPE_V <-> MTE3)",
+      "summary": "Depth-4 bank-staggered ring pipeline with balanced SetFlag/WaitFlag HardEvent pairs to deeply overlap MTE2 prefetch, PIPE_V compute, and MTE3 writeback.",
+      "category": "async-pipeline",
+      "tags": ["ring4", "SetFlag", "WaitFlag", "DMA-overlap"],
+      "bottlenecks": ["mte2-bound", "mte3-bound", "pipeline-stall", "bank-conflict"],
+      "regimes": ["M_MID_UB", "L_HBM_TILED"],
+      "dtypes": ["float32", "float16", "bfloat16", "int8"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 3,
+      "fails": 0,
+      "confidence": 0.833,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "ConcatD",
+          "sha": "c8b5521",
+          "delta_raw": 7.14,
+          "verdict": "win",
+          "note": "online +7.14 pts via 4-stage Ring4 MTE2/MTE3 overlap",
+          "recorded_at": "2026-11-22T10:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "ConfusionTransposeD",
+          "sha": "3938863",
+          "delta_raw": 8.39,
+          "verdict": "win",
+          "note": "online +8.39 pts with depth-4 Ring4 HBM streaming",
+          "recorded_at": "2026-11-22T12:30:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "SyncBatchNormGatherStats",
+          "sha": "de25877",
+          "delta_raw": 10.58,
+          "verdict": "win",
+          "note": "online +10.58 pts with depth-4 async pipeline overlap",
+          "recorded_at": "2026-11-22T14:30:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-zero-tpipe-ub-arena"],
+      "doc_path": "code/SNP-ring4-async-pipe.h"
+    },
+    {
+      "id": "SNP-transdata-5hd-transpose",
+      "pillar": "snippets",
+      "title": "TransDataTo5HD<uint16_t> 16x16 Hardware SIMD Transpose",
+      "summary": "Fixed-function PIPE_V 16x16 matrix transpose & zero-index interleave skeleton replacing scalar loops and slow Gather across 16-bit/32-bit column reductions.",
+      "category": "simd-transpose",
+      "tags": ["TransDataTo5HD", "PIPE_V", "zero-gather", "bf16"],
+      "bottlenecks": ["vec-bound", "scalar-bound", "gather-bound", "transpose-bound"],
+      "regimes": ["M_MID_UB", "L_HBM_TILED", "X_EXTREME"],
+      "dtypes": ["float16", "bfloat16", "uint16", "float32"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 2,
+      "fails": 0,
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "LayerNormV3",
+          "sha": "af0807c",
+          "delta_raw": 16.53,
+          "speedup": 9.05,
+          "verdict": "win",
+          "note": "profiler bf16_1024x1024 936.86->103.54us (9.05x) and online +16.53 pts",
+          "recorded_at": "2026-11-18T18:00:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "ConcatD",
+          "sha": "4832524",
+          "delta_raw": 4.6,
+          "verdict": "win",
+          "note": "online score 71.00->75.60 beating built-in torch across 32/32 buckets",
+          "recorded_at": "2026-11-22T11:30:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-zero-tpipe-ub-arena"],
+      "doc_path": "code/SNP-transdata-5hd-transpose.h"
+    },
+    {
+      "id": "SNP-noinline-cold-pad",
+      "pillar": "snippets",
+      "title": "noinline Cold DataCopyPad + <8 KB Hot I-Cache Diet",
+      "summary": "Isolate unaligned DataCopyPad and fallback branches into static __attribute__((noinline)) helpers while keeping aligned fast loops inline, protecting 32 KB L1 I-cache and avoiding 420s compile TLE.",
+      "category": "dma-coalescing",
+      "tags": ["noinline", "elf-diet", "DataCopyPad", "32KB-icache"],
+      "bottlenecks": ["icache-bloat", "cold-launch-tax", "unaligned-tail", "compile-tle"],
+      "regimes": ["S_SMALL_CORE", "X_EXTREME"],
+      "dtypes": ["float32", "float16", "bfloat16", "int32", "int8"],
+      "portability": "native-accel",
+      "status": "verified",
+      "prior_alpha": 2.0,
+      "prior_beta": 1.0,
+      "wins": 2,
+      "fails": 0,
+      "confidence": 0.8,
+      "evidence": [
+        {
+          "workspace": "accel-ops",
+          "problem": "StridedSliceGrad",
+          "sha": "ba4a357",
+          "delta_raw": 6.45,
+          "verdict": "win",
+          "note": "online score 71.57 folding 50->7 DataCopyPad expansions and keeping micro-entry ~3 KB",
+          "recorded_at": "2026-11-22T15:30:00+00:00"
+        },
+        {
+          "workspace": "accel-ops",
+          "problem": "ConfusionTransposeD",
+          "sha": "8e7ba6b",
+          "delta_raw": 4.9,
+          "verdict": "win",
+          "note": "online score 79.08 (#6) cutting .text >60% with cold noinline helpers",
+          "recorded_at": "2026-11-22T17:00:00+00:00"
+        }
+      ],
+      "related_snippets": ["SNP-direct-gm-tiling-64b"],
+      "doc_path": "code/SNP-noinline-cold-pad.h"
+    }
+  ]
+}
