@@ -636,26 +636,15 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
 
             cooling = judge_cooldown_remaining(workspace)
             if cooling > 0:
-                deferred_at = (utc_now() + datetime.timedelta(seconds=cooling)).isoformat()
-                deferred = {
-                    "title": title, "sha": sha, "note": note, "queued_at": deferred_at,
-                    "status": "cooldown", "finished_at": utc_now().isoformat(),
-                    "retry_after": cooling, "retry_at": deferred_at,
-                    "detail": f"judge-wide cooldown {cooling}s (another problem is pacing the account)",
-                    "account_id": aid, "account_label": acc_label,
-                }
-                with io_lock_path.open("a") as iolf:
-                    fcntl.flock(iolf, fcntl.LOCK_EX)
-                    try:
-                        with outcome_path.open("a", encoding="utf-8") as of:
-                            of.write(json.dumps(deferred, ensure_ascii=False) + "\n")
-                        # Same queued_at as the claimed record: keeps the dedupe key stable
-                        # so a cooling queue sdkot grow by one copy per cycle.
-                        with queue_path.open("a", encoding="utf-8") as qf:
-                            qf.write(json.dumps({**deferred, "queued_at": (record or {}).get("queued_at") or deferred_at},
-                                                ensure_ascii=False) + "\n")
-                    finally:
-                        fcntl.flock(iolf, fcntl.LOCK_UN)
+                # Staying pending is the whole state: an item with no outcome row is retried
+                # by the consumer. Writing a cooldown row here flooded the history with one
+                # entry per queue tick.
+                try:
+                    from scheduler.feedback_log import log_feedback  # type: ignore
+
+                    log_feedback(workspace, "submit_cooldown", title=title, sha=sha[:7], retry_after=cooling)
+                except Exception:
+                    pass
                 return 4
 
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging", aid, acc_label)
@@ -770,30 +759,10 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             early_out_rec = {"cancelled": True}
             invalidate_ttl_cache("scheduler_bridge")
         except SubmitRateLimited as exc:
-            # Defer: keep the item alive for a later retry, never spend a probe on a 429.
-            base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
+            # Defer silently: no outcome row (that is what fills the history), no queue copy
+            # (the original pending row is still unclaimed). The judge's own retry_after sets
+            # the next attempt window for every problem.
             set_judge_cooldown(workspace, exc.retry_after, "judge 429")
-            retry_at = (utc_now() + datetime.timedelta(seconds=exc.retry_after)).isoformat()
-            deferred_rec = {
-                **base_rec,
-                "finished_at": utc_now().isoformat(),
-                "status": "cooldown",
-                "retry_after": exc.retry_after,
-                "retry_at": retry_at,
-                "detail": f"judge cooldown {exc.retry_after}s: {exc}",
-                "account_id": aid,
-                "account_label": acc_label,
-            }
-            with io_lock_path.open("a") as iolf:
-                fcntl.flock(iolf, fcntl.LOCK_EX)
-                try:
-                    with outcome_path.open("a", encoding="utf-8") as of:
-                        of.write(json.dumps(deferred_rec, ensure_ascii=False) + "\n")
-                    with queue_path.open("a", encoding="utf-8") as qf:
-                        qf.write(json.dumps({**base_rec, "queued_at": base_rec.get("queued_at") or retry_at,
-                                             "deferred_from": started_iso}, ensure_ascii=False) + "\n")
-                finally:
-                    fcntl.flock(iolf, fcntl.LOCK_UN)
             try:
                 from scheduler.feedback_log import log_feedback  # type: ignore
 
