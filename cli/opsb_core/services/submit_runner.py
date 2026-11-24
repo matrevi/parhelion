@@ -30,7 +30,7 @@ from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STAT
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
-MIN_RATE_GAP_SEC = 190
+MIN_RATE_GAP_SEC = 0  # only the judge's own 429 decides pacing
 JUDGE_SUBMIT_GAP_SEC = 0
 POLL_TIMEOUT_SEC = 1800
 _LOCAL_ACTIVE_PHASES = ("waiting_cooldown", "packaging", "preparing", "uploading")
@@ -697,7 +697,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                     dt = parse_iso(o.get("submitted_at") or o.get("finished_at"))
                     if dt:
                         last_epoch = max(last_epoch, dt.timestamp())
-            if last_epoch > 0:
+            if MIN_RATE_GAP_SEC > 0 and last_epoch > 0:
                 wait_s = MIN_RATE_GAP_SEC - (utc_now().timestamp() - last_epoch)
                 if wait_s > 0:
                     _write_inflight_phase(title, sha, workspace, started_iso, "waiting_cooldown", aid, acc_label)
