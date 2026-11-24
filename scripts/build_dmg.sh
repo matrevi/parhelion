@@ -10,9 +10,16 @@ BUILD_DIR="${PARHELION_BUILD_DIR:-${TMPDIR:-/tmp}/parhelion-build}"
 APP_BUNDLE="$BUILD_DIR/Parhelion.app"
 
 VERSION_ARG="${1:-}"
+REPO_VERSION="$(sed -n 's/^__version__ = "\([^"]*\)".*/\1/p' "$REPO_ROOT/cli/opsb_core/__init__.py" 2>/dev/null | head -1)"
+BUNDLE_VERSION=""
+if [[ -f "$APP_BUNDLE/Contents/Info.plist" ]]; then
+    BUNDLE_VERSION="$(plutil -extract CFBundleShortVersionString raw -o - "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || true)"
+fi
 
-if [[ ! -d "$APP_BUNDLE" || "${REBUILD_APP:-0}" == "1" ]]; then
-    echo "==> Building Parhelion.app before DMG packaging..."
+# A cached $TMPDIR bundle from an older release must not be packaged under the new
+# version number: rebuild whenever it is missing, explicitly requested, or stale.
+if [[ ! -d "$APP_BUNDLE" || "${REBUILD_APP:-0}" == "1" || -n "$REPO_VERSION" && "$BUNDLE_VERSION" != "$REPO_VERSION" ]]; then
+    echo "==> Building Parhelion.app before DMG packaging (bundle=${BUNDLE_VERSION:-none} repo=$REPO_VERSION)..."
     "$SCRIPT_DIR/bundle_app.sh"
 fi
 
