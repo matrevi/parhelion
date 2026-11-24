@@ -596,6 +596,34 @@ def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: st
 
 
 def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary") -> int:
+    """Single-entry dispatch: one submission in flight per workspace, judge cooldown respected.
+
+    The UI dispatches every queued problem at once; without this gate they all raced the
+    judge and each other, so every burst ended in 429s and a round of "本地拦截".
+    """
+    results_dir = workspace / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with (results_dir / ".submit-dispatch.lock").open("a") as dlf:
+        try:
+            fcntl.flock(dlf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 2  # someone else is submitting: stay silent, keep the item pending
+        try:
+            cooling = judge_cooldown_remaining(workspace)
+            if cooling > 0:
+                try:
+                    from scheduler.feedback_log import log_feedback  # type: ignore
+
+                    log_feedback(workspace, "submit_cooldown", title=title, sha=sha[:7], retry_after=cooling)
+                except Exception:
+                    pass
+                return 4
+            return _run_worker_submit_locked(workspace, title, sha, note, account_id=account_id)
+        finally:
+            fcntl.flock(dlf, fcntl.LOCK_UN)
+
+
+def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary") -> int:
     """Detached consumer: holds per-account lock ONLY for cooldown wait + local pack/upload.
 
     Each enabled teammate account obeys its own independent 190s platform cooldown and session file.
