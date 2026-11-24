@@ -5,6 +5,7 @@ import datetime
 import fcntl
 import json
 import os
+import pathlib
 import re
 import signal
 import subprocess
@@ -850,14 +851,22 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                 pass
             invalidate_ttl_cache("scheduler_bridge")
         except Exception as exc:
+            msg = str(exc)
+            # Attach the child's step trace: an rc=0/no-output child left no other evidence.
+            trace_tail = ""
+            try:
+                lines = pathlib.Path("/tmp/opsb-submit-trace.log").read_text(errors="replace").splitlines()[-6:]
+                trace_tail = " | trace: " + " ; ".join(ln[:120] for ln in lines)
+            except OSError:
+                pass
             base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
             early_out_rec = {
                 **base_rec,
                 "finished_at": utc_now().isoformat(),
-                "status": "rejected",
+                "status": "blocked_compliance" if "不合规内容" in msg else "rejected",
                 "account_id": aid,
                 "account_label": acc_label,
-                "detail": str(exc)[:2000],
+                "detail": (msg + trace_tail)[:2000],
             }
             try:
                 from scheduler.feedback_log import log_feedback  # type: ignore
