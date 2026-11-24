@@ -31,7 +31,7 @@ from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
 MIN_RATE_GAP_SEC = 190
-JUDGE_SUBMIT_GAP_SEC = 95
+JUDGE_SUBMIT_GAP_SEC = 0
 POLL_TIMEOUT_SEC = 1800
 _LOCAL_ACTIVE_PHASES = ("waiting_cooldown", "packaging", "preparing", "uploading")
 
@@ -737,7 +737,8 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
 
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading", aid, acc_label)
             receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file)
-            set_judge_cooldown(workspace, JUDGE_SUBMIT_GAP_SEC, "pacing after successful submit")
+            if JUDGE_SUBMIT_GAP_SEC > 0:
+                set_judge_cooldown(workspace, JUDGE_SUBMIT_GAP_SEC, "pacing after successful submit")
             invalidate_ttl_cache("remote_judge")
             invalidate_ttl_cache("scheduler_bridge")
             try:
