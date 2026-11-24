@@ -113,6 +113,41 @@ class AgentMeshAndMcpTests(unittest.TestCase):
         appr_reply = next(m for m in cx_sent if m.get("id") == 77)
         self.assertEqual(appr_reply["result"]["decision"], "accept")
 
+
+    def test_claude_dispatch_requires_admin_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ws = (root / "ops-bench").resolve()
+            ws.mkdir()
+            p_home = root / "phome"
+            with mock.patch.dict(os.environ, {"PARHELION_HOME": str(p_home), "PARHELION_DISABLE_DAEMON_PROXY": "1"}, clear=False), \
+                 mock.patch.dict(os.environ, {"PARHELION_ALLOW_CLAUDE_WORKERS": ""}, clear=False):
+                select_active_driver("codex")
+                mgr = AgentMeshManager(adapter_factory=_FakeAdapter)
+                bind_daemon_agent_manager(mgr)
+                try:
+                    pool = mgr.get_harness_pool(ws)
+                    self.assertNotIn("claude", {d["kind"] for d in pool["eligible_external_drivers"]})
+                    self.assertFalse(pool["dispatch_policy"]["claude_workers_allowed"])
+                    self.assertTrue(pool["dispatch_policy"]["prefer_native_subagents"])
+
+                    with self.assertRaises(ValueError) as ctx:
+                        mgr.spawn_agent(ws, driver="claude", task="audit PadV3Grad")
+                    self.assertIn("Claude workers are disabled by policy", str(ctx.exception))
+
+                    os.environ["PARHELION_ALLOW_CLAUDE_WORKERS"] = "1"
+                    try:
+                        spawned = mgr.spawn_agent(ws, driver="claude", task="audit PadV3Grad", worktree_mode="readonly")
+                        self.assertTrue(spawned["ok"])
+                        pool2 = mgr.get_harness_pool(ws)
+                        self.assertIn("claude", {d["kind"] for d in pool2["eligible_external_drivers"]})
+                        self.assertTrue(pool2["dispatch_policy"]["claude_workers_allowed"])
+                    finally:
+                        os.environ.pop("PARHELION_ALLOW_CLAUDE_WORKERS", None)
+                finally:
+                    mgr.stop_all()
+                    bind_daemon_agent_manager(None)
+
     def test_end_to_end_spawn_blocks_self_dispatch_and_handles_messages_and_wait(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

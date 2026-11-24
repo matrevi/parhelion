@@ -167,6 +167,72 @@ def _quit_dsh_desktop(timeout: float = 15.0) -> bool:
 
 
 
+
+DSH_SUBAGENT_CAP = 20
+
+
+def ensure_subagent_capacity(
+    profile: str = "desktop",
+    minimum: int = DSH_SUBAGENT_CAP,
+    dsh_home: Path | None = None,
+) -> dict[str, Any]:
+    """Pin DSH's subagent residency cap in `<profile>/cordis.patch.yml`.
+
+    The shipped default is 8 (and this machine's desktop profile had been pinned to 5), far
+    below a 14-problem sprint, so spawn requests were rejected at residency and had to be
+    retried by hand. The value is read when a profile loads, so this only takes effect on
+    the next DSH start; callers must not restart DSH on the user's behalf.
+    """
+    home = _resolve_dsh_home(dsh_home)
+    path = home / "profiles" / profile / "cordis.patch.yml"
+    result: dict[str, Any] = {"path": str(path), "changed": False, "value": None, "exists": path.is_file()}
+    if not path.is_file():
+        return result
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip() == "- id: subagent"), None)
+    if start is None:
+        block = ["- id: subagent", "  name: '@deepseek-ai/dsh-subagent'", "  config:",
+                 f"    maxActiveSubagents: {minimum}"]
+        # A profile that only holds the loader's `[]` placeholder must be replaced, not
+        # appended to (two top-level documents would fail to parse).
+        kept = [ln for ln in lines if ln.strip() not in ("[]", "")]
+        text = "\n".join(kept + ([""] if kept else []) + block) + "\n"
+        path.write_text(text, encoding="utf-8")
+        result.update(changed=True, value=minimum)
+        return result
+
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("- id:")), len(lines))
+    current = None
+    value_idx = None
+    for i in range(start, end):
+        stripped = lines[i].strip()
+        if stripped.startswith("maxActiveSubagents:"):
+            value_idx = i
+            try:
+                current = int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                current = None
+            break
+    if value_idx is None:
+        for i in range(start, end):
+            if lines[i].strip() == "config:":
+                value_idx = i
+                lines.insert(i + 1, f"    maxActiveSubagents: {minimum}")
+                break
+        else:
+            lines.insert(end, f"  config:\n    maxActiveSubagents: {minimum}")
+            value_idx = end
+        result.update(changed=True, value=minimum)
+    elif current is None or current < minimum:
+        indent = lines[value_idx][: len(lines[value_idx]) - len(lines[value_idx].lstrip())]
+        lines[value_idx] = f"{indent}maxActiveSubagents: {minimum}"
+        result.update(changed=True, value=minimum)
+    else:
+        result["value"] = current
+    if result["changed"]:
+        (home / "profiles" / profile / "cordis.patch.yml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return result
+
 class DeepSeekDriver(BaseDriver):
     """Unified DeepSeek Harness driver (`DeepSeek Harness.app` GUI + bundled `dsh` CLI / ACP stdio)."""
 
@@ -504,6 +570,12 @@ class DeepSeekDriver(BaseDriver):
 
         ws = Path(os.path.realpath(workspace.expanduser()))
         wt = Path(os.path.realpath(worktree.expanduser()))
+        subagent_cap: dict[str, Any] = {}
+        if not dry_run:
+            try:
+                subagent_cap = ensure_subagent_capacity()
+            except Exception:
+                subagent_cap = {}
         sync_res = self.sync_workspace(ws)
         brief_path, copied = stage_brief_and_clipboard(wt, brief, copy_clipboard=(not dry_run))
         url = self.build_gui_deep_link(wt, prompt="", thread_id=resume_id)
@@ -530,6 +602,8 @@ class DeepSeekDriver(BaseDriver):
             if seed.get("session_id"):
                 native_id = str(seed["session_id"])
             workspace_reg["restarted"] = restarted
+            if subagent_cap:
+                workspace_reg["subagent_capacity"] = subagent_cap
             workspace_reg["needs_reload"] = bool(
                 not restarted and (running or _dsh_desktop_running())
                 and (workspace_reg.get("created") or workspace_reg.get("session_linked"))

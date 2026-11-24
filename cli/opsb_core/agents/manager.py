@@ -66,6 +66,27 @@ def _git_diff_stat(path: Path) -> str:
         return ""
 
 
+CLAUDE_DRIVER = "claude"
+
+
+def claude_workers_allowed(cfg: dict[str, Any] | None = None) -> bool:
+    """Admin opt-in for Claude workers.
+
+    Policy: the orchestrator prefers its own harness (native subagents) and must not
+    dispatch Claude workers unless an administrator explicitly allows it —
+    `PARHELION_ALLOW_CLAUDE_WORKERS=1` or `"allow_claude_workers": true` in config.json.
+    """
+    import os
+
+    if str(os.environ.get("PARHELION_ALLOW_CLAUDE_WORKERS", "")).strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    try:
+        doc = cfg if cfg is not None else _cfg.load_parhelion_config()
+    except Exception:
+        doc = {}
+    return bool((doc or {}).get("allow_claude_workers"))
+
+
 class _WorkerRunner:
     """Per-agent turn pump keeping persistent RPC adapters warm across follow-up messages."""
 
@@ -318,6 +339,7 @@ class AgentMeshManager:
         doc = self._cached_doctor()
         active = str(doc.get("active_driver") or get_active_driver_kind()).lower()
         store = self._store(workspace)
+        allow_claude = claude_workers_allowed()
         eligible: list[dict[str, Any]] = []
         orchestrator_info: dict[str, Any] = {"kind": active, "display_name": active.upper(), "protocol": "", "gui_app_path": ""}
         for d in doc.get("diagnostics") or []:
@@ -332,6 +354,8 @@ class AgentMeshManager:
                     "auth_ok": bool(d.get("auth_ok")),
                 }
                 continue
+            if k == CLAUDE_DRIVER and not allow_claude:
+                continue  # policy: Claude workers need explicit admin opt-in
             eligible.append({
                 "kind": k,
                 "display_name": str(d.get("display_name") or k),
@@ -349,6 +373,11 @@ class AgentMeshManager:
             "orchestrator": orchestrator_info,
             "disabled_self_driver": active,
             "eligible_external_drivers": eligible,
+            "dispatch_policy": {
+                "prefer_native_subagents": True,
+                "external_spawn_scope": "admin_requested_multi_harness_only",
+                "claude_workers_allowed": allow_claude,
+            },
             "squads": hot["squads"],
             "strategic_alerts": hot["strategic_alerts"],
             "active_workers": store.list_agents(include_stopped=False),
@@ -377,6 +406,12 @@ class AgentMeshManager:
             raise ValueError(
                 f"Self-dispatch blocked: '{drv_kind}' is the primary orchestrator. "
                 "Manage homogeneous subagents natively; use Parhelion MCP only for OTHER Harnesses."
+            )
+        if drv_kind == CLAUDE_DRIVER and not claude_workers_allowed():
+            raise ValueError(
+                "Claude workers are disabled by policy: prefer the orchestrator's own native "
+                "subagents, and only dispatch Claude after an administrator enables it "
+                "(`PARHELION_ALLOW_CLAUDE_WORKERS=1` or config allow_claude_workers=true)."
             )
         if not str(task or "").strip():
             raise ValueError("task prompt must be non-empty")
@@ -686,6 +721,7 @@ class AgentMeshManager:
         ws_sig = self._cached_ws_signals(ws)
         scores_map = ws_sig.get("scores") or {}
 
+        allow_claude = claude_workers_allowed()
         ready_drivers = [
             {
                 "kind": str(d.get("kind") or "").lower(),
@@ -698,6 +734,7 @@ class AgentMeshManager:
             }
             for d in (doc.get("diagnostics") or [])
             if str(d.get("kind") or "").lower() != active
+            and not (str(d.get("kind") or "").lower() == CLAUDE_DRIVER and not allow_claude)
         ]
         orch_session, native_subs = self._observed_driver_sessions(ws, active)
         orch_deep_link = str(orch_session.get("deep_link") or "") or self._fallback_driver_deep_link(active, orch_diag)

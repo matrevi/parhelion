@@ -229,6 +229,10 @@ def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, An
         lines.append(f"- `{title}` x{diff} · `{repo}`")
     lines += [
         "",
+        "## 派发策略（管理员规则）",
+        "- 默认优先主控**自身 harness 的原生 subagent**拆分全部题目；只有管理员明确要求「多 Harness 协作」时才用 `parhelion_agent_spawn` 派外部 worker",
+        "- **禁止派 claude worker**，除非管理员提示词明确同意（`PARHELION_ALLOW_CLAUDE_WORKERS=1` 或 config `allow_claude_workers`）；外部池已按该策略过滤",
+        "",
         "## 编排协议",
         "1. 每题 spawn 一个 worker（driver 不能等于自己的 active_driver），role=kernel-impl，collab_mode=orthogonal，axis=`<kernel_pattern>/<tier>`",
         "2. 测试闸门：worker 发 `SLOT-REQ <Title> <sha7>` → 主控最多放 4 个 `SLOT-GRANT` → worker 完成后 `SLOT-REL`；坏构建连续 3 次同因失败改为静态修复后再申请",
@@ -369,5 +373,9 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
         "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 4-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
         "3. **Lock-Safe Validation & Gated Submission**: Use `opsb test --build-only` / `--fast` / full (respecting Die 0 lock) and enqueue only gate-approved gains via `parhelion_submit_gate` / `opsb submit`.",
         "4. **Shared Memory**: Record verified silicon findings into `pillar=hardware` and reusable blocks into `pillar=snippets` via `parhelion_kb_record`.",
+        "",
+        "## Dispatch Policy (admin rules)",
+        "5. **Prefer native subagents** of the active orchestrator; dispatch external Harness workers via `parhelion_agent_spawn` only when an admin explicitly requests multi-Harness collaboration.",
+        "6. **Never dispatch `claude` workers** unless an admin prompt explicitly allows it (`PARHELION_ALLOW_CLAUDE_WORKERS=1`); the pool hides them by default.",
     ])
     return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)

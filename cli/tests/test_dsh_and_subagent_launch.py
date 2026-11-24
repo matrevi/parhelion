@@ -260,6 +260,44 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("禁止 `opsb submit`", sprint)
             self.assertLessEqual(len(sprint.encode("utf-8")), MAX_BRIEF_BYTES)
 
+
+    def test_subagent_capacity_is_pinned_to_twenty_idempotently(self) -> None:
+        from opsb_core.drivers.dsh_driver import ensure_subagent_capacity
+
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            patch = home / "profiles" / "desktop" / "cordis.patch.yml"
+            patch.parent.mkdir(parents=True)
+            patch.write_text(
+                "- id: ui-chat\n  name: '@deepseek-ai/dsh-client-ui-chat'\n  config:\n    transcriptView: standard\n"
+                "- id: subagent\n  name: '@deepseek-ai/dsh-subagent'\n  config:\n    maxActiveSubagents: 5\n"
+                "- id: ui-theme\n  name: '@deepseek-ai/dsh-client-ui-theme'\n",
+                encoding="utf-8",
+            )
+            first = ensure_subagent_capacity(dsh_home=home)
+            self.assertTrue(first["changed"])
+            self.assertEqual(first["value"], 20)
+            text = patch.read_text(encoding="utf-8")
+            self.assertIn("maxActiveSubagents: 20", text)
+            self.assertIn("ui-theme", text)          # unrelated entries preserved
+            self.assertNotIn("maxActiveSubagents: 5", text)
+            second = ensure_subagent_capacity(dsh_home=home)
+            self.assertFalse(second["changed"])
+            self.assertEqual(second["value"], 20)
+
+    def test_subagent_capacity_adds_block_when_profile_has_none(self) -> None:
+        from opsb_core.drivers.dsh_driver import ensure_subagent_capacity
+
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            patch = home / "profiles" / "acp" / "cordis.patch.yml"
+            patch.parent.mkdir(parents=True)
+            patch.write_text("[]\n", encoding="utf-8")
+            res = ensure_subagent_capacity(profile="acp", dsh_home=home)
+            self.assertTrue(res["changed"])
+            self.assertIn("maxActiveSubagents: 20", patch.read_text(encoding="utf-8"))
+            self.assertFalse(ensure_subagent_capacity(profile="missing", dsh_home=home)["exists"])
+
     def _seed_dsh_home(self, root: Path) -> Path:
         home = root / ".dsh"
         store = home / "storages" / "workspace.json"
