@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import time
+from typing import Any
 
 RUNTIME_DIR = Path(__file__).resolve().parent
 JUDGE_DIR = RUNTIME_DIR / "judge"
@@ -95,15 +96,35 @@ def main() -> None:
         help="relax the duplicate check (deliberate rollback of an earlier source)",
     )
     args = parser.parse_args()
+    _trace_path = Path(os.environ.get("OPSB_SUBMIT_TRACE") or "/tmp/opsb-submit-trace.log")
+
+    def trace(step: str, **fields: Any) -> None:
+        try:
+            with _trace_path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": time.time(), "pid": os.getpid(), "step": step, **fields},
+                                    ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+    trace("start", argv=sys.argv[1:], python=sys.version.split()[0], cwd=os.getcwd())
     workspace = _resolve_workspace(args.workspace)
     problem = next(p for p in _load_problems(workspace) if p["title"] == args.title)
     repo = workspace / problem["path"]
 
+    trace("problem", title=args.title, sha=str(problem.get("sha") if isinstance(problem, dict) else ""),
+          problem_id=str(problem.get("problem_id") if isinstance(problem, dict) else ""), path=str(repo))
     client = ICTClient(session_file=os.environ.get("JUDGE_SESSION_FILE") or None)
+    trace("session_loaded", ok=bool(client.load_session()))
     if not client.load_session():
         raise RuntimeError("Judge session missing — sign in via `opsb auth login` or Parhelion Settings")
     source_dir = Path(args.project_dir) if args.project_dir else repo
-    payload = client.prepare_submission(problem["problem_id"], str(source_dir))
+    try:
+        payload = client.prepare_submission(problem["problem_id"], str(source_dir))
+    except Exception as exc:
+        trace("prepare_failed", error=str(exc)[:400])
+        raise
+    trace("prepared", files=[(f["path"], len(f["content"])) for f in payload.get("files", [])],
+          source_dir=str(source_dir))
     records = [json.loads(p.read_text()) for p in (workspace / "results" / args.title).glob("*/result.json")]
     records.sort(key=lambda r: r["finished_at"], reverse=True)
     editable = [dict(f, editable=True) for f in payload["files"]]
@@ -144,7 +165,9 @@ def main() -> None:
     directory = workspace / "results" / args.title / matched["sha"]
     manifest = [{"path": f["path"], "sha256": hashlib.sha256(f["content"].encode()).hexdigest()} for f in payload["files"]]
     (directory / "submission-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    trace("posting", bytes=len(json.dumps(payload)))
     response = client.session.post(client.BASE_URL + "/api/submissions/submit", json=payload, timeout=30)
+    trace("posted", status=response.status_code, body=response.text[:600])
     if response.status_code == 429:
         try:
             body = response.json()
@@ -175,4 +198,12 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit as exc:
+        try:
+            with Path(os.environ.get("OPSB_SUBMIT_TRACE") or "/tmp/opsb-submit-trace.log").open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps({"ts": time.time(), "step": "exit", "code": exc.code}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        raise
