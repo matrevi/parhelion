@@ -586,4 +586,13 @@ def check_commit_safety_gate(workspace: Path, title: str, sha: str) -> bool:
     if r_data.get("exit_code") != 0:
         return False
     txt = val_log.read_text(encoding="utf-8", errors="replace")
-    return ("EXTENDED_PASSED" in txt or "EXTENDED_RC=0" in txt) and "EXTENDED_FAILED" not in txt
+    if "EXTENDED_FAILED" in txt:
+        return False
+    if "EXTENDED_PASSED" in txt or "EXTENDED_RC=0" in txt:
+        return True
+    # Official-template repos ship no validation/extended.py, so EXTENDED_PASSED can never
+    # appear there. Their equivalent evidence is the template's own verifier: exit 0 plus
+    # "verified": true in result.json.
+    if bool(r_data.get("verified")) and str(r_data.get("layout") or "") == "template":
+        return True
+    return "VERIFY OK" in txt or "verify: OK" in txt

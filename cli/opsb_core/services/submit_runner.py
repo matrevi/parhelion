@@ -649,8 +649,11 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                     try:
                         with outcome_path.open("a", encoding="utf-8") as of:
                             of.write(json.dumps(deferred, ensure_ascii=False) + "\n")
+                        # Same queued_at as the claimed record: keeps the dedupe key stable
+                        # so a cooling queue sdkot grow by one copy per cycle.
                         with queue_path.open("a", encoding="utf-8") as qf:
-                            qf.write(json.dumps({**deferred, "queued_at": deferred_at}, ensure_ascii=False) + "\n")
+                            qf.write(json.dumps({**deferred, "queued_at": (record or {}).get("queued_at") or deferred_at},
+                                                ensure_ascii=False) + "\n")
                     finally:
                         fcntl.flock(iolf, fcntl.LOCK_UN)
                 return 4
@@ -786,7 +789,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                     with outcome_path.open("a", encoding="utf-8") as of:
                         of.write(json.dumps(deferred_rec, ensure_ascii=False) + "\n")
                     with queue_path.open("a", encoding="utf-8") as qf:
-                        qf.write(json.dumps({**base_rec, "queued_at": retry_at,
+                        qf.write(json.dumps({**base_rec, "queued_at": base_rec.get("queued_at") or retry_at,
                                              "deferred_from": started_iso}, ensure_ascii=False) + "\n")
                 finally:
                     fcntl.flock(iolf, fcntl.LOCK_UN)
