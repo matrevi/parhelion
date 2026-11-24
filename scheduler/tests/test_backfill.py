@@ -633,7 +633,12 @@ class CalibrationMergeTest(unittest.TestCase):
         return cal
 
     def _buckets(self) -> list[dict]:
-        spec = json.loads((BENCH_SPECS / self.TITLE / "cases_perf.json").read_text())
+        spec_path = BENCH_SPECS / self.TITLE / "cases_perf.json"
+        if not spec_path.is_file():
+            # The active workspace is whatever ~/.parhelion/config.json points at; contests
+            # other than the ops-bench fixtures simply have no spec for this operator.
+            self.skipTest(f"no bench spec for {self.TITLE} in the active workspace ({spec_path})")
+        spec = json.loads(spec_path.read_text())
         return spec["hidden_buckets"]
 
     def test_backfill_fills_holes_without_overriding_the_log(self) -> None:
