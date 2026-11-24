@@ -225,6 +225,38 @@ struct DriverSessionsResponse: Codable {
     }
 }
 
+/// DSH workspace registration result for a GUI launch (folder shown in DeepSeek Harness).
+struct DshWorkspaceInfo: Codable {
+    let ok: Bool?
+    let workspaceId: String?
+    let path: String?
+    let created: Bool?
+    let sessionLinked: Bool?
+    let needsReload: Bool?
+    let restarted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, path, created, restarted
+        case workspaceId = "workspace_id"
+        case sessionLinked = "session_linked"
+        case needsReload = "needs_reload"
+    }
+}
+
+/// DSH pre-seeded conversation result: the brief queued as the session's first user message.
+struct DshSeedInfo: Codable {
+    let ok: Bool?
+    let sessionId: String?
+    let briefQueued: Bool?
+    let reason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, reason
+        case sessionId = "session_id"
+        case briefQueued = "brief_queued"
+    }
+}
+
 struct DriverLaunchResponse: Codable {
     let ok: Bool
     let session: DriverSessionModel?
@@ -238,6 +270,8 @@ struct DriverLaunchResponse: Codable {
     let projectId: String?
     let briefPath: String?
     let clipboardCopied: Bool?
+    let dshWorkspace: DshWorkspaceInfo?
+    let dshSeed: DshSeedInfo?
     let error: String?
 
     enum CodingKeys: String, CodingKey {
@@ -249,5 +283,7 @@ struct DriverLaunchResponse: Codable {
         case projectId = "project_id"
         case briefPath = "brief_path"
         case clipboardCopied = "clipboard_copied"
+        case dshWorkspace = "dsh_workspace"
+        case dshSeed = "dsh_seed"
     }
 }

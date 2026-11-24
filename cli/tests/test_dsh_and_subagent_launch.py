@@ -208,6 +208,186 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             drivers_seen = {r["driver"] for r in merged}
             self.assertEqual(drivers_seen, {"antigravity", "deepseek", "codex"})
 
+    def _seed_dsh_home(self, root: Path) -> Path:
+        home = root / ".dsh"
+        store = home / "storages" / "workspace.json"
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_text(
+            json.dumps({"unit": {"name": "workspace", "version": 2}, "global": {"workspaceIds": []}, "tables": {"workspaces": {}}}),
+            encoding="utf-8",
+        )
+        return home
+
+    def test_ensure_dsh_workspace_registers_folder_and_links_session(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = self._seed_dsh_home(root)
+            ws = root / "mat-chem-sim-pred" / "FlashAttentionScore"
+            ws.mkdir(parents=True)
+            drv = DeepSeekDriver()
+
+            first = drv.ensure_dsh_workspace(ws, session_id="sess-alpha", dsh_home=home)
+            self.assertTrue(first["ok"])
+            self.assertTrue(first["created"])
+            self.assertTrue(first["session_linked"])
+
+            doc = json.loads((home / "storages" / "workspace.json").read_text(encoding="utf-8"))
+            entry = doc["tables"]["workspaces"][first["workspace_id"]]
+            self.assertEqual(entry["path"], os.path.realpath(ws))
+            self.assertEqual(entry["title"], "FlashAttentionScore")
+            self.assertEqual(entry["sessionIds"], ["sess-alpha"])
+            self.assertIn(first["workspace_id"], doc["global"]["workspaceIds"])
+            self.assertTrue((home / "storages" / "workspace.json.parhelion.bak").is_file())
+
+            again = drv.ensure_dsh_workspace(ws, session_id="sess-alpha", dsh_home=home)
+            self.assertTrue(again["ok"])
+            self.assertFalse(again["created"])
+            self.assertFalse(again["session_linked"])
+            self.assertEqual(again["workspace_id"], first["workspace_id"])
+
+    def test_ensure_dsh_workspace_rejects_unknown_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / ".dsh"
+            store = home / "storages" / "workspace.json"
+            store.parent.mkdir(parents=True, exist_ok=True)
+            store.write_text(json.dumps({"unit": {"name": "workspace", "version": 99}, "tables": {}}), encoding="utf-8")
+            before = store.read_text(encoding="utf-8")
+            res = DeepSeekDriver().ensure_dsh_workspace(root / "ws", dsh_home=home)
+            self.assertFalse(res["ok"])
+            self.assertIn("unsupported", res["reason"])
+            self.assertEqual(store.read_text(encoding="utf-8"), before)
+
+    def test_queue_dsh_prompt_appends_inbox_splice_frame(self) -> None:
+        import shutil
+        import subprocess
+
+        zstd_bin = shutil.which("zstd")
+        if not zstd_bin:
+            self.skipTest("zstd CLI unavailable")
+        with tempfile.TemporaryDirectory() as td:
+            log = Path(td) / "session.v4.jsonl.zstd"
+            header = (
+                '{"type":"session","version":4,"id":"sess-1","cwd":"/tmp/ws","createdAt":1,'
+                '"isSeeded":false,"delegationDepth":0}\n'
+                '{"type":"approval/policy","seq":2,"time":1,"data":{"policy":"never"}}\n'
+            ).encode()
+            log.write_bytes(subprocess.run([zstd_bin, "-q", "-c"], input=header, capture_output=True).stdout)
+
+            self.assertTrue(DeepSeekDriver._queue_dsh_prompt(log, "Parhelion brief body"))
+            raw = subprocess.run([zstd_bin, "-dc", str(log)], capture_output=True).stdout.decode()
+            lines = [json.loads(x) for x in raw.splitlines() if x.strip()]
+            self.assertEqual(lines[0]["type"], "session")
+            spliced = lines[-1]
+            self.assertEqual(spliced["type"], "agent/inbox/spliced")
+            self.assertEqual(spliced["seq"], 3)
+            self.assertEqual(spliced["data"]["target"], "next-turn")
+            self.assertEqual(spliced["data"]["inserted"][0]["content"][0]["text"], "Parhelion brief body")
+            self.assertEqual(spliced["data"]["inserted"][0]["role"], "user")
+
+    def test_gui_launch_quits_running_desktop_before_seeding(self) -> None:
+        order: list[str] = []
+
+        class _Diag:
+            gui_installed = True
+            installed = True
+            gui_app_path = "/Applications/DeepSeek Harness.app"
+            detail = "ready"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ws = root / "ws"
+            ws.mkdir()
+            drv = DeepSeekDriver()
+            with (
+                mock.patch.dict(os.environ, {"PARHELION_HOME": str(root / "phome"), "DSH_HOME": str(root / "dsh-home")}, clear=False),
+                mock.patch.object(DeepSeekDriver, "discover", return_value=_Diag()),
+                mock.patch.object(DeepSeekDriver, "sync_workspace", return_value={"mcp_config_path": "x"}),
+                mock.patch("opsb_core.drivers.dsh_driver.stage_brief_and_clipboard", return_value=(root / "brief.md", True)),
+                mock.patch("opsb_core.drivers.dsh_driver._dsh_desktop_running", return_value=True),
+                mock.patch("opsb_core.drivers.dsh_driver._quit_dsh_desktop", side_effect=lambda *a, **k: order.append("quit") or True),
+                mock.patch.object(DeepSeekDriver, "preseed_dsh_conversation",
+                                  side_effect=lambda *a, **k: order.append("seed") or {"ok": True, "session_id": "sid-1"}),
+                mock.patch.object(DeepSeekDriver, "ensure_dsh_workspace",
+                                  side_effect=lambda *a, **k: order.append("workspace") or {"ok": True, "workspace_id": "wid-1", "created": True}),
+                mock.patch("opsb_core.drivers.dsh_driver.launch_macos_deep_link",
+                           side_effect=lambda *a, **k: order.append("open")),
+            ):
+                rec = drv.launch_session(ws, "PadV3Grad", ws, "brief body", mode="gui")
+            self.assertEqual(order, ["quit", "seed", "workspace", "open"])
+            self.assertEqual(rec.native_session_id, "sid-1")
+            self.assertEqual(rec.project_id, "wid-1")
+            self.assertTrue(drv.last_launch_meta["dsh_workspace"]["restarted"])
+            self.assertFalse(drv.last_launch_meta["dsh_workspace"]["needs_reload"])
+
+
+    def test_gui_launch_skips_restart_for_known_workspace(self) -> None:
+        order: list[str] = []
+
+        class _Diag:
+            gui_installed = True
+            installed = True
+            gui_app_path = "/Applications/DeepSeek Harness.app"
+            detail = "ready"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            ws = root / "mat-chem-sim-pred"
+            ws.mkdir()
+            drv = DeepSeekDriver()
+            with (
+                mock.patch.dict(os.environ, {"PARHELION_HOME": str(root / "phome"), "DSH_HOME": str(root / "dsh-home")}, clear=False),
+                mock.patch.object(DeepSeekDriver, "discover", return_value=_Diag()),
+                mock.patch.object(DeepSeekDriver, "sync_workspace", return_value={"mcp_config_path": "x"}),
+                mock.patch.object(DeepSeekDriver, "dsh_workspace_exists", return_value=True),
+                mock.patch("opsb_core.drivers.dsh_driver.stage_brief_and_clipboard", return_value=(root / "brief.md", True)),
+                mock.patch("opsb_core.drivers.dsh_driver._dsh_desktop_running", return_value=True),
+                mock.patch("opsb_core.drivers.dsh_driver._quit_dsh_desktop", side_effect=lambda *a, **k: order.append("quit") or True),
+                mock.patch.object(DeepSeekDriver, "preseed_dsh_conversation",
+                                  side_effect=lambda *a, **k: order.append("seed") or {"ok": True, "session_id": "sid-2"}),
+                mock.patch.object(DeepSeekDriver, "ensure_dsh_workspace",
+                                  side_effect=lambda *a, **k: order.append("workspace") or {"ok": True, "workspace_id": "wid-2", "created": False, "session_linked": True}),
+                mock.patch("opsb_core.drivers.dsh_driver.launch_macos_deep_link",
+                           side_effect=lambda *a, **k: order.append("open")),
+            ):
+                rec = drv.launch_session(ws, "RevINNorm", ws, "brief body", mode="gui")
+            self.assertEqual(order, ["seed", "workspace", "open"])
+            meta = drv.last_launch_meta["dsh_workspace"]
+            self.assertFalse(meta["restarted"])
+            self.assertTrue(meta["needs_reload"])
+
+    def test_preseed_reports_missing_cli_without_touching_store(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = self._seed_dsh_home(root)
+            ws = root / "ws"
+            ws.mkdir()
+            with mock.patch.object(DeepSeekDriver, "_find_binary", return_value=""):
+                res = DeepSeekDriver().preseed_dsh_conversation(ws, "brief", dsh_home=home)
+            self.assertFalse(res["ok"])
+            self.assertIn("dsh CLI not found", res["reason"])
+            doc = json.loads((home / "storages" / "workspace.json").read_text(encoding="utf-8"))
+            self.assertEqual(doc["tables"]["workspaces"], {})
+
+    def test_gui_dry_run_keeps_dsh_store_untouched(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = self._seed_dsh_home(root)
+            ws = root / "ops-bench"
+            (ws / "results").mkdir(parents=True)
+            (ws / "bench" / "PadV3Grad").mkdir(parents=True)
+            (ws / "bench" / "problems.json").write_text(
+                json.dumps([{"title": "PadV3Grad", "slug": "pad_v3_grad", "problem_id": "p1", "difficulty": 3, "path": "bench/PadV3Grad"}]),
+                encoding="utf-8",
+            )
+            before = (home / "storages" / "workspace.json").read_text(encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PARHELION_HOME": str(root / "phome"), "DSH_HOME": str(home)}, clear=False):
+                res = launch_problem_session(ws, "PadV3Grad", driver_kind="deepseek", mode="gui", dry_run=True)
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["deep_link"], "dsh://open")
+            self.assertFalse(res["dsh_seed"]["ok"])
+            self.assertEqual((home / "storages" / "workspace.json").read_text(encoding="utf-8"), before)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -139,6 +139,8 @@ def launch_problem_session(
         "project_id": meta.get("project_id", record.project_id),
         "brief_path": meta.get("brief_path", record.brief_path),
         "clipboard_copied": bool(meta.get("clipboard_copied", False)),
+        "dsh_seed": meta.get("dsh_seed"),
+        "dsh_workspace": meta.get("dsh_workspace"),
         "brief": brief,
     }
 

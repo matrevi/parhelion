@@ -194,14 +194,30 @@ extension ContestStore {
                 let clipNote = (res.clipboardCopied == true)
                     ? tr("（Brief 已写入并复制到剪贴板）", " (brief saved & copied)")
                     : ""
+                // DSH sdkot take a folder or an initial prompt through `dsh://open`, so the
+                // launcher seeds a real workspace + conversation inside DSH storage instead.
+                let dshNote: String = {
+                    guard res.dshWorkspace?.ok == true else { return "" }
+                    let queued = res.dshSeed?.briefQueued == true
+                        ? tr("，Brief 已预置为该对话的待发消息", ", brief pre-queued in that conversation")
+                        : ""
+                    let reload = res.dshWorkspace?.restarted == true
+                        ? tr("；DSH 已重启以加载该工作区", "; DSH was restarted to load it")
+                        : (res.dshWorkspace?.needsReload == true
+                            ? tr("；按 ⌘R 刷新 DSH 即可看到", "; press ⌘R in DSH to view it")
+                            : "")
+                    return tr("（DSH 已登记工作区「\(wtName)」\(queued)\(reload)）",
+                              " (DSH workspace \"\(wtName)\" ready\(queued)\(reload))")
+                }()
+                let notes = clipNote + dshNote
                 bannerMessage = isAllOps
                     ? tr(
-                        "已通过 \(drvName) 新开 10 题 Subagent 并行优化对话 [\(wtName)]\(clipNote)",
-                        "Launched \(drvName) 10-op subagent orchestration session [\(wtName)]\(clipNote)"
+                        "已通过 \(drvName) 新开 10 题 Subagent 并行优化对话 [\(wtName)]\(notes)",
+                        "Launched \(drvName) 10-op subagent orchestration session [\(wtName)]\(notes)"
                     )
                     : tr(
-                        "已通过 \(drvName) 为 \(problem) 新开调优对话 [\(wtName)]\(clipNote)",
-                        "Launched \(drvName) session for \(problem) [\(wtName)]\(clipNote)"
+                        "已通过 \(drvName) 为 \(problem) 新开调优对话 [\(wtName)]\(notes)",
+                        "Launched \(drvName) session for \(problem) [\(wtName)]\(notes)"
                     )
                 await reloadDriverSessions()
             } else {

@@ -5,6 +5,10 @@ import datetime
 import json
 import os
 import re
+import shutil
+import subprocess
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +86,85 @@ def _read_json_safe(path: Path) -> dict[str, Any]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _zstd_read(path: Path) -> bytes | None:
+    """Decompress a zstd file via the `zstd` CLI (DSH appends one frame per write)."""
+    zstd_bin = shutil.which("zstd")
+    if not zstd_bin:
+        return None
+    try:
+        proc = subprocess.run([zstd_bin, "-dc", str(path)], capture_output=True, timeout=30)
+    except Exception:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _zstd_frame(data: bytes) -> bytes | None:
+    zstd_bin = shutil.which("zstd")
+    if not zstd_bin:
+        return None
+    try:
+        proc = subprocess.run([zstd_bin, "-q", "-c"], input=data, capture_output=True, timeout=30)
+    except Exception:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def _dsh_workspace_store(dsh_home: Path) -> Path:
+    return dsh_home / "storages" / "workspace.json"
+
+
+def _dsh_session_log(dsh_home: Path, cwd: str, session_id: str) -> Path:
+    return dsh_home / "sessions" / _dsh_project_key(cwd) / session_id / "session.v4.jsonl.zstd"
+
+
+def _dsh_desktop_running() -> bool:
+    """True when the Desktop app is already up (its in-memory store needs a page reload)."""
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", "Contents/MacOS/DeepSeek Harness"],
+            capture_output=True, timeout=5,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _quit_dsh_desktop(timeout: float = 15.0) -> bool:
+    """Gracefully quit DeepSeek Harness so its storage unit is flushed before we edit it.
+
+    DSH keeps the workspace unit authoritative in memory and rewrites the whole file on any
+    change, so an external write is only safe while the app is down. Every open session is
+    already persisted; the app restores them on the next launch.
+    """
+    if not _dsh_desktop_running():
+        return True
+    try:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "DeepSeek Harness" to quit'],
+            capture_output=True, timeout=20,
+        )
+    except Exception:
+        pass
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _dsh_desktop_running():
+            return True
+        time.sleep(0.3)
+    try:
+        subprocess.run(["pkill", "-f", "Contents/MacOS/DeepSeek Harness"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        if not _dsh_desktop_running():
+            return True
+        time.sleep(0.2)
+    return False
+
+
+
 
 
 class DeepSeekDriver(BaseDriver):
@@ -223,8 +306,184 @@ class DeepSeekDriver(BaseDriver):
         thread_id: str | None = None,
     ) -> str:
         # Verified in DeepSeek Harness 0.2.0-rc.2 `lib/main.js`: `open-url` strictly matches
-        # `dsh://open` or `dsh://open/` and ignores any query or path parameters.
+        # `dsh://open` or `dsh://open/` and ignores any query or path parameters, so the folder
+        # and the prompt have to be staged inside DSH's own storage instead of the deep link.
         return "dsh://open"
+
+    def ensure_dsh_workspace(self, path: Path, session_id: str | None = None, *, dsh_home: Path | None = None) -> dict[str, Any]:
+        """Idempotently register `path` as a DSH Desktop workspace and optionally link a session.
+
+        DSH only adds workspaces through its own UI, so a launcher has to write the same
+        `storages/workspace.json` unit (`workspace/v2`). The write is atomic, backed up once and
+        skipped entirely for unknown schema versions.
+        """
+        home = dsh_home or _resolve_dsh_home()
+        store = _dsh_workspace_store(home)
+        doc = _read_json_safe(store)
+        unit = doc.get("unit") if isinstance(doc.get("unit"), dict) else {}
+        tables = doc.get("tables") if isinstance(doc.get("tables"), dict) else {}
+        workspaces = tables.get("workspaces") if isinstance(tables.get("workspaces"), dict) else None
+        if unit.get("name") != "workspace" or int(unit.get("version") or 0) != 2 or workspaces is None:
+            return {"ok": False, "reason": f"unsupported DSH workspace store at {store}"}
+
+        real = Path(os.path.realpath(path.expanduser()))
+        ws_id = ""
+        for wid, obj in workspaces.items():
+            if isinstance(obj, dict) and str(obj.get("path") or "").strip():
+                if os.path.realpath(str(obj.get("path"))) == str(real):
+                    ws_id = str(wid)
+                    break
+        created = False
+        if not ws_id:
+            ws_id = str(uuid.uuid4())
+            workspaces[ws_id] = {"path": str(real), "title": real.name, "sessionIds": []}
+            global_blk = doc.setdefault("global", {})
+            ids = global_blk.setdefault("workspaceIds", [])
+            if ws_id not in ids:
+                ids.append(ws_id)
+            created = True
+
+        entry = workspaces[ws_id]
+        sessions = entry.setdefault("sessionIds", [])
+        linked = False
+        if session_id and session_id not in sessions:
+            sessions.append(session_id)
+            linked = True
+
+        if created or linked:
+            backup = store.with_name(store.name + ".parhelion.bak")
+            if not backup.exists():
+                try:
+                    backup.write_bytes(store.read_bytes())
+                except OSError:
+                    pass
+            tmp = store.with_name(store.name + ".parhelion.tmp")
+            tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+            os.replace(tmp, store)
+        return {
+            "ok": True,
+            "workspace_id": ws_id,
+            "path": str(real),
+            "created": created,
+            "session_linked": linked,
+        }
+
+    def preseed_dsh_conversation(self, worktree: Path, brief: str, *, dsh_home: Path | None = None) -> dict[str, Any]:
+        """Create a real DSH session for `worktree` and queue the brief as its first user message.
+
+        `session/new` (ACP) makes DSH persist a schema-correct session log; the brief is then
+        appended as one extra zstd frame carrying an `agent/inbox/spliced` event, exactly the
+        event DSH itself emits when it queues user input for the next turn.
+        """
+        bin_path = self._find_binary()
+        if not bin_path:
+            return {"ok": False, "reason": "dsh CLI not found"}
+        wt = Path(os.path.realpath(worktree.expanduser()))
+        home = dsh_home or _resolve_dsh_home()
+        env = {
+            **os.environ,
+            "DSH_PERMISSION_MODE": "danger-full-access",
+            "PARHELION_HOME": str(resolve_parhelion_home()),
+        }
+        try:
+            proc = subprocess.Popen(
+                [bin_path, "--profile", "acp"], cwd=str(wt), env=env,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            )
+        except Exception as exc:
+            return {"ok": False, "reason": f"sdkot start dsh --profile acp: {exc}"}
+
+        from .antigravity_acp import AcpSessionClient
+
+        session_id = ""
+        try:
+            assert proc.stdin is not None and proc.stdout is not None
+            client = AcpSessionClient(proc.stdin, proc.stdout)
+            client.initialize()
+            session_id, _ = client.open_session(cwd=wt, mcp_servers=[])
+        except Exception as exc:
+            return {"ok": False, "reason": f"acp session/new failed: {exc}"}
+        finally:
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+
+        if not session_id:
+            return {"ok": False, "reason": "acp session/new returned no session id"}
+        log_path = _dsh_session_log(home, str(wt), session_id)
+        if not log_path.is_file():
+            return {"ok": False, "session_id": session_id, "reason": f"session log not found at {log_path}"}
+        queued = self._queue_dsh_prompt(log_path, brief)
+        return {
+            "ok": queued,
+            "session_id": session_id,
+            "session_path": str(log_path),
+            "brief_queued": queued,
+            "reason": "" if queued else "zstd CLI unavailable or session log unreadable",
+        }
+
+    @staticmethod
+    def _queue_dsh_prompt(log_path: Path, brief: str) -> bool:
+        text = brief.strip()
+        if not text:
+            return False
+        raw = _zstd_read(log_path)
+        if raw is None:
+            return False
+        last_seq = -1
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except Exception:
+                continue
+            seq = event.get("seq") if isinstance(event, dict) else None
+            if isinstance(seq, int) and seq > last_seq:
+                last_seq = seq
+        message = {
+            "type": "agent/inbox/spliced",
+            "seq": last_seq + 1,
+            "time": int(time.time() * 1000),
+            "data": {
+                "target": "next-turn",
+                "start": 0,
+                "inserted": [{
+                    "content": [{"type": "text", "text": text}],
+                    "source": {"kind": "user"},
+                    "role": "user",
+                    "id": str(uuid.uuid4()),
+                }],
+            },
+        }
+        frame = _zstd_frame((json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8"))
+        if not frame:
+            return False
+        try:
+            with log_path.open("ab") as fh:
+                fh.write(frame)
+        except OSError:
+            return False
+        return True
+
+    def dsh_workspace_exists(self, path: Path, *, dsh_home: Path | None = None) -> bool:
+        """Read-only check: is this folder already a DSH workspace?"""
+        home = dsh_home or _resolve_dsh_home()
+        doc = _read_json_safe(_dsh_workspace_store(home))
+        tables = doc.get("tables") if isinstance(doc.get("tables"), dict) else {}
+        workspaces = tables.get("workspaces") if isinstance(tables.get("workspaces"), dict) else {}
+        real = str(Path(os.path.realpath(path.expanduser())))
+        return any(
+            isinstance(obj, dict) and os.path.realpath(str(obj.get("path") or "")) == real
+            for obj in workspaces.values()
+        )
 
     def launch_session(
         self,
@@ -250,20 +509,44 @@ class DeepSeekDriver(BaseDriver):
         url = self.build_gui_deep_link(wt, prompt="", thread_id=resume_id)
         session_id = self._new_session_id()
         diag = self.discover()
+        seed: dict[str, Any] = {"ok": False, "reason": "dry-run"}
+        workspace_reg: dict[str, Any] = {"ok": False, "reason": "dry-run"}
+        native_id = resume_id or session_id
         if dry_run:
             status = "idle"
         else:
             if not diag.gui_installed and not diag.installed:
                 raise RuntimeError(f"DeepSeek Harness Desktop / dsh CLI not installed ({diag.detail})")
+            # DSH workspaces are folders: register the contest directory itself (not the
+            # per-problem worktree) so the sidebar entry matches the workspace the user added.
+            running = _dsh_desktop_running()
+            # A brand-new workspace can only appear after DSH reloads its store from disk, and
+            # the store is in-memory-authoritative while the app runs. Quit it once for the
+            # first launch of a folder, seed, and let the deep link bring it back.
+            missing = not self.dsh_workspace_exists(ws)
+            restarted = _quit_dsh_desktop() if (running and missing) else False
+            seed = self.preseed_dsh_conversation(ws, brief) if not resume_id else {"ok": False, "reason": "resume"}
+            workspace_reg = self.ensure_dsh_workspace(ws, session_id=seed.get("session_id") or resume_id)
+            if seed.get("session_id"):
+                native_id = str(seed["session_id"])
+            workspace_reg["restarted"] = restarted
+            workspace_reg["needs_reload"] = bool(
+                not restarted and (running or _dsh_desktop_running())
+                and (workspace_reg.get("created") or workspace_reg.get("session_linked"))
+            )
             launch_macos_deep_link(url, diag.gui_app_path, [], "DeepSeek Harness")
             status = "draft"
-        return self._finalize_gui_launch(
+        record = self._finalize_gui_launch(
             ws, wt, problem, brief,
-            session_id=session_id, native_id=resume_id or session_id,
-            status=status, launch_mode="gui", url=url, project_id="",
+            session_id=session_id, native_id=native_id,
+            status=status, launch_mode="gui", url=url,
+            project_id=str(workspace_reg.get("workspace_id") or ""),
             brief_path=brief_path, copied=copied, dry_run=dry_run,
             mcp_config_path=sync_res.get("mcp_config_path"), sync_res=sync_res,
         )
+        self.last_launch_meta["dsh_seed"] = seed
+        self.last_launch_meta["dsh_workspace"] = workspace_reg
+        return record
 
     def observe_gui_sessions(
         self,
