@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import pathlib
@@ -204,6 +205,26 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                 e["valid"] = detail.get("valid")
             histories[p["title"]] = entries
 
+    # Daily quota: count the judge's submissions whose create_time falls on today's
+    # Beijing date (this is what the UI must show as used/limit).
+    try:
+        from .judge_quota import beijing_date, write_quota  # type: ignore
+
+        today = beijing_date()
+        used_today = 0
+        for entries in histories.values():
+            for e in entries:
+                stamp = str(e.get("create_time") or "")
+                try:
+                    ts = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if ts.astimezone(datetime.timezone(datetime.timedelta(hours=8))).strftime("%Y-%m-%d") == today:
+                    used_today += 1
+        write_quota(workspace, used=used_today, source="judge-history")
+        report_quota = {"used": used_today, "beijing_date": today}
+    except Exception:
+        report_quota = {}
     board, virtual = build_boards(problems, histories, receipts)
     for row in board:
         head = heads.get(row["title"], "")
@@ -219,6 +240,7 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
         "virtual": virtual,
         "queue": {"before": pruned["before"], "kept": len(pruned["kept"]), "dropped": pruned["dropped"]},
         "dry_run": dry_run,
+        "quota": report_quota,
     }
     if not dry_run:
         ev = workspace / "results" / "scoring-evidence"

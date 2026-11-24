@@ -61,6 +61,12 @@ def compute_account_slots(
     if outcome_rows is None:
         outcome_rows = read_jsonl(results_dir / "submit-queue-outcome.jsonl")
     outcome_rows = collapse_reconciled_outcomes(outcome_rows)
+    try:
+        from .judge_quota import read_quota  # type: ignore
+
+        _quota = read_quota(results_dir.parent)
+    except Exception:
+        _quota = None
     accounts = list_judge_accounts()
     uid_to_aid = {str(a.get("user_id")): str(a["id"]) for a in accounts if a.get("user_id")}
 
@@ -124,6 +130,9 @@ def compute_account_slots(
                 # Never unlink on a torn/unreadable read; only reap a provably dead, unchanged tracker.
                 reap_inflight_if_stale(inf_path, inf)
         used_today = len(today_sids_by_aid.get(aid, set()))
+        # The judge's own count wins: receipts only cover submissions our queue sent.
+        if _quota and aid == "primary":
+            used_today = max(used_today, int(_quota.get("used") or 0))
         rem_today = max(0, daily_limit - used_today)
         slots.append(
             {

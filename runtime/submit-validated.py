@@ -153,6 +153,15 @@ def main() -> None:
         if "daily_limit" in str(response.text):
             raise RuntimeError("daily submission limit reached; next window at 00:00 Beijing time")
         data = body.get("data") or {}
+        try:
+            import sys as _sys, pathlib as _pl
+            _sys.path.insert(0, str(_pl.Path(__file__).resolve().parents[1] / "cli"))
+            from opsb_core.services.judge_quota import write_quota  # type: ignore
+
+            if data.get("used") is not None:
+                write_quota(workspace, used=int(data["used"]), limit=int(data.get("limit") or 50), source="429")
+        except Exception:
+            pass
         retry_after = int(data.get("retry_after_seconds") or response.headers.get("Retry-After") or 90)
         # Never sleep here: the caller owns scheduling. Sleeping burned the caller's 90s
         # subprocess timeout and turned a rate limit into a hard "rejected" verdict.
