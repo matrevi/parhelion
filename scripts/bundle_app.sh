@@ -71,9 +71,9 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.1.1</string>
+    <string>3.2.0</string>
     <key>CFBundleVersion</key>
-    <string>9</string>
+    <string>10</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>
@@ -89,7 +89,15 @@ PLIST
 echo "==> [4/4] Ad-hoc signing Parhelion.app..."
 codesign --force --deep --sign - "$APP_BUNDLE"
 
-echo "==> Done! Bundle ready at: $APP_BUNDLE"
+# Keep the build artifact out of LaunchServices: it shares CFBundleIdentifier with the
+# installed /Applications/Parhelion.app, so a second registration would hijack
+# `open -b dev.winbeau.Parhelion` and parhelion:// links. Never-index stops Spotlight
+# from re-registering it on the next metadata scan.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+"$LSREGISTER" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
+touch "$DIST_DIR/.metadata_never_index"
+
+echo "==> Done! Bundle ready at: $APP_BUNDLE (LaunchServices registration pruned)"
 
 if [[ "${1:-}" == "--install" || "${INSTALL_TO_APPLICATIONS:-0}" == "1" ]]; then
     echo "==> [install] Copying bundle to /Applications/Parhelion.app..."
