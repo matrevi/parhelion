@@ -36,7 +36,7 @@ class ContestStateResetTests(unittest.TestCase):
             archives = list((ws / "results").glob("_archive-*"))
             self.assertEqual(len(archives), 1)
             self.assertTrue((archives[0] / "score-snapshot.json").is_file())
-            self.assertTrue((archives[0] / "board-summary.json").is_file())
+            self.assertTrue((archives[0] / "scoring-evidence" / "board-summary.json").is_file())
 
 
 if __name__ == "__main__":
