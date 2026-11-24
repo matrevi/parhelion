@@ -10,7 +10,8 @@ struct WorkspaceWizardView: View {
     @UIState private var gitOwner: String = "winbeau"
     @UIState private var repoPrefix: String = "accel-ops"
     @UIState private var npuHost: String = "npu"
-    @UIState private var problemsSpec: String = "FlashAttentionScore:3, LayerNormGrad:2, MoeGatingTopK:3"
+    @UIState private var contestURL: String = ""
+    @UIState private var problemsSpec: String = ""
     @UIState private var activateOnCreate: Bool = false
     @UIState private var isCreating: Bool = false
     @UIState private var showPreview: Bool = false
@@ -37,6 +38,12 @@ struct WorkspaceWizardView: View {
                                 Button(lang.tr("浏览…", "Browse…"), action: pickFolder)
                                     .controlSize(.small)
                             }
+                        }
+
+                        labeledField(lang.tr("比赛链接（自动爬取题目）", "Contest Link (auto-scrapes problems)")) {
+                            TextField("https://judge.invalid/public/<contest>", text: $contestURL)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.system(size: 12, design: .monospaced))
                         }
 
                         HStack(spacing: 10) {
@@ -68,8 +75,8 @@ struct WorkspaceWizardView: View {
                             }
                         }
 
-                        labeledField(lang.tr("算子列表与难度等级 (名称:等级)", "Operators & Difficulty Tiers (Name:Tier)")) {
-                            TextField("OpA:3, OpB:2", text: $problemsSpec)
+                        labeledField(lang.tr("算子列表与等级（留空则按比赛链接自动爬取）", "Operators & Tiers (blank = scrape from the contest link)")) {
+                            TextField("留空自动爬取 / OpA:3, OpB:2", text: $problemsSpec)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12, design: .monospaced))
                         }
@@ -97,6 +104,7 @@ struct WorkspaceWizardView: View {
                                         repoPrefix: repoPrefix,
                                         npuHost: npuHost,
                                         problemsSpec: problemsSpec,
+                                        contestUrl: contestURL,
                                         activate: activateOnCreate
                                     )
                                     store.bannerMessage = lang.tr("已在 \(targetDir) 初始化工作区", "Scaffolded clean workspace at \(targetDir)")
@@ -117,7 +125,10 @@ struct WorkspaceWizardView: View {
                             }
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(targetDir.trimmingCharacters(in: .whitespaces).isEmpty || isCreating)
+                        .disabled(targetDir.trimmingCharacters(in: .whitespaces).isEmpty || isCreating
+                                  || (contestURL.trimmingCharacters(in: .whitespaces).isEmpty
+                                      && contestId.trimmingCharacters(in: .whitespaces).isEmpty
+                                      && problemsSpec.trimmingCharacters(in: .whitespaces).isEmpty))
                     }
                 }
             }

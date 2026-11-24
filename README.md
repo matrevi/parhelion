@@ -69,6 +69,20 @@ cross-Harness external workers on solid bidirectional Bézier lanes (pulses trav
 - **Zero-poll UI** — the compact `agent_mesh` projection rides the existing 1 Hz `/v1/stream/hot` SSE frame;
   full message history is fetched only when a node is selected.
 
+## Contest Problem Scraping
+
+A contest link (or bare contest name / Judge object id) resolves to the real problem set through
+three read-only public endpoints, so a new workspace never starts from placeholder operators:
+
+```bash
+opsb workspace init ~/Competitions/<contest> --contest-url https://judge.invalid/public/<contest> --activate
+opsb workspace sync-problems ~/Competitions/<contest>        # refresh an existing workspace
+```
+
+`/api/groups/public` → `/api/contests/group/<group_id>` → `/api/problems/contest/<contest_id>`
+yields titles, slugs, difficulty tiers, kernel pattern and judge ids; existing repo slugs and paths
+are preserved on re-sync, and removed problems are reported (their directories are never deleted).
+
 ## Build, Install & Release DMG
 
 ```bash

@@ -19,9 +19,22 @@ from ..services.auth_service import (
     set_judge_account_enabled,
 )
 from ..services.contest_service import resolve_workspace_meta
+from ..services.contest_scrape_service import ContestScrapeError, fetch_contest_problems
 from ..services.scaffold_service import scaffold_workspace
 from ..services.skills_service import get_skills_status, install_skills
 from ..services.ssh_service import parse_ssh_hosts, upsert_ssh_config_block
+
+
+def _parse_problem_spec(spec: str) -> list[dict]:
+    """Parse `--problems "OpA:3, OpB"` into scaffold-shaped problem dicts."""
+    out: list[dict] = []
+    for item in (x.strip() for x in (spec or "").split(",") if x.strip()):
+        if ":" in item:
+            t_name, d_val = item.split(":", 1)
+            out.append({"title": t_name.strip(), "difficulty": int(d_val) if d_val.strip().isdigit() else 2})
+        else:
+            out.append({"title": item, "difficulty": 2})
+    return out
 
 
 def run_workspace(args: argparse.Namespace) -> int:
@@ -50,23 +63,39 @@ def run_workspace(args: argparse.Namespace) -> int:
 
     if args.ws_cmd == "init":
         target = Path(args.target_dir).expanduser().resolve()
-        probs = []
-        if args.problems:
-            for item in (x.strip() for x in args.problems.split(",") if x.strip()):
-                if ":" in item:
-                    t_name, d_val = item.split(":", 1)
-                    probs.append({"title": t_name.strip(), "difficulty": int(d_val) if d_val.isdigit() else 2})
-                else:
-                    probs.append({"title": item, "difficulty": 2})
+        probs = _parse_problem_spec(args.problems)
+        contest_url = (getattr(args, "contest_url", "") or "").strip()
+        contest_id = (args.contest_id or "").strip()
+        title = (args.title or "").strip()
+        scrape_ref = contest_url or contest_id
+        scraped: dict = {}
+        if not probs:
+            # A contest link/id must yield its real problem list: silently scaffolding a
+            # placeholder operator is what made a new contest workspace look "wrong".
+            if not scrape_ref:
+                raise SystemExit(
+                    "workspace init requires --problems, or --contest-url/--contest-id so the "
+                    "problem list can be scraped from Judge"
+                )
+            try:
+                scraped = fetch_contest_problems(scrape_ref)
+            except ContestScrapeError as exc:
+                raise SystemExit(f"sdkot scrape contest {scrape_ref!r}: {exc}")
+            probs = scraped["problems"]
+            title = title or str(scraped["contest"].get("title") or "")
+            contest_id = contest_id or str(scraped["contest"].get("name") or scraped["contest"].get("id") or "")
         res = scaffold_workspace(
             target_dir=target,
-            contest_title=args.title,
-            contest_id=args.contest_id or "",
+            contest_title=title or "KernelC Operator Contest",
+            contest_id=contest_id,
+            contest_url=contest_url,
             git_owner=args.git_owner,
             repo_prefix=args.repo_prefix,
             npu_host=args.npu_host or cfg.get("npu_ssh_host", "npu"),
             problems=probs or None,
         )
+        if scraped:
+            res["scraped"] = {"contest": scraped["contest"], "problem_count": len(probs)}
         if not args.no_register:
             t_str = str(target)
             if t_str not in cfg["workspaces"]:
@@ -75,6 +104,61 @@ def run_workspace(args: argparse.Namespace) -> int:
                 cfg["active_workspace"] = t_str
             ConfigRepository.save(cfg)
         print(json.dumps({"ok": True, **res}, ensure_ascii=False) if args.json else f"Initialized workspace at {res['workspace']}")
+        return 0
+
+    if args.ws_cmd == "sync-problems":
+        target = Path(args.target_dir or args.workspace or cfg.get("active_workspace") or "").expanduser()
+        if not target.is_dir():
+            raise SystemExit(f"workspace not found: {target}")
+        meta = resolve_workspace_meta(target)
+        ref = (args.contest_url or args.contest_id or meta.get("contest_url") or meta.get("contest_id") or "").strip()
+        if not ref:
+            raise SystemExit("no contest link/id on this workspace; pass --contest-url or --contest-id")
+        try:
+            scraped = fetch_contest_problems(ref)
+        except ContestScrapeError as exc:
+            raise SystemExit(f"sdkot scrape contest {ref!r}: {exc}")
+        existing = {str(p.get("title")): p for p in (meta.get("problems") or []) if p.get("title")}
+        merged, added = [], []
+        for sp in scraped["problems"]:
+            prev = existing.get(sp["title"], {})
+            row = {
+                **sp,
+                "slug": prev.get("slug") or sp.get("slug") or "",
+                "repo_slug": prev.get("repo_slug") or "",
+                "path": prev.get("path") or sp["title"],
+            }
+            if not prev:
+                added.append(sp["title"])
+            merged.append(row)
+        removed = [t for t in existing if t not in {p["title"] for p in merged}]
+        res = scaffold_workspace(
+            target_dir=target,
+            contest_title=meta.get("title") or scraped["contest"].get("title") or "",
+            contest_id=args.contest_id or meta.get("contest_id") or scraped["contest"].get("name") or "",
+            contest_url=args.contest_url or meta.get("contest_url") or "",
+            git_owner=meta.get("git_owner") or "winbeau",
+            repo_prefix=meta.get("repo_prefix") or "accel-ops",
+            npu_host=meta.get("npu_ssh_host") or cfg.get("npu_ssh_host", "npu"),
+            problems=merged,
+        )
+        payload = {
+            "ok": True,
+            "workspace": str(target),
+            "contest": scraped["contest"],
+            "problem_count": len(merged),
+            "added": added,
+            "removed": removed,
+            "problem_dirs": res["problem_dirs"],
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False))
+        else:
+            print(f"Synced {len(merged)} problems from {scraped['contest'].get('name') or ref}")
+            if added:
+                print(f"  added: {', '.join(added)}")
+            if removed:
+                print(f"  stale (dirs kept): {', '.join(removed)}")
         return 0
 
     if args.ws_cmd == "gen-agents":

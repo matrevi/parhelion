@@ -83,6 +83,7 @@ def scaffold_workspace(
     repo_prefix: str = "accel-ops",
     npu_host: str = "npu",
     problems: list[dict[str, Any]] | None = None,
+    contest_url: str = "",
 ) -> dict[str, Any]:
     target_dir = target_dir.expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +105,10 @@ def scaffold_workspace(
                 "problem_id": p.get("problem_id", ""),
                 "difficulty": diff,
                 "sdk_version": p.get("sdk_version", "9.1.0"),
-                "path": title,
+                "path": p.get("path") or title,
+                "kernel_pattern": p.get("kernel_pattern", ""),
+                "tags": p.get("tags") or [],
+                "problem_url": p.get("problem_url", ""),
             }
         )
 
@@ -169,6 +173,7 @@ def scaffold_workspace(
         "created_at": utc_now().isoformat(),
         "title": contest_title,
         "contest_id": contest_id,
+        "contest_url": contest_url,
         "git_owner": git_owner,
         "repo_prefix": repo_prefix,
         "npu_ssh_host": npu_host,

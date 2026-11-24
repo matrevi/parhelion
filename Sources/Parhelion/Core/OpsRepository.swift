@@ -28,18 +28,22 @@ struct OpsRepository: Sendable {
         repoPrefix: String,
         npuHost: String,
         problemsSpec: String,
+        contestUrl: String = "",
         activate: Bool
     ) async throws {
         var args = [
             "workspace", "init", targetDir,
-            "--title", title,
-            "--contest-id", contestId,
             "--git-owner", gitOwner,
             "--repo-prefix", repoPrefix,
             "--npu-host", npuHost,
-            "--problems", problemsSpec,
             "--json"
         ]
+        if !title.trimmingCharacters(in: .whitespaces).isEmpty { args += ["--title", title] }
+        if !contestId.trimmingCharacters(in: .whitespaces).isEmpty { args += ["--contest-id", contestId] }
+        if !contestUrl.trimmingCharacters(in: .whitespaces).isEmpty { args += ["--contest-url", contestUrl] }
+        // Blank operator list lets the CLI scrape the real problem set from the contest link
+        // instead of scaffolding the old placeholder operators.
+        if !problemsSpec.trimmingCharacters(in: .whitespaces).isEmpty { args += ["--problems", problemsSpec] }
         if activate { args.append("--activate") }
         _ = try await client.execute(args)
     }
