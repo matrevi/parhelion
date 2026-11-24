@@ -230,6 +230,37 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
         (workspace / "results" / "submit-queue.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in pruned["kept"]), encoding="utf-8"
         )
+        # Backfill history rows for submissions the judge knows about but our queue never
+        # recorded (submitted outside the dispatcher, or receipts lost). Without this the
+        # history shows only local interceptions and every real attempt looks scoreless.
+        try:
+            outcome_path = workspace / "results" / "submit-queue-outcome.jsonl"
+            existing = _read_jsonl(outcome_path)
+            known = {str(r.get("submission_id")) for r in existing if r.get("submission_id")}
+            added = 0
+            with outcome_path.open("a", encoding="utf-8") as fh:
+                for row in board:
+                    for att in row.get("attempts", []):
+                        sid = str(att.get("submission_id") or "")
+                        if not sid or sid in known:
+                            continue
+                        fh.write(json.dumps({
+                            "title": row["title"],
+                            "sha": row.get("best_sha") or "",
+                            "status": att.get("status"),
+                            "score": att.get("score"),
+                            "cases_passed": att.get("cases_passed"),
+                            "cases_total": att.get("cases_total"),
+                            "submission_id": sid,
+                            "finished_at": att.get("judge_at") or "",
+                            "note": f"judge backfill · {att.get('cases_passed')}/{att.get('cases_total')} cases",
+                            "source": "judge-reconcile",
+                        }, ensure_ascii=False) + "\n")
+                        known.add(sid)
+                        added += 1
+            report["history_backfilled"] = added
+        except Exception:
+            report["history_backfilled"] = 0
         try:
             from ...scheduler.feedback_log import log_feedback  # type: ignore
 
