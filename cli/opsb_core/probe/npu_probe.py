@@ -400,7 +400,7 @@ def _is_driver_wrapper(cmd: str) -> bool:
     Scanning its literal source text would match `CONCATD_FAST`, `profiler_launches`, `device0.lock`, etc.
     """
     return "python3 -c" in cmd and (
-        "bench-repo-" in cmd
+        re.search(r"[\w.-]+-repo-[\w.-]+\.lock", cmd) is not None
         or "PHASE A:" in cmd
         or "CONCATD_FAST" in cmd
         or "BACKFILL_RESULT " in cmd
@@ -430,7 +430,7 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
                 sha = m40.group(1)
             else:
                 # Look for results/<Problem>/<sha> or --out .../<sha>/ or explicit 7-char sha token
-                m_res = re.search(r"bench-results/[^/]+/([0-9a-f]{7,40})", cmd)
+                m_res = re.search(r"(?:bench|[\w.-]+)-results/[^/]+/([0-9a-f]{7,40})", cmd)
                 if m_res:
                     sha = m_res.group(1)
         # Also inspect /proc/<pid>/cwd safely (skip driver wrapper whose cwd is home dir)
@@ -544,7 +544,7 @@ def build_snapshot() -> dict[str, Any]:
         cmd = p["cmd"]
         if _is_driver_wrapper(cmd):
             continue
-        if "bench-device" in cmd and "flock" in cmd:
+        if re.search(r"[\w.-]+-device\d*\.lock", cmd) is not None and "flock" in cmd:
             if pid not in die_holders.values():
                 waiting_roots.add(pid)
 

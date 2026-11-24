@@ -338,6 +338,24 @@ def run_queue(args: argparse.Namespace) -> int:
     return 1
 
 
+
+def _remote_problem_dir(workspace: Path, title: str) -> str:
+    """Remote checkout path for a problem: `<npu_remote_root>/<Title>` (legacy default unchanged)."""
+    try:
+        manifest = json.loads((workspace / "opsb.workspace.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        manifest = {}
+    root = ""
+    if isinstance(manifest, dict):
+        root = str(manifest.get("npu_remote_root") or "").strip()
+        if not root:
+            contest = str(manifest.get("contest_id") or "").strip()
+            if contest:
+                root = f"/home/developer/work/{contest}"
+    if not root:
+        root = "/srv/work"
+    return f"{root.rstrip('/')}/{title}"
+
 def run_test(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(args.workspace, cfg)
@@ -387,7 +405,7 @@ def run_test(args: argparse.Namespace) -> int:
                 sha = resolve_commit_sha(ws / prob["path"], getattr(args, "sha", None) or "HEAD") or ""
                 remote_sh = (
                     f"set -e; source /opt/toolchain/latest/set_env.sh; "
-                    f"cd /srv/work/{prob['title']}; "
+                    f"cd {_remote_problem_dir(ws, prob['title'])}; "
                     f"git fetch origin --prune && git checkout --detach --force {sha}; "
                     f"NCPU=$(nproc 2>/dev/null || echo 16); "
                     f"LIVE=$(ls ~/.opsb/cpu_builds/*.json 2>/dev/null | wc -l); [ \"$LIVE\" -lt 1 ] && LIVE=1; "
