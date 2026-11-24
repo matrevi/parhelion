@@ -3,8 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DIST_DIR="$REPO_ROOT/dist"
-APP_BUNDLE="$DIST_DIR/Parhelion.app"
+
+# Build the bundle OUTSIDE the repository: anything under a Spotlight-indexed tree
+# gets re-registered in LaunchServices by mdworker within seconds of every build,
+# which makes the artifact compete with the installed /Applications copy for the
+# same CFBundleIdentifier (and for parhelion:// links). $TMPDIR is not indexed.
+BUILD_DIR="${PARHELION_BUILD_DIR:-${TMPDIR:-/tmp}/parhelion-build}"
+APP_BUNDLE="$BUILD_DIR/Parhelion.app"
+mkdir -p "$BUILD_DIR"
 
 echo "==> [1/4] Building Parhelion release binary via SwiftPM..."
 cd "$REPO_ROOT"
@@ -22,6 +28,7 @@ trap 'rm -rf "$WORK_ICON_DIR"' EXIT
 ICONSET_DIR="$WORK_ICON_DIR/AppIcon.iconset"
 swift "$SCRIPT_DIR/generate_icon.swift" "$ICONSET_DIR"
 
+rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
@@ -89,15 +96,12 @@ PLIST
 echo "==> [4/4] Ad-hoc signing Parhelion.app..."
 codesign --force --deep --sign - "$APP_BUNDLE"
 
-# Keep the build artifact out of LaunchServices: it shares CFBundleIdentifier with the
-# installed /Applications/Parhelion.app, so a second registration would hijack
-# `open -b dev.winbeau.Parhelion` and parhelion:// links. Never-index stops Spotlight
-# from re-registering it on the next metadata scan.
+# Belt and braces: even in $TMPDIR, make sure the fresh bundle is not left as a
+# LaunchServices peer of the installed app (same CFBundleIdentifier).
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 "$LSREGISTER" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
-touch "$DIST_DIR/.metadata_never_index"
 
-echo "==> Done! Bundle ready at: $APP_BUNDLE (LaunchServices registration pruned)"
+echo "==> Done! Bundle ready at: $APP_BUNDLE (outside the repo, LaunchServices registration pruned)"
 
 if [[ "${1:-}" == "--install" || "${INSTALL_TO_APPLICATIONS:-0}" == "1" ]]; then
     echo "==> [install] Copying bundle to /Applications/Parhelion.app..."
