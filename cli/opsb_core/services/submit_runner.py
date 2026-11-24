@@ -1073,7 +1073,20 @@ def _submit_via_worktree(
         raise SubmitRateLimited(int(signal.get("retry_after") or 90), str(signal.get("message") or ""))
     if res.returncode != 0:
         raise RuntimeError((res.stderr or res.stdout).strip())
-    return json.loads(last_line)
+    if not last_line:
+        # rc=0 with no stdout used to surface as "Expecting value: line 1 column 1", which
+        # told us nothing; keep the exit code and both streams instead.
+        raise RuntimeError(
+            "submit-validated.py exited 0 without a JSON receipt "
+            f"(stderr={ (res.stderr or '')[:400]!r} stdout={(res.stdout or '')[:400]!r})"
+        )
+    try:
+        return json.loads(last_line)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"submit-validated.py printed non-JSON ({exc}): {last_line[:400]!r} "
+            f"stderr={(res.stderr or '')[:400]!r}"
+        ) from exc
 
 
 def _wait_and_fetch_score(
