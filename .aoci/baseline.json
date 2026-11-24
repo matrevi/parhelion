@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-24T13:56:04Z",
+  "updated_at": "2026-11-24T15:18:54Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -29,9 +29,9 @@
     },
     "README.md": {
       "role": "index",
-      "sha256": "7ceed3f7b49100639ba648f7b7fedd5c4c679b9db85c710eb3b87427759b5160",
-      "size": 5457,
-      "normalized_sha256": "7ceed3f7b49100639ba648f7b7fedd5c4c679b9db85c710eb3b87427759b5160"
+      "sha256": "a7393c53c1a71736f332e93c420cbd63624b8d4dc477d2bf343ff3bacc6af61f",
+      "size": 6533,
+      "normalized_sha256": "a7393c53c1a71736f332e93c420cbd63624b8d4dc477d2bf343ff3bacc6af61f"
     },
     "Sources/Parhelion/App/AppRouterView.swift": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "6b94b123853c320b4564eb693f9fb0dfc8ac07d592fced745a2293da21bbd5ed",
-      "size": 87030,
-      "normalized_sha256": "6b94b123853c320b4564eb693f9fb0dfc8ac07d592fced745a2293da21bbd5ed"
+      "sha256": "acac7c39382187fa6daa0bd59a89b8e7dcae95c4aeceb5f31d1e26d9df0869e6",
+      "size": 87731,
+      "normalized_sha256": "acac7c39382187fa6daa0bd59a89b8e7dcae95c4aeceb5f31d1e26d9df0869e6"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -497,9 +497,9 @@
     },
     "cli/opsb_core/cli_app.py": {
       "role": "index",
-      "sha256": "34de31fc8431cf867fd4fbceff0ce1768cb92e3bf03c7a3d3706f2f63c417935",
-      "size": 19146,
-      "normalized_sha256": "34de31fc8431cf867fd4fbceff0ce1768cb92e3bf03c7a3d3706f2f63c417935"
+      "sha256": "d9383f5e5df56a330448d95c256979d23f556d493b61d1816c9336093d3c485a",
+      "size": 19386,
+      "normalized_sha256": "d9383f5e5df56a330448d95c256979d23f556d493b61d1816c9336093d3c485a"
     },
     "cli/opsb_core/commands/__init__.py": {
       "role": "index",
@@ -509,9 +509,9 @@
     },
     "cli/opsb_core/commands/admin_cmd.py": {
       "role": "index",
-      "sha256": "207d6407bdd073cce150dfcb0bb895f68f4858c77a26d89a66fc78eef087e4b3",
-      "size": 13130,
-      "normalized_sha256": "207d6407bdd073cce150dfcb0bb895f68f4858c77a26d89a66fc78eef087e4b3"
+      "sha256": "deb20a6a42bf80d082453c3a9f15b8d0bb671b898dc0aef3d40eb16e7a5fa1bb",
+      "size": 13913,
+      "normalized_sha256": "deb20a6a42bf80d082453c3a9f15b8d0bb671b898dc0aef3d40eb16e7a5fa1bb"
     },
     "cli/opsb_core/commands/bench_cmd.py": {
       "role": "index",
@@ -915,6 +915,12 @@
       "size": 8842,
       "normalized_sha256": "31b56d409633146de23bfed35960c7eeb1b7150aa6a83f666bb7210cdf403bba"
     },
+    "cli/opsb_core/services/problem_repo_service.py": {
+      "role": "index",
+      "sha256": "cc9690185b623f516f6d5a56db3b287b1137e02ca909dbc8054cda834a09bf00",
+      "size": 12114,
+      "normalized_sha256": "cc9690185b623f516f6d5a56db3b287b1137e02ca909dbc8054cda834a09bf00"
+    },
     "cli/opsb_core/services/queue_service.py": {
       "role": "index",
       "sha256": "4178e2ae7b09cbee9e68b899b24e42032175bfaea03812663316472ff6a83e24",
@@ -1040,6 +1046,12 @@
       "sha256": "bc6df7cdf32a0c564181ee874d4fc50a6c4320478f6f058025d6c659a7d6e3b0",
       "size": 7590,
       "normalized_sha256": "bc6df7cdf32a0c564181ee874d4fc50a6c4320478f6f058025d6c659a7d6e3b0"
+    },
+    "cli/tests/test_problem_repo_bootstrap.py": {
+      "role": "observe",
+      "sha256": "b75d41dd9851dcf7ba94acc2182065cb165109b09502fce069347b427e18884c",
+      "size": 7667,
+      "normalized_sha256": "b75d41dd9851dcf7ba94acc2182065cb165109b09502fce069347b427e18884c"
     },
     "cli/tests/test_queue_quota_consistency.py": {
       "role": "observe",
