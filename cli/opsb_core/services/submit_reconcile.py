@@ -247,7 +247,13 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
         added = 0
         with (results / ".submit-queue-io.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            existing = collapse_reconciled_outcomes(_read_jsonl(outcome_path))
+            journal = _read_jsonl(outcome_path)
+            first_scores: dict[tuple[str, str], float] = {}
+            for entry in journal:
+                sid = entry.get("submission_id")
+                if sid and entry.get("source") != "judge-reconcile" and entry.get("status") == "Pass" and isinstance(entry.get("score"), (int, float)):
+                    first_scores.setdefault((sid, "Pass"), entry["score"])
+            existing = collapse_reconciled_outcomes(journal)
             known = {r["submission_id"]: r for r in existing if r.get("submission_id")}
             with outcome_path.open("a", encoding="utf-8") as fh:
                 for row in board:
@@ -257,7 +263,9 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                             continue
                         prev = known.get(sid, {})
                         sha = att["sha"] or (prev.get("sha") if prev.get("source") != "judge-reconcile" else "") or ""
-                        score = att["score"]
+                        # Ranking scores can decay when the leaderboard changes. A history
+                        # card retains the first authoritative score for this exact attempt.
+                        score = first_scores.get((sid, att["status"]), att["score"])
                         if score is None and prev.get("source") != "judge-reconcile":
                             score = prev.get("score")
                         if prev and (prev.get("status"), prev.get("score"), prev.get("sha")) == (att["status"], score, sha) and prev.get("source") != "judge-reconcile":
