@@ -40,15 +40,31 @@ def _load_problems(workspace: Path) -> list[dict]:
     raise FileNotFoundError(f"No workspace problems manifest found under {workspace}")
 
 
-def _probe_remaining(workspace: Path, title: str, limit: int = 2) -> int:
-    """Opening probes left for this problem (mirrors scheduler.gate's allowance)."""
-    base = workspace / "results" / title
-    if not base.is_dir():
-        return limit
-    dirs = set()
-    for pattern in ("*/submission-receipt.json", "*/submission-inflight.json", "*/submission-manifest.json"):
-        dirs.update(p.parent for p in base.glob(pattern))
-    return max(0, limit - len(dirs))
+def _problem_unsolved(workspace: Path, title: str) -> bool:
+    """True while the board has no accepted submission for this problem.
+
+    Mirrors scheduler.gate: an unsolved problem may be probed beyond the bootstrap window,
+    so a rejected-but-compiled submission must still be sendable.
+    """
+    for rel in ("results/score-snapshot.json", "results/scoring-evidence/my-score-table.json"):
+        path = workspace / rel
+        if not path.is_file():
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(doc, dict):
+            row = doc.get(title) or {}
+            if isinstance(row, dict) and (str(row.get("status")) == "Pass" or float(row.get("score") or 0) > 0):
+                return False
+        if isinstance(doc, list):
+            for row in doc:
+                if isinstance(row, dict) and row.get("title") == title and (
+                    str(row.get("status")) == "Pass" or float(row.get("score") or 0) > 0
+                ):
+                    return False
+    return True
 
 
 def source_matches(repo: Path, sha: str, files: list[dict]) -> bool:
@@ -94,11 +110,11 @@ def main() -> None:
     # Opening probe: while the allowance lasts, a built-but-wrong submission is still worth
     # sending (that is how the opening 2xN probes learn the testcase shape). Afterwards only a
     # verified run may be submitted.
-    probe_left = _probe_remaining(workspace, args.title)
+    unsolved = _problem_unsolved(workspace, args.title)
     built = lambda r: bool(r.get("phase_a_cpu_sec") or r.get("layout") == "template") and r.get("exit_code") == 2
     candidates = [
         r for r in records
-        if (r["exit_code"] == 0 or (probe_left > 0 and built(r)))
+        if (r["exit_code"] == 0 or (unsolved and built(r)))
         and (args.sha is None or r["sha"] == args.sha)
     ]
     matched = next((r for r in candidates if source_matches(repo, r["sha"], editable)), None)

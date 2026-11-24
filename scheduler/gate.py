@@ -74,10 +74,13 @@ class GateConfig:
     daily_limit: int = DAILY_HARD_LIMIT
     q0_quantum_sec: int = 180
     aging_tau_sec: float = 600.0
-    # Opening probe allowance: at contest start every problem gets this many free
-    # submissions as long as the server build/run actually executed. Calibration data does
-    # not exist yet, so the strict accuracy/perf gate would hold every first submission.
-    probe_submissions_per_problem: int = 2
+    # Bootstrap probe window: while a problem has never been accepted (board score 0 /
+    # not Pass) it may be submitted freely as long as the server build actually executed.
+    # The first `probe_bootstrap_submissions` sends are reported as bootstrap probes, and
+    # an unsolved problem keeps the allowance afterwards; only an AC flips it back to the
+    # strict 4-stage gate.
+    probe_submissions_per_problem: int = 3
+    probe_while_unsolved: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -351,17 +354,27 @@ class SubmissionGate:
             return True, "validation.log shows a completed build"
         return False, "no successful compile record (probe needs a real server build)"
 
-    def probe_allowance(self, title: str, sha: str = "") -> dict[str, Any]:
-        limit = int(self.config.probe_submissions_per_problem)
+    def probe_allowance(self, title: str, sha: str = "", *, unsolved: bool = True) -> dict[str, Any]:
+        """Free submissions for a problem that has never been accepted.
+
+        `unsolved` is the caller's board read (score<=0 / not Pass). A solved problem is
+        never probe-eligible; an unsolved one is unbounded once `probe_while_unsolved` is on.
+        """
+        bootstrap = int(self.config.probe_submissions_per_problem)
         used = self._submission_record_count(title)
-        allowed, why = (False, "opening probe allowance disabled")
-        if limit > 0 and used < limit:
+        within_bootstrap = used < bootstrap
+        entitled = bool(unsolved and (within_bootstrap or self.config.probe_while_unsolved))
+        allowed, why = (False, "no probe entitlement while the problem is accepted")
+        if entitled:
             allowed, why = self._compile_ok(title, sha)
+            if not allowed and used >= bootstrap:
+                why = "unsolved but " + why
         return {
-            "limit": limit,
+            "bootstrap": bootstrap,
             "used": used,
-            "remaining": max(0, limit - used),
-            "allowed": bool(allowed and limit > 0 and used < limit),
+            "remaining": max(0, bootstrap - used),
+            "bootstrap_stage": bool(within_bootstrap),
+            "allowed": bool(allowed),
             "reason": why,
         }
 
@@ -995,12 +1008,16 @@ class SubmissionGate:
         # Opening probe allowance: first submissions of a cold problem may skip the strict
         # accuracy/perf stages when the server build actually ran. This exists so the opening
         # 2×N probing submissions are not held by a gate that has no calibration data yet.
-        probe = self.probe_allowance(title, canonical_sha)
-        if probe["allowed"] and is_critical_restore and not explicit_skip:
+        probe = self.probe_allowance(title, canonical_sha, unsolved=is_critical_restore)
+        if probe["allowed"] and not explicit_skip:
             stages = [
                 StageResult(
                     stage="SAFETY", passed=True, code="PROBE_ALLOWANCE",
-                    reason=f"Opening probe {probe['used'] + 1}/{probe['limit']}: {probe['reason']}",
+                    reason=(
+                        f"Probe {probe['used'] + 1}/{probe['bootstrap']} (unsolved problem): {probe['reason']}"
+                        if probe["bootstrap_stage"] else
+                        f"Probe #{probe['used'] + 1} beyond bootstrap, problem still unsolved: {probe['reason']}"
+                    ),
                     metrics=dict(probe),
                 ),
                 StageResult(stage="NOISE_FLOOR", passed=True, code="PROBE_ALLOWANCE",
@@ -1021,7 +1038,11 @@ class SubmissionGate:
                 approved=True,
                 status_tag="PROBE",
                 gate_reason=(
-                    f"Opening probe {probe['used'] + 1}/{probe['limit']} for {title}: {probe['reason']}"
+                    (
+                        f"Probe {probe['used'] + 1}/{probe['bootstrap']} for unsolved {title}: {probe['reason']}"
+                        if probe["bootstrap_stage"] else
+                        f"Unsolved probe #{probe['used'] + 1} for {title}: {probe['reason']}"
+                    )
                 ),
                 priority_score=round(500.0 + estimate.difficulty, 2),
                 is_critical_restore=True,
