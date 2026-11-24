@@ -93,7 +93,7 @@ WorkspaceWizardView.swift[AU6M]: F:提供零噪声竞赛工作区脚手架表单
 opsb[EG9T]: F:opsb CLI可执行入口，自动检测并execv重入workspace或~/.parhelion虚拟环境后转交cli_app | R:code:cli/opsb_core/cli_app.py | A:_ensure_venv_python | S:用OPSB_VENV_BOOTSTRAPPED=1防递归execv；优先选用--workspace指定的.venv以保证LaunchServices拉起时依赖完整
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/===
-__init__.py[CG3T]: F:声明opsb_core包元信息与唯一版本号源(3.2.1) | R:- | A:__version__ | S:MCP与驱动clientInfo的版本均取自此处；Info.plist需手工同步
+__init__.py[CG3T]: F:声明opsb_core包元信息与唯一版本号源(3.2.2) | R:- | A:__version__ | S:MCP与驱动clientInfo的版本均取自此处；Info.plist需手工同步
 cli_app.py[EG9M]: F:opsb统一argparse解析与命令分发入口，注册status/npu/workspace(含sync-problems/--no-repos)/submit/queue/test/bench/kb/driver/daemon子命令 | R:code:cli/opsb_core/commands/status_cmd.py,code:cli/opsb_core/commands/queue_cmd.py,code:cli/opsb_core/commands/bench_cmd.py,code:cli/opsb_core/commands/admin_cmd.py,code:cli/opsb_core/commands/kb_cmd.py,code:cli/opsb_core/commands/driver_mcp_cmd.py,code:cli/opsb_core/daemon/server.py | A:build_parser,main | S:默认仅注册命令树并按args.func懒分发；workspace init的--title默认为空字符串以便采用爬取到的赛事标题；两处--no-repos可跳过模板拉取与私有仓库创建
 config.py[CC9M]: F:管理~/.parhelion路径解析、工作区自动发现、旧配置无损迁移、TTL缓存与原子JSON/JSONL I/O | R:- | A:ConfigRepository,PARHELION_HOME,workspace_data_dir,append_jsonl_locked,read_ttl_cache,resolve_python_exe | S:discover_default_workspace拒绝硬编码路径；append_jsonl_locked用flock互斥；save使用PID+TID临时文件原子替换
 ipc_bridge.py[IW9M]: F:通过子进程调用scheduler.cli_bridge并缓存结果，将配额、校准与4阶门禁候选富化合并入快照 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/sync_reconciler.py,code:scheduler/cli_bridge.py | A:invoke_bridge,merge_bridge_enrichment | S:多账号启用时按slot合计队伍总额度防被单账号50覆盖；过滤已跳过、在途及未对账回执候选；输出强制按CRITICAL→WSPT→title→sha7排序
