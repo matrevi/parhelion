@@ -78,13 +78,24 @@ struct ChevronStackGlyph: View {
     let level: Int
     let color: Color
 
+    /// Uniform glyph box: extra tiers compress spacing/stroke instead of growing the badge, so
+    /// 1…5 chevrons keep the same footprint. Tiers 1–3 keep the historical geometry exactly.
+    private static let legacyStepY: CGFloat = 4.1
+    private static let legacyLineWidth: CGFloat = 1.9
+
     var body: some View {
         Canvas { ctx, size in
             let cx = size.width / 2.0
             let halfW: CGFloat = 4.6
             let chevH: CGFloat = 3.1
-            let stepY: CGFloat = 4.1
-            let totalH = chevH + CGFloat(level - 1) * stepY
+            let steps = CGFloat(max(1, level - 1))
+            let margin: CGFloat = 1.6
+            let fitStep = min(Self.legacyStepY, max(1.4, (size.height - chevH - margin * 2) / steps))
+            let stepY = level <= 3 ? Self.legacyStepY : fitStep
+            let lineWidth = level <= 3
+                ? Self.legacyLineWidth
+                : max(1.15, Self.legacyLineWidth * (stepY / Self.legacyStepY))
+            let totalH = chevH + steps * stepY
             let startY = (size.height - totalH) / 2.0
 
             for i in 0..<level {
@@ -96,24 +107,29 @@ struct ChevronStackGlyph: View {
                 ctx.stroke(
                     path,
                     with: .color(color),
-                    style: StrokeStyle(lineWidth: 1.9, lineCap: .round, lineJoin: .round)
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
                 )
             }
         }
     }
 }
 
-/// Stacked upward chevron tier badge: draws EXACTLY `level` (1, 2, or 3) solid chevrons, vertically centered.
+/// Stacked upward chevron tier badge: draws EXACTLY `level` (1…5) solid chevrons, vertically centered.
+/// The badge box is fixed at 24×20 for every tier; 4–5 stay inside it by tightening chevron spacing
+/// and stroke, so table rows never change height. Tiers 1–3 render pixel-identically.
 struct DifficultyBadge: View {
     let difficulty: Int
 
-    private var level: Int { min(3, max(1, difficulty)) }
+    /// Judge difficulty is 1…5; clamp defensively but stop truncating at 3.
+    private var level: Int { min(5, max(1, difficulty)) }
 
     private var tint: Color {
         switch level {
-        case 3: return Color(red: 0.66, green: 0.34, blue: 0.95)
-        case 2: return Color(red: 0.20, green: 0.56, blue: 0.95)
-        default: return .teal
+        case 5: return Color(red: 0.90, green: 0.26, blue: 0.32)   // crimson
+        case 4: return Color(red: 0.95, green: 0.62, blue: 0.16)   // amber
+        case 3: return Color(red: 0.66, green: 0.34, blue: 0.95)   // violet (unchanged)
+        case 2: return Color(red: 0.20, green: 0.56, blue: 0.95)   // blue (unchanged)
+        default: return .teal                                      // tier 1 (unchanged)
         }
     }
 
@@ -124,16 +140,16 @@ struct DifficultyBadge: View {
                 RoundedRectangle(cornerRadius: 5, style: .continuous)
                     .fill(tint.opacity(0.12))
             )
-            .help("难度级别 \(level) 级（计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
+            .help("难度级别 \(level) 级（共 5 级；计分权重 \(level) 倍，折算满分 \(level * 100) 分）")
     }
 }
 
-/// Unified single badge merging the solid 1/2/3 chevron tier icon + clean priority label (no duplicate ASCII `^`).
+/// Unified single badge merging the solid 1…5 chevron tier icon + clean priority label (no duplicate ASCII `^`).
 struct TierTagBadge: View {
     let difficulty: Int
     let text: String
 
-    private var level: Int { min(3, max(1, difficulty)) }
+    private var level: Int { min(5, max(1, difficulty)) }
 
     private var palette: (fg: Color, bg: Color) {
         let u = text.uppercased()
@@ -146,6 +162,8 @@ struct TierTagBadge: View {
         }
         let tierTint: Color = {
             switch level {
+            case 5: return Color(red: 0.90, green: 0.26, blue: 0.32)
+            case 4: return Color(red: 0.95, green: 0.62, blue: 0.16)
             case 3: return Color(red: 0.62, green: 0.36, blue: 0.95)
             case 2: return Color(red: 0.20, green: 0.56, blue: 0.95)
             default: return .teal
