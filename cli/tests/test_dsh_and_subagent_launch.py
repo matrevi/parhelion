@@ -18,6 +18,7 @@ if str(CLI_DIR) not in sys.path:
 from opsb_core.drivers.brief import (  # noqa: E402
     MAX_BRIEF_BYTES,
     compose_contest_subagent_brief,
+    compose_bench_author_brief,
     compose_session_brief,
 )
 from opsb_core.drivers.dsh_driver import DeepSeekDriver, _dsh_project_key  # noqa: E402
@@ -250,6 +251,12 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("parhelion_submit_gate", single)          # mentioned only as forbidden
             self.assertIn("禁止 `opsb submit`", single)
             self.assertLessEqual(len(single.encode("utf-8")), MAX_BRIEF_BYTES)
+
+            bench = compose_bench_author_brief(ws, "NeighborListPbcFixedK")
+            self.assertIn("cases_perf.json", bench)
+            self.assertIn("不要改 kernel.asc", bench)
+            self.assertIn("bench-specs", bench)
+            self.assertLessEqual(len(bench.encode("utf-8")), MAX_BRIEF_BYTES)
 
             sprint = compose_contest_subagent_brief(ws)
             self.assertIn("Subagent", sprint)

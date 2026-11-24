@@ -233,6 +233,10 @@ def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, An
         "- 默认优先主控**自身 harness 的原生 subagent**拆分全部题目；只有管理员明确要求「多 Harness 协作」时才用 `parhelion_agent_spawn` 派外部 worker",
         "- **禁止派 claude worker**，除非管理员提示词明确同意（`PARHELION_ALLOW_CLAUDE_WORKERS=1` 或 config `allow_claude_workers`）；外部池已按该策略过滤",
         "",
+        "## 阶段 0：先派 bench 作者（冷启动，未提交前）",
+        "- 工作区尚无提交且 `bench-specs/<Title>/cases_perf.json` 缺失时，**每题先派一个 agent** 写本地 bench 桶（`compose_bench_author_brief`），再谈提交",
+        "- bench 作者只写 bench-specs 目录，不改 kernel；产出用于给 50 例桶排序，不消耗判题额度",
+        "",
         "## 编排协议",
         "1. 每题 spawn 一个 worker（driver 不能等于自己的 active_driver），role=kernel-impl，collab_mode=orthogonal，axis=`<kernel_pattern>/<tier>`",
         "2. 测试闸门：worker 发 `SLOT-REQ <Title> <sha7>` → 主控最多放 4 个 `SLOT-GRANT` → worker 完成后 `SLOT-REL`；坏构建连续 3 次同因失败改为静态修复后再申请",
@@ -242,6 +246,42 @@ def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, An
     ]
     if goal.strip():
         lines.insert(2, f"- Goal: {goal.strip()}")
+    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+
+
+def compose_bench_author_brief(workspace: Path, problem: str) -> str:
+    """Stage-0 task: one agent per problem authors its local bench buckets.
+
+    The judge's own testcases are hidden and the opening submissions happen before any
+    calibration exists, so the 50-case local bucket must be authored from the problem
+    semantics (reference.py / sample.py) instead of copied from public anchors.
+    """
+    ws = workspace.expanduser().resolve()
+    title, repo_dir, p_meta = resolve_problem_repo(ws, problem)
+    diff = int((p_meta or {}).get("difficulty") or 2)
+    spec = f"~/.parhelion/workspaces/<ws-id>/bench-specs/{title}/cases_perf.json"
+    lines = [
+        f"# Bench Bucket Author · {title} (Tier x{diff})",
+        f"- Repo: `{repo_dir.name}` | 只读模板，**不要改 kernel.asc**（这个 agent 只写 bench 规格）",
+        f"- 产物: `{spec}`（JSON，schema 见 ops-bench 的既有 cases_perf.json）",
+        "",
+        "## 目标",
+        "1. 读 `reference.py` / `sample.py` 的 shapes、dtype、属性，列出该算子的真实形状族：",
+        "   - 小/中/大三档 + 边界形状（空张量、单元素、非对齐尾块、极端属性）",
+        "   - 每个 case 写明输入 shapes/dtype/attrs 与权重，**只依据语义推导**，不要猜隐藏用例",
+        "2. 生成 8–14 个 case（至少覆盖：gate 样例形状、一个接近 UB 上限的大形状、一个尾块不对齐）",
+        "3. 每个 case 用 `opsb bench run <Title> --case <id>` 在远端跑一次，把 profiler 中位数写入 `measured_us`",
+        "4. 若某形状会超出 UB/编译失败，标注 `skip_reason` 而不是删除，方便后续判断 strata",
+        "",
+        "## 输出",
+        "- `cases_perf.json`：problem/version/protocol/hardware_roofline 沿用 ops-bench 格式；",
+        "  `cases: [{id, weight_pts, shapes, dtype, attrs, measured_us, skip_reason?}]`",
+        "- 一段 5 行内说明：覆盖了哪些形状族、哪些没覆盖、预估隐藏集风险",
+        "",
+        "## 约束",
+        "- 不改 kernel.asc / main.asc / sample.py / reference.py；只写 bench-specs 目录",
+        "- 不 submit、不消耗判题额度；bench 结果只用于本地排序",
+    ]
     return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
 
 
