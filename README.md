@@ -83,6 +83,24 @@ opsb workspace sync-problems ~/Competitions/<contest>        # refresh an existi
 yields titles, slugs, difficulty tiers, kernel pattern and judge ids; existing repo slugs and paths
 are preserved on re-sync, and removed problems are reported (their directories are never deleted).
 
+## Per-Problem Template & Private Repo Bootstrap
+
+`workspace init` / `workspace sync-problems` also wire each problem directory to the two
+external systems the submission pipeline expects:
+
+- **Official template** — `GET /api/problems/<problem_id>/template` (public, no login)
+  returns the starter `CMakeLists.txt`, `kernel.asc`, `main.asc`, `reference.py`,
+  `sample.py`, `run.sh` … They are written only when missing, so user edits survive a
+  re-sync, and Parhelion-owned names (`AGENTS.md`, `PROBLEM.md`, `DESIGN.md`,
+  `SCORE_HISTORY.md`) are never replaced.
+- **Private repo** — `gc repo create <repo_slug> --private` creates `owner/accel-…-<slug>`
+  (an already existing repo counts as success), then the directory is `git init`-ed on
+  `main`, committed and pushed to `https://gitcode.com/<owner>/<repo_slug>.git`. The first
+  push after creation is forced because GitCode seeds a README; later pushes are never
+  forced and a rejection is reported instead of overwritten.
+
+Add `--no-repos` to either command to skip both steps (offline or CI scaffolding).
+
 ## Build, Install & Release DMG
 
 ```bash

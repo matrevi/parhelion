@@ -20,6 +20,7 @@ from ..services.auth_service import (
 )
 from ..services.contest_service import resolve_workspace_meta
 from ..services.contest_scrape_service import ContestScrapeError, fetch_contest_problems
+from ..services.problem_repo_service import bootstrap_workspace_repos
 from ..services.scaffold_service import scaffold_workspace
 from ..services.skills_service import get_skills_status, install_skills
 from ..services.ssh_service import parse_ssh_hosts, upsert_ssh_config_block
@@ -96,6 +97,13 @@ def run_workspace(args: argparse.Namespace) -> int:
         )
         if scraped:
             res["scraped"] = {"contest": scraped["contest"], "problem_count": len(probs)}
+        if not getattr(args, "no_repos", False):
+            manifest = json.loads((target / "opsb.workspace.json").read_text(encoding="utf-8"))
+            res["repos"] = bootstrap_workspace_repos(
+                target,
+                manifest.get("problems") or [],
+                git_owner=args.git_owner,
+            )
         if not args.no_register:
             t_str = str(target)
             if t_str not in cfg["workspaces"]:
@@ -142,6 +150,13 @@ def run_workspace(args: argparse.Namespace) -> int:
             npu_host=meta.get("npu_ssh_host") or cfg.get("npu_ssh_host", "npu"),
             problems=merged,
         )
+        if not getattr(args, "no_repos", False):
+            manifest = json.loads((target / "opsb.workspace.json").read_text(encoding="utf-8"))
+            res["repos"] = bootstrap_workspace_repos(
+                target,
+                manifest.get("problems") or [],
+                git_owner=meta.get("git_owner") or "winbeau",
+            )
         payload = {
             "ok": True,
             "workspace": str(target),
@@ -150,6 +165,7 @@ def run_workspace(args: argparse.Namespace) -> int:
             "added": added,
             "removed": removed,
             "problem_dirs": res["problem_dirs"],
+            "repos": res.get("repos"),
         }
         if args.json:
             print(json.dumps(payload, ensure_ascii=False))
