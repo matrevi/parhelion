@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-24T12:59:38Z",
+  "updated_at": "2026-11-24T13:05:01Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "3f8ec4702790de25adae1f1c66beffb5304a794e604335677cc07c692bb2feff",
-      "size": 85517,
-      "normalized_sha256": "3f8ec4702790de25adae1f1c66beffb5304a794e604335677cc07c692bb2feff"
+      "sha256": "b7bb2968ab6e90ac2975a9f7eb228d0c69720e89965be9003664c3bb8de0a96a",
+      "size": 85556,
+      "normalized_sha256": "b7bb2968ab6e90ac2975a9f7eb228d0c69720e89965be9003664c3bb8de0a96a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1306,15 +1306,15 @@
     },
     "scripts/build_dmg.sh": {
       "role": "index",
-      "sha256": "86559bbf357de58bc31a0c30c6e7c9f091797eb158497f2332583fcae668b8f8",
-      "size": 1203,
-      "normalized_sha256": "86559bbf357de58bc31a0c30c6e7c9f091797eb158497f2332583fcae668b8f8"
+      "sha256": "1c2096cc6b3b09953893480134d6b49cedc8e3899b506210b27a2f44844e5022",
+      "size": 2039,
+      "normalized_sha256": "1c2096cc6b3b09953893480134d6b49cedc8e3899b506210b27a2f44844e5022"
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "7625e77c614e23445f661bcddb539ae8bb774ce63280820dbf744e089165bff0",
-      "size": 4866,
-      "normalized_sha256": "7625e77c614e23445f661bcddb539ae8bb774ce63280820dbf744e089165bff0"
+      "sha256": "b01833c555a0abe56ca242423bff31afec665b9f343da408674ebad222031dc8",
+      "size": 5102,
+      "normalized_sha256": "b01833c555a0abe56ca242423bff31afec665b9f343da408674ebad222031dc8"
     },
     "scripts/generate_icon.swift": {
       "role": "index",

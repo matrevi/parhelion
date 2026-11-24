@@ -235,8 +235,8 @@ pairwise_anchor.py[KA8M]: F:双锚点(latest vs best) Pairwise-v2候选分数估
 parhelion_paths.py[CP8M]: F:共享~/.parhelion/多工作区隔离路径解析,RFC-8259去NaN/Inf原子写与账号槽位读取 | R:code:cli/opsb_core/config.py | A:sanitize_json_value,atomic_write_text,atomic_write_json,read_json_safe | S:强制allow_nan=False防非标准JSON破坏Swift解码;按PARHELION_HOME/OPSB_HOME动态求值
 
 ===/Users/winbeau/Developer/personal/parhelion/scripts/===
-build_dmg.sh[OV5T]: F:将dist/Parhelion.app打包为压缩UDZO DMG并生成SHA-256校验文件 | R:code:scripts/bundle_app.sh | A:- | S:app缺失或REBUILD_APP=1时先触发bundle_app.sh构建
-bundle_app.sh[OV7S]: F:Release构建Parhelion.app，生成icns图标、组装零竞赛数据包、摘除构建产物的LaunchServices注册并可选安装至/Applications | R:code:Package.swift,code:scripts/generate_icon.swift,code:cli/opsb_core/__init__.py | A:- | S:Info.plist版本需与__version__手工同步；Parhelion运行中拒覆盖安装；打包后对dist产物lsregister -u并写.metadata_never_index防重复注册
+build_dmg.sh[OV5T]: F:将构建产物打包为压缩UDZO DMG并生成SHA-256校验文件 | R:code:scripts/bundle_app.sh | A:- | S:版本按$1→plist→__version__解析并校验semver；app缺失或REBUILD_APP=1先调bundle_app.sh
+bundle_app.sh[OV7S]: F:在仓库外构建Release Parhelion.app、生成icns图标、摘除构建产物的LaunchServices注册并可选安装至/Applications | R:code:Package.swift,code:scripts/generate_icon.swift,code:cli/opsb_core/__init__.py | A:- | S:构件必须落在Spotlight索引外的$TMPDIR，仓库内.app会被mdworker秒级重新注册；Info.plist版本与__version__手工同步；Parhelion运行中拒覆盖安装
 generate_icon.swift[OV5S]: F:基于AppKit/CoreGraphics与SDK logo位图渲染全尺寸macOS AppIcon.iconset | R:code:scripts/bundle_app.sh | A:- | S:小于64px自动退化为红色A字标保证小尺寸清晰度
 
 ===/Users/winbeau/Developer/personal/parhelion/skills/kernelc-deep-reference/===
