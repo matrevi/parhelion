@@ -404,6 +404,42 @@ def spawn_jump_submit(
     pipeline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     slots = compute_account_slots(workspace)
+    # Workspace-wide dispatch gate: the UI asks to submit every queued problem at once. Only
+    # one may enter the send path; the rest must stay "pending" instead of showing 提交中.
+    results_dir = workspace / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with (results_dir / ".submit-dispatch.lock").open("a") as dlf:
+        try:
+            fcntl.flock(dlf, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {"ok": False, "deferred": True, "reason": "busy",
+                    "error": "另一个题目正在发送中，本条保持排队"}
+        try:
+            cooling = judge_cooldown_remaining(workspace)
+            if cooling > 0:
+                return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling,
+                        "error": f"判题器冷却中，{cooling}s 后再试"}
+            return _spawn_jump_submit_locked(
+                opsb_bin, workspace, title, sha, note, account_id=account_id, force=force,
+                enforce_operator_mutex=enforce_operator_mutex, pipeline=pipeline, slots=slots,
+            )
+        finally:
+            fcntl.flock(dlf, fcntl.LOCK_UN)
+
+
+def _spawn_jump_submit_locked(
+    opsb_bin: Path,
+    workspace: Path,
+    title: str,
+    sha: str,
+    note: str,
+    account_id: str | None = None,
+    force: bool = False,
+    enforce_operator_mutex: bool = False,
+    pipeline: dict[str, Any] | None = None,
+    slots: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    slots = slots if slots is not None else compute_account_slots(workspace)
     # Global anti-collision guard: NEVER let two teammate accounts submit the exact same (title, sha)
     # while it is already packaging/uploading/waiting OR already submitted & still running remotely!
     for s in slots:
