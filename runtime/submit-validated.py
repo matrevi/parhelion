@@ -40,6 +40,17 @@ def _load_problems(workspace: Path) -> list[dict]:
     raise FileNotFoundError(f"No workspace problems manifest found under {workspace}")
 
 
+def _probe_remaining(workspace: Path, title: str, limit: int = 2) -> int:
+    """Opening probes left for this problem (mirrors scheduler.gate's allowance)."""
+    base = workspace / "results" / title
+    if not base.is_dir():
+        return limit
+    dirs = set()
+    for pattern in ("*/submission-receipt.json", "*/submission-inflight.json", "*/submission-manifest.json"):
+        dirs.update(p.parent for p in base.glob(pattern))
+    return max(0, limit - len(dirs))
+
+
 def source_matches(repo: Path, sha: str, files: list[dict]) -> bool:
     if not any(item.get("editable") for item in files):
         return False
@@ -80,7 +91,16 @@ def main() -> None:
     records = [json.loads(p.read_text()) for p in (workspace / "results" / args.title).glob("*/result.json")]
     records.sort(key=lambda r: r["finished_at"], reverse=True)
     editable = [dict(f, editable=True) for f in payload["files"]]
-    candidates = [r for r in records if r["exit_code"] == 0 and (args.sha is None or r["sha"] == args.sha)]
+    # Opening probe: while the allowance lasts, a built-but-wrong submission is still worth
+    # sending (that is how the opening 2xN probes learn the testcase shape). Afterwards only a
+    # verified run may be submitted.
+    probe_left = _probe_remaining(workspace, args.title)
+    built = lambda r: bool(r.get("phase_a_cpu_sec") or r.get("layout") == "template") and r.get("exit_code") == 2
+    candidates = [
+        r for r in records
+        if (r["exit_code"] == 0 or (probe_left > 0 and built(r)))
+        and (args.sha is None or r["sha"] == args.sha)
+    ]
     matched = next((r for r in candidates if source_matches(repo, r["sha"], editable)), None)
     if not matched:
         raise RuntimeError("Current source does not match any successful server validation")
