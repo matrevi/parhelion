@@ -415,6 +415,9 @@ def spawn_jump_submit(
             return {"ok": False, "deferred": True, "reason": "busy",
                     "error": "另一个题目正在发送中，本条保持排队"}
         try:
+            if submissions_frozen(workspace):
+                return {"ok": False, "deferred": True, "reason": "frozen",
+                        "error": "提交已冻结（results/.submit-freeze），修复队列后删除该文件恢复"}
             cooling = judge_cooldown_remaining(workspace)
             if cooling > 0:
                 return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling,
@@ -645,6 +648,8 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
         except BlockingIOError:
             return 2  # someone else is submitting: stay silent, keep the item pending
         try:
+            if submissions_frozen(workspace):
+                return 5
             cooling = judge_cooldown_remaining(workspace)
             if cooling > 0:
                 try:
@@ -969,6 +974,14 @@ class SubmitRateLimited(RuntimeError):
 
 def _judge_cooldown_path(workspace: Path) -> Path:
     return workspace / "results" / ".judge-cooldown.json"
+
+
+def submissions_frozen(workspace: Path) -> bool:
+    """Operator freeze: results/.submit-freeze exists -> nothing is dispatched.
+
+    Used while the queue/board are being reconciled; delete the file to resume.
+    """
+    return (workspace / "results" / ".submit-freeze").is_file()
 
 
 def judge_cooldown_remaining(workspace: Path) -> int:
