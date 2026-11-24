@@ -31,6 +31,7 @@ from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
 MIN_RATE_GAP_SEC = 190
+JUDGE_SUBMIT_GAP_SEC = 95
 POLL_TIMEOUT_SEC = 1800
 _LOCAL_ACTIVE_PHASES = ("waiting_cooldown", "packaging", "preparing", "uploading")
 
@@ -633,6 +634,27 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             if my_slot is not None and _is_slot_exhausted(my_slot):
                 return 3
 
+            cooling = judge_cooldown_remaining(workspace)
+            if cooling > 0:
+                deferred_at = (utc_now() + datetime.timedelta(seconds=cooling)).isoformat()
+                deferred = {
+                    "title": title, "sha": sha, "note": note, "queued_at": deferred_at,
+                    "status": "cooldown", "finished_at": utc_now().isoformat(),
+                    "retry_after": cooling, "retry_at": deferred_at,
+                    "detail": f"judge-wide cooldown {cooling}s (another problem is pacing the account)",
+                    "account_id": aid, "account_label": acc_label,
+                }
+                with io_lock_path.open("a") as iolf:
+                    fcntl.flock(iolf, fcntl.LOCK_EX)
+                    try:
+                        with outcome_path.open("a", encoding="utf-8") as of:
+                            of.write(json.dumps(deferred, ensure_ascii=False) + "\n")
+                        with queue_path.open("a", encoding="utf-8") as qf:
+                            qf.write(json.dumps({**deferred, "queued_at": deferred_at}, ensure_ascii=False) + "\n")
+                    finally:
+                        fcntl.flock(iolf, fcntl.LOCK_UN)
+                return 4
+
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging", aid, acc_label)
 
             # Reuse existing pending queue entry if present, otherwise append audit record
@@ -712,6 +734,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
 
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading", aid, acc_label)
             receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file)
+            set_judge_cooldown(workspace, JUDGE_SUBMIT_GAP_SEC, "pacing after successful submit")
             invalidate_ttl_cache("remote_judge")
             invalidate_ttl_cache("scheduler_bridge")
             try:
@@ -745,6 +768,7 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
         except SubmitRateLimited as exc:
             # Defer: keep the item alive for a later retry, never spend a probe on a 429.
             base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
+            set_judge_cooldown(workspace, exc.retry_after, "judge 429")
             retry_at = (utc_now() + datetime.timedelta(seconds=exc.retry_after)).isoformat()
             deferred_rec = {
                 **base_rec,
@@ -904,6 +928,41 @@ class SubmitRateLimited(RuntimeError):
         super().__init__(message or f"judge cooldown {retry_after}s")
         self.retry_after = max(1, int(retry_after))
 
+
+
+def _judge_cooldown_path(workspace: Path) -> Path:
+    return workspace / "results" / ".judge-cooldown.json"
+
+
+def judge_cooldown_remaining(workspace: Path) -> int:
+    """Seconds left on the *judge-wide* submission cooldown (0 = free to attempt).
+
+    The judge rate-limits the account, not the title: with several problems queued,
+    per-title pacing let every worker race for the same slot and all of them got 429.
+    """
+    try:
+        doc = read_json(_judge_cooldown_path(workspace), {})
+        not_before = float(doc.get("not_before_epoch") or 0.0)
+        return max(0, int(round(not_before - utc_now().timestamp())))
+    except Exception:
+        return 0
+
+
+def set_judge_cooldown(workspace: Path, seconds: float, reason: str = "") -> None:
+    try:
+        epoch = utc_now().timestamp() + max(0.0, float(seconds))
+        path = _judge_cooldown_path(workspace)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({
+            "not_before_epoch": epoch,
+            "not_before": datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat(),
+            "reason": reason,
+            "updated_at": utc_now().isoformat(),
+        }, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except Exception:
+        pass
 
 def _submit_via_worktree(
     workspace: Path,
