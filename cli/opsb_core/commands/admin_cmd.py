@@ -85,6 +85,14 @@ def run_workspace(args: argparse.Namespace) -> int:
             probs = scraped["problems"]
             title = title or str(scraped["contest"].get("title") or "")
             contest_id = contest_id or str(scraped["contest"].get("name") or scraped["contest"].get("id") or "")
+        # A folder re-initialised for a different contest must not inherit the previous
+        # contest's score snapshot, board summary, queue or scheduler cache.
+        from ..services.contest_state_service import existing_contest_id, reset_contest_state
+
+        prev_contest = existing_contest_id(target)
+        state_reset: dict = {}
+        if prev_contest and contest_id and prev_contest != contest_id:
+            state_reset = reset_contest_state(target, contest_id)
         res = scaffold_workspace(
             target_dir=target,
             contest_title=title or "KernelC Operator Contest",
@@ -97,6 +105,8 @@ def run_workspace(args: argparse.Namespace) -> int:
         )
         if scraped:
             res["scraped"] = {"contest": scraped["contest"], "problem_count": len(probs)}
+        if state_reset:
+            res["state_reset"] = state_reset
         if not getattr(args, "no_repos", False):
             manifest = json.loads((target / "opsb.workspace.json").read_text(encoding="utf-8"))
             res["repos"] = bootstrap_workspace_repos(
