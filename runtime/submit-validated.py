@@ -128,40 +128,25 @@ def main() -> None:
     directory = workspace / "results" / args.title / matched["sha"]
     manifest = [{"path": f["path"], "sha256": hashlib.sha256(f["content"].encode()).hexdigest()} for f in payload["files"]]
     (directory / "submission-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    for _ in range(4):
-        response = client.session.post(client.BASE_URL + "/api/submissions/submit", json=payload, timeout=30)
-        if response.status_code == 429:
-            try:
-                message = str(response.json().get("message", ""))
-            except ValueError:
-                message = ""
-            if "daily_limit" in str(response.text):
-                raise RuntimeError("daily submission limit reached; next window at 00:00 Beijing time")
-            delay = response.headers.get("Retry-After")
-            if not delay:
-                match = re.search(r"(\d+)\s*(?:s|seconds?)", message)
-                delay = match[1] if match else "180"
-            delay_int = min(600, max(1, int(delay))) + 1
-            print(f"Rate limited; retry after {delay_int} seconds", flush=True)
-            deadline = time.monotonic() + delay_int
-            while time.monotonic() < deadline:
-                time.sleep(min(30, deadline - time.monotonic()))
-            continue
-        client._check_response(response)
-        sid = response.json().get("data", {}).get("submissionId")
-        if not sid:
-            raise RuntimeError("Submission response has no ID; query history before retrying")
-        record = dict(
-            submission_id=sid,
-            validated_commit=matched["sha"],
-            submitted_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            account_id=os.environ.get("OPSB_ACCOUNT_ID") or "primary",
-            user_id=client.user_id,
-        )
-        (directory / "submission-receipt.json").write_text(json.dumps(record, indent=2) + "\n")
-        print(json.dumps(record), flush=True)
-        return
-    raise RuntimeError("Server rate limit persisted after four attempts")
+    response = client.session.post(client.BASE_URL + "/api/submissions/submit", json=payload, timeout=30)
+    if response.status_code == 429:
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        if "daily_limit" in str(response.text):
+            raise RuntimeError("daily submission limit reached; next window at 00:00 Beijing time")
+        data = body.get("data") or {}
+        retry_after = int(data.get("retry_after_seconds") or response.headers.get("Retry-After") or 90)
+        # Never sleep here: the caller owns scheduling. Sleeping burned the caller's 90s
+        # subprocess timeout and turned a rate limit into a hard "rejected" verdict.
+        print(json.dumps({
+            "rate_limited": True,
+            "retry_after": max(1, retry_after),
+            "message": str(body.get("message") or body.get("msg") or "rate limited")[:200],
+        }, ensure_ascii=False), flush=True)
+        sys.exit(75)
+    client._check_response(response)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Single-shot jump-queue submission worker & live in-flight detector."""
 from __future__ import annotations
 
+import datetime
 import fcntl
 import json
 import os
@@ -741,6 +742,38 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
         except _CooldownReservationCancelled:
             early_out_rec = {"cancelled": True}
             invalidate_ttl_cache("scheduler_bridge")
+        except SubmitRateLimited as exc:
+            # Defer: keep the item alive for a later retry, never spend a probe on a 429.
+            base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
+            retry_at = (utc_now() + datetime.timedelta(seconds=exc.retry_after)).isoformat()
+            deferred_rec = {
+                **base_rec,
+                "finished_at": utc_now().isoformat(),
+                "status": "cooldown",
+                "retry_after": exc.retry_after,
+                "retry_at": retry_at,
+                "detail": f"judge cooldown {exc.retry_after}s: {exc}",
+                "account_id": aid,
+                "account_label": acc_label,
+            }
+            with io_lock_path.open("a") as iolf:
+                fcntl.flock(iolf, fcntl.LOCK_EX)
+                try:
+                    with outcome_path.open("a", encoding="utf-8") as of:
+                        of.write(json.dumps(deferred_rec, ensure_ascii=False) + "\n")
+                    with queue_path.open("a", encoding="utf-8") as qf:
+                        qf.write(json.dumps({**base_rec, "queued_at": retry_at,
+                                             "deferred_from": started_iso}, ensure_ascii=False) + "\n")
+                finally:
+                    fcntl.flock(iolf, fcntl.LOCK_UN)
+            try:
+                from scheduler.feedback_log import log_feedback  # type: ignore
+
+                log_feedback(workspace, "submit_rate_limited", title=title, sha=sha[:7],
+                             retry_after=exc.retry_after, account_id=aid)
+            except Exception:
+                pass
+            invalidate_ttl_cache("scheduler_bridge")
         except Exception as exc:
             base_rec = record or {"title": title, "sha": sha, "note": note, "queued_at": started_iso}
             early_out_rec = {
@@ -864,6 +897,14 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
     return 0
 
 
+class SubmitRateLimited(RuntimeError):
+    """Judge asked us to wait; requeue instead of burning the caller's 90s timeout."""
+
+    def __init__(self, retry_after: int, message: str = "") -> None:
+        super().__init__(message or f"judge cooldown {retry_after}s")
+        self.retry_after = max(1, int(retry_after))
+
+
 def _submit_via_worktree(
     workspace: Path,
     title: str,
@@ -906,13 +947,24 @@ def _submit_via_worktree(
             env=env,
             capture_output=True,
             text=True,
-            timeout=90,
+            # submit-validated.py sleeps out the server's rate-limit window
+            # (rate_limit_gap_sec, default 190s) before it can POST, so a 90s
+            # timeout rejects every rate-limited submission. Allow a full
+            # multi-window margin instead.
+            timeout=900,
         )
     finally:
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], stdin=subprocess.DEVNULL, capture_output=True)
+    last_line = (res.stdout or "").strip().splitlines()[-1] if (res.stdout or "").strip() else ""
+    if res.returncode == 75:
+        try:
+            signal = json.loads(last_line)
+        except ValueError:
+            signal = {}
+        raise SubmitRateLimited(int(signal.get("retry_after") or 90), str(signal.get("message") or ""))
     if res.returncode != 0:
         raise RuntimeError((res.stderr or res.stdout).strip())
-    return json.loads(res.stdout.strip().splitlines()[-1])
+    return json.loads(last_line)
 
 
 def _wait_and_fetch_score(
