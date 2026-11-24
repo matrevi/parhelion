@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import pathlib
 import sys
 import tempfile
 import unittest
@@ -14,7 +15,11 @@ CLI_DIR = Path(__file__).resolve().parents[1]
 if str(CLI_DIR) not in sys.path:
     sys.path.insert(0, str(CLI_DIR))
 
-from opsb_core.drivers.brief import MAX_BRIEF_BYTES, compose_contest_subagent_brief  # noqa: E402
+from opsb_core.drivers.brief import (  # noqa: E402
+    MAX_BRIEF_BYTES,
+    compose_contest_subagent_brief,
+    compose_session_brief,
+)
 from opsb_core.drivers.dsh_driver import DeepSeekDriver, _dsh_project_key  # noqa: E402
 from opsb_core.drivers.registry import launch_problem_session  # noqa: E402
 
@@ -207,6 +212,53 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertEqual(len(merged), 20)
             drivers_seen = {r["driver"] for r in merged}
             self.assertEqual(drivers_seen, {"antigravity", "deepseek", "codex"})
+
+
+    def test_clean_layout_briefs_encode_official_template_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ws = pathlib.Path(td) / "mat-chem-sim-pred"
+            ws.mkdir()
+            (ws / "opsb.workspace.json").write_text(
+                json.dumps(
+                    {
+                        "layout": "clean-agents-first",
+                        "title": "第二届石油和化工行业人工智能创新大赛-算子赛道",
+                        "contest_id": "mat-chem-sim-pred",
+                        "contest_url": "https://judge.invalid/public/mat-chem-sim-pred",
+                        "git_owner": "winbeau",
+                        "repo_prefix": "accel-mat",
+                        "problems": [
+                            {"title": "NeighborListPbcFixedK", "difficulty": 5, "repo_slug": "accel-mat-neighborlistpbcfixedk", "path": "NeighborListPbcFixedK", "problem_id": "p1"},
+                            {"title": "RevINNorm", "difficulty": 2, "repo_slug": "accel-mat-revinnorm", "path": "RevINNorm", "problem_id": "p2"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            for name in ("NeighborListPbcFixedK", "RevINNorm"):
+                op = ws / name
+                op.mkdir()
+                # official template layout marker used by the brief dispatcher
+                (op / "CMakeLists.txt").write_text("project(sample LANGUAGES ASC CXX)\n", encoding="utf-8")
+                (op / "run.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+                (op / "kernel.asc").write_text("// TODO\n", encoding="utf-8")
+
+            single = compose_session_brief(ws, "NeighborListPbcFixedK")
+            self.assertIn("kernel.asc", single)
+            self.assertIn("opsb test NeighborListPbcFixedK", single)
+            self.assertIn("git push origin main", single)
+            self.assertIn("parhelion_submit_gate", single)          # mentioned only as forbidden
+            self.assertIn("禁止 `opsb submit`", single)
+            self.assertLessEqual(len(single.encode("utf-8")), MAX_BRIEF_BYTES)
+
+            sprint = compose_contest_subagent_brief(ws)
+            self.assertIn("Subagent", sprint)
+            self.assertIn("NeighborListPbcFixedK", sprint)
+            self.assertIn("RevINNorm", sprint)
+            self.assertIn("SLOT-REQ", sprint)
+            self.assertIn("device0.lock", sprint)
+            self.assertIn("禁止 `opsb submit`", sprint)
+            self.assertLessEqual(len(sprint.encode("utf-8")), MAX_BRIEF_BYTES)
 
     def _seed_dsh_home(self, root: Path) -> Path:
         home = root / ".dsh"

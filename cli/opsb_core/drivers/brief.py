@@ -154,10 +154,100 @@ def _collect_kb_digest(ws: Path, title: str, detected_tags: list[str]) -> str:
     return ""
 
 
+
+def _template_layout(repo: Path) -> bool:
+    """Official judge template: CMake project + run.sh, no legacy build.sh."""
+    try:
+        return (
+            (repo / "CMakeLists.txt").is_file()
+            and (repo / "run.sh").is_file()
+            and not (repo / "build.sh").is_file()
+        )
+    except OSError:
+        return False
+
+
+def _clean_session_brief(ws: Path, title: str, meta: dict[str, Any], p_meta: dict[str, Any] | None, goal: str) -> str:
+    """Brief for one official-template problem: judge scaffold, remote-only build, push-before-test."""
+    diff = int((p_meta or {}).get("difficulty") or 2)
+    repo = str((p_meta or {}).get("repo_slug") or "")
+    lines = [
+        f"# Parhelion Kernel Session · {title} (Tier x{diff})",
+        f"- Workspace: `{ws}` | layout=clean-agents-first | repo `{repo}` (private, origin/main)",
+        "",
+        "## 官方模板所有权",
+        "- 只读：`main.asc` `sample.py` `reference.py` `CMakeLists.txt` `run.sh`（改了判题会拒绝）",
+        "- 只改：`kernel.asc`（同目录可新增 `*.asc` / `*.h`，禁止新增 `main()`）",
+        "- 输入输出/容差一律以 `sample.py` 的 OUTPUTS 与 `reference.py` 为准",
+        "",
+        "## 硬约束",
+        "- 本机没有 SDK：禁止本地编译/执行；唯一评测入口是 `opsb test " + title + "`（远端 npu，device0.lock 串行）",
+        "- 测试前必须 `git add -A && git commit -m ... && git push origin main`，否则运行时拒绝",
+        "- 禁止 `opsb submit` / `parhelion_submit_gate`：会消耗每日额度，且需要 verified=true 的成功记录",
+        "",
+        "## 迭代循环",
+        "1. 读 `main.asc` / `reference.py` 明确形状、dtype、PBC 与排序规则",
+        "2. 实现/修改 `kernel.asc`，commit 并 push `origin main`",
+        "3. `opsb test " + title + "`（如需并发，先向主控申请测试槽）",
+        "4. 读 `results/" + title + "/<sha>/validation.log`：VERIFY 失败先修正确性；通过后看 `result.json` 的 `timing_source`（profiler 时含 `MS_PROF median(us)`）",
+        "",
+        "## 汇报",
+        "- 首次 `verified=true`（kind=result）、连续 3 轮无 gain（stagnation）、线上清零（escape_zero）、需要决策（question）时用 `parhelion_agent_report`",
+        "",
+        "## 铁律",
+        "- 不改其他题目录、不动 `results/` 与 `_stale_scaffold/`、不改只读模板",
+        "- 同一错误重复 3 次必须换方案或上报，不做无意义重试",
+    ]
+    if goal.strip():
+        lines.insert(2, f"- Goal: {goal.strip()}")
+    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+
+
+def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, Any]], goal: str) -> str:
+    """Master brief: spawn one worker per problem, gate remote tests, never auto-submit."""
+    ranked = sorted(
+        (p for p in probs if p.get("title")),
+        key=lambda p: (-int(p.get("difficulty") or 2), str(p.get("title"))),
+    )
+    weighted = sum(int(p.get("difficulty") or 2) for p in ranked)
+    lines = [
+        f"# Parhelion {len(ranked)}-Operator Subagent Sprint · {ws.name}",
+        f"- Workspace: `{ws}` | layout=clean-agents-first | 难度 = 计分权重(1-5)，当前权重合计 {weighted}",
+        "- 每题一个独立 git 仓库（官方模板：`kernel.asc` 可改，`main.asc`/`sample.py`/`reference.py`/`CMakeLists.txt` 只读）",
+        "",
+        "## 资源模型（决定并发）",
+        "- 本机没有 SDK：唯一评测入口 `opsb test <Title>`，远端 npu，device0.lock 串行",
+        "- cmake 编译可并行，但**同时跑测试不超过 4 个**；其余 agent 继续写代码，不要空转重试",
+        "- 测试前必须 push 到 origin/main；禁止 `opsb submit` / `parhelion_submit_gate`（额度 + 需 verified 记录）",
+        "",
+        "## 题目与权重（先打高权重）",
+    ]
+    for p in ranked:
+        title = str(p.get("title"))
+        diff = int(p.get("difficulty") or 2)
+        repo = str(p.get("repo_slug") or "")
+        lines.append(f"- `{title}` x{diff} · `{repo}`")
+    lines += [
+        "",
+        "## 编排协议",
+        "1. 每题 spawn 一个 worker（driver 不能等于自己的 active_driver），role=kernel-impl，collab_mode=orthogonal，axis=`<kernel_pattern>/<tier>`",
+        "2. 测试闸门：worker 发 `SLOT-REQ <Title> <sha7>` → 主控最多放 4 个 `SLOT-GRANT` → worker 完成后 `SLOT-REL`；坏构建连续 3 次同因失败改为静态修复后再申请",
+        "3. worker 纪律：只改 `kernel.asc`(+同目录 `*.asc`/`*.h`)，push 后再测，读 `results/<Title>/<sha>/validation.log`，VERIFY 失败先修正确性",
+        "4. 汇聚：`verified=true` 才记录 `MS_PROF median(us)`；跨题可复用结论与反模式用 `parhelion_kb_record`（带 sha + profiler 证据）",
+        "5. 停滞（连续 3 轮无 gain）换独立方案或遣散重派；任何 ESCAPE_LOCK / 线上 WA/TLE/RE 立刻降级为只读复现",
+    ]
+    if goal.strip():
+        lines.insert(2, f"- Goal: {goal.strip()}")
+    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+
+
 def compose_session_brief(workspace: Path, problem: str, goal: str = "") -> str:
     """Compose a prompt-cache-safe `< 3 KB` first-user-message brief from score, PMU/ELF/Cold3 & Triad KB."""
     ws = workspace.expanduser().resolve()
     title, repo_dir, p_meta = resolve_problem_repo(ws, problem)
+    meta = resolve_workspace_meta(ws)
+    if _template_layout(repo_dir):
+        return _clean_session_brief(ws, title, meta, p_meta, goal)
 
     snapshot = _cfg.read_json(ws / "results" / "score-snapshot.json", {})
     snap_row = snapshot.get(title, {}) if isinstance(snapshot, dict) else {}
@@ -229,6 +319,8 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
     ws = workspace.expanduser().resolve()
     meta = resolve_workspace_meta(ws)
     probs = meta.get("problems") or []
+    if any(_template_layout(ws / str(p.get("path") or p.get("title"))) for p in probs):
+        return _clean_sprint_brief(ws, meta, probs, goal)
     snapshot = _cfg.read_json(ws / "results" / "score-snapshot.json", {})
     if not isinstance(snapshot, dict):
         snapshot = {}
