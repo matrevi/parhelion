@@ -259,7 +259,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from .parhelion_paths import atomic_write_json, get_parhelion_home, read_json_safe
+from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
 _FP_CACHE_LOADED: bool = False
@@ -717,15 +717,15 @@ class ScoreEstimator:
 
     def _load_problems(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
-        p_file = self.workspace / "bench" / "problems.json"
-        if p_file.is_file():
-            try:
-                for item in json.loads(p_file.read_text()):
-                    title = item["title"]
-                    out[title] = dict(item)
-                    out[title].setdefault("difficulty", PROBLEM_DIFFICULTY.get(title, 2))
-            except Exception:
-                pass
+        # Clean-agents-first workspaces carry the roster in opsb.workspace.json; the legacy
+        # bench/problems.json path is only the fallback. Reading a single hard-coded
+        # path made every newly scraped contest fall back to the old 10-problem roster.
+        for item in load_problem_manifest(self.workspace):
+            title = str(item.get("title") or "")
+            if not title:
+                continue
+            out[title] = dict(item)
+            out[title].setdefault("difficulty", PROBLEM_DIFFICULTY.get(title, 2))
         ev_file = self.workspace / "results" / "scoring-evidence" / "problems-all.json"
         if ev_file.is_file():
             try:

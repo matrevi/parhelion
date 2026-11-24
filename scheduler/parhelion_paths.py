@@ -258,3 +258,51 @@ def list_eligible_account_slots() -> list[dict[str, str]]:
         if ok:
             slots.append({"id": aid, "user_id": uid})
     return slots
+
+
+def load_problem_manifest(workspace: pathlib.Path | str) -> list[dict[str, Any]]:
+    """Return the canonical problem list for a workspace, independent of its layout.
+
+    `clean-agents-first` workspaces keep the manifest in `opsb.workspace.json` (written by
+    `opsb workspace init/sync-problems`); older workspaces keep `bench/problems.json`.
+    Consumers must use this instead of hard-coding either path — the scheduler used to read
+    only the legacy file, so a freshly scraped contest looked like the old 10-problem roster.
+
+    Entries are normalized to: title, path (workspace-relative), difficulty, slug,
+    repo_slug, problem_id.
+    """
+    ws = pathlib.Path(workspace).expanduser()
+    clean, clean_ok = read_json_safe(ws / "opsb.workspace.json")
+    if clean_ok and isinstance(clean, dict) and isinstance(clean.get("problems"), list) and clean["problems"]:
+        out: list[dict[str, Any]] = []
+        for item in clean["problems"]:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            title = str(item["title"])
+            slug = str(item.get("slug") or title.lower())
+            row = dict(item)
+            row.setdefault("path", item.get("path") or title)
+            row.setdefault("slug", slug)
+            row.setdefault("repo_slug", item.get("repo_slug") or "")
+            row.setdefault("difficulty", item.get("difficulty") or 2)
+            out.append(row)
+        if out:
+            return out
+
+    legacy, legacy_ok = read_json_safe(ws / "bench" / "problems.json")
+    if legacy_ok and isinstance(legacy, list):
+        out = []
+        for item in legacy:
+            if not isinstance(item, dict) or not item.get("title"):
+                continue
+            title = str(item["title"])
+            slug = str(item.get("slug") or title.lower())
+            row = dict(item)
+            row.setdefault("path", item.get("path") or f"bench/{title}")
+            row.setdefault("slug", slug)
+            row.setdefault("repo_slug", item.get("repo_slug") or f"bench-{slug}")
+            row.setdefault("difficulty", item.get("difficulty") or 2)
+            out.append(row)
+        if out:
+            return out
+    return []

@@ -1007,6 +1007,81 @@ class NpuTaskScheduler:
         wspt_base, _, wspt_prio, mlfq = self.compute_wspt(title, fast=fast, wait_sec=0)
         est_sec = 25.0 if build_only else self.est_service_sec(title, fast=fast)
         walk_script_exists = (repo / "validation" / "walk_model.py").is_file()
+        is_template = (
+            (repo / "CMakeLists.txt").is_file()
+            and (repo / "run.sh").is_file()
+            and not (repo / "build.sh").is_file()
+        )
+        if is_template:
+            plan = {
+                "title": title,
+                "sha": canonical_sha,
+                "short_sha": canonical_sha[:7] if canonical_sha else None,
+                "layout": "template",
+                "fast_lane": False,
+                "build_only": build_only,
+                "mlfq_level": "CPU" if build_only else mlfq,
+                "quantum_sec": 300 if build_only else (self.config.q0_quantum_sec if fast else 1200),
+                "est_service_sec": est_sec,
+                "wspt_priority": 0.0 if build_only else wspt_prio,
+                "phases": [
+                    {
+                        "phase": "A_REMOTE_CMAKE_BUILD",
+                        "holds_npu_die_lock": False,
+                        "heartbeat": f"~/.opsb/cpu_builds/{title}.json",
+                        "steps": [
+                            "git clone/fetch + checkout the pushed SHA on the NPU host",
+                            "cmake -S . -B build-npu (Compiler ASC, CMAKE_ASC_RUN_MODE=npu)",
+                            "cmake --build build-npu -j<N>",
+                            "python3 sample.py generate --directory build-npu",
+                        ],
+                    },
+                    {
+                        "phase": "B_DEVICE_LOCK_RUN_AND_VERIFY",
+                        "holds_npu_die_lock": True,
+                        "npu_host": self.npu_host,
+                        "steps": [
+                            "device0.lock exclusive (shared with legacy runs)",
+                            "./sample <device> under the official template",
+                            "profiler --task-time=l0 task duration capture",
+                            "python3 sample.py verify --directory build-npu",
+                        ],
+                    },
+                    {
+                        "phase": "C_ARTIFACTS",
+                        "holds_npu_die_lock": False,
+                        "steps": [
+                            "Immediate device0.lock release",
+                            "Write results/<Title>/<SHA>/{validation.log,result.json}",
+                        ],
+                    },
+                ],
+                "dry_run": dry_run,
+            }
+            if dry_run:
+                return plan
+            import importlib.util as _ilu
+
+            npu_test_path = pathlib.Path(__file__).resolve().parents[1] / "runtime" / "npu-test.py"
+            if not npu_test_path.is_file():
+                npu_test_path = self.workspace / "tools" / "npu-test.py"
+            spec = _ilu.spec_from_file_location("opsb_npu_test", str(npu_test_path))
+            if spec is None or spec.loader is None:
+                raise RuntimeError(f"Missing 3-Phase runner at {npu_test_path}")
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            res_obj = mod.run_3phase_validation(
+                title=title,
+                sha_override=sha,
+                sync_only=False,
+                fast=fast,
+                build_only=build_only,
+                pmu=pmu,
+                npu_host=self.npu_host,
+                workspace=self.workspace,
+                stream_stdout=stream_stdout,
+            )
+            return {**plan, "result": res_obj}
 
         phases: list[dict[str, Any]] = [
             {

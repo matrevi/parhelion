@@ -856,9 +856,16 @@ def _submit_via_worktree(
     account_id: str = "primary",
     session_file: str = "",
 ) -> dict[str, Any]:
-    problems = read_json(workspace / "bench" / "problems.json", [])
-    p_meta = next((p for p in problems if p["title"] == title), {"path": f"bench/{title}"})
-    repo = workspace / p_meta["path"]
+    try:
+        from scheduler.parhelion_paths import load_problem_manifest  # type: ignore
+
+        problems = load_problem_manifest(workspace)
+    except Exception:
+        problems = read_json(workspace / "bench" / "problems.json", [])
+    p_meta = next((p for p in problems if p.get("title") == title), {"path": title})
+    repo = workspace / str(p_meta.get("path") or title)
+    if not (repo / ".git").is_dir() and (workspace / "bench" / title).is_dir():
+        repo = workspace / "bench" / title
     safe_aid = re.sub(r"[^A-Za-z0-9_-]", "", account_id or "primary") or "primary"
     worktree = Path("/tmp") / f"opsb-submit-{title}-{safe_aid}"
     venv_py = workspace / ".venv" / "bin" / "python"

@@ -1156,6 +1156,268 @@ sys.exit(code)
 '''
 
 
+def expected_origin_url(workspace: Path, problem: dict) -> str:
+    """Canonical remote for a problem repo.
+
+    `opsb.workspace.json` is authoritative when present (clean-agents-first layout:
+    `git_owner` + per-problem `repo_slug`, e.g. `accel-mat-<slug>`). Workspaces without
+    that manifest keep the legacy `bench-<slug>` naming.
+    """
+    manifest_path = workspace / "opsb.workspace.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+            owner = manifest.get("git_owner") or "winbeau"
+            for entry in manifest.get("problems") or []:
+                if entry.get("title") == problem.get("title") and entry.get("repo_slug"):
+                    return f"https://gitcode.com/{owner}/{entry['repo_slug']}.git"
+        except Exception:
+            pass
+    return "https://git.invalid/bench-" + problem["slug"] + ".git"
+
+
+def load_problem_manifest(workspace: Path) -> list[dict]:
+    """Clean-layout manifest first, legacy `bench/problems.json` as fallback."""
+    clean = workspace / "opsb.workspace.json"
+    if clean.is_file():
+        try:
+            data = json.loads(clean.read_text())
+            rows = [r for r in (data.get("problems") or []) if isinstance(r, dict) and r.get("title")]
+            if rows:
+                out = []
+                for r in rows:
+                    row = dict(r)
+                    row.setdefault("path", row.get("path") or row["title"])
+                    row.setdefault("repo_slug", row.get("repo_slug") or "")
+                    out.append(row)
+                return out
+        except Exception:
+            pass
+    legacy = workspace / "bench" / "problems.json"
+    if legacy.is_file():
+        try:
+            rows = json.loads(legacy.read_text())
+            out = []
+            for r in rows:
+                row = dict(r)
+                row.setdefault("path", row.get("path") or f"bench/{row['title']}")
+                row.setdefault("repo_slug", row.get("repo_slug") or f"bench-{row.get('slug', row['title'].lower())}")
+                out.append(row)
+            return out
+        except Exception:
+            pass
+    return []
+
+
+REMOTE_TEMPLATE = r"""
+import glob, json, os, pathlib, shlex, shutil, subprocess, sys, tempfile, time, fcntl
+
+cfg = json.load(sys.stdin)
+title, sha = cfg['title'], cfg['sha']
+
+def _parse_task_durations(out_dir):
+    import csv
+    rows = []
+    # SDK 9.1 writes task_time_*.csv; older toolchains write op_summary_*.csv.
+    candidates = sorted(pathlib.Path(out_dir).rglob('task_time_*.csv')) + \
+        sorted(pathlib.Path(out_dir).rglob('op_summary_*.csv'))
+    for csv_path in candidates:
+        try:
+            with csv_path.open(newline='', encoding='utf-8', errors='replace') as fh:
+                for record in csv.DictReader(fh):
+                    keys = {str(k).strip(): k for k in (record or {}) if k}
+                    dur_key = next((k for k in keys if 'Task Duration' in k), '')
+                    if not dur_key:
+                        dur_key = next((k for k in keys if k.lower().startswith('task_time')), '')
+                    if not dur_key:
+                        continue
+                    type_key = next((k for k in keys if k.strip() in ('Task Type', 'kernel_type')), '')
+                    task_type = str(record.get(keys[type_key], '') if type_key else '').upper()
+                    if task_type and not any(tag in task_type for tag in ('AICORE', 'AI_CORE', 'AIV', 'AIC', 'MIX', 'VECTOR')):
+                        continue
+                    try:
+                        value = float(str(record[keys[dur_key]]).strip())
+                    except (TypeError, ValueError):
+                        continue
+                    if value > 0:
+                        rows.append(value)
+        except OSError:
+            continue
+    return rows
+
+
+def _profiler_path():
+    shell = (f'source {accel_env} && ' if accel_env else '') + 'command -v profiler'
+    probe = subprocess.run(['bash', '-lc', shell], capture_output=True, text=True, env=env, timeout=60)
+    hits = [ln.strip() for ln in (probe.stdout or '').splitlines() if ln.strip()]
+    if hits:
+        return hits[-1]
+    for pattern in ('/opt/toolchain/latest/sdk-*/tools/profiler/bin/profiler',
+                    '/opt/driver//opt/toolchain/*/tools/profiler/bin/profiler',
+                    '/opt/driver/*/tools/profiler/bin/profiler'):
+        found = sorted(glob.glob(pattern))
+        if found:
+            return found[-1]
+    return shutil.which('profiler') or ''
+
+
+def _run_profiler(repo, build_dir, application, pmu, out_dir):
+    # Profile one ./sample invocation; return Task Duration stats (us).
+    profiler = _profiler_path()
+    if not profiler:
+        print('[TEMPLATE] profiler not found; keeping wall-clock timing', flush=True)
+        return {}
+    shutil.rmtree(out_dir, ignore_errors=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    flags = ['--task-time=l1' if pmu else '--task-time=l0',
+             '--ai-core=on' if pmu else '--ai-core=off',
+             '--aicpu=off', '--accl=off', '--runtime-api=off']
+    if pmu:
+        flags.append('--aic-metrics=PipeUtilization')
+    cmd = [profiler, f'--application={application}', f'--output={out_dir}', *flags]
+    print(f'[TEMPLATE] profiler profiling: {" ".join(cmd)}', flush=True)
+    shell_cmd = (f'source {accel_env} && ' if accel_env else '') + ' '.join(shlex.quote(part) for part in cmd)
+    proc = subprocess.run(['bash', '-lc', shell_cmd], cwd=str(build_dir), env=env,
+                          capture_output=True, text=True, timeout=600)
+    tail = (proc.stdout or '') + (proc.stderr or '')
+    for line in tail.splitlines()[-8:]:
+        print('[TEMPLATE][profiler] ' + line, flush=True)
+    durations = _parse_task_durations(out_dir)
+    if not durations:
+        print('[TEMPLATE] profiler produced no AI Core task durations', flush=True)
+        return {}
+    durations.sort()
+    mid = len(durations) // 2
+    median = durations[mid] if len(durations) % 2 else (durations[mid - 1] + durations[mid]) / 2.0
+    return {'profiler_us_median': round(median, 3), 'profiler_us_min': round(durations[0], 3),
+            'profiler_us_max': round(durations[-1], 3), 'profiler_samples': len(durations)}
+root = pathlib.Path(cfg['remote_root'])
+repo = root / title
+build_dir = repo / 'build-npu'
+accel_env = cfg.get('accel_env') or ''
+soc = cfg.get('soc') or 'soc-a'
+device_id = cfg.get('device_id', 0)
+arch = cfg.get('arch') or 'arch-v1'
+jobs = int(cfg.get('jobs') or 8)
+
+env = os.environ.copy()
+env['GIT_TERMINAL_PROMPT'] = '0'
+
+def sh(cmd, cwd=None, check=True, timeout=None):
+    proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env,
+                          capture_output=True, text=True, timeout=timeout)
+    for stream, sink in ((proc.stdout, sys.stdout), (proc.stderr, sys.stderr)):
+        if stream:
+            sink.write(stream)
+            sink.flush()
+    if check and proc.returncode != 0:
+        print(f'[TEMPLATE] command failed ({proc.returncode}): {" ".join(cmd)}', flush=True)
+        raise SystemExit(proc.returncode or 1)
+    return proc
+
+def bash(script, cwd=None, check=True, timeout=None):
+    return sh(['bash', '-lc', (f'source {accel_env} && ' if accel_env else '') + script],
+              cwd=cwd, check=check, timeout=timeout)
+
+with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
+    askpass = pathlib.Path(auth) / 'askpass.py'
+    askpass.write_text(
+        '#!/usr/bin/env python3\nimport os,sys\n'
+        'print(os.environ["TASK_GIT_USERNAME" if "username" in sys.argv[1].lower() else "TASK_GIT_PASSWORD"])\n'
+    )
+    askpass.chmod(0o700)
+    env.update(GIT_ASKPASS=str(askpass),
+               TASK_GIT_USERNAME=cfg.pop('username', ''),
+               TASK_GIT_PASSWORD=cfg.pop('password', ''))
+
+    if not (repo / '.git').is_dir():
+        root.mkdir(parents=True, exist_ok=True)
+        print(f'[TEMPLATE] cloning {cfg["url"]} -> {repo}', flush=True)
+        sh(['git', 'clone', cfg['url'], str(repo)])
+    sh(['git', 'fetch', 'origin', '--prune'], cwd=repo)
+    sh(['git', 'checkout', '--detach', '--force', sha], cwd=repo)
+
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    t_a = time.monotonic()
+    print('[TEMPLATE] cmake configure', flush=True)
+    bash(f'cmake -S . -B build-npu -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
+    print(f'[TEMPLATE] cmake build (-j{jobs})', flush=True)
+    bash(f'cmake --build build-npu --parallel {jobs}', cwd=repo)
+    print('[TEMPLATE] generating sample data', flush=True)
+    bash('python3 sample.py generate --directory build-npu', cwd=repo)
+    phase_a = round(time.monotonic() - t_a, 3)
+
+    metrics = {'layout': 'template', 'phase_a_cpu_sec': phase_a, 'soc': soc}
+    if cfg.get('build_only'):
+        metrics['build_only'] = True
+        print('OPSB_PHASE_METRICS ' + json.dumps(metrics), flush=True)
+        raise SystemExit(0)
+
+    lock_path = pathlib.Path(cfg['device_lock'])
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        t_b = time.monotonic()
+        bash(f'cd build-npu && ./sample {device_id}', cwd=repo)
+        run_wall = round(time.monotonic() - t_b, 3)
+        prof = {}
+        if cfg.get('profiler', True):
+            prof = _run_profiler(repo, build_dir, f'./sample {device_id}', bool(cfg.get('pmu')), build_dir / 'prof')
+        verified = True
+        try:
+            bash('python3 sample.py verify --directory build-npu', cwd=repo)
+        except SystemExit:
+            verified = False
+
+    print(f'RUNTIME_SOC={soc}')
+    if prof:
+        print(f'MS_PROF case={title} median={prof["profiler_us_median"]:.1f} min={prof["profiler_us_min"]:.1f}')
+        metrics.update(npu_exec_sec=round(prof['profiler_us_median'] / 1e6, 6), timing_source='profiler', **prof)
+    else:
+        # Without hardware counters we refuse to fabricate an MS_PROF row: a wall-clock number
+        # would be treated as device evidence by parse_validation_perf.
+        metrics.update(npu_exec_sec=run_wall, timing_source='wall')
+    print(f'[TEMPLATE] run_wall_sec={run_wall} verified={verified} timing_source={metrics["timing_source"]}')
+    metrics.update(verified=verified)
+    print('OPSB_PHASE_METRICS ' + json.dumps(metrics), flush=True)
+    raise SystemExit(0 if verified else 2)
+"""
+
+
+def _remote_root_for(workspace: Path, manifest: dict) -> str:
+    """Remote contest root: manifest override, else /home/developer/work/<contest>."""
+    override = str(manifest.get("npu_remote_root") or "").strip()
+    if override:
+        return override.rstrip("/")
+    name = str(manifest.get("contest_id") or "").strip() or workspace.name
+    return f"/home/developer/work/{name}"
+
+
+def _stream_remote(script: str, cfg: dict, destination: Path, log_basename: str, stream_stdout: bool) -> tuple[int, dict]:
+    """Run the remote helper over ssh, teeing its log and capturing OPSB_PHASE_METRICS."""
+    remote_metrics: dict = {}
+    with (destination / (log_basename + ".log")).open("w", encoding="utf-8") as log:
+        proc = subprocess.Popen(
+            ["ssh", "-o", "BatchMode=yes", cfg["npu_host"], "python3 -c " + shlex.quote(script)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        proc.stdin.write(json.dumps(cfg))
+        proc.stdin.close()
+        for line in proc.stdout:
+            if line.startswith("OPSB_PHASE_METRICS "):
+                try:
+                    remote_metrics = json.loads(line[len("OPSB_PHASE_METRICS "):].strip())
+                except Exception:
+                    pass
+                continue
+            log.write(line)
+            log.flush()
+            if stream_stdout:
+                print(line, end="", flush=True)
+        return proc.wait(), remote_metrics
+
 def run_3phase_validation(
     title: str,
     sha_override: str | None = None,
@@ -1168,7 +1430,7 @@ def run_3phase_validation(
     workspace: Path = ROOT,
     stream_stdout: bool = True,
 ) -> dict:
-    problems = json.loads((workspace / "bench/problems.json").read_text())
+    problems = load_problem_manifest(workspace)
     problem = next((p for p in problems if p["title"] == title), None)
     if problem is None:
         raise ValueError(f"Unknown title: {title}")
@@ -1176,7 +1438,7 @@ def run_3phase_validation(
     repo = workspace / problem["path"]
     if not sha_override and git(repo, "status", "--porcelain"):
         raise RuntimeError("Commit local changes before server validation")
-    url = "https://git.invalid/bench-" + problem["slug"] + ".git"
+    url = expected_origin_url(workspace, problem)
     if git(repo, "remote", "get-url", "origin") != url:
         raise RuntimeError("Unexpected local origin")
 
@@ -1237,6 +1499,47 @@ def run_3phase_validation(
     )
 
     t_start = datetime.datetime.now(datetime.timezone.utc)
+
+    # Official-template layout (CMakeLists.txt + run.sh + kernel.asc, no build.sh): the judge
+    # scaffold is its own CMake project, so the legacy build.sh/examples pipeline sdkot run.
+    manifest_doc: dict = {}
+    try:
+        manifest_path = workspace / "opsb.workspace.json"
+        if manifest_path.is_file():
+            manifest_doc = json.loads(manifest_path.read_text())
+    except Exception:
+        manifest_doc = {}
+    if (repo / "CMakeLists.txt").is_file() and (repo / "run.sh").is_file() and not (repo / "build.sh").is_file():
+        template_cfg = dict(cfg)
+        template_cfg.update(
+            npu_host=npu_host,
+            remote_root=_remote_root_for(workspace, manifest_doc),
+            device_lock="/srv/work-device0.lock",
+            accel_env=os.environ.get("OPSB_TOOLCHAIN_ENV", "/opt/toolchain/latest/set_env.sh"),
+            device_id=str(os.environ.get("OPSB_DEVICE_ID", "0")),
+            arch=os.environ.get("NPU_ARCH", "arch-v1"),
+            soc=os.environ.get("OPSB_RUNTIME_SOC", "soc-a"),
+            jobs=str(os.environ.get("OPSB_BUILD_JOBS", "8")),
+            build_only=build_only,
+        )
+        for legacy_only in ("fast", "cold3", "pmu", "mlfq", "wspt_base", "aging_tau", "branch_ref", "sync_only"):
+            template_cfg.pop(legacy_only, None)
+        code, template_metrics = _stream_remote(
+            REMOTE_TEMPLATE, template_cfg, destination, log_basename, stream_stdout
+        )
+        finished_at = datetime.datetime.now(datetime.timezone.utc)
+        result = dict(
+            title=problem["title"], sha=sha, exit_code=code, layout="template",
+            fast_lane=False, build_only=build_only, mlfq_level="CPU" if build_only else "Q1",
+            wall_sec=round((finished_at - t_start).total_seconds(), 2),
+            finished_at=finished_at.isoformat(),
+        )
+        for k in ("phase_a_cpu_sec", "npu_exec_sec", "timing_source", "verified", "soc", "build_only"):
+            if template_metrics.get(k) is not None:
+                result[k] = template_metrics[k]
+        (destination / res_basename).write_text(json.dumps(result, indent=2) + "\n")
+        return result
+
     remote_metrics: dict = {}
     with (destination / (log_basename + ".log")).open("w", encoding="utf-8") as log:
         proc = subprocess.Popen(

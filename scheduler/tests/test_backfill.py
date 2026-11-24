@@ -945,7 +945,19 @@ class SpecPlaceholderTest(unittest.TestCase):
 
 
 
-@unittest.skipUnless((REAL_WORKSPACE / "bench" / "problems.json").is_file(), "real workspace unavailable")
+# The live-workspace invariants below assert the ops-bench fixture set (ConcatD …), not just
+# "some manifest exists": pointing the active workspace at another contest must skip them
+# instead of failing on unknown titles.
+_LIVE_FIXTURE_TITLES = ("ConcatD", "PadV3Grad", "ConfusionTransposeD")
+
+
+def _has_live_fixtures() -> bool:
+    if not (REAL_WORKSPACE / "bench" / "problems.json").is_file():
+        return False
+    return all((BENCH_SPECS / t / "cases_perf.json").is_file() for t in _LIVE_FIXTURE_TITLES)
+
+
+@unittest.skipUnless(_has_live_fixtures(), "ops-bench live fixtures unavailable")
 class RealWorkspaceReadOnlyTest(unittest.TestCase):
     """Read-only invariants against the live 10-operator workspace (never writes state/)."""
 
