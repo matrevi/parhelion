@@ -713,6 +713,14 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
             receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file)
             invalidate_ttl_cache("remote_judge")
             invalidate_ttl_cache("scheduler_bridge")
+            try:
+                from scheduler.feedback_log import log_feedback  # type: ignore
+
+                log_feedback(workspace, "submit", title=title, sha=sha[:7], account_id=aid,
+                             submission_id=receipt.get("submission_id"),
+                             existing=bool(receipt.get("existing")))
+            except Exception:
+                pass
             if receipt.get("existing"):
                 early_out_rec = {
                     **record,
@@ -741,8 +749,15 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                 "status": "rejected",
                 "account_id": aid,
                 "account_label": acc_label,
-                "detail": str(exc)[:400],
+                "detail": str(exc)[:2000],
             }
+            try:
+                from scheduler.feedback_log import log_feedback  # type: ignore
+
+                log_feedback(workspace, "submit_error", title=title, sha=sha[:7],
+                             detail=str(exc)[:2000], account_id=aid)
+            except Exception:
+                pass
             with io_lock_path.open("a") as iolf:
                 fcntl.flock(iolf, fcntl.LOCK_EX)
                 try:

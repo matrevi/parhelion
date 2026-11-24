@@ -902,7 +902,28 @@ class SubmissionGate:
                 prefix_match = v
         return prefix_match
 
-    def evaluate(
+    def evaluate(self, *args, **kwargs):
+        """Public entry: evaluate, then durably record the verdict for later analysis."""
+        verdict = self._evaluate_impl(*args, **kwargs)
+        try:
+            from .feedback_log import log_feedback
+
+            log_feedback(
+                self.workspace,
+                "gate",
+                title=verdict.title,
+                sha=verdict.sha[:7],
+                status=verdict.status_tag,
+                approved=verdict.approved,
+                stages=[s.code for s in verdict.stages],
+                reason=verdict.gate_reason,
+                probe=next((s.metrics for s in verdict.stages if s.code == "PROBE_ALLOWANCE"), None),
+            )
+        except Exception:
+            pass
+        return verdict
+
+    def _evaluate_impl(
         self,
         title: str,
         sha: str | None = None,
