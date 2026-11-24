@@ -133,7 +133,7 @@ class RestoreRegimeGateTest(unittest.TestCase):
                 json.dumps({"StridedSliceGrad": {"score": 66.83, "status": "Pass"}}),
                 encoding="utf-8",
             )
-            gate = SubmissionGate(ws, config=GateConfig(noise_floor_pts=1.9, min_closing_reserve=2))
+            gate = SubmissionGate(ws, config=GateConfig(noise_floor_pts=1.9, min_closing_reserve=2, probe_submissions_per_problem=0))
             ledger = _fake_ledger("StridedSliceGrad", current_score=66.83, best_score=72.13, best_sha=best_sha)
 
             # 1. Non-best candidate est=70.40 < best=72.13 (even though +3.57 > cur and explore_eligible=True) -> HELD!

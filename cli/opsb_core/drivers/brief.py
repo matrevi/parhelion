@@ -234,7 +234,7 @@ def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, An
         "- **禁止派 claude worker**，除非管理员提示词明确同意（`PARHELION_ALLOW_CLAUDE_WORKERS=1` 或 config `allow_claude_workers`）；外部池已按该策略过滤",
         "",
         "## 阶段 0：先派 bench 作者（冷启动，未提交前）",
-        "- 工作区尚无提交且 `bench-specs/<Title>/cases_perf.json` 缺失时，**每题先派一个 agent** 写本地 bench 桶（`compose_bench_author_brief`），再谈提交",
+        "- 逐题检查 bench-specs/<Title>/cases_perf.json；hidden_buckets 为空时先派 role=bench-author，以官方样例为基线补充本题测试",
         "- bench 作者只写 bench-specs 目录，不改 kernel；产出用于给 50 例桶排序，不消耗判题额度",
         "",
         "## 编排协议",
@@ -259,7 +259,7 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
     ws = workspace.expanduser().resolve()
     title, repo_dir, p_meta = resolve_problem_repo(ws, problem)
     diff = int((p_meta or {}).get("difficulty") or 2)
-    spec = f"~/.parhelion/workspaces/<ws-id>/bench-specs/{title}/cases_perf.json"
+    spec = _cfg.workspace_bench_specs_dir(ws) / title / "cases_perf.json"
     lines = [
         f"# Bench Bucket Author · {title} (Tier x{diff})",
         f"- Repo: `{repo_dir.name}` | 只读模板，**不要改 kernel.asc**（这个 agent 只写 bench 规格）",
@@ -270,12 +270,12 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
         "   - 小/中/大三档 + 边界形状（空张量、单元素、非对齐尾块、极端属性）",
         "   - 每个 case 写明输入 shapes/dtype/attrs 与权重，**只依据语义推导**，不要猜隐藏用例",
         "2. 生成 8–14 个 case（至少覆盖：gate 样例形状、一个接近 UB 上限的大形状、一个尾块不对齐）",
-        "3. 每个 case 用 `opsb bench run <Title> --case <id>` 在远端跑一次，把 profiler 中位数写入 `measured_us`",
+        "3. 按 reference.impl 写可重复的输入和断言，先在本地运行；只有验证日志含该桶的 profiler 时才填实测耗时",
         "4. 若某形状会超出 UB/编译失败，标注 `skip_reason` 而不是删除，方便后续判断 strata",
         "",
         "## 输出",
         "- `cases_perf.json`：problem/version/protocol/hardware_roofline 沿用 ops-bench 格式；",
-        "  `cases: [{id, weight_pts, shapes, dtype, attrs, measured_us, skip_reason?}]`",
+        "  保留 public_anchors，在 hidden_buckets 数组追加 id、stratum、shapes、dtype、attrs、description；未测耗时留空",
         "- 一段 5 行内说明：覆盖了哪些形状族、哪些没覆盖、预估隐藏集风险",
         "",
         "## 约束",

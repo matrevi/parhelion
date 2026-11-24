@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from .. import config as _cfg
 from ..drivers.base import resolve_session_logs_dir
-from ..drivers.brief import prepare_session_worktree, resolve_problem_repo
+from ..drivers.brief import compose_bench_author_brief, prepare_session_worktree, resolve_problem_repo
 from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
@@ -450,6 +450,8 @@ class AgentMeshManager:
             f"`stagnation` (6 consecutive attempts without gain), `escape_zero` (online WA/TLE/RE zero), `question`, or final `result`.\n\n"
             f"Task:\n{task.strip()}"
         )
+        if safe_role == "bench-author" and prob_title:
+            worker_prompt = compose_bench_author_brief(ws, prob_title) + "\n\n" + task.strip()
         rec = store.create_agent({
             "agent_id": agent_id,
             "driver": drv_kind,

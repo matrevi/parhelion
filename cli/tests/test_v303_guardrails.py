@@ -211,7 +211,7 @@ def test_per_operator_inflight_mutex_python_auto_dispatch_and_drain(iso_ph: Path
     m_spawn.assert_not_called()
     out = json.loads(buf.getvalue())
     assert out["enqueued"] is True
-    assert out["dispatched"]["deferred_operator_inflight"] is True
+    assert "dispatched" not in out
 
     # 2. `spawn_jump_submit(..., enforce_operator_mutex=True)` also enforces mutex directly for different SHA
     with mock.patch("opsb_core.services.submit_runner.compute_account_slots", return_value=[{"id": "primary", "label": "主账号", "enabled": True, "logged_in": True, "phase": "idle", "cooldown_remaining_sec": 0, "used_today": 1, "daily_limit": 50, "remaining_today": 49, "quota_exhausted": False}]):
@@ -245,7 +245,7 @@ def test_per_operator_inflight_mutex_python_auto_dispatch_and_drain(iso_ph: Path
     ):
         rc_other = run_submit(ns_other)
     assert rc_other == 0
-    m_other.assert_called_once()
+    m_other.assert_not_called()
 
     # 5. `SchedulerEngine.drain(dry_run=True)` also holds `StridedSliceGrad` under `INFLIGHT_MUTEX` while letting `PadV3Grad` proceed
     eng = SchedulerEngine(workspace=ws, state_dir=tmp_path / "sched_st")

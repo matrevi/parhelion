@@ -64,7 +64,7 @@ def needs_score_backfill(row: dict[str, Any]) -> bool:
 def collapse_reconciled_outcomes(outcome_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse superseded `sync_error` / `score=None` rows when a later row exists for the same `submission_id`."""
     best_idx_by_sid: dict[str, int] = {}
-    best_rank_by_sid: dict[str, tuple[int, int]] = {}
+    best_rank_by_sid: dict[str, tuple[int, int, int]] = {}
     for idx, row in enumerate(outcome_rows):
         sid = str(row.get("submission_id") or "").strip()
         if not sid:
@@ -72,7 +72,7 @@ def collapse_reconciled_outcomes(outcome_rows: list[dict[str, Any]]) -> list[dic
         st = str(row.get("status") or "").strip()
         has_verdict = 1 if (st in TERMINAL_JUDGE_STATUSES and not is_sync_error_outcome(row)) else 0
         has_score = 1 if (row.get("score") is not None) else 0
-        rank = (has_verdict, has_score)
+        rank = (has_verdict, int(row.get("source") != "judge-reconcile"), has_score)
         prev = best_rank_by_sid.get(sid)
         if prev is None or rank >= prev:
             best_rank_by_sid[sid] = rank

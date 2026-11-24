@@ -87,7 +87,6 @@ extension ContestStore {
         }
         clearColdError()
         pruneSettling(confirmedAt: fetchStartedAt)
-        scheduleAutoConsume(localSnap)
         Task { [weak self] in await self?.reloadBackfillStatusIfNeeded(localSnap) }
     }
 
@@ -103,18 +102,6 @@ extension ContestStore {
         Task { [weak self] in
             await self?.refreshLocal(force: false)
             self?.isFetchingColdFromETag = false
-        }
-    }
-
-    func scheduleAutoConsume(
-        _ snap: SupervisorSnapshot,
-        livePipeline: LivePipelineState? = nil,
-        liveCooldownRem: Int? = nil
-    ) {
-        guard autoConsumeTask == nil, !isLaunchingSubmit else { return }
-        autoConsumeTask = Task { [weak self] in
-            await self?.maybeAutoConsumeTopCandidate(snap, livePipeline: livePipeline, liveCooldownRem: liveCooldownRem)
-            self?.autoConsumeTask = nil
         }
     }
 
@@ -159,14 +146,6 @@ extension ContestStore {
         let etagChanged = !frame.coldEtag.isEmpty && frame.coldEtag != lastColdETag
         if etagChanged || (!frame.coldEtag.isEmpty && wsMismatch) {
             scheduleColdRefreshFromETag()
-        }
-        let coldStale = isFetchingColdFromETag || isRefreshingLocal || etagChanged || wsMismatch
-        if !coldStale, let snap = snapshot, effectiveAutoConsumer(hot: frame.schedulerHot.autoConsumerEnabled) {
-            scheduleAutoConsume(
-                snap,
-                livePipeline: frame.pipeline,
-                liveCooldownRem: frame.schedulerHot.cooldownRemainingSec
-            )
         }
     }
 

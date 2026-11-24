@@ -25,7 +25,6 @@ from .inflight_io import (
     read_inflight,
     reap_inflight_if_stale,
     write_inflight_atomic,
-    write_inflight_unless_owned,
 )
 from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STATUSES
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
@@ -108,12 +107,13 @@ def compute_account_slots(
                 today_sids_by_aid[aid].add(sid)
 
     now_ep = utc_now().timestamp()
+    observed_wait = judge_cooldown_remaining(workspace)
     slots: list[dict[str, Any]] = []
     for a in accounts:
         aid = str(a["id"])
         last_ep = last_epoch_by_aid.get(aid, 0.0)
-        ends_ep = (last_ep + gap_sec) if last_ep > 0 else 0.0
-        rem = max(0, int(round(ends_ep - now_ep)))
+        ends_ep = now_ep + observed_wait if observed_wait else 0.0
+        rem = observed_wait
         inf_path = inflight_file_for(aid)
         phase = "idle"
         active_title = None
@@ -413,7 +413,6 @@ def spawn_jump_submit(
     enforce_operator_mutex: bool = False,
     pipeline: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    slots = compute_account_slots(workspace)
     # Workspace-wide dispatch gate: the UI asks to submit every queued problem at once. Only
     # one may enter the send path; the rest must stay "pending" instead of showing 提交中.
     results_dir = workspace / "results"
@@ -424,20 +423,17 @@ def spawn_jump_submit(
         except BlockingIOError:
             return {"ok": False, "deferred": True, "reason": "busy",
                     "error": "另一个题目正在发送中，本条保持排队"}
-        try:
-            if submissions_frozen(workspace):
-                return {"ok": False, "deferred": True, "reason": "frozen",
-                        "error": "提交已冻结（results/.submit-freeze），修复队列后删除该文件恢复"}
-            cooling = judge_cooldown_remaining(workspace)
-            if cooling > 0:
-                return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling,
-                        "error": f"判题器冷却中，{cooling}s 后再试"}
-            return _spawn_jump_submit_locked(
-                opsb_bin, workspace, title, sha, note, account_id=account_id, force=force,
-                enforce_operator_mutex=enforce_operator_mutex, pipeline=pipeline, slots=slots,
-            )
-        finally:
-            fcntl.flock(dlf, fcntl.LOCK_UN)
+        if submissions_frozen(workspace):
+            return {"ok": False, "deferred": True, "reason": "frozen",
+                    "error": "提交已冻结（results/.submit-freeze），修复队列后删除该文件恢复"}
+        cooling = judge_cooldown_remaining(workspace)
+        if cooling > 0:
+            return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling,
+                    "error": f"判题器冷却中，{cooling}s 后再试"}
+        return _spawn_jump_submit_locked(
+            opsb_bin, workspace, title, sha, note, account_id=account_id, force=force,
+            enforce_operator_mutex=enforce_operator_mutex, pipeline=pipeline, dispatch_fd=dlf.fileno(),
+        )
 
 
 def _spawn_jump_submit_locked(
@@ -450,9 +446,9 @@ def _spawn_jump_submit_locked(
     force: bool = False,
     enforce_operator_mutex: bool = False,
     pipeline: dict[str, Any] | None = None,
-    slots: list[dict[str, Any]] | None = None,
+    *, dispatch_fd: int,
 ) -> dict[str, Any]:
-    slots = slots if slots is not None else compute_account_slots(workspace)
+    slots = compute_account_slots(workspace)
     # Global anti-collision guard: NEVER let two teammate accounts submit the exact same (title, sha)
     # while it is already packaging/uploading/waiting OR already submitted & still running remotely!
     for s in slots:
@@ -513,7 +509,7 @@ def _spawn_jump_submit_locked(
                 "duplicate_terminal": True,
                 "error": f"{title} ({sha[:7]}) 已上传 (sid={sid[:8]}) 但同步中断，等待自动补偿同步，禁止重复提交",
             }
-        terminal_statuses = TERMINAL_JUDGE_STATUSES | {"skipped"}
+        terminal_statuses = TERMINAL_JUDGE_STATUSES | {"skipped", "blocked_compliance"}
         for o in reversed(outcomes_all):
             if o.get("title") != title or not str(o.get("sha") or "").lower().startswith(sha7_low):
                 continue
@@ -589,7 +585,10 @@ def _spawn_jump_submit_locked(
                 aid,
                 "--workspace",
                 str(workspace),
+                *(["--force"] if force else []),
             ],
+            pass_fds=(dispatch_fd,),
+            env={**os.environ, "OPSB_DISPATCH_FD": str(dispatch_fd)},
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
@@ -597,20 +596,6 @@ def _spawn_jump_submit_locked(
             close_fds=True,
         )
 
-    # Atomic + owner-aware: the worker (same pid) may already have advanced past `packaging`.
-    write_inflight_unless_owned(
-        inf_path,
-        {
-            "pid": proc.pid,
-            "workspace": str(workspace),
-            "title": title,
-            "sha": sha,
-            "account_id": aid,
-            "account_label": chosen["label"],
-            "started_at": utc_now().isoformat(),
-            "phase": "packaging",
-        },
-    )
     invalidate_ttl_cache("scheduler_bridge")
     invalidate_ttl_cache("remote_judge")
     return {
@@ -644,15 +629,15 @@ def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: st
         pass
 
 
-def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary") -> int:
-    """Single-entry dispatch: one submission in flight per workspace, judge cooldown respected.
-
-    The UI dispatches every queued problem at once; without this gate they all raced the
-    judge and each other, so every burst ended in 429s and a round of "本地拦截".
-    """
+def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary", force: bool = False) -> int:
+    """Claim one upload; remote polling continues after releasing the claim."""
     results_dir = workspace / "results"
     results_dir.mkdir(parents=True, exist_ok=True)
-    with (results_dir / ".submit-dispatch.lock").open("a") as dlf:
+    lock_path = results_dir / ".submit-dispatch.lock"
+    inherited_fd = os.environ.pop("OPSB_DISPATCH_FD", None)
+    with (os.fdopen(int(inherited_fd), "a") if inherited_fd else lock_path.open("a")) as dlf:
+        if not os.path.samestat(os.fstat(dlf.fileno()), lock_path.stat()):
+            raise ValueError("dispatch lock does not belong to workspace")
         try:
             fcntl.flock(dlf, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -669,24 +654,19 @@ def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, acco
                 except Exception:
                     pass
                 return 4
-            return _run_worker_submit_locked(workspace, title, sha, note, account_id=account_id)
+            return _run_worker_submit_locked(workspace, title, sha, note, account_id, force, dlf.fileno())
         finally:
             fcntl.flock(dlf, fcntl.LOCK_UN)
 
 
-def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary") -> int:
-    """Detached consumer: holds per-account lock ONLY for cooldown wait + local pack/upload.
-
-    Each enabled teammate account obeys its own independent 190s platform cooldown and session file.
-    """
+def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, account_id: str, force: bool, dispatch_fd: int) -> int:
+    """Serialize upload claims and publish receipts before parallel polling."""
     results_dir = workspace / "results"
     aid = (account_id or "primary").strip() or "primary"
     accounts = list_judge_accounts()
     slot_meta = next((a for a in accounts if a.get("id") == aid), {"id": aid, "label": "主账号", "session_file": ""})
     acc_label = str(slot_meta.get("label") or aid)
     session_file = str(slot_meta.get("session_file") or "")
-    uid_to_aid = {str(a.get("user_id")): str(a["id"]) for a in accounts if a.get("user_id")}
-
     lock_path = lock_file_for(workspace, aid)
     io_lock_path = results_dir / ".submit-queue-io.lock"
     inf_path = inflight_file_for(aid)
@@ -699,7 +679,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
     receipt: dict[str, Any] | None = None
     early_out_rec: dict[str, Any] | None = None
 
-    # Phase 1 (locked per account): claim queue record, wait THIS account's 190s cooldown, pack & upload
+    # Hold the claim until the judge acknowledges the upload.
     with lock_path.open("a") as lf:
         try:
             fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -726,6 +706,11 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                     pass
                 return 4
 
+            from ..ipc_bridge import invoke_bridge
+            gate_args = ["--title", title, "--sha", sha, "--note", note] + (["--force"] if force else [])
+            verdict = invoke_bridge(workspace, "evaluate", gate_args)
+            if not verdict or not verdict.get("approved"):
+                return 4
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging", aid, acc_label)
 
             # Reuse existing pending queue entry if present, otherwise append audit record
@@ -751,47 +736,14 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                             "note": note,
                             "queued_at": started_iso,
                             "status": "queued",
-                            "force": True,
+                            "force": force,
                         }
                         with queue_path.open("a", encoding="utf-8") as qf:
                             qf.write(json.dumps(record, ensure_ascii=False) + "\n")
                 finally:
                     fcntl.flock(iolf, fcntl.LOCK_UN)
 
-            # Respect THIS account's 190s platform rate-limit across receipts AND outcomes
-            last_epoch = 0.0
-            for r_file in results_dir.glob("*/*/submission-receipt.json"):
-                rd = read_json(r_file, {})
-                r_aid = str(rd.get("account_id") or "") or uid_to_aid.get(str(rd.get("user_id") or ""), "primary")
-                if r_aid != aid:
-                    continue
-                dt = parse_iso(rd.get("submitted_at"))
-                if dt:
-                    last_epoch = max(last_epoch, dt.timestamp())
-            for o in read_jsonl(outcome_path):
-                if o.get("status") not in ("rejected", "skipped", "duplicate") and o.get("submission_id"):
-                    o_aid = str(o.get("account_id") or "primary")
-                    if o_aid != aid:
-                        continue
-                    dt = parse_iso(o.get("submitted_at") or o.get("finished_at"))
-                    if dt:
-                        last_epoch = max(last_epoch, dt.timestamp())
-            if MIN_RATE_GAP_SEC > 0 and last_epoch > 0:
-                wait_s = MIN_RATE_GAP_SEC - (utc_now().timestamp() - last_epoch)
-                if wait_s > 0:
-                    _write_inflight_phase(title, sha, workspace, started_iso, "waiting_cooldown", aid, acc_label)
-                    prev_handler = signal.getsignal(signal.SIGTERM)
-
-                    def _on_cancel_wait(_sig: int, _frame: Any) -> None:
-                        raise _CooldownReservationCancelled()
-
-                    signal.signal(signal.SIGTERM, _on_cancel_wait)
-                    try:
-                        time.sleep(wait_s)
-                    finally:
-                        signal.signal(signal.SIGTERM, prev_handler)
-
-            # Guard against race where `opsb queue skip` landed while sleeping in waiting_cooldown
+            # A manual skip may arrive after the worker claimed the queue row.
             sha7_low = sha[:7].lower()
             skipped_during_wait = any(
                 o.get("title") == title
@@ -804,7 +756,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                 raise _CooldownReservationCancelled()
 
             _write_inflight_phase(title, sha, workspace, started_iso, "uploading", aid, acc_label)
-            receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file)
+            receipt = _submit_via_worktree(workspace, title, sha, account_id=aid, session_file=session_file, force=force)
             if JUDGE_SUBMIT_GAP_SEC > 0:
                 set_judge_cooldown(workspace, JUDGE_SUBMIT_GAP_SEC, "pacing after successful submit")
             invalidate_ttl_cache("remote_judge")
@@ -817,23 +769,6 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                              existing=bool(receipt.get("existing")))
             except Exception:
                 pass
-            if receipt.get("existing"):
-                early_out_rec = {
-                    **record,
-                    "finished_at": utc_now().isoformat(),
-                    "status": "duplicate",
-                    "submission_id": receipt["submission_id"],
-                    "account_id": aid,
-                    "account_label": acc_label,
-                }
-                with io_lock_path.open("a") as iolf:
-                    fcntl.flock(iolf, fcntl.LOCK_EX)
-                    try:
-                        with outcome_path.open("a", encoding="utf-8") as of:
-                            of.write(json.dumps(early_out_rec, ensure_ascii=False) + "\n")
-                    finally:
-                        fcntl.flock(iolf, fcntl.LOCK_UN)
-                invalidate_ttl_cache("scheduler_bridge")
         except _CooldownReservationCancelled:
             early_out_rec = {"cancelled": True}
             invalidate_ttl_cache("scheduler_bridge")
@@ -855,7 +790,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             # Attach the child's step trace: an rc=0/no-output child left no other evidence.
             trace_tail = ""
             try:
-                lines = pathlib.Path("/tmp/opsb-submit-trace.log").read_text(errors="replace").splitlines()[-6:]
+                lines = (workspace / "results" / title / sha / "submit-trace.log").read_text(errors="replace").splitlines()[-6:]
                 trace_tail = " | trace: " + " ; ".join(ln[:120] for ln in lines)
             except OSError:
                 pass
@@ -890,6 +825,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
     if early_out_rec is not None or receipt is None or record is None:
         return 0
 
+    fcntl.flock(dispatch_fd, fcntl.LOCK_UN)
     # Phase 2 (lock-free): poll remote Judge to terminal status using the submitting account's session
     sub_id = receipt["submission_id"]
     submitted_at = str(receipt.get("submitted_at") or utc_now().isoformat())
@@ -1038,6 +974,7 @@ def _submit_via_worktree(
     sha: str,
     account_id: str = "primary",
     session_file: str = "",
+    force: bool = False,
 ) -> dict[str, Any]:
     try:
         from scheduler.parhelion_paths import load_problem_manifest  # type: ignore
@@ -1056,6 +993,7 @@ def _submit_via_worktree(
 
     env = dict(os.environ)
     env["OPSB_ACCOUNT_ID"] = safe_aid
+    env["OPSB_SUBMIT_TRACE"] = str(workspace / "results" / title / sha / "submit-trace.log")
     if session_file:
         env["JUDGE_SESSION_FILE"] = session_file
 
@@ -1069,15 +1007,11 @@ def _submit_via_worktree(
         if not runner.is_file():
             runner = workspace / "tools" / "submit-validated.py"
         res = subprocess.run(
-            [py_exe, str(runner), title, "--workspace", str(workspace), "--sha", sha, "--project-dir", str(worktree), "--force"],
+            [py_exe, str(runner), title, "--workspace", str(workspace), "--sha", sha, "--project-dir", str(worktree), *(["--force"] if force else [])],
             stdin=subprocess.DEVNULL,
             env=env,
             capture_output=True,
             text=True,
-            # submit-validated.py sleeps out the server's rate-limit window
-            # (rate_limit_gap_sec, default 190s) before it can POST, so a 90s
-            # timeout rejects every rate-limited submission. Allow a full
-            # multi-window margin instead.
             timeout=900,
         )
     finally:

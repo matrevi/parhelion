@@ -240,6 +240,29 @@ def bootstrap_problem(
     return result
 
 
+def seed_template_bench(workspace: Path, problem: dict[str, Any]) -> None:
+    """Expose the executable official sample as the first public benchmark."""
+    from ..config import workspace_bench_specs_dir
+    title = problem["title"]
+    repo = workspace / (problem.get("path") or title)
+    if not all((repo / name).is_file() for name in ("reference.py", "sample.py", "kernel.asc")):
+        return
+    directory = workspace_bench_specs_dir(workspace) / title
+    directory.mkdir(parents=True, exist_ok=True)
+    anchor = {"id": "official_sample", "stratum": "PUBLIC", "generator": "sample.py generate",
+              "verifier": "sample.py verify", "reference": "reference.py"}
+    for filename, spec in (
+        ("cases_perf.json", {"problem": title, "public_anchors": [anchor], "hidden_buckets": []}),
+        ("cases_correctness.json", {"problem": title, "cases": [anchor]}),
+    ):
+        try:
+            with (directory / filename).open("x", encoding="utf-8") as stream:
+                json.dump(spec, stream, ensure_ascii=False, indent=2)
+                stream.write("\n")
+        except FileExistsError:
+            continue
+
+
 def bootstrap_workspace_repos(
     target_dir: Path,
     problems: list[dict[str, Any]],
@@ -275,6 +298,7 @@ def bootstrap_workspace_repos(
                 can_judge_base=can_judge_base,
             )
         )
+        seed_template_bench(root, p)
     ok = [r for r in results if not r.get("error")]
     return {
         "ok": len(ok) == len(results),

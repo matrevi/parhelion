@@ -36,6 +36,7 @@ from ..mcp.handlers_agents import bind_daemon_agent_manager
 from .agent_routes import handle_agent_get, handle_agent_post
 from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
+from ..services.submit_runner import spawn_jump_submit
 
 DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
@@ -155,6 +156,46 @@ class OpsbDaemonRuntime:
         )
         self.agent_mesh = AgentMeshManager(on_change=self.notify_subscribers)
         bind_daemon_agent_manager(self.agent_mesh)
+
+    def dispatch_next(self, workspace: Path, snapshot: dict, backoff: dict) -> None:
+        now = time.monotonic()
+        queue = snapshot.get("submission_queue", [])
+        for item in queue:
+            if item.get("kind") not in ("pending", "candidate") or not item.get("gates", {}).get("all_pass"):
+                continue
+            title, sha = item["title"], item["sha"]
+            key = (workspace, title, sha)
+            if backoff.get(key, 0) > now:
+                continue
+            result = spawn_jump_submit(CLI_DIR / "opsb", workspace, title, sha, item.get("note") or "",
+                                       enforce_operator_mutex=True)
+            if result.get("ok"):
+                backoff[key] = now + 10
+                self.state_cache.invalidate(workspace)
+                self.notify_subscribers()
+                return
+            if result.get("operator_inflight") or result.get("duplicate_inflight") or result.get("duplicate_terminal"):
+                backoff[key] = now + 5
+                continue
+            return
+
+    def consume_queue(self, stop: threading.Event) -> None:
+        backoff: dict = {}
+        while not stop.wait(1):
+            try:
+                cfg = ConfigRepository.load()
+                if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
+                    continue
+                ws = Path(cfg.get("active_workspace") or self.workspace).expanduser().resolve()
+                if not (ws / "results").is_dir():
+                    continue
+                _, _, data = self.state_cache.get_snapshot(ws)
+                backoff = {key: until for key, until in backoff.items() if until > time.monotonic()}
+                if not stop.is_set():
+                    self.dispatch_next(ws, json.loads(data), backoff)
+            except Exception as exc:
+                print(f"queue dispatch failed: {exc}", file=sys.stderr, flush=True)
+                stop.wait(4)
 
     def notify_subscribers(self) -> None:
         with self._sub_cond:
@@ -442,6 +483,8 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
     # Warm cold cache before accepting traffic so the first snapshot & hot frame are ready immediately.
     runtime.state_cache.warm(workspace)
     runtime.stream_mgr.start()
+    consumer = threading.Thread(target=runtime.consume_queue, args=(stop_event,), name="submission-consumer", daemon=True)
+    consumer.start()
 
     state = {
         "pid": os.getpid(),

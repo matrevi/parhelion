@@ -29,6 +29,8 @@ from opsb_core.mcp import (  # noqa: E402
 def _make_mcp_workspace(tmp_path: Path) -> tuple[Path, Path, str]:
     ws = tmp_path / "ws"
     op_dir = ws / "bench" / "PadV3Grad"
+    (op_dir / "op_host").mkdir(parents=True)
+    (op_dir / "op_host" / "tiling.cpp").write_text("// tiling\n")
     (op_dir / "op_kernel").mkdir(parents=True)
     (op_dir / "op_kernel" / "pad_v3_grad.cpp").write_text("// impl\n", encoding="utf-8")
     (ws / "results" / "scoring-evidence").mkdir(parents=True)
@@ -224,12 +226,17 @@ def test_escape_lock_blocks_submit_gate(isolated_mcp_env: Path, tmp_path: Path) 
     ws, _, sha = _make_mcp_workspace(tmp_path)
     res_dir = ws / "results" / "PadV3Grad" / sha
     res_dir.mkdir(parents=True)
-    (res_dir / "result.json").write_text(json.dumps({"exit_code": 0}), encoding="utf-8")
+    (res_dir / "result.json").write_text(json.dumps({"exit_code": 0, "sha": sha}), encoding="utf-8")
     (res_dir / "validation.log").write_text("EXTENDED_PASSED 40 cases\nEXTENDED_RC=0\n", encoding="utf-8")
     (ws / "results" / "PadV3Grad" / "calibration.json").write_text(
         json.dumps({"escape_lock": True, "escape_sha": "deadbee", "strata": []}),
         encoding="utf-8",
     )
+
+    (ws / "results" / "submit-queue-outcome.jsonl").write_text("".join(
+        json.dumps({"title": "PadV3Grad", "status": "Wrong Answer", "submission_id": f"sid-{i}",
+                    "sha": "deadbee", "finished_at": f"2026-01-01T00:00:0{i}Z"}) + "\n"
+        for i in range(3)))
 
     blocked = call_tool("parhelion_submit_gate", {"problem": "PadV3Grad", "sha": sha, "enqueue": True}, ws)
     assert blocked["gates"]["safety_ok"] is False

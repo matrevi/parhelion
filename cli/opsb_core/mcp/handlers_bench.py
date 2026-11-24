@@ -11,7 +11,7 @@ from ..drivers.base import load_parhelion_config
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
-from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
+from ..services.queue_service import enqueue_once, check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
 
 
@@ -266,6 +266,16 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
         "gates": {"safety_ok": safety_ok, "noise_ok": noise_ok, "circuit_ok": circuit_ok, "quota_ok": quota_ok, "all_pass": all_pass},
         "reasons": reasons, "enqueued": False,
     }
+    official = invoke_bridge(workspace, "evaluate", ["--title", title, "--sha", sha, "--note", note])
+    if official and official.get("stages"):
+        stages = {s["stage"]: bool(s["passed"]) for s in official["stages"]}
+        all_pass = bool(official.get("approved"))
+        est = (official.get("estimate") or {}).get("estimated_score")
+        reasons = [s["reason"] for s in official["stages"] if not s["passed"]]
+        verdict.update(gates={"safety_ok": stages["SAFETY"], "noise_ok": stages["NOISE_FLOOR"],
+                              "circuit_ok": stages["CIRCUIT_BREAKER"], "quota_ok": stages["QUOTA_RESERVE"],
+                              "all_pass": all_pass}, estimated_score=est, reasons=reasons,
+                       status_tag=official["status_tag"], wspt_priority=official["priority_score"])
     if not enqueue:
         verdict["dry_run"] = True
         return verdict
@@ -298,7 +308,9 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     }
     if force:
         record["force"] = True
-    _cfg.append_jsonl_locked(workspace / "results" / ".submit-queue.lock", q_path, record)
+    if not enqueue_once(workspace, record):
+        verdict["reason"] = "Already queued or previously submitted"
+        return verdict
     _cfg.invalidate_ttl_cache("scheduler_bridge")
     verdict.update({"enqueued": True, "queued_record": record})
     return verdict

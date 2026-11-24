@@ -32,7 +32,8 @@ from ..services.judge_sync import (
 from ..services.queue_service import _probe_queue_lock, compute_workspace_snapshot
 from ..services.quota_helpers import compute_effective_closing_reserve
 from ..services.skills_service import get_skills_status
-from ..services.submit_runner import MIN_RATE_GAP_SEC, inflight_file_for
+from ..services.submit_runner import MIN_RATE_GAP_SEC, inflight_file_for, judge_cooldown_remaining
+from ..services.judge_quota import read_quota
 from ..services.sync_reconciler import collapse_reconciled_outcomes, reconcile_sync_errors_async
 
 
@@ -486,7 +487,7 @@ class _WorkspaceStateEntry:
 
         cfg = ConfigRepository.load()
         sched_cfg = cfg.get("scheduler", DEFAULT_CONFIG["scheduler"])
-        gap_sec = int(sched_cfg.get("rate_limit_gap_sec", MIN_RATE_GAP_SEC))
+        gap_sec = MIN_RATE_GAP_SEC
         daily_limit = int(sched_cfg.get("daily_quota_limit", 50))
         closing_reserve = int(sched_cfg.get("closing_reserve", 12))
         noise_floor = float(sched_cfg.get("noise_floor_delta", 2.7))
@@ -538,12 +539,14 @@ class _WorkspaceStateEntry:
                 if sid and ts >= bj_day_start_ep:
                     today_sids_by_aid[aid].add(sid)
 
+        observed_wait = judge_cooldown_remaining(self.workspace)
+        judge_quota = read_quota(self.workspace) or {}
         account_slots: list[dict[str, Any]] = []
         for a in accounts:
             aid = str(a["id"])
             last_ep = last_epoch_by_aid.get(aid, 0.0)
-            ends_ep = (last_ep + gap_sec) if last_ep > 0 else 0.0
-            rem = max(0, int(round(ends_ep - now_epoch)))
+            ends_ep = now_epoch + observed_wait if observed_wait else 0.0
+            rem = observed_wait
             inf_path = inflight_file_for(aid)
             phase = "idle"
             active_title = None
@@ -558,6 +561,8 @@ class _WorkspaceStateEntry:
                 else:
                     reap_inflight_if_stale(inf_path, inf)
             used_today = len(today_sids_by_aid.get(aid, set()))
+            if aid == "primary":
+                used_today = max(used_today, int(judge_quota.get("used") or 0))
             rem_today = max(0, daily_limit - used_today)
             account_slots.append(
                 {

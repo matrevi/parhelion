@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,27 @@ from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
 from .sync_reconciler import recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
+
+
+def enqueue_once(workspace: Path, record: dict[str, Any]) -> bool:
+    results = workspace / "results"
+    results.mkdir(parents=True, exist_ok=True)
+    queue = results / "submit-queue.jsonl"
+    with (results / ".submit-queue-io.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        key = (record["title"], record["sha"][:7])
+        outcomes = [r for r in read_jsonl(results / "submit-queue-outcome.jsonl")
+                    if (r.get("title"), (r.get("sha") or "")[:7]) == key]
+        done = {r.get("queued_at") for r in outcomes}
+        if not record.get("force") and any(r.get("submission_id") or r.get("status") in
+                                             ("blocked_compliance", "skipped") for r in outcomes):
+            return False
+        if any((r.get("title"), (r.get("sha") or "")[:7]) == key and r.get("queued_at") not in done
+               for r in read_jsonl(queue)):
+            return False
+        with queue.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return True
 
 
 def estimate_score_from_note(note: str, base_score: float, best_score: float) -> float | None:
@@ -76,7 +98,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     bt_threshold = float(sched_cfg.get("breakthrough_threshold", 5.0))
     daily_limit = int(sched_cfg.get("daily_quota_limit", 50))
     closing_reserve = int(sched_cfg.get("closing_reserve", 12))
-    gap_sec = int(sched_cfg.get("rate_limit_gap_sec", 190))
+    gap_sec = 0
     cb_limit = int(sched_cfg.get("circuit_breaker_limit", 6))
 
     now = utc_now()
@@ -312,7 +334,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     peak_pass_score: dict[str, float] = {}
     seen_pass_shas: set[tuple[str, str]] = set()
     chron_items: list[dict[str, Any]] = []
-    matched_outcome_sids: set[str] = set()
+    completed_attempts: list[tuple] = []
     inflight_q = build_inflight_queue_items(pipeline, prob_map, queue_rows, exp_map, now.isoformat())
     inflight_emitted = {
         (str(it.get("title") or ""), str(it.get("short_sha") or "").lower()[:7])
@@ -326,7 +348,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         if "|" in str(k)
     } | inflight_emitted
 
-    def _append_completed_item(item_id: str, t: str, sha: str, q_at: str, note: str, est: float, out: dict[str, Any]) -> None:
+    def _append_completed_item(item_id: str, t: str, sha: str, q_at: str, note: str, est: float | None, out: dict[str, Any]) -> None:
         p_obj = prob_map.get(t, {"difficulty": DEFAULT_DIFFICULTIES.get(t, 2), "current_score": 0.0, "best_score": 0.0})
         cur_sc = float(p_obj.get("current_score", 0.0))
         prior_sc = prior_board.get(t, 0.0)
@@ -334,6 +356,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         raw_detail = str(out.get("detail") or "")
         if st == "rejected" and (raw_detail.lower().startswith("poll error:") or bool(out.get("submission_id"))):
             st = "sync_error"
+        if st == "rejected" and "不合规内容" in raw_detail:
+            st = "blocked_compliance"
         actual = float(out["score"]) if out.get("score") is not None else None
         delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
         bt_delta: float | None = None
@@ -348,7 +372,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 is_repeat = (t, sha[:7]) in seen_pass_shas
                 if (not is_repeat) and (not is_restore_note) and (peak_p > 0) and (actual > peak_p):
                     bt_delta = round(actual - peak_p, 2)
-                seen_pass_shas.add((t, sha[:7]))
+                if sha:
+                    seen_pass_shas.add((t, sha[:7]))
                 last_pass_score[t] = actual
                 last_pass_sha[t] = sha[:7]
                 peak_pass_score[t] = max(peak_p, actual)
@@ -366,17 +391,17 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         chron_items.append(
             {
                 "id": item_id,
-                "kind": "completed",
+                "kind": "held" if st in ("rejected", "blocked_compliance") else "completed",
                 "title": t,
                 "difficulty": int(p_obj.get("difficulty", 2)),
                 "sha": sha,
                 "short_sha": sha[:7],
-                "note": effective_note,
+                "note": raw_detail if st in ("blocked_compliance", "rejected") else effective_note,
                 "detail": out.get("detail", ""),
                 "submission_id": out.get("submission_id"),
                 "queued_at": q_at,
                 "finished_at": out.get("finished_at") or out.get("submitted_at"),
-                "badge": badge,
+                "badge": "HOLD: COMPLIANCE" if st == "blocked_compliance" else badge,
                 "raw_status": st,
                 "current_score": cur_sc,
                 "prior_score": round(prior_sc, 2),
@@ -387,15 +412,15 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 "is_breakthrough": bool(bt_delta is not None and bt_delta >= bt_threshold),
                 "experience_id": exp_map.get((t, sha[:7])),
                 "baseline_pass_sha": base_p_sha,
-                "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
+                "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, (est or 0) - prior_sc), 2),
                 "gates": {
                     "safety_ok": st not in ("rejected", "Compile Error", "Runtime Error", "Wrong Answer"),
                     "noise_ok": st != "skipped",
                     "circuit_ok": True,
                     "quota_ok": True,
                     "all_pass": st == "Pass",
-                    "delta_expected": round(est - prior_sc, 2),
-                    "wspt_score": round(int(p_obj.get("difficulty", 2)) * max(0.0, est - prior_sc), 2),
+                    "delta_expected": round((est or 0) - prior_sc, 2),
+                    "wspt_score": round(int(p_obj.get("difficulty", 2)) * max(0.0, (est or 0) - prior_sc), 2),
                 },
                 "can_approve": False,
                 "can_skip": False,
@@ -411,8 +436,6 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
         sha_low = str(sha or "").lower()
         out = _resolve_queue_outcome(t, sha_low, str(q_at or ""), forced)
-        if out is not None and out.get("submission_id"):
-            matched_outcome_sids.add(str(out["submission_id"]))
         prior_sc = prior_board.get(t, 0.0)
         cur_sc = float(p_obj.get("current_score", 0.0))
 
@@ -424,7 +447,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             base_anchor = prior_sc if (out is not None and prior_sc > 0) else (cur_sc or prior_sc)
             est = estimate_score_from_note(note, base_anchor, float(p_obj.get("best_score", 0.0)))
             if est is None:
-                est = round(sum(priors) / len(priors), 2) if priors else (round(base_anchor + 2.5, 2) if base_anchor > 0 else 40.0)
+                est = round(sum(priors) / len(priors), 2) if priors else None
 
         if out is None:
             # Skip putting in waiting list if this (title, sha) is ALREADY inflight/running OR has an unreconciled receipt!
@@ -468,7 +491,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 esc_detail = ""
             cand_bt_delta = (
                 round((est or cur_sc) - cur_sc, 2)
-                if (cur_sc > 0 and not is_rest and not esc_blocked and (t, sha[:7]) not in seen_pass_shas and "restore" not in note.lower())
+                if (est is not None and cur_sc > 0 and not is_rest and not esc_blocked and not is_known_pass and "restore" not in note.lower())
                 else None
             )
             chron_items.append(
@@ -487,7 +510,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "badge": badge,
                     "raw_status": "queued",
                     "current_score": cur_sc,
-                    "prior_score": round(prior_sc, 2),
+                    "prior_score": cur_sc,
                     "estimated_score": est,
                     "actual_score": None,
                     "delta_score": None,
@@ -504,20 +527,27 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 }
             )
         else:
-            _append_completed_item(f"done-{idx}-{t}-{sha[:7]}", t, sha, q_at, note, est, out)
+            if out.get("submission_id"):
+                continue  # Project the journal once, independently of queue membership.
+            if out.get("status") in ("rejected", "blocked_compliance"):
+                pair = outcomes_pair.get((t, sha_low))
+                if pair and pair.get("submission_id"):
+                    continue
+            completed_attempts.append((f"done-{idx}-{t}-{sha[:7]}", t, sha, q_at, note, saved_est, out))
 
-    for r_idx, out in enumerate(outcome_rows):
-        sid = str(out.get("submission_id") or "").strip()
-        if not sid or sid in matched_outcome_sids or out.get("reconciled_from") != "orphan_receipt":
+    queue_by_claim = {(q.get("title"), q.get("sha"), q.get("queued_at")): q for q in queue_rows}
+    for out in outcome_rows:
+        sid = out.get("submission_id")
+        if not sid or out.get("status") == "duplicate":
             continue
-        t = str(out.get("title") or "")
-        sha = str(out.get("sha") or "")
-        if not t or not sha:
-            continue
-        q_at = str(out.get("queued_at") or out.get("submitted_at") or "")
-        note = str(out.get("note") or "")
-        est = round(float(out["estimated_score"]), 2) if out.get("estimated_score") is not None else round(prior_board.get(t, 0.0) or float(prob_map.get(t, {}).get("current_score", 0.0)), 2)
-        _append_completed_item(f"done-orphan-{r_idx}-{t}-{sha[:7]}", t, sha, q_at, note, est, out)
+        t, sha = out.get("title", ""), out.get("sha") or ""
+        q = queue_by_claim.get((t, sha, out.get("queued_at")), {})
+        at = out.get("submitted_at") or out.get("queued_at") or out.get("finished_at") or ""
+        completed_attempts.append((f"judge-{sid}", t, sha, at, q.get("note", ""),
+                                   out.get("estimated_score", q.get("estimated_score")), out))
+
+    for attempt in sorted(completed_attempts, key=lambda a: a[6].get("submitted_at") or a[6].get("finished_at") or a[3]):
+        _append_completed_item(*attempt)
 
     raw_active = [x for x in (advisory_items + chron_items) if x["kind"] != "completed"]
     raw_active.sort(
@@ -565,7 +595,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "available_normal_shots": avail_shots,
             "noise_floor_delta": noise_floor,
             "breakthrough_threshold": bt_threshold,
-            "breakthrough_count": sum(1 for x in (active_q + done_q) if x.get("is_breakthrough")),
+            "breakthrough_count": sum(1 for x in done_q if x.get("is_breakthrough")),
             "circuit_breaker_limit": cb_limit,
             "queue_lock_held": queue_lock_held,
             "actionable_count": len(active_q),

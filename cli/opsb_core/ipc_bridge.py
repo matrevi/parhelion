@@ -138,7 +138,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     completed_short_pairs = {
         (it["title"], str(it.get("sha") or "").lower()[:7])
         for it in payload["submission_queue"]
-        if it.get("kind") == "completed" and it.get("title") and len(str(it.get("sha") or "")) >= 7
+        if it.get("kind") in ("held", "completed") and it.get("title") and len(str(it.get("sha") or "")) >= 7
     }
     skipped_pairs: set[tuple[str, str]] = set()
     skipped_short_pairs: set[tuple[str, str]] = set()
@@ -180,7 +180,12 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
 
     extra_cands: list[dict[str, Any]] = []
     bt_thresh = float(sched.get("breakthrough_threshold", 5.0))
-    for uc in bridge.get("unsubmitted_candidates") or []:
+    candidates = list(bridge.get("unsubmitted_candidates") or [])
+    for sq in bridge.get("submit_queue") or []:
+        if sq.get("queue_state") == "HELD" and (sq["title"], sq["sha"]) not in existing:
+            candidates.append({**sq, "approved": all(st["passed"] for st in sq.get("stages", [])),
+                               "estimate": sq})
+    for uc in candidates:
         t, sha = uc.get("title", ""), uc.get("sha", "")
         sha_low = sha.lower()
         short_s = sha_low[:7]
@@ -197,7 +202,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         if (t, short_s) in completed_short_pairs and not is_crit_rest_pre:
             continue
         est_obj = uc.get("estimate") or {}
-        est_sc = round(float(est_obj["estimated_score"]), 2) if est_obj.get("estimated_score") is not None else None
+        est_sc = round(float(est_obj["estimated_score"]), 2) if est_obj.get("estimated_score") is not None and "no perf telemetry" not in str(est_obj.get("detail", "")).lower() else None
         cur_sc = round(float(est_obj.get("current_score") or 0.0), 2)
         if est_sc is not None:
             est_by_pair[(t, sha)] = est_sc
@@ -240,7 +245,7 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     else:
                         item["gates"] = gates
                         # Synchronize badge with bridge's 4-stage gates so badge never contradicts `gates`.
-                        if item.get("badge") not in ("ESCAPE LOCK", "CRITICAL RESTORE"):
+                        if raw_tag == "PROBE" or item.get("badge") not in ("ESCAPE LOCK", "CRITICAL RESTORE"):
                             item["badge"] = badge
                             item["can_approve"] = badge in ("HOLD: NOISE", "CIRCUIT OPEN", "HOLD: RESERVE", "HOLD LOW GAIN")
                     item["wspt_priority"] = gates["wspt_score"]
@@ -291,6 +296,17 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     item["is_breakthrough"] = cbd >= bt_thresh
             sq_m = sq_meta_by_pair.get(pair)
             if sq_m and isinstance(item.get("gates"), dict):
+                if item["kind"] == "pending" and sq_m.get("stages"):
+                    stages = {s["stage"]: bool(s["passed"]) for s in sq_m["stages"]}
+                    for key, stage in (("safety_ok", "SAFETY"), ("noise_ok", "NOISE_FLOOR"),
+                                       ("circuit_ok", "CIRCUIT_BREAKER"), ("quota_ok", "QUOTA_RESERVE")):
+                        item["gates"][key] = stages.get(stage, False)
+                    item["gates"]["all_pass"] = all(stages.values())
+                    tag = str(sq_m["status_tag"])
+                    item["badge"] = badge_norm.get(tag, tag.replace("_", " "))
+                    item["detail"] = sq_m.get("gate_reason") or ""
+                    if tag == "PROBE":
+                        item["note"] = item["detail"]
                 if item["gates"].get("ucb_delta") is None and sq_m.get("ucb_delta") is not None:
                     item["gates"]["ucb_delta"] = round(float(sq_m["ucb_delta"]), 2)
                 if item["gates"].get("explore_eligible") is None and sq_m.get("explore_eligible") is not None:
@@ -311,4 +327,4 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
     done = [x for x in payload["submission_queue"] if x["kind"] == "completed"]
     payload["submission_queue"] = inflight + active + done
     sched["actionable_count"] = len(active)
-    sched["breakthrough_count"] = sum(1 for x in payload["submission_queue"] if x.get("is_breakthrough"))
+    sched["breakthrough_count"] = sum(1 for x in payload["submission_queue"] if x["kind"] == "completed" and x.get("is_breakthrough"))

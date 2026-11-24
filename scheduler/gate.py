@@ -42,6 +42,7 @@ from .estimator import (
     resolve_sha,
 )
 from .parhelion_paths import list_eligible_account_slots
+from .probes import OPENING_PROBES, compile_evidence, submitted_attempts
 
 STATUS_TAGS: tuple[str, ...] = (
     "READY",
@@ -61,7 +62,7 @@ STATUS_TAGS: tuple[str, ...] = (
 
 BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
 DAILY_HARD_LIMIT = 50
-MIN_SUBMIT_GAP_SEC = 190
+MIN_SUBMIT_GAP_SEC = 0
 
 
 @dataclasses.dataclass
@@ -74,13 +75,8 @@ class GateConfig:
     daily_limit: int = DAILY_HARD_LIMIT
     q0_quantum_sec: int = 180
     aging_tau_sec: float = 600.0
-    # Bootstrap probe window: while a problem has never been accepted (board score 0 /
-    # not Pass) it may be submitted freely as long as the server build actually executed.
-    # The first `probe_bootstrap_submissions` sends are reported as bootstrap probes, and
-    # an unsolved problem keeps the allowance afterwards; only an AC flips it back to the
-    # strict 4-stage gate.
-    probe_submissions_per_problem: int = 3
-    probe_while_unsolved: bool = True
+    # Only judge-acknowledged attempts consume the opening window.
+    probe_submissions_per_problem: int = OPENING_PROBES
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -302,16 +298,6 @@ class SubmissionGate:
         return passed
 
 
-    def _submission_record_count(self, title: str) -> int:
-        """Submitted-but-unfinished and already-submitted records for one problem."""
-        base = self.workspace / "results" / title
-        if not base.is_dir():
-            return 0
-        dirs: set[pathlib.Path] = set()
-        for pattern in ("*/submission-receipt.json", "*/submission-inflight.json", "*/submission-manifest.json"):
-            dirs.update(p.parent for p in base.glob(pattern))
-        return len(dirs)
-
     def _result_record(self, title: str, sha: str) -> tuple[dict[str, Any], str]:
         base = self.workspace / "results" / title
         if not base.is_dir():
@@ -340,35 +326,14 @@ class SubmissionGate:
     def _compile_ok(self, title: str, sha: str) -> tuple[bool, str]:
         """Probe submissions only require that the remote build/run really executed."""
         record, log_path = self._result_record(title, sha)
-        code = record.get("exit_code")
-        if code in (0, 2):
-            # 0 = verified, 2 = built and ran but the answer was rejected: both mean the
-            # server compiled the kernel, which is all the opening probe needs.
-            return True, f"server exit={code} (build+run executed)"
-        log_text = ""
-        try:
-            log_text = pathlib.Path(log_path).read_text(errors="replace") if log_path else ""
-        except OSError:
-            log_text = ""
-        if "Built target" in log_text and not re.search(r"\b(error:|COMPILE ERROR|Error 2)\b", log_text):
-            return True, "validation.log shows a completed build"
-        return False, "no successful compile record (probe needs a real server build)"
+        return compile_evidence(record, pathlib.Path(log_path))
 
     def probe_allowance(self, title: str, sha: str = "", *, unsolved: bool = True) -> dict[str, Any]:
-        """Free submissions for a problem that has never been accepted.
-
-        `unsolved` is the caller's board read (score<=0 / not Pass). A solved problem is
-        never probe-eligible; an unsolved one is unbounded once `probe_while_unsolved` is on.
-        """
+        """The first three acknowledged submissions may use compile-only evidence."""
         bootstrap = int(self.config.probe_submissions_per_problem)
-        used = self._submission_record_count(title)
+        used = submitted_attempts(self.workspace, title, self.estimator.outcomes)
         within_bootstrap = used < bootstrap
-        entitled = bool(unsolved and (within_bootstrap or self.config.probe_while_unsolved))
-        allowed, why = (False, "no probe entitlement while the problem is accepted")
-        if entitled:
-            allowed, why = self._compile_ok(title, sha)
-            if not allowed and used >= bootstrap:
-                why = "unsolved but " + why
+        allowed, why = self._compile_ok(title, sha) if within_bootstrap else (False, "opening probes used")
         return {
             "bootstrap": bootstrap,
             "used": used,
@@ -406,7 +371,7 @@ class SubmissionGate:
         return None
 
     def _check_kernel_cross_core_tokens(self, title: str, sha: str) -> list[str]:
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
         if not (repo / ".git").exists() or not sha:
             return []
         ls_proc = subprocess.run(
@@ -435,7 +400,7 @@ class SubmissionGate:
         return sorted(found)
 
     def _verify_git_commit_exists(self, title: str, sha: str) -> tuple[bool, str]:
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
         if not (repo / ".git").exists():
             return True, "no_git_repo_fixture"
         cat = subprocess.run(
@@ -452,6 +417,8 @@ class SubmissionGate:
             text=True,
         )
         entries = set(tree.stdout.splitlines())
+        if "kernel.asc" in entries and "CMakeLists.txt" in entries:
+            return True, "template_tree_verified"
         if not ("op_host" in entries and "op_kernel" in entries):
             return False, f"commit {sha[:7]} missing op_host/ or op_kernel/ tree"
         return True, "git_tree_verified"
@@ -549,7 +516,8 @@ class SubmissionGate:
             return marker_result
 
         ext_matches = _EXTENDED_PASS_RE.findall(log_text)
-        if not ext_matches:
+        template_verified = res_data.get("layout") == "template" and res_data.get("verified") is True
+        if not ext_matches and not template_verified:
             return StageResult(
                 stage="SAFETY",
                 passed=False,
@@ -781,6 +749,8 @@ class SubmissionGate:
                     if ts_r and bj_midnight <= ts_r.astimezone(BEIJING_TZ) < ref_now.astimezone(BEIJING_TZ):
                         used_ids_by_aid[aid].update(f"limit_fill_{i}" for i in range(per_acc_limit))
                 continue
+            if not r.get("submission_id"):
+                continue
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
             if ts is None or ts >= ref_now:
                 continue
@@ -788,7 +758,7 @@ class SubmissionGate:
             if cur_last is None or ts > cur_last:
                 last_ts_by_aid[aid] = ts
             if ts.astimezone(BEIJING_TZ) >= bj_midnight:
-                sid = str(r.get("submission_id") or f"{r.get('title')}:{r.get('sha')}:{ts.isoformat()}")
+                sid = str(r["submission_id"])
                 used_ids_by_aid[aid].add(sid)
 
         if as_of is None:
@@ -973,7 +943,9 @@ class SubmissionGate:
         quota = self.get_quota_status(as_of=as_of)
 
         is_critical_restore = (
-            estimate.current_score <= 0.0 or estimate.board_status != "Pass"
+            (estimate.current_score <= 0.0 or estimate.board_status != "Pass")
+            and bool(ledger.historical_best_sha)
+            and canonical_sha.lower().startswith(ledger.historical_best_sha.lower()[:7])
         )
         is_already_active_on_board = (
             as_of is None
@@ -1005,18 +977,14 @@ class SubmissionGate:
             and not bool(ev.get("veto_small_core"))
         )
 
-        # Opening probe allowance: first submissions of a cold problem may skip the strict
-        # accuracy/perf stages when the server build actually ran. This exists so the opening
-        # 2×N probing submissions are not held by a gate that has no calibration data yet.
+        # Acknowledged submission IDs define the three opening probes.
         probe = self.probe_allowance(title, canonical_sha, unsolved=is_critical_restore)
-        if probe["allowed"] and not explicit_skip:
+        if as_of is None and probe["allowed"] and not explicit_skip and quota.remaining_today > 0:
             stages = [
                 StageResult(
                     stage="SAFETY", passed=True, code="PROBE_ALLOWANCE",
                     reason=(
-                        f"Probe {probe['used'] + 1}/{probe['bootstrap']} (unsolved problem): {probe['reason']}"
-                        if probe["bootstrap_stage"] else
-                        f"Probe #{probe['used'] + 1} beyond bootstrap, problem still unsolved: {probe['reason']}"
+                        f"Probe {probe['used'] + 1}/{probe['bootstrap']}: {probe['reason']}"
                     ),
                     metrics=dict(probe),
                 ),
@@ -1039,13 +1007,11 @@ class SubmissionGate:
                 status_tag="PROBE",
                 gate_reason=(
                     (
-                        f"Probe {probe['used'] + 1}/{probe['bootstrap']} for unsolved {title}: {probe['reason']}"
-                        if probe["bootstrap_stage"] else
-                        f"Unsolved probe #{probe['used'] + 1} for {title}: {probe['reason']}"
+                        f"Probe {probe['used'] + 1}/{probe['bootstrap']} for {title}: {probe['reason']}"
                     )
                 ),
                 priority_score=round(500.0 + estimate.difficulty, 2),
-                is_critical_restore=True,
+                is_critical_restore=False,
                 forced=False,
                 decay_factor_gamma=estimate.decay_factor_gamma,
                 raw_historical_best_score=float(ledger.raw_historical_best_score or 0.0),

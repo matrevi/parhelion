@@ -173,7 +173,7 @@ class QuotaExhaustedTagTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             ws, shas = _make_multi_problem_ws(pathlib.Path(td), ("ConcatD",))
             cand_sha = shas["ConcatD"][1]
-            gate = SubmissionGate(ws, config=GateConfig(noise_floor_pts=2.5))
+            gate = SubmissionGate(ws, config=GateConfig(noise_floor_pts=2.5, probe_submissions_per_problem=0))
 
             est = _stub_estimate("ConcatD", cand_sha, current=60.0, est=70.0)
             ledger = _stub_ledger("ConcatD", current=60.0, best_sha=shas["ConcatD"][0])

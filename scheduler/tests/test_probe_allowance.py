@@ -1,4 +1,4 @@
-"""Opening probe allowance: 2 free submissions per problem while the board is cold."""
+"""Opening probe allowance: first three acknowledged submissions per problem."""
 from __future__ import annotations
 
 import json
@@ -55,7 +55,7 @@ BUILD_OK_LOG = (
 
 
 class ProbeAllowanceTests(unittest.TestCase):
-    def test_rejected_answer_still_gets_two_opening_probes(self) -> None:
+    def test_rejected_answer_still_gets_three_opening_probes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
             gate = SubmissionGate(ws)
@@ -69,31 +69,30 @@ class ProbeAllowanceTests(unittest.TestCase):
             self.assertIn("Probe 1/3", verdict.gate_reason)
             self.assertEqual([s.code for s in verdict.stages], ["PROBE_ALLOWANCE"] * 4)
 
-    def test_unsolved_problem_keeps_probing_after_the_bootstrap_window(self) -> None:
+    def test_fourth_submission_requires_full_validation_even_when_unsolved(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
-            for idx in range(5):
+            for idx in range(3):
                 d = ws / "results" / title / f"{sha[:7]}-probe{idx}"
                 d.mkdir(parents=True)
-                (d / "submission-receipt.json").write_text("{}", encoding="utf-8")
+                (d / "submission-receipt.json").write_text(json.dumps({"submission_id": f"sid-{idx}"}), encoding="utf-8")
             gate = SubmissionGate(ws)
             probe = gate.probe_allowance(title, sha, unsolved=True)
-            self.assertTrue(probe["allowed"])
+            self.assertFalse(probe["allowed"])
             self.assertEqual(probe["remaining"], 0)
             self.assertFalse(probe["bootstrap_stage"])
             verdict = gate.evaluate(title, sha)
-            self.assertTrue(verdict.approved)
-            self.assertIn("Unsolved probe #6", verdict.gate_reason)
+            self.assertFalse(verdict.approved)
 
-    def test_solved_problem_falls_back_to_the_strict_gate(self) -> None:
+    def test_early_ac_keeps_remaining_opening_probes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
             (ws / "results" / "score-snapshot.json").write_text(
                 json.dumps({title: {"score": 80.0, "status": "Pass"}}), encoding="utf-8"
             )
             gate = SubmissionGate(ws)
-            self.assertFalse(gate.probe_allowance(title, sha, unsolved=False)["allowed"])
-            self.assertFalse(gate.evaluate(title, sha).approved)
+            self.assertTrue(gate.probe_allowance(title, sha)["allowed"])
+            self.assertTrue(gate.evaluate(title, sha).approved)
 
     def test_compile_failure_never_gets_a_probe(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -109,18 +108,20 @@ class ProbeAllowanceTests(unittest.TestCase):
     def test_allowance_can_be_disabled_by_config(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
-            gate = SubmissionGate(ws, config=GateConfig(probe_submissions_per_problem=0, probe_while_unsolved=False))
+            gate = SubmissionGate(ws, config=GateConfig(probe_submissions_per_problem=0))
             self.assertFalse(gate.probe_allowance(title, sha)["allowed"])
             self.assertFalse(gate.evaluate(title, sha).approved)
 
-    def test_passed_board_is_not_a_cold_start(self) -> None:
+    def test_counts_distinct_judge_ids_including_repeated_sha(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
-            (ws / "results" / "score-snapshot.json").write_text(
-                json.dumps({title: {"score": 80.0, "status": "Pass"}}), encoding="utf-8"
-            )
-            gate = SubmissionGate(ws)
-            self.assertFalse(gate.evaluate(title, sha).status_tag == "PROBE")
+            results = ws / "results"
+            (results / title / sha / "submission-manifest.json").write_text("[]")
+            rows = [{"title": title, "sha": sha, "submission_id": sid, "status": "Wrong Answer"}
+                    for sid in ["a", "a", "b"]]
+            (results / "submit-queue-outcome.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            probe = SubmissionGate(ws).probe_allowance(title, sha)
+            self.assertEqual(probe["remaining"], 1)
 
 
 if __name__ == "__main__":

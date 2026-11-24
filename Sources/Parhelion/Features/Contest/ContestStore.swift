@@ -76,8 +76,6 @@ final class ContestStore: ObservableObject {
     var isFetchingColdFromETag = false
     var coldRefreshPending = false
     var coldRefreshForcePending = false
-    var autoConsumeTask: Task<Void, Never>?
-    var autoConsumeBackoffUntil: [String: Date] = [:]
 
     init(hotStore: HotTelemetryStore? = nil) {
         self.hotStore = hotStore ?? HotTelemetryStore()
@@ -86,7 +84,6 @@ final class ContestStore: ObservableObject {
 
     deinit {
         streamTask?.cancel()
-        autoConsumeTask?.cancel()
         fallbackTimer?.invalidate()
     }
 
@@ -129,7 +126,6 @@ final class ContestStore: ObservableObject {
         selectedWorkspace = path
         lastColdETag = nil
         lastLoadedWorkspace = nil
-        autoConsumeBackoffUntil.removeAll()
         resetHotColdReconciliation()
         hotStore.resetPipelineState()
         selectedProblemTitle = nil

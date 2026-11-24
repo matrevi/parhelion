@@ -78,7 +78,10 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
     return out
 
 
-def _append_jsonl(path: pathlib.Path, record: dict[str, Any]) -> None:
+def _append_jsonl(path: pathlib.Path, record: dict[str, Any]) -> bool:
+    if path.name == "submit-queue.jsonl":
+        from cli.opsb_core.services.queue_service import enqueue_once
+        return enqueue_once(path.parent.parent, record)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(sanitize_json_value(record), ensure_ascii=False, allow_nan=False) + "\n"
     with path.open("a", encoding="utf-8") as fh:
@@ -92,6 +95,7 @@ def _append_jsonl(path: pathlib.Path, record: dict[str, Any]) -> None:
                 pass
         finally:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+    return True
 
 
 def _opt_float(val: Any) -> float | None:
@@ -153,10 +157,10 @@ class SchedulerEngine:
                 cfg_dict["min_closing_reserve"] = int(ph_sched["closing_reserve"])
             if ph_sched.get("daily_quota_limit") is not None:
                 cfg_dict["daily_limit"] = int(ph_sched["daily_quota_limit"])
-            if ph_sched.get("rate_limit_gap_sec") is not None:
-                cfg_dict["rate_limit_gap_sec"] = int(ph_sched["rate_limit_gap_sec"])
             if ph_sched.get("circuit_breaker_limit") is not None:
                 cfg_dict["circuit_limit_shots"] = int(ph_sched["circuit_breaker_limit"])
+        cfg_dict["rate_limit_gap_sec"] = 0
+        cfg_dict.pop("probe_submissions_per_problem", None)  # Previously persisted default was two.
         self.config = GateConfig.from_dict(cfg_dict)
         self.overrides: dict[str, dict[str, Any]] = dict(self._raw_state.get("overrides", {}))
         self.held_items: dict[str, dict[str, Any]] = dict(self._raw_state.get("held_items", {}))
@@ -231,7 +235,22 @@ class SchedulerEngine:
         with lock_file.open("a", encoding="utf-8") as lk:
             fcntl.flock(lk.fileno(), fcntl.LOCK_EX)
             try:
+                latest, ok = read_json_safe(self.state_file)
+                if not ok or (latest is not None and not isinstance(latest, dict)):
+                    raise RuntimeError(f"Unreadable scheduler state: {self.state_file}")
+                for field in ("overrides", "held_items", "verified_escapes", "config"):
+                    original = self._raw_state.get(field, {})
+                    current = payload[field]
+                    merged = dict((latest or {}).get(field, {}))
+                    for key in original.keys() - current.keys():
+                        merged.pop(key, None)
+                    merged.update({key: value for key, value in current.items() if original.get(key) != value})
+                    payload[field] = merged
                 atomic_write_json(self.state_file, payload, indent=2, ensure_ascii=False)
+                self.overrides = dict(payload["overrides"])
+                self.held_items = dict(payload["held_items"])
+                self.verified_escapes = dict(payload["verified_escapes"])
+                self._raw_state = payload
             finally:
                 fcntl.flock(lk.fileno(), fcntl.LOCK_UN)
 
@@ -363,7 +382,7 @@ class SchedulerEngine:
             for rj in res_dir.glob("*/result.json"):
                 try:
                     d = json.loads(rj.read_text())
-                    if d.get("exit_code") == 0 and d.get("sha"):
+                    if d.get("sha") and (d.get("exit_code") == 0 or self.gate.probe_allowance(title, d["sha"])["allowed"]):
                         runs.append((str(d.get("finished_at", "")), str(d["sha"]).lower()))
                 except Exception:
                     continue
@@ -464,7 +483,7 @@ class SchedulerEngine:
                 "queued_at": rec.get("queued_at"),
                 "submitted_at": None,
                 "current_score": est.current_score,
-                "estimated_score": est.estimated_score,
+                "estimated_score": None if "no perf telemetry" in est.detail.lower() else est.estimated_score,
                 "raw_historical_best_score": est.raw_historical_best_score,
                 "contemporary_best_score": est.contemporary_best_score,
                 "decay_factor_gamma": est.decay_factor_gamma,
@@ -514,7 +533,7 @@ class SchedulerEngine:
                 "queued_at": h_rec.get("held_at"),
                 "submitted_at": None,
                 "current_score": est.current_score,
-                "estimated_score": est.estimated_score,
+                "estimated_score": None if "no perf telemetry" in est.detail.lower() else est.estimated_score,
                 "raw_historical_best_score": est.raw_historical_best_score,
                 "contemporary_best_score": est.contemporary_best_score,
                 "decay_factor_gamma": est.decay_factor_gamma,
@@ -594,7 +613,7 @@ class SchedulerEngine:
                 "queued_at": rec.get("queued_at"),
                 "submitted_at": rec.get("submitted_at") or rec.get("finished_at"),
                 "current_score": prev_b,
-                "estimated_score": est.estimated_score,
+                "estimated_score": None if "no perf telemetry" in est.detail.lower() else est.estimated_score,
                 "raw_historical_best_score": est.raw_historical_best_score,
                 "contemporary_best_score": est.contemporary_best_score,
                 "decay_factor_gamma": est.decay_factor_gamma,
@@ -753,18 +772,19 @@ class SchedulerEngine:
                     "queued_at": _utc_now(),
                     "status": "queued",
                     "priority_score": verdict.priority_score,
-                    "estimated_score": verdict.estimate.estimated_score,
+                    "estimated_score": None if "no perf telemetry" in verdict.estimate.detail.lower() else verdict.estimate.estimated_score,
                     "delta_expected": verdict.estimate.delta_expected,
                 }
                 if speedup is not None:
                     q_rec["speedup"] = speedup
                 if verdict.forced or verdict.is_critical_restore:
                     q_rec["force"] = True
-                _append_jsonl(self.workspace / "results" / "submit-queue.jsonl", q_rec)
+                enqueued = _append_jsonl(self.workspace / "results" / "submit-queue.jsonl", q_rec)
                 if h_key in self.held_items:
                     self.held_items.pop(h_key, None)
                     self._save_state()
-            enqueued = True
+            else:
+                enqueued = True
         else:
             if not dry_run and verdict.status_tag in ("HOLD_LOW_GAIN", "CIRCUIT_OPEN"):
                 self.held_items[h_key] = {
@@ -931,88 +951,11 @@ class SchedulerEngine:
         self.refresh_models()
         return {"updated": not dry_run, "dry_run": dry_run, "config": self.config.to_dict()}
 
-    def _execute_platform_submit(self, title: str, sha: str) -> dict[str, Any]:
-        """Invoke `tools/submit-validated.py` from a clean detached git worktree."""
-        repo = self.workspace / "bench" / title
-        worktree = pathlib.Path("/tmp") / f"opsb-submit-{title}"
-        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)], stdin=subprocess.DEVNULL, capture_output=True)
-        added = subprocess.run(
-            ["git", "-C", str(repo), "worktree", "add", "--detach", str(worktree), sha],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-        )
-        if added.returncode != 0:
-            raise RuntimeError(f"worktree add failed for {title} {sha[:7]}: {added.stderr.strip()}")
-        submit_runner_py = PACKAGE_DIR.parent / "runtime" / "submit-validated.py"
-        if not submit_runner_py.is_file():
-            submit_runner_py = self.workspace / "tools" / "submit-validated.py"
-        try:
-            res = subprocess.run(
-                [
-                    sys.executable,
-                    str(submit_runner_py),
-                    title,
-                    "--workspace",
-                    str(self.workspace),
-                    "--sha",
-                    sha,
-                    "--project-dir",
-                    str(worktree),
-                    "--force",
-                ],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            subprocess.run(
-                ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-            )
-        if res.returncode != 0:
-            raise RuntimeError(f"submit failed for {title} {sha[:7]}: {(res.stderr or res.stdout).strip()}")
-        return json.loads(res.stdout.strip().splitlines()[-1])
-
-    def _wait_and_score(self, title: str, submission_id: str) -> tuple[str, float | None]:
-        judge_dir = PACKAGE_DIR.parent / "runtime" / "judge"
-        if not (judge_dir / "ict_cli.py").is_file():
-            judge_dir = self.workspace / "skills" / "problem-submit" / "scripts"
-        if str(judge_dir) not in sys.path:
-            sys.path.insert(0, str(judge_dir))
-        from ict_cli import ICTClient  # type: ignore
-
-        client = ICTClient()
-        if not client.load_session():
-            raise RuntimeError("Run tools/cj login first")
-        deadline = time.monotonic() + 1800
-        status = "Running"
-        while time.monotonic() < deadline:
-            status = client.get_submission(submission_id).get("status", "Running")
-            if status not in ("Running", "Queued", "Pending"):
-                break
-            time.sleep(20)
-        pmeta = self.estimator.problems_meta[title]
-        base = f"/api/problems/{pmeta['problem_id']}/ranking"
-        score = None
-        for page in range(1, 8):
-            payload = client.session.get(
-                client.BASE_URL + base, params={"page": page, "size": 100}, timeout=30
-            ).json()
-            row = next((e for e in payload.get("rows", []) if e.get("user_id") == client.user_id), None)
-            if row:
-                score = float(row["score"])
-                break
-        return status, score
-
     def drain(self, once: bool = True, interval_sec: int = 180, dry_run: bool = False) -> dict[str, Any]:
         """Single-consumer WSPT priority drain loop over `results/submit-queue.jsonl`."""
         while True:
             self.refresh_models()
             q_path = self.workspace / "results" / "submit-queue.jsonl"
-            out_path = self.workspace / "results" / "submit-queue-outcome.jsonl"
-            lock_path = self.workspace / "results" / ".submit-queue.lock"
 
             outcomes = self.estimator.outcomes
             skipped_short = self._skipped_short_map()
@@ -1146,89 +1089,23 @@ class SchedulerEngine:
                     "quota": self.gate.get_quota_status().to_dict(),
                 }
 
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            submitted_results: list[dict[str, Any]] = []
-            with lock_path.open("a") as lk:
-                try:
-                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    return {"action": "drain", "locked_by_other": True, "submitted": []}
-
-                for idx, (rec, verdict) in enumerate(approved_plan):
-                    self.refresh_models()
-                    quota_now = self.gate.get_quota_status()
-                    if quota_now.remaining_today <= 0:
-                        break
-                    if quota_now.rate_wait_sec > 0 or idx > 0:
-                        wait_s = quota_now.rate_wait_sec if idx == 0 else self.config.rate_limit_gap_sec
-                        if wait_s > 0:
-                            time.sleep(wait_s)
-
-                    t, csha = verdict.title, verdict.sha
-                    receipt = None
-                    err = None
-                    for _attempt in range(3):
-                        try:
-                            receipt = self._execute_platform_submit(t, csha)
-                            break
-                        except RuntimeError as exc:
-                            err = exc
-                            if "timed out" not in str(exc) and "ReadTimeout" not in str(exc):
-                                break
-                            time.sleep(30)
-
-                    if receipt is None:
-                        out_rec = {
-                            **rec,
-                            "sha": csha,
-                            "finished_at": _utc_now(),
-                            "status": "rejected",
-                            "detail": str(err)[:400],
-                        }
-                        _append_jsonl(out_path, out_rec)
-                        submitted_results.append(out_rec)
-                        if err and "daily submission limit" in str(err):
-                            break
-                        continue
-
-                    if receipt.get("existing"):
-                        out_rec = {
-                            **rec,
-                            "sha": csha,
-                            "finished_at": _utc_now(),
-                            "status": "duplicate",
-                            "submission_id": receipt["submission_id"],
-                        }
-                        _append_jsonl(out_path, out_rec)
-                        submitted_results.append(out_rec)
-                        continue
-
-                    sub_id = receipt["submission_id"]
-                    st_str, sc_val = self._wait_and_score(t, sub_id)
-                    out_rec = {
-                        **rec,
-                        "sha": csha,
-                        "finished_at": _utc_now(),
-                        "status": st_str,
-                        "submission_id": sub_id,
-                        "score": sc_val,
-                        "submitted_at": receipt.get("submitted_at") or _utc_now(),
-                    }
-                    _append_jsonl(out_path, out_rec)
-                    submitted_results.append(out_rec)
-                    # Closed-loop auto-recalibration upon receiving new online score or WA/TLE/RE!
-                    try:
-                        self.refresh_models()
-                        self.calibrator.calibrate_problem(t, persist=True)
-                    except Exception:
-                        pass
-
+            dispatched = []
+            if approved_plan:
+                rec, verdict = approved_plan[0]
+                proc = subprocess.run(
+                    [sys.executable, str(PACKAGE_DIR.parent / "cli" / "opsb"), "queue", "submit-now",
+                     verdict.title, verdict.sha, "--workspace", str(self.workspace), "--note", rec.get("note") or ""],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30,
+                )
+                if not proc.stdout.strip():
+                    raise RuntimeError(proc.stderr.strip() or "submit dispatcher returned no result")
+                dispatched.append(json.loads(proc.stdout))
             if once:
                 return {
                     "action": "drain",
                     "dry_run": False,
-                    "submitted_count": len(submitted_results),
-                    "submitted": submitted_results,
+                    "submitted_count": sum(bool(d.get("ok")) for d in dispatched),
+                    "submitted": dispatched,
                     "held_or_rejected": held_plan,
                 }
             time.sleep(max(30, interval_sec))

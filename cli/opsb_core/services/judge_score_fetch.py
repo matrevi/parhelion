@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime
+import fcntl
 import json
 import math
 import os
@@ -334,33 +335,35 @@ def update_score_snapshot(
     snap_path = workspace / "results" / "score-snapshot.json"
     if not snap_path.is_file():
         return False
-    snap = _read_json(snap_path, {})
-    if not isinstance(snap, dict):
-        return False
-    prev = snap.get(title) if isinstance(snap.get(title), dict) else {}
-    prev_sid = str(prev.get("submission_id") or "")
-    prev_dt = _parse_iso(prev.get("submission_time"))
-    cur_dt = _parse_iso(submitted_at)
-    if require_current_check:
-        should_update = (prev_sid == sid) or (not prev_dt) or (cur_dt is not None and cur_dt >= prev_dt)
-        if not should_update:
+    with (snap_path.parent / ".score-snapshot.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        snap = _read_json(snap_path, {})
+        if not isinstance(snap, dict):
             return False
+        prev = snap.get(title) if isinstance(snap.get(title), dict) else {}
+        prev_sid = str(prev.get("submission_id") or "")
+        prev_dt = _parse_iso(prev.get("submission_time"))
+        cur_dt = _parse_iso(submitted_at)
+        if require_current_check:
+            should_update = (prev_sid == sid) or (not prev_dt) or (cur_dt is not None and cur_dt >= prev_dt)
+            if not should_update:
+                return False
 
-    new_rank = rank if rank is not None else (prev.get("rank") if prev_sid == sid else None)
-    new_score = (score if score is not None else prev.get("score")) if status == "Pass" else 0
-    sub_time = prev.get("submission_time")
-    if submitted_at and (not sub_time or (cur_dt is not None and (prev_dt is None or cur_dt >= prev_dt))):
-        sub_time = submitted_at
+        new_rank = rank if rank is not None else (prev.get("rank") if prev_sid == sid else None)
+        new_score = (score if score is not None else (prev.get("score") if prev_sid == sid else None)) if status == "Pass" else 0
+        sub_time = prev.get("submission_time")
+        if submitted_at and (not sub_time or (cur_dt is not None and (prev_dt is None or cur_dt >= prev_dt))):
+            sub_time = submitted_at
 
-    snap[title] = {
-        **prev,
-        "rank": new_rank,
-        "status": status,
-        "submission_id": sid,
-        "score": new_score,
-        "public_times_us": pub_times if pub_times else prev.get("public_times_us", []),
-        **({"public_tbest_us": pub_tbest} if pub_tbest else {}),
-        **({"submission_time": sub_time} if sub_time else {}),
-    }
-    atomic_write_json(snap_path, snap)
-    return True
+        snap[title] = {
+            **prev,
+            "rank": new_rank,
+            "status": status,
+            "submission_id": sid,
+            "score": new_score,
+            "public_times_us": pub_times if pub_times else prev.get("public_times_us", []),
+            **({"public_tbest_us": pub_tbest} if pub_tbest else {}),
+            **({"submission_time": sub_time} if sub_time else {}),
+        }
+        atomic_write_json(snap_path, snap)
+        return True

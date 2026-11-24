@@ -56,7 +56,7 @@ struct SubmissionQueueView: View {
 
     private var breakthroughItems: [SubmissionQueueItem] {
         items
-            .filter { $0.kind != "inflight" && ($0.breakthroughDelta ?? -999.0) >= btThreshold }
+            .filter { $0.kind == "completed" && $0.rawStatus == "Pass" && ($0.breakthroughDelta ?? -999.0) >= btThreshold }
             .sorted { a, b in
                 if btSortByTime {
                     let ta = a.finishedAt ?? a.queuedAt

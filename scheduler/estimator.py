@@ -804,19 +804,19 @@ class ScoreEstimator:
                 continue
             try:
                 rec = json.loads(line)
-                rec["canonical_sha"] = resolve_sha(self.workspace, rec.get("title", ""), rec.get("sha"))
+                rec["canonical_sha"] = resolve_sha(self.workspace, rec.get("title", ""), rec["sha"]) if rec.get("sha") else ""
                 records.append(rec)
             except ValueError:
                 continue
         best_idx: dict[str, int] = {}
-        best_rank: dict[str, tuple[int, int]] = {}
+        best_rank: dict[str, tuple[int, int, int]] = {}
         for idx, rec in enumerate(records):
             sid = str(rec.get("submission_id") or "").strip()
             if not sid:
                 continue
             st = str(rec.get("status") or "")
             is_sync_err = st == "sync_error" or (st == "rejected" and ("poll error:" in str(rec.get("detail") or "").lower() or bool(sid)))
-            rank = (0 if is_sync_err else 1, 1 if rec.get("score") is not None else 0)
+            rank = (0 if is_sync_err else 1, int(rec.get("source") != "judge-reconcile"), int(rec.get("score") is not None))
             prev = best_rank.get(sid)
             if prev is None or rank >= prev:
                 best_rank[sid] = rank

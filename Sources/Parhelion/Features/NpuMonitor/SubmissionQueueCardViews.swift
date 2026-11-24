@@ -110,7 +110,7 @@ struct CandidateSubmissionCardView: View {
                         if needsForceConfirm {
                             confirmRiskySubmit = true
                         } else {
-                            Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
+                            Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, force: true) }
                         }
                     } label: {
                         if isLocalUploading {
@@ -152,7 +152,7 @@ struct CandidateSubmissionCardView: View {
         .alert(lang.tr("确认强制覆盖门禁提交？", "Force Submit Blocked Candidate?"), isPresented: $confirmRiskySubmit) {
             Button(lang.tr("取消", "Cancel"), role: .cancel) {}
             Button(lang.tr("确认强制提交", "Force Submit"), role: .destructive) {
-                Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, isAuto: false, force: true) }
+                Task { await store.jumpSubmitNow(problem: item.title, sha: item.sha, note: item.note, force: true) }
             }
         } message: {
             Text("\(item.title) (\(item.shortSha)) · \(item.badge)")
@@ -239,7 +239,7 @@ struct CompletedSubmissionCardView: View {
                 HStack(spacing: 7) {
                     DifficultyBadge(difficulty: item.difficulty)
                     Text(item.title).font(.system(size: 13, weight: .bold))
-                    Text(item.shortSha).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    Text(item.shortSha.isEmpty ? String((item.submissionId ?? "").suffix(8)) : item.shortSha).font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
                     Text("· \(Formatters.shortTimestamp(item.finishedAt ?? item.queuedAt))")
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -285,14 +285,13 @@ struct CompletedSubmissionCardView: View {
                         .controlSize(.mini)
                     }
 
-                    if passed {
+                    if passed && !item.sha.isEmpty {
                         Button {
                             Task {
                                 await store.jumpSubmitNow(
                                     problem: item.title,
                                     sha: item.sha,
                                     note: lang.tr("重新提交历史版本 \(item.shortSha)", "Resubmit historical \(item.shortSha)"),
-                                    isAuto: false,
                                     force: true
                                 )
                             }

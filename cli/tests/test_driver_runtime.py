@@ -117,7 +117,7 @@ def test_discover_all_six_drivers_mocked(isolated_env: Path, tmp_path: Path, mon
     for kind, diag in seen.items():
         assert diag["installed"] is True, kind
         assert diag["auth_ok"] is True, kind
-        assert diag["version"] == "1.2.3"
+        assert diag["version"] == "1.2.3", (kind, diag["binary_path"])
         assert str(fake_bin) in diag["binary_path"]
 
     # Missing binary & missing GUI bundle cleanly reports installed=False without throwing

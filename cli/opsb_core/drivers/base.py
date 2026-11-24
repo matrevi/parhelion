@@ -97,7 +97,7 @@ def which_binary(candidates: tuple[str, ...] | list[str]) -> str:
     return ""
 
 
-def probe_binary_version(binary_path: str, args: tuple[str, ...] = ("--version",), timeout: float = 2.0) -> str:
+def probe_binary_version(binary_path: str, args: tuple[str, ...] = ("--version",), timeout: float = 5.0) -> str:
     """Run lightweight `--version` probe without network or stdin blocking."""
     if not binary_path:
         return ""

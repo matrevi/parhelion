@@ -12,7 +12,7 @@ from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
 from ..services.npu_service import SSH_CONTROL_OPTS
-from ..services.queue_service import check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
+from ..services.queue_service import enqueue_once, check_commit_safety_gate, compute_workspace_snapshot, estimate_score_from_note
 from ..services.submit_runner import (
     cancel_waiting_cooldown_for_commit,
     find_active_inflight_for_title,
@@ -46,9 +46,7 @@ def run_submit(args: argparse.Namespace) -> int:
         (it for it in snap["submission_queue"] if it["title"] == title and it["sha"].startswith(sha[:7]) and it["kind"] != "completed"),
         None,
     )
-    bridge_eval = None
-    if matched_cand is None:
-        bridge_eval = invoke_bridge(ws, "evaluate", ["--title", title, "--sha", sha, "--note", args.note or ""], use_cache=False)
+    bridge_eval = invoke_bridge(ws, "evaluate", ["--title", title, "--sha", sha, "--note", args.note or ""], use_cache=False)
 
     bridge_est = (bridge_eval or {}).get("estimate") or {}
     est = (
@@ -92,6 +90,13 @@ def run_submit(args: argparse.Namespace) -> int:
     circuit_ok = is_restore_zero or not prob["circuit_open"]
     quota_ok = is_restore_zero or snap["scheduler"]["available_normal_shots"] > 0
 
+    if bridge_stages:
+        safety_ok, noise_ok, circuit_ok, quota_ok = (bool(bridge_stages.get(stage, {}).get("passed")) for stage in
+            ("SAFETY", "NOISE_FLOOR", "CIRCUIT_BREAKER", "QUOTA_RESERVE"))
+    if bridge_tag == "PROBE":
+        safety_ok = noise_ok = circuit_ok = True
+        quota_ok = snap["scheduler"]["used_today_24h"] < snap["scheduler"]["daily_quota_limit"]
+
     verdict = {
         "title": title,
         "sha": sha,
@@ -126,9 +131,7 @@ def run_submit(args: argparse.Namespace) -> int:
         print(json.dumps(verdict, ensure_ascii=False) if args.json else f"HELD BY GATE: {verdict['reason']} (pass --force to override)")
         return 3
 
-    # Duplicate-dispatch guard: one (title, sha) must never hold two live shots.
-    # Two dispatchers exist (this CLI and the app's auto-consumer); without this check a
-    # second enqueue of the same source burns a daily shot and re-judges the same bytes.
+    # Return a specific diagnostic before the final atomic enqueue check.
     try:
         from ..services.queue_service import read_jsonl as _read_jsonl
 
@@ -167,43 +170,24 @@ def run_submit(args: argparse.Namespace) -> int:
         "note": args.note or "queued via opsb",
         "queued_at": utc_now().isoformat(),
         "status": "queued",
-        "estimated_score": est,
+        "estimated_score": None if "no perf telemetry" in str(bridge_est.get("detail", "")).lower() else est,
     }
     if args.force:
         record["force"] = True
-    append_jsonl_locked(ws / "results" / ".submit-queue-io.lock", ws / "results" / "submit-queue.jsonl", record)
+    explicit_now = bool(getattr(args, "now", False))
+    inserted = enqueue_once(ws, record)
+    if not inserted and not (explicit_now and args.force):
+        verdict.update(enqueued=False, reason="Already queued or previously submitted")
+        print(json.dumps(verdict, ensure_ascii=False))
+        return 4
     invalidate_ttl_cache("scheduler_bridge")
     verdict.update(enqueued=True, queued_record=record)
 
-    # Auto-dispatch unified background worker if `--now` is requested or `auto_consumer_enabled` is ON
-    explicit_now = bool(getattr(args, "now", False))
-    explicit_force = bool(getattr(args, "force", False))
-    auto_on = bool(snap["scheduler"].get("auto_consumer_enabled", False))
     if explicit_now:
-        disp = spawn_jump_submit(CLI_DIR / "opsb", ws, title, sha, record["note"], force=explicit_force)
-        verdict["dispatched"] = disp
-    elif auto_on:
-        pipeline = snap["scheduler"].get("pipeline") or {}
-        inflight_hit = find_active_inflight_for_title(ws, title, pipeline=pipeline)
-        if inflight_hit is not None:
-            verdict["dispatched"] = {
-                "ok": False,
-                "deferred_operator_inflight": True,
-                "inflight": inflight_hit,
-                "reason": f"{title} already has an active inflight submission; kept queued",
-            }
-        else:
-            disp = spawn_jump_submit(
-                CLI_DIR / "opsb",
-                ws,
-                title,
-                sha,
-                record["note"],
-                force=explicit_force,
-                enforce_operator_mutex=True,
-                pipeline=pipeline,
-            )
-            verdict["dispatched"] = disp
+        verdict["dispatched"] = spawn_jump_submit(
+            CLI_DIR / "opsb", ws, title, sha, record["note"], force=bool(args.force),
+            enforce_operator_mutex=not args.force,
+        )
 
     print(json.dumps(verdict, ensure_ascii=False) if args.json else f"Enqueued {title} {sha[:7]} (est={est:.2f}, WSPT={verdict['wspt_priority']:.1f})")
     return 0
@@ -312,13 +296,14 @@ def run_queue(args: argparse.Namespace) -> int:
             sha,
             args.note or "jump-queue submit via Parhelion",
             account_id=getattr(args, "account_id", None),
+            enforce_operator_mutex=not getattr(args, "force", False),
             force=bool(getattr(args, "force", False)),
         )
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res.get("ok") else 2
 
     if args.q_cmd == "_worker-submit-one":
-        return run_worker_submit_one(ws, args.problem, args.sha, args.note or "", account_id=getattr(args, "account_id", "primary") or "primary")
+        return run_worker_submit_one(ws, args.problem, args.sha, args.note or "", account_id=getattr(args, "account_id", "primary") or "primary", force=bool(getattr(args, "force", False)))
 
     if args.q_cmd == "drain":
         bridge_res = invoke_bridge(ws, "drain")
@@ -326,15 +311,8 @@ def run_queue(args: argparse.Namespace) -> int:
         if bridge_res is not None:
             print(json.dumps(bridge_res, ensure_ascii=False))
             return 0
-        legacy_q = ws / "tools" / "submit-queue.py"
-        if legacy_q.is_file():
-            py_exe = resolve_python_exe(ws)
-            proc = subprocess.run([py_exe, str(legacy_q), "run"], cwd=str(ws), capture_output=True, text=True)
-            out = {"ok": proc.returncode == 0, "output": (proc.stdout + proc.stderr).strip()}
-            print(json.dumps(out, ensure_ascii=False) if getattr(args, "json", False) else out["output"])
-            return proc.returncode
-        print(json.dumps({"ok": True, "output": "Queue consumer idle."}))
-        return 0
+        print(json.dumps({"ok": False, "error": "Scheduler unavailable; queue preserved."}))
+        return 2
     return 1
 
 
