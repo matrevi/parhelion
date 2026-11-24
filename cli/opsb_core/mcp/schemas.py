@@ -129,6 +129,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_submit_gate",
         "description": "Evaluate 4-Stage Submission Gate (G1-G4 + ESCAPE_LOCK) and optionally enqueue validated commit.",
+        "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -139,6 +140,115 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "force": {"type": "boolean"},
             },
             "required": ["problem"],
+        },
+    },
+    {
+        "name": "parhelion_harness_pool",
+        "description": "Inspect primary orchestrator (self-dispatch disabled), eligible external Harnesses, problem squads, and strategic alerts.",
+        "roles": ("orchestrator",),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "parhelion_agent_spawn",
+        "description": "Spawn a non-blocking autonomous external Harness worker (blocks active_driver self-dispatch; no concurrency cap; full bench+gate autonomy).",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "driver": {"type": "string", "enum": ["antigravity", "codex", "claude", "deepseek", "pi", "gemini"]},
+                "task": {"type": "string", "description": "Initial task instruction for the external worker"},
+                "role_label": {"type": "string", "description": "Short role badge (e.g. impl, audit, recon)"},
+                "problem": {"type": "string", "description": "Optional operator problem title (groups into Problem Squad)"},
+                "collab_mode": {"type": "string", "enum": ["orthogonal", "pipeline", "solo"], "description": "Squad concurrency philosophy"},
+                "axis": {"type": "string", "description": "Orthogonal exploration axis or pipeline stage tag (e.g. L1I-pack, ring4-ub, audit)"},
+                "worktree_mode": {"type": "string", "enum": ["isolated", "readonly", "shared"]},
+                "track": {"type": "string", "description": "Optional git worktree branch/track name"},
+            },
+            "required": ["driver", "task"],
+        },
+    },
+    {
+        "name": "parhelion_agent_send",
+        "description": "Send a strategic adjustment, generalization hint, or mid-turn interrupt to an external Harness worker.",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "message": {"type": "string"},
+                "delivery": {"type": "string", "enum": ["queue", "interrupt"]},
+            },
+            "required": ["agent_id", "message"],
+        },
+    },
+    {
+        "name": "parhelion_agent_wait",
+        "description": "Block on daemon condition (<=45s cap) until strategic events (breakthrough/stagnation/escape_zero/question/directive) or worker results arrive.",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_seq": {"type": "integer"},
+                "agent_ids": {"type": "array", "items": {"type": "string"}},
+                "problem": {"type": "string", "description": "Optional Problem Squad filter"},
+                "strategic_only": {"type": "boolean", "description": "Wake only on strategic escalations & results (default true)"},
+                "timeout_sec": {"type": "number", "description": "Wait timeout in seconds (default 25, max 45)"},
+            },
+        },
+    },
+    {
+        "name": "parhelion_agent_messages",
+        "description": "Read message history (per-worker or aggregated by Problem Squad), worktree git diff --stat, and commit SHA.",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "problem": {"type": "string", "description": "Optional Problem Squad filter"},
+                "since_seq": {"type": "integer"},
+                "limit": {"type": "integer"},
+                "ack": {"type": "boolean"},
+            },
+        },
+    },
+    {
+        "name": "parhelion_agent_stop",
+        "description": "Terminate an external Harness worker process group (-pgid) and optionally remove its isolated worktree.",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string"},
+                "cleanup_worktree": {"type": "boolean"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
+        "name": "parhelion_agent_report",
+        "description": "Worker-only: report autonomous progress, breakthrough (for cross-problem generalization), 6-shot stagnation, escape_zero, question, or final result.",
+        "roles": ("worker",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error"]},
+                "summary": {"type": "string"},
+                "no_gain_streak": {"type": "integer", "description": "Optional count of consecutive attempts without positive gain (>=6 escalates)"},
+                "artifacts": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["summary"],
+        },
+    },
+    {
+        "name": "parhelion_agent_inbox",
+        "description": "Worker-only: read and optionally acknowledge pending orchestrator follow-up messages or cross-problem broadcasts.",
+        "roles": ("worker",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since_seq": {"type": "integer"},
+                "ack_seq": {"type": "integer"},
+            },
         },
     },
 ]

@@ -47,8 +47,27 @@ parhelion/
     └── <slug>-<sha1[:8]>/             # Per-workspace isolated specs & scheduler state
         ├── meta.json
         ├── bench-specs/               # Per-problem cases_*.json & bench_feedback.json
-        └── state/                     # scheduler_state.json, backfill_ledger.jsonl, verified_escapes.json
+        └── state/                     # scheduler_state.json, backfill_ledger.jsonl, verified_escapes.json, agent_bus.db
 ```
+
+## Multi-Harness Agent Mesh (v3.2)
+
+The fifth sidebar tab「Agent 协作流 / Agent Mesh」renders the whole collaboration topology on one canvas:
+the active Harness as orchestrator in the centre, its native subagents on dashed branches, and
+cross-Harness external workers on solid bidirectional Bézier lanes (pulses travel on the arcs).
+
+- **Bus & lifecycle** — `opsb daemon` owns an `AgentMeshManager`; agent state and the monotonic message
+  log live in a stdlib SQLite WAL file at `~/.parhelion/workspaces/<id>/state/agent_bus.db`.
+  Every worker runs as its own process group (`-pgid` teardown) in an isolated git worktree
+  (`readonly` / `shared` modes available).
+- **HTTP control plane** — `GET /v1/agents/pool`, `POST /v1/agents/spawn|wait|directive|cleanup`,
+  `POST /v1/agents/<id>/send|stop|report`, `GET /v1/agents/<id>/messages|inbox`; all bearer-token guarded.
+- **Role-scoped MCP** — orchestrator sees 15 `parhelion_*` tools, a worker sees 11
+  (`parhelion_agent_report` / `parhelion_agent_inbox`, no orchestration tools).
+  `parhelion_agent_spawn` rejects `driver == active_driver` (homogeneous subagents stay native),
+  and `parhelion_agent_wait` defaults to 25 s with a hard 45 s ceiling.
+- **Zero-poll UI** — the compact `agent_mesh` projection rides the existing 1 Hz `/v1/stream/hot` SSE frame;
+  full message history is fetched only when a node is selected.
 
 ## Build, Install & Release DMG
 

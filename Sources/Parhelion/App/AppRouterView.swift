@@ -3,6 +3,7 @@ import SwiftUI
 enum NavigationRoute: String, CaseIterable, Identifiable {
     case contest
     case npuMonitor
+    case agentMesh
     case breakthroughs
     case workspaces
 
@@ -12,6 +13,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return lang.tr("赛题与榜单", "Contest & Operators")
         case .npuMonitor: return lang.tr("NPU 遥测与队列", "NPU & Task Queues")
+        case .agentMesh: return lang.tr("Agent 协作流", "Agent Mesh")
         case .breakthroughs: return lang.tr("四元知识库", "4-Pillar KB")
         case .workspaces: return lang.tr("工作区管理", "Workspaces")
         }
@@ -21,6 +23,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return lang.tr("实时总分 · 50 例对标", "Leaderboard · 50-Case Ratios")
         case .npuMonitor: return lang.tr("示波遥测 · 提交与门禁", "Telemetry · Queue · Gate")
+        case .agentMesh: return lang.tr("主控编排 · 跨 Harness 通信", "Orchestrator · MCP Flow")
         case .breakthroughs: return lang.tr("突破 · 积木 · 硬件 · 社区", "Breakthrough · Snippets · Hardware · Community")
         case .workspaces: return lang.tr("项目切换 · 零噪声脚手架", "Projects · Clean Scaffolder")
         }
@@ -30,6 +33,7 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         switch self {
         case .contest: return "chart.bar.xaxis"
         case .npuMonitor: return "cpu.fill"
+        case .agentMesh: return "point.3.connected.trianglepath.dotted"
         case .breakthroughs: return "sparkles.rectangle.stack.fill"
         case .workspaces: return "folder.badge.gearshape"
         }
@@ -59,6 +63,7 @@ struct AppRouterView: View {
                     switch route {
                     case .contest: ContestOverviewView()
                     case .npuMonitor: NpuMonitorView()
+                    case .agentMesh: AgentMeshView()
                     case .breakthroughs: BreakthroughLibraryView()
                     case .workspaces: WorkspaceManagerView()
                     }
@@ -227,6 +232,8 @@ struct AppRouterView: View {
                     .background(Capsule().fill(Color.accentColor.opacity(0.14)))
             case .npuMonitor:
                 NpuRouteBadgeView(fallbackCount: snap.npu.tasks.count)
+            case .agentMesh:
+                AgentMeshRouteBadgeView()
             case .breakthroughs:
                 let cnt = store.breakthroughEntries.filter { $0.deltaRaw >= store.breakthroughThreshold }.count
                 if cnt > 0 {
@@ -340,6 +347,22 @@ private struct NpuRouteBadgeView: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Capsule().fill(Color.orange.opacity(0.16)))
+        }
+    }
+}
+
+private struct AgentMeshRouteBadgeView: View {
+    @EnvironmentObject var hotStore: HotTelemetryStore
+
+    var body: some View {
+        let active = hotStore.agentMesh?.orchestrator.activeWorkers ?? 0
+        if active > 0 {
+            Text("\(active)")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.cyan)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Capsule().fill(Color.cyan.opacity(0.16)))
         }
     }
 }

@@ -8,6 +8,7 @@ import tomllib
 from pathlib import Path
 from typing import IO, Any
 
+from .. import __version__ as _OPSB_VERSION
 from .. import config as _cfg
 from .macos_gui import build_parhelion_mcp_command
 
@@ -32,15 +33,31 @@ def _strip_toml_sections(text: str, section_headers: set[str]) -> str:
     return "".join(out)
 
 
-def render_codex_config_toml(workspace: Path, mcp_url: str | None = None) -> str:
+def render_codex_config_toml(
+    workspace: Path,
+    mcp_url: str | None = None,
+    *,
+    role: str | None = None,
+    agent_id: str | None = None,
+    tool_timeout_sec: int = 120,
+) -> str:
     if mcp_url:
-        lines = ["# Managed by Parhelion", "[mcp_servers.parhelion]", f"url = {_toml_quote(mcp_url)}"]
+        lines = [
+            "# Managed by Parhelion",
+            "[mcp_servers.parhelion]",
+            f"url = {_toml_quote(mcp_url)}",
+            f"tool_timeout_sec = {int(tool_timeout_sec)}",
+        ]
     else:
-        cmd, args, env = build_parhelion_mcp_command(workspace)
+        cmd, args, env = build_parhelion_mcp_command(workspace, role=role, agent_id=agent_id)
         args_toml = ", ".join(_toml_quote(a) for a in args)
         lines = [
-            "# Managed by Parhelion", "[mcp_servers.parhelion]",
-            f"command = {_toml_quote(cmd)}", f"args = [{args_toml}]", "[mcp_servers.parhelion.env]",
+            "# Managed by Parhelion",
+            "[mcp_servers.parhelion]",
+            f"command = {_toml_quote(cmd)}",
+            f"args = [{args_toml}]",
+            f"tool_timeout_sec = {int(tool_timeout_sec)}",
+            "[mcp_servers.parhelion.env]",
             *(f"{k} = {_toml_quote(v)}" for k, v in env.items()),
         ]
     return "\n".join(lines) + "\n"
@@ -83,12 +100,21 @@ def ensure_codex_project_trusted(config_toml_path: Path, real_ws: str) -> bool:
 class CodexAppServerClient:
     """Native `codex app-server --listen stdio://` JSON-RPC 2.0 client."""
 
-    def __init__(self, stdin_stream: IO[str], stdout_stream: IO[str], log_stream: IO[str] | None = None) -> None:
+    def __init__(
+        self,
+        stdin_stream: IO[str],
+        stdout_stream: IO[str],
+        log_stream: IO[str] | None = None,
+        on_event: Any = None,
+    ) -> None:
         self._stdin = stdin_stream
         self._stdout = stdout_stream
         self._log = log_stream
+        self._on_event = on_event
         self._next_id = 1
         self.events: list[dict[str, Any]] = []
+        self.last_turn_id: str = ""
+        self.last_assistant_text: str = ""
 
     def _log_msg(self, direction: str, msg: Any) -> None:
         if self._log is None:
@@ -100,6 +126,39 @@ class CodexAppServerClient:
         self._log_msg("out", msg)
         self._stdin.write(json.dumps(msg, ensure_ascii=False, separators=(",", ":")) + "\n")
         self._stdin.flush()
+
+    def _handle_server_request(self, msg: dict[str, Any]) -> None:
+        """Auto-answer server-initiated approval requests so headless turns never deadlock."""
+        req_id = msg.get("id")
+        method = str(msg.get("method") or "")
+        if "approval" in method.lower() or "requestapproval" in method.lower():
+            self._write_msg({"jsonrpc": "2.0", "id": req_id, "result": {"decision": "accept"}})
+            return
+        self._write_msg({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Unsupported server callback in headless mode: {method}"},
+        })
+
+    def _record_event(self, msg: dict[str, Any]) -> None:
+        self.events.append(msg)
+        method = str(msg.get("method") or "")
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        if method in ("item/agentMessage/delta", "agentMessage/delta"):
+            delta = str(params.get("delta") or params.get("text") or "")
+            if delta:
+                self.last_assistant_text += delta
+        elif method == "item/completed":
+            item = params.get("item") if isinstance(params.get("item"), dict) else {}
+            if str(item.get("type") or "") in ("agentMessage", "message"):
+                txt = str(item.get("text") or "")
+                if txt:
+                    self.last_assistant_text = txt
+        if callable(self._on_event):
+            try:
+                self._on_event(msg)
+            except Exception:
+                pass
 
     def _read_until_id(self, req_id: int) -> dict[str, Any]:
         while True:
@@ -114,10 +173,14 @@ class CodexAppServerClient:
             except json.JSONDecodeError:
                 continue
             self._log_msg("in", msg)
-            if isinstance(msg, dict) and msg.get("id") == req_id:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("id") == req_id and ("result" in msg or "error" in msg):
                 return msg
-            if isinstance(msg, dict):
-                self.events.append(msg)
+            if "id" in msg and "method" in msg and "result" not in msg and "error" not in msg:
+                self._handle_server_request(msg)
+                continue
+            self._record_event(msg)
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         req_id = self._next_id
@@ -126,15 +189,28 @@ class CodexAppServerClient:
         return self._read_until_id(req_id)
 
     def initialize(self) -> dict[str, Any]:
-        resp = self.request("initialize", {"clientInfo": {"name": "parhelion", "title": "Parhelion", "version": "3.1.1"}})
+        resp = self.request("initialize", {"clientInfo": {"name": "parhelion", "title": "Parhelion", "version": _OPSB_VERSION}})
         if "error" in resp:
             raise RuntimeError(f"Codex initialize failed: {resp['error']}")
         self._write_msg({"jsonrpc": "2.0", "method": "initialized", "params": {}})
         return resp.get("result") or {}
 
-    def open_thread(self, cwd: Path, resume_id: str | None = None, *, persist_extended_history: bool = False) -> str:
+    def open_thread(
+        self,
+        cwd: Path,
+        resume_id: str | None = None,
+        *,
+        persist_extended_history: bool = False,
+        approval_policy: str | None = None,
+        sandbox: str | None = None,
+    ) -> str:
         if resume_id:
-            resp = self.request("thread/resume", {"threadId": resume_id, "cwd": str(cwd)})
+            r_params: dict[str, Any] = {"threadId": resume_id, "cwd": str(cwd)}
+            if approval_policy:
+                r_params["approvalPolicy"] = approval_policy
+            if sandbox:
+                r_params["sandbox"] = sandbox
+            resp = self.request("thread/resume", r_params)
             res = resp.get("result") if isinstance(resp.get("result"), dict) else None
             if "error" not in resp and res is not None:
                 thread = res.get("thread") if isinstance(res.get("thread"), dict) else {}
@@ -142,6 +218,10 @@ class CodexAppServerClient:
         params: dict[str, Any] = {"cwd": str(cwd)}
         if persist_extended_history:
             params["persistExtendedHistory"] = True
+        if approval_policy:
+            params["approvalPolicy"] = approval_policy
+        if sandbox:
+            params["sandbox"] = sandbox
         resp = self.request("thread/start", params)
         if "error" in resp:
             raise RuntimeError(f"Codex thread/start failed: {resp['error']}")
@@ -155,10 +235,33 @@ class CodexAppServerClient:
             raise RuntimeError(f"Codex thread/name/set failed: {resp['error']}")
         return resp.get("result") or {}
 
-    def start_turn(self, thread_id: str, prompt_text: str) -> dict[str, Any]:
-        resp = self.request("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt_text}]})
+    def interrupt_turn(self, thread_id: str, turn_id: str | None = None) -> None:
+        params: dict[str, Any] = {"threadId": thread_id}
+        if turn_id or self.last_turn_id:
+            params["turnId"] = turn_id or self.last_turn_id
+        self._write_msg({"jsonrpc": "2.0", "id": self._next_id, "method": "turn/interrupt", "params": params})
+        self._next_id += 1
+
+    def start_turn(
+        self,
+        thread_id: str,
+        prompt_text: str,
+        *,
+        approval_policy: str | None = None,
+        sandbox: str | None = None,
+    ) -> dict[str, Any]:
+        self.last_assistant_text = ""
+        params: dict[str, Any] = {"threadId": thread_id, "input": [{"type": "text", "text": prompt_text}]}
+        if approval_policy:
+            params["approvalPolicy"] = approval_policy
+        if sandbox:
+            params["sandboxPolicy"] = {"type": sandbox}
+        resp = self.request("turn/start", params)
         if "error" in resp:
             raise RuntimeError(f"Codex turn/start failed: {resp['error']}")
+        res = dict(resp.get("result") or {})
+        turn_obj = res.get("turn") if isinstance(res.get("turn"), dict) else {}
+        self.last_turn_id = str(turn_obj.get("id") or res.get("turnId") or "")
         while True:
             raw = self._stdout.readline()
             if raw == "":
@@ -171,11 +274,17 @@ class CodexAppServerClient:
             except json.JSONDecodeError:
                 continue
             self._log_msg("in", msg)
-            if isinstance(msg, dict):
-                self.events.append(msg)
-                if msg.get("method") in ("turn/completed", "turn/failed"):
-                    break
-        return resp.get("result") or {}
+            if not isinstance(msg, dict):
+                continue
+            if "id" in msg and "method" in msg and "result" not in msg and "error" not in msg:
+                self._handle_server_request(msg)
+                continue
+            self._record_event(msg)
+            if msg.get("method") in ("turn/completed", "turn/failed", "turn/cancelled"):
+                break
+        if self.last_assistant_text and "text" not in res:
+            res["text"] = self.last_assistant_text.strip()
+        return res
 
 
 def preseed_codex_thread(bin_path: str, real_wt: Path, name: str, c_home: Path) -> str:

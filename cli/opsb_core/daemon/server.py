@@ -31,6 +31,9 @@ from ..config import (
     resolve_python_exe,
     utc_now,
 )
+from ..agents.manager import AgentMeshManager
+from ..mcp.handlers_agents import bind_daemon_agent_manager
+from .agent_routes import handle_agent_get, handle_agent_post
 from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
 
@@ -150,6 +153,8 @@ class OpsbDaemonRuntime:
             on_frame=self.notify_subscribers,
             problems_provider=lambda: self.state_cache.get_problems_by_title(self.workspace),
         )
+        self.agent_mesh = AgentMeshManager(on_change=self.notify_subscribers)
+        bind_daemon_agent_manager(self.agent_mesh)
 
     def notify_subscribers(self) -> None:
         with self._sub_cond:
@@ -282,6 +287,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                     stream_stats=runtime.stream_mgr.stats(),
                     uptime_sec=runtime.uptime_sec(),
                 )
+                frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
                 self._send_json(200, frame)
                 return
 
@@ -329,6 +335,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                             stream_stats=runtime.stream_mgr.stats(),
                             uptime_sec=runtime.uptime_sec(),
                         )
+                        frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
                         first_frame = False
                         line = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
                         payload = f"event: hot\ndata: {line}\n\n".encode("utf-8")
@@ -341,6 +348,10 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                         self.close_connection = True
                         return
                     raise
+                return
+
+            if agent_resp := handle_agent_get(path, q, ws, runtime):
+                self._send_json(agent_resp[0], agent_resp[1])
                 return
 
             self._send_json(404, {"ok": False, "error": f"not found: {path}"})
@@ -362,14 +373,25 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
 
             ws = runtime.resolve_ws(body_obj.get("workspace") or q.get("workspace"))
 
-            if path in ("/v1/mcp", "/mcp"):
+            if path in ("/v1/mcp", "/mcp", "/v1/mcp/orchestrator") or path.startswith("/v1/mcp/worker/"):
                 from ..mcp.server import handle_mcp_http_request
 
-                code, resp_obj = handle_mcp_http_request(raw_body, workspace=ws)
+                if path.startswith("/v1/mcp/worker/"):
+                    mcp_role = "worker"
+                    mcp_agent_id = urllib.parse.unquote(path[len("/v1/mcp/worker/"):]).strip("/") or None
+                else:
+                    mcp_role = (self.headers.get("X-Parhelion-Role") or q.get("role") or "orchestrator").strip().lower()
+                    mcp_agent_id = (self.headers.get("X-Parhelion-Agent-Id") or q.get("agent_id") or "").strip() or None
+
+                code, resp_obj = handle_mcp_http_request(raw_body, workspace=ws, role=mcp_role, agent_id=mcp_agent_id)
                 if resp_obj is None:
                     self._send_bytes(code, "application/json; charset=utf-8", b"")
                 else:
                     self._send_json(code, resp_obj)
+                return
+
+            if agent_resp := handle_agent_post(path, body_obj, ws, runtime):
+                self._send_json(agent_resp[0], agent_resp[1])
                 return
 
             if path == "/v1/invalidate":
@@ -445,6 +467,8 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
     finally:
         stop_event.set()
         runtime.notify_subscribers()
+        runtime.agent_mesh.stop_all()
+        bind_daemon_agent_manager(None)
         runtime.stream_mgr.stop()
         server.server_close()
         _remove_daemon_state(expected_pid=os.getpid())

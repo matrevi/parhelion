@@ -1,6 +1,7 @@
 """Session worktree preparation and prompt-cache-safe `< 3 KB` brief composition."""
 from __future__ import annotations
 
+import fcntl
 import importlib
 import re
 import subprocess
@@ -57,18 +58,26 @@ def prepare_session_worktree(
         return wt_dir.resolve()
 
     wt_dir.parent.mkdir(parents=True, exist_ok=True)
-    branch_chk = subprocess.run(
-        ["git", "-C", str(repo_dir), "rev-parse", "--verify", f"refs/heads/{safe_track}"],
-        stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5.0,
-    )
-    cmd = (
-        ["git", "-C", str(repo_dir), "worktree", "add", str(wt_dir), safe_track]
-        if branch_chk.returncode == 0
-        else ["git", "-C", str(repo_dir), "worktree", "add", "-b", safe_track, str(wt_dir), "HEAD"]
-    )
-    proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15.0)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Failed to prepare worktree for {title} at {wt_dir}: {(proc.stderr or proc.stdout).strip()}")
+    lock_path = (repo_dir / ".git" / ".parhelion-worktree.lock") if (repo_dir / ".git").is_dir() else (wt_dir.parent / ".parhelion-worktree.lock")
+    with lock_path.open("a", encoding="utf-8") as lfh:
+        fcntl.flock(lfh, fcntl.LOCK_EX)
+        try:
+            if wt_dir.exists() and (wt_dir / ".git").exists():
+                return wt_dir.resolve()
+            branch_chk = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "--verify", f"refs/heads/{safe_track}"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5.0,
+            )
+            cmd = (
+                ["git", "-C", str(repo_dir), "worktree", "add", str(wt_dir), safe_track]
+                if branch_chk.returncode == 0
+                else ["git", "-C", str(repo_dir), "worktree", "add", "-b", safe_track, str(wt_dir), "HEAD"]
+            )
+            proc = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15.0)
+            if proc.returncode != 0:
+                raise RuntimeError(f"Failed to prepare worktree for {title} at {wt_dir}: {(proc.stderr or proc.stdout).strip()}")
+        finally:
+            fcntl.flock(lfh, fcntl.LOCK_UN)
     return wt_dir.resolve()
 
 

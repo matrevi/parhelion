@@ -9,6 +9,7 @@ final class HotTelemetryStore: ObservableObject {
     @Published var telemetryHistory: [TelemetrySample] = []
     @Published var pipeline: LivePipelineState?
     @Published var schedulerHot: SchedulerHotState?
+    @Published var agentMesh: AgentMeshHotState?
     @Published var streamConnected: Bool = false
     @Published var daemonOnline: Bool = false
     @Published var probeBackend: String = "dcmi"
@@ -21,6 +22,9 @@ final class HotTelemetryStore: ObservableObject {
         mergeTelemetryHistory(from: frame.npu)
         pipeline = frame.pipeline
         schedulerHot = frame.schedulerHot
+        if let mesh = frame.agentMesh {
+            agentMesh = mesh
+        }
         daemonOnline = true
         streamConnected = frame.daemonStats.streamConnected
         probeBackend = frame.daemonStats.probeBackend
@@ -62,12 +66,14 @@ final class HotTelemetryStore: ObservableObject {
         daemonOnline = false
         streamConnected = false
         schedulerHot = nil
+        agentMesh = nil
     }
 
     /// Workspace switch: drop the previous workspace's submit pipeline / scheduler hot state.
     func resetPipelineState() {
         pipeline = nil
         schedulerHot = nil
+        agentMesh = nil
     }
 
     func clearForHostSwitch() {

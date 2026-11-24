@@ -178,12 +178,25 @@ def launch_macos_deep_link(url: str, gui_app_path: str, fallback_args: list[str]
             raise RuntimeError(f"Failed to launch {label} GUI URL: {(proc.stderr or proc.stdout).strip()}")
 
 
-def build_parhelion_mcp_command(workspace: Path) -> tuple[str, list[str], dict[str, str]]:
+def build_parhelion_mcp_command(
+    workspace: Path,
+    *,
+    role: str | None = None,
+    agent_id: str | None = None,
+) -> tuple[str, list[str], dict[str, str]]:
     """Return `(command, args, env)` to run `opsb mcp serve` for a workspace."""
     ws = Path(os.path.realpath(workspace.expanduser()))
     py_exe = _cfg.resolve_python_exe(ws)
     opsb_script = str(_cfg.CLI_DIR / "opsb")
-    return py_exe, [opsb_script, "mcp", "serve", "--workspace", str(ws)], {"PARHELION_HOME": str(_parhelion_home())}
+    args = [opsb_script, "mcp", "serve", "--workspace", str(ws)]
+    env = {"PARHELION_HOME": str(_parhelion_home())}
+    if role:
+        args.extend(["--role", role])
+        env["PARHELION_MCP_ROLE"] = role
+    if agent_id:
+        args.extend(["--agent-id", agent_id])
+        env["PARHELION_AGENT_ID"] = agent_id
+    return py_exe, args, env
 
 
 def write_mcp_json_file(
@@ -191,13 +204,16 @@ def write_mcp_json_file(
     workspace: Path,
     mcp_url: str | None = None,
     server_name: str = "parhelion",
+    *,
+    role: str | None = None,
+    agent_id: str | None = None,
 ) -> Path:
     """Write standard `mcpServers` JSON config file atomically."""
     target_path.parent.mkdir(parents=True, exist_ok=True)
     if mcp_url:
         entry: dict[str, Any] = {"type": "http", "url": mcp_url}
     else:
-        cmd, args, env = build_parhelion_mcp_command(workspace)
+        cmd, args, env = build_parhelion_mcp_command(workspace, role=role, agent_id=agent_id)
         entry = {"command": cmd, "args": args, "env": env}
     tmp = target_path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"mcpServers": {server_name: entry}}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

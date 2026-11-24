@@ -1,0 +1,808 @@
+"""Daemon-hosted Multi-Harness AgentMeshManager coordinating worker lifecycles & message bus."""
+from __future__ import annotations
+
+import queue
+import re
+import shlex
+import subprocess
+import threading
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Callable
+
+from .. import config as _cfg
+from ..drivers.base import resolve_session_logs_dir
+from ..drivers.brief import prepare_session_worktree, resolve_problem_repo
+from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
+from ..services.git_fast import read_head_fast
+from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
+from .bus_store import AgentBusStore
+
+AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
+MAX_WAIT_SEC = 45.0
+DEFAULT_WAIT_SEC = 25.0
+STAGNATION_STREAK_THRESHOLD = 6
+STRATEGIC_KINDS = frozenset({"breakthrough", "stagnation", "escape_zero", "directive", "question", "error"})
+
+
+def _git_branch_and_sha(path: Path) -> tuple[str, str]:
+    if not path.is_dir():
+        return "", ""
+    sha, _, _ = read_head_fast(path)
+    branch = ""
+    head_file = path / ".git"
+    try:
+        if head_file.is_file():
+            txt = head_file.read_text(encoding="utf-8", errors="replace").strip()
+            if txt.startswith("gitdir:"):
+                gd = Path(txt.split(":", 1)[1].strip())
+                if not gd.is_absolute():
+                    gd = (path / gd).resolve()
+                hf = gd / "HEAD"
+                if hf.is_file():
+                    ht = hf.read_text(encoding="utf-8", errors="replace").strip()
+                    if ht.startswith("ref: refs/heads/"):
+                        branch = ht[len("ref: refs/heads/"):]
+        elif (head_file / "HEAD").is_file():
+            ht = (head_file / "HEAD").read_text(encoding="utf-8", errors="replace").strip()
+            if ht.startswith("ref: refs/heads/"):
+                branch = ht[len("ref: refs/heads/"):]
+    except Exception:
+        pass
+    return branch, (sha[:7] if sha else "")
+
+
+def _git_diff_stat(path: Path) -> str:
+    if not path.is_dir():
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "diff", "--stat", "HEAD"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2.5,
+        )
+        return proc.stdout.strip()[-400:] if proc.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+class _WorkerRunner:
+    """Per-agent turn pump keeping persistent RPC adapters warm across follow-up messages."""
+
+    def __init__(self, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter, on_notify: Callable[[], None]) -> None:
+        self.agent_id = agent_id
+        self.store = store
+        self.adapter = adapter
+        self._on_notify = on_notify
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._stop_flag = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name=f"agent-{agent_id}", daemon=True)
+        self._thread.start()
+
+    def enqueue(self, prompt: str) -> None:
+        if not self._stop_flag.is_set():
+            self._queue.put(prompt)
+
+    def interrupt(self) -> None:
+        self.adapter.interrupt()
+
+    def stop(self) -> None:
+        self._stop_flag.set()
+        self.adapter.stop()
+        self._queue.put(None)
+
+    def _on_tool_event(self, kind: str, label: str) -> None:
+        if kind == "tool":
+            updates: dict[str, Any] = {"last_tool": label}
+            if self.adapter.native_session_id:
+                updates["native_session_id"] = self.adapter.native_session_id
+            if self.adapter.pid:
+                updates["pid"] = self.adapter.pid
+                updates["pgid"] = self.adapter.pgid
+            self.store.update_agent(self.agent_id, **updates)
+            self._on_notify()
+
+    def _loop(self) -> None:
+        while not self._stop_flag.is_set():
+            prompt = self._queue.get()
+            if prompt is None or self._stop_flag.is_set():
+                break
+            rec = self.store.get_agent(self.agent_id) or {}
+            turn_n = int(rec.get("turn_count") or 0) + 1
+            self.store.update_agent(self.agent_id, status="working", turn_count=turn_n, error="")
+            self._on_notify()
+            try:
+                reply = self.adapter.send_turn(prompt, on_event=self._on_tool_event)
+                branch, sha7 = _git_branch_and_sha(self.adapter.worktree)
+                self.store.update_agent(
+                    self.agent_id,
+                    status="idle" if not self._stop_flag.is_set() else "stopped",
+                    pid=self.adapter.pid,
+                    pgid=self.adapter.pgid,
+                    native_session_id=self.adapter.native_session_id,
+                    branch=branch or rec.get("branch", ""),
+                    last_commit_sha=sha7 or rec.get("last_commit_sha", ""),
+                    last_tool="",
+                )
+                if not self._stop_flag.is_set() and reply:
+                    self.store.append_message(
+                        self.agent_id, "worker_to_orch", "result", reply[:4000], commit_sha=sha7
+                    )
+            except Exception as exc:
+                if not self._stop_flag.is_set():
+                    err_s = str(exc)[:600]
+                    self.store.update_agent(self.agent_id, status="error", error=err_s, last_tool="")
+                    self.store.append_message(self.agent_id, "worker_to_orch", "error", err_s)
+            finally:
+                self._on_notify()
+
+
+class AgentMeshManager:
+    """Manages cross-Harness external workers, role boundaries, and SSE hot-mesh projections."""
+
+    def __init__(
+        self,
+        *,
+        on_change: Callable[[], None] | None = None,
+        adapter_factory: AdapterFactory = create_worker_adapter,
+        max_workers: int | None = None,
+    ) -> None:
+        self._on_change = on_change
+        self._adapter_factory = adapter_factory
+        self.max_workers = int(max_workers) if max_workers is not None else None
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._stores: dict[str, AgentBusStore] = {}
+        self._runners: dict[str, _WorkerRunner] = {}
+        self._doctor_cache: tuple[float, dict[str, Any]] = (0.0, {})
+        self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
+        self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def _notify(self) -> None:
+        with self._cond:
+            self._cond.notify_all()
+        if callable(self._on_change):
+            try:
+                self._on_change()
+            except Exception:
+                pass
+
+    def _store(self, workspace: Path) -> AgentBusStore:
+        key = str(workspace.expanduser().resolve())
+        with self._lock:
+            st = self._stores.get(key)
+            if st is None:
+                st = AgentBusStore(Path(key))
+                st.sweep_stale_running(set(self._runners.keys()))
+                self._stores[key] = st
+            return st
+
+    def _cached_doctor(self) -> dict[str, Any]:
+        now = time.monotonic()
+        ts, data = self._doctor_cache
+        if data and (now - ts) < 6.0:
+            return data
+        try:
+            fresh = doctor_drivers()
+        except Exception:
+            fresh = {"active_driver": get_active_driver_kind(), "diagnostics": []}
+        self._doctor_cache = (now, fresh)
+        return fresh
+
+    def _observed_driver_sessions(self, workspace: Path, active_driver: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return (primary_orchestrator_session, native_subagents) from a single cached GUI observation."""
+        key = f"{workspace.expanduser().resolve()}::{active_driver}"
+        now = time.monotonic()
+        cached = self._native_cache.get(key)
+        if cached and (now - cached[0]) < 3.5:
+            return cached[1]
+        primary: dict[str, Any] = {}
+        subs: list[dict[str, Any]] = []
+        try:
+            rows = get_driver(active_driver).observe_gui_sessions(workspace=workspace, limit=12)
+            for r in rows:
+                if not primary and not r.get("parent_conversation_id"):
+                    primary = r
+                is_sub = bool(r.get("parent_conversation_id")) or str(r.get("status") or "") == "running"
+                if not is_sub:
+                    continue
+                subs.append({
+                    "id": str(r.get("session_id") or r.get("native_session_id") or "")[:24],
+                    "driver": active_driver,
+                    "role_label": str(r.get("agent_name") or "subagent")[:20],
+                    "status": str(r.get("status") or "idle"),
+                    "problem": str(r.get("problem") or workspace.name),
+                    "steps": int(r.get("observed_steps") or 0),
+                    "last_tool": str(r.get("last_tool") or "")[:32],
+                    "title": str(r.get("brief_preview") or r.get("agent_name") or "")[:64],
+                    "deep_link": str(r.get("deep_link") or ""),
+                })
+                if len(subs) >= 4:
+                    break
+            if not primary and rows:
+                primary = rows[0]
+        except Exception:
+            primary, subs = {}, []
+        res = (primary, subs)
+        self._native_cache[key] = (now, res)
+        return res
+
+    @staticmethod
+    def _fallback_driver_deep_link(driver: str, diag: dict[str, Any]) -> str:
+        drv = str(driver or "").lower()
+        scheme = str(diag.get("url_scheme") or "").strip()
+        if drv == "antigravity":
+            return "antigravity://open"
+        if drv == "deepseek":
+            return "dsh://open"
+        if drv == "codex":
+            return "codex://open"
+        if drv == "claude":
+            return "claude://" if diag.get("gui_installed") else ""
+        return f"{scheme}://open" if scheme else ""
+
+    def _build_worker_jump(
+        self,
+        ws: Path,
+        worker: dict[str, Any],
+        diag: dict[str, Any],
+        orch_deep_link: str = "",
+    ) -> tuple[str, str, str]:
+        """Return (deep_link, resume_command, jump_mode) for an external MCP worker."""
+        drv = str(worker.get("driver") or "").lower()
+        aid = str(worker.get("agent_id") or "")
+        nsid = str(worker.get("native_session_id") or "").strip()
+        wt = str(worker.get("worktree") or ws)
+        bin_path = str(diag.get("binary_path") or "").strip()
+
+        if drv == "deepseek":
+            # DSH ACP shares ~/.dsh/sessions with DeepSeek Harness Desktop
+            return "dsh://open", "", "deeplink"
+
+        if drv == "antigravity":
+            dl = orch_deep_link if orch_deep_link.startswith("antigravity://") else "antigravity://open"
+            return dl, "", "deeplink"
+
+        if drv == "codex":
+            worker_codex_home = worker_runtime_dir(ws, aid) / "codex_home"
+            exe = bin_path or "codex"
+            res_arg = shlex.quote(nsid) if nsid else "--last"
+            cmd = f"cd {shlex.quote(wt)} && CODEX_HOME={shlex.quote(str(worker_codex_home))} {shlex.quote(exe)} resume {res_arg}"
+            dl = f"codex://threads/{nsid}" if nsid else "codex://open"
+            return dl, cmd, ("terminal" if bin_path else "deeplink")
+
+        if drv == "claude":
+            exe = bin_path or "claude"
+            res_flag = f"--resume {shlex.quote(nsid)}" if nsid else "--continue"
+            cmd = f"cd {shlex.quote(wt)} && {shlex.quote(exe)} {res_flag}"
+            dl = "claude://" if diag.get("gui_installed") else ""
+            return dl, cmd, ("terminal" if bin_path else "deeplink")
+
+        if drv in ("pi", "gemini"):
+            exe = bin_path or drv
+            cmd = f"cd {shlex.quote(wt)} && {shlex.quote(exe)}"
+            return "", cmd, "terminal"
+
+        return self._fallback_driver_deep_link(drv, diag), "", "deeplink"
+
+    def _cached_ws_signals(self, workspace: Path) -> dict[str, Any]:
+        """Cached (3s) per-problem score, difficulty & ESCAPE_LOCK map for Squad grouping & alerts."""
+        key = str(workspace.expanduser().resolve())
+        now = time.monotonic()
+        cached = self._ws_signals_cache.get(key)
+        if cached and (now - cached[0]) < 3.0:
+            return cached[1]
+        ws = Path(key)
+        snap = _cfg.read_json(ws / "results" / "score-snapshot.json", {})
+        scores: dict[str, dict[str, Any]] = {}
+        escape_locked: list[str] = []
+        if isinstance(snap, dict):
+            for prob, row in snap.items():
+                if not isinstance(row, dict):
+                    continue
+                cal = _cfg.read_json(ws / "results" / prob / "calibration.json", {})
+                esc = bool(isinstance(cal, dict) and cal.get("escape_lock"))
+                if esc:
+                    escape_locked.append(prob)
+                scores[prob] = {
+                    "score": float(row.get("score") or 0.0),
+                    "status": str(row.get("status") or ""),
+                    "difficulty": int(_cfg.DEFAULT_DIFFICULTIES.get(prob, 2)),
+                    "escape_locked": esc,
+                }
+        res = {"scores": scores, "escape_locked": escape_locked}
+        self._ws_signals_cache[key] = (now, res)
+        return res
+
+    def get_harness_pool(self, workspace: Path) -> dict[str, Any]:
+        doc = self._cached_doctor()
+        active = str(doc.get("active_driver") or get_active_driver_kind()).lower()
+        store = self._store(workspace)
+        eligible: list[dict[str, Any]] = []
+        orchestrator_info: dict[str, Any] = {"kind": active, "display_name": active.upper(), "protocol": "", "gui_app_path": ""}
+        for d in doc.get("diagnostics") or []:
+            k = str(d.get("kind") or "").lower()
+            if k == active:
+                orchestrator_info = {
+                    "kind": k,
+                    "display_name": str(d.get("display_name") or k),
+                    "protocol": str(d.get("protocol") or ""),
+                    "gui_app_path": str(d.get("gui_app_path") or ""),
+                    "installed": bool(d.get("installed")),
+                    "auth_ok": bool(d.get("auth_ok")),
+                }
+                continue
+            eligible.append({
+                "kind": k,
+                "display_name": str(d.get("display_name") or k),
+                "protocol": str(d.get("protocol") or ""),
+                "gui_app_path": str(d.get("gui_app_path") or ""),
+                "installed": bool(d.get("installed")),
+                "auth_ok": bool(d.get("auth_ok")),
+                "has_cli": bool(d.get("binary_path")),
+                "detail": str(d.get("detail") or ""),
+            })
+        hot = self.build_hot_mesh(workspace)
+        return {
+            "ok": True,
+            "workspace": str(workspace.expanduser().resolve()),
+            "orchestrator": orchestrator_info,
+            "disabled_self_driver": active,
+            "eligible_external_drivers": eligible,
+            "squads": hot["squads"],
+            "strategic_alerts": hot["strategic_alerts"],
+            "active_workers": store.list_agents(include_stopped=False),
+            "all_workers": store.list_agents(include_stopped=True),
+        }
+
+    def spawn_agent(
+        self,
+        workspace: Path,
+        *,
+        driver: str,
+        task: str,
+        role_label: str = "worker",
+        problem: str = "",
+        collab_mode: str = "solo",
+        axis: str = "",
+        worktree_mode: str = "isolated",
+        track: str = "",
+    ) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        drv_kind = str(driver or "").strip().lower()
+        if drv_kind not in VALID_DRIVERS:
+            raise ValueError(f"Unknown driver '{driver}'. Supported: {', '.join(VALID_DRIVERS)}")
+        active = get_active_driver_kind()
+        if drv_kind == active:
+            raise ValueError(
+                f"Self-dispatch blocked: '{drv_kind}' is the primary orchestrator. "
+                "Manage homogeneous subagents natively; use Parhelion MCP only for OTHER Harnesses."
+            )
+        if not str(task or "").strip():
+            raise ValueError("task prompt must be non-empty")
+
+        store = self._store(ws)
+        if self.max_workers is not None:
+            live_count = len(store.list_agents(include_stopped=False))
+            if live_count >= self.max_workers:
+                raise RuntimeError(f"External worker limit reached ({live_count}/{self.max_workers}); stop an idle worker first.")
+
+        agent_id = f"{drv_kind[:3]}-{uuid.uuid4().hex[:6]}"
+        safe_role = re.sub(r"[^A-Za-z0-9._-]+", "-", (role_label or "worker").strip()).strip("-")[:20] or "worker"
+        mode = worktree_mode if worktree_mode in ("isolated", "readonly", "shared") else "isolated"
+        c_mode = collab_mode if collab_mode in ("orthogonal", "pipeline", "solo") else "solo"
+        clean_axis = str(axis or "").strip()[:28]
+        prob_title = problem.strip()
+        if prob_title:
+            resolved_title, repo_dir, _ = resolve_problem_repo(ws, prob_title)
+            prob_title = resolved_title
+            if mode == "isolated":
+                wt = prepare_session_worktree(ws, resolved_title, track_name=track or f"{drv_kind}-{safe_role}-{agent_id[-4:]}")
+            else:
+                wt = repo_dir if repo_dir.is_dir() else ws
+        else:
+            wt = ws
+
+        branch, sha7 = _git_branch_and_sha(wt)
+        axis_line = f" | axis={clean_axis}" if clean_axis else ""
+        worker_prompt = (
+            f"[Parhelion Autonomous Worker | id={agent_id} | role={safe_role} | squad={prob_title or ws.name} ({c_mode}{axis_line})]\n"
+            f"Workspace: {ws}\nWorktree: {wt}\n"
+            f"Autonomy Protocol: You operate autonomously under primary orchestrator ({active}).\n"
+            f"1. Run local bench (`opsb test` / `parhelion_test_plan`) and fast-feedback (`parhelion_pmu_card`, `parhelion_elf_cold3_check`, `parhelion_kb_query`).\n"
+            f"2. When local bench confirms a real gain, invoke `parhelion_submit_gate` directly (gate + auto-submitter handle safety & quota).\n"
+            f"3. Escalate to orchestrator via `parhelion_agent_report` ONLY for: `breakthrough` (for cross-problem generalization), "
+            f"`stagnation` (6 consecutive attempts without gain), `escape_zero` (online WA/TLE/RE zero), `question`, or final `result`.\n\n"
+            f"Task:\n{task.strip()}"
+        )
+        rec = store.create_agent({
+            "agent_id": agent_id,
+            "driver": drv_kind,
+            "role_label": safe_role,
+            "problem": prob_title or ws.name,
+            "collab_mode": c_mode,
+            "axis": clean_axis,
+            "worktree": str(wt),
+            "worktree_mode": mode,
+            "branch": branch,
+            "status": "spawning",
+            "last_commit_sha": sha7,
+        })
+        msg = store.append_message(agent_id, "orch_to_worker", "task", task.strip(), problem=prob_title or ws.name)
+        log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
+        adapter = self._adapter_factory(ws, wt, drv_kind, agent_id, log_path)
+        runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+        with self._lock:
+            self._runners[agent_id] = runner
+        runner.enqueue(worker_prompt)
+        self._notify()
+        return {"ok": True, "agent": rec, "message": msg}
+
+    def send_message(self, workspace: Path, agent_id: str, message: str, *, delivery: str = "queue") -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        rec = store.get_agent(agent_id)
+        if rec is None:
+            raise KeyError(f"Unknown agent_id: {agent_id}")
+        if rec["status"] == "stopped":
+            raise RuntimeError(f"Agent '{agent_id}' is stopped; spawn a new worker instead.")
+        kind = "interrupt" if delivery == "interrupt" else "followup"
+        msg = store.append_message(agent_id, "orch_to_worker", kind, message.strip())
+        with self._lock:
+            runner = self._runners.get(agent_id)
+        if runner is None:
+            log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
+            adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
+            adapter.native_session_id = str(rec.get("native_session_id") or "")
+            runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+            with self._lock:
+                self._runners[agent_id] = runner
+        if delivery == "interrupt":
+            runner.interrupt()
+        runner.enqueue(message.strip())
+        self._notify()
+        return {"ok": True, "agent_id": agent_id, "delivery": kind, "message": msg}
+
+    def wait_events(
+        self,
+        workspace: Path,
+        *,
+        since_seq: int = 0,
+        agent_ids: list[str] | None = None,
+        problem: str | None = None,
+        strategic_only: bool = True,
+        timeout_sec: float = DEFAULT_WAIT_SEC,
+    ) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        cap_timeout = max(0.5, min(MAX_WAIT_SEC, float(timeout_sec)))
+        id_set = {str(x) for x in (agent_ids or []) if str(x).strip()}
+        deadline = time.monotonic() + cap_timeout
+
+        def _collect() -> list[dict[str, Any]]:
+            msgs = store.list_messages(
+                problem=problem or None,
+                since_seq=since_seq,
+                strategic_only=strategic_only,
+                limit=40,
+            )
+            return [
+                m for m in msgs
+                if (m["direction"] == "worker_to_orch" or m["kind"] == "directive")
+                and (not id_set or m["agent_id"] in id_set)
+            ]
+
+        with self._cond:
+            matched = _collect()
+            while not matched:
+                rem = deadline - time.monotonic()
+                if rem <= 0:
+                    break
+                self._cond.wait(timeout=min(rem, 1.0))
+                matched = _collect()
+
+        agents = store.list_agents(include_stopped=True)
+        if id_set:
+            agents = [a for a in agents if a["agent_id"] in id_set]
+        if problem:
+            agents = [a for a in agents if str(a.get("problem") or "").lower() == problem.lower()]
+        next_seq = max([int(since_seq), *[int(m["seq"]) for m in matched]])
+        squad_map: dict[str, list[str]] = {}
+        for a in agents:
+            p = str(a.get("problem") or ws.name)
+            st_tag = f"{a['driver'][:3]}:{a['status']}"
+            if int(a.get("no_gain_streak") or 0) >= STAGNATION_STREAK_THRESHOLD:
+                st_tag += f"(stag:{a['no_gain_streak']})"
+            squad_map.setdefault(p, []).append(st_tag)
+        return {
+            "ok": True,
+            "timed_out": len(matched) == 0,
+            "next_seq": next_seq,
+            "strategic_only": strategic_only,
+            "messages": matched,
+            "squad_digest": [f"{p}: {', '.join(tags)}" for p, tags in sorted(squad_map.items())],
+            "agents": [
+                {
+                    "agent_id": a["agent_id"], "driver": a["driver"], "role_label": a["role_label"],
+                    "status": a["status"], "problem": a["problem"], "collab_mode": a.get("collab_mode", "solo"),
+                    "axis": a.get("axis", ""), "turn_count": a["turn_count"],
+                    "no_gain_streak": int(a.get("no_gain_streak") or 0),
+                    "unread_for_orch": a["unread_for_orch"], "last_tool": a["last_tool"],
+                    "last_commit_sha": a["last_commit_sha"],
+                }
+                for a in agents
+            ],
+        }
+
+    def read_messages(
+        self,
+        workspace: Path,
+        *,
+        agent_id: str | None = None,
+        problem: str | None = None,
+        since_seq: int = 0,
+        limit: int = 60,
+        ack: bool = True,
+    ) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        msgs = store.list_messages(agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit)
+        if ack and agent_id and msgs:
+            store.ack_messages(agent_id, max(int(m["seq"]) for m in msgs), reader="orch")
+            self._notify()
+        agent = store.get_agent(agent_id) if agent_id else None
+        diff_stat = _git_diff_stat(Path(agent["worktree"])) if (agent and agent.get("worktree")) else ""
+        return {
+            "ok": True,
+            "agent": agent,
+            "problem": problem or (agent.get("problem") if agent else ""),
+            "diff_stat": diff_stat,
+            "latest_seq": store.latest_seq(),
+            "messages": msgs,
+        }
+
+    def worker_report(
+        self,
+        workspace: Path,
+        agent_id: str,
+        *,
+        kind: str = "progress",
+        summary: str,
+        no_gain_streak: int | None = None,
+        artifacts: list[str] | None = None,
+    ) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        rec = store.get_agent(agent_id)
+        if rec is None:
+            raise KeyError(f"Unknown worker agent_id: {agent_id}")
+        valid_kinds = ("progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error")
+        norm_kind = kind if kind in valid_kinds else "progress"
+        streak = int(no_gain_streak) if no_gain_streak is not None else int(rec.get("no_gain_streak") or 0)
+        if norm_kind == "breakthrough":
+            streak = 0
+        elif streak >= STAGNATION_STREAK_THRESHOLD and norm_kind == "progress":
+            norm_kind = "stagnation"
+
+        priority = "strategic" if (norm_kind in STRATEGIC_KINDS or norm_kind == "result") else "normal"
+        _, sha7 = _git_branch_and_sha(Path(rec["worktree"])) if rec.get("worktree") else ("", "")
+        updates: dict[str, Any] = {"no_gain_streak": streak}
+        if norm_kind in ("question", "stagnation", "escape_zero"):
+            updates["status"] = "waiting_input"
+        store.update_agent(agent_id, **updates)
+        msg = store.append_message(
+            agent_id, "worker_to_orch", norm_kind, summary.strip()[:4000],
+            artifacts=artifacts, commit_sha=sha7, priority=priority, problem=str(rec.get("problem") or ""),
+        )
+        self._notify()
+        return {"ok": True, "seq": msg["seq"], "agent_id": agent_id, "kind": norm_kind, "priority": priority, "no_gain_streak": streak}
+
+    def post_admin_directive(
+        self,
+        workspace: Path,
+        body: str,
+        *,
+        problem: str = "",
+        broadcast_workers: bool = False,
+    ) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        text = str(body or "").strip()
+        if not text:
+            raise ValueError("directive body must be non-empty")
+        store = self._store(ws)
+        msg = store.append_message(
+            "admin", "system", "directive", text[:4000], priority="strategic", problem=problem.strip()
+        )
+        dispatched: list[str] = []
+        if broadcast_workers:
+            for a in store.list_agents(include_stopped=False):
+                if problem and str(a.get("problem") or "").lower() != problem.lower():
+                    continue
+                try:
+                    self.send_message(ws, a["agent_id"], f"[Admin Directive] {text}", delivery="queue")
+                    dispatched.append(a["agent_id"])
+                except Exception:
+                    pass
+        self._notify()
+        return {"ok": True, "message": msg, "dispatched_workers": dispatched}
+
+    def worker_inbox(self, workspace: Path, agent_id: str, *, since_seq: int = 0, ack_seq: int | None = None) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        if ack_seq is not None:
+            store.ack_messages(agent_id, int(ack_seq), reader="worker")
+        msgs = store.list_messages(agent_id=agent_id, since_seq=since_seq, direction="orch_to_worker", limit=30)
+        return {"ok": True, "agent_id": agent_id, "messages": msgs, "latest_seq": store.latest_seq()}
+
+    def stop_agent(self, workspace: Path, agent_id: str, *, cleanup_worktree: bool = False) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        store = self._store(ws)
+        rec = store.get_agent(agent_id)
+        if rec is None:
+            raise KeyError(f"Unknown agent_id: {agent_id}")
+        with self._lock:
+            runner = self._runners.pop(agent_id, None)
+        if runner is not None:
+            runner.stop()
+        removed_wt = False
+        if cleanup_worktree and rec.get("worktree_mode") == "isolated" and rec.get("worktree"):
+            wt_p = Path(rec["worktree"])
+            if wt_p.is_dir() and ".worktrees" in wt_p.parts:
+                try:
+                    repo_root = wt_p.parent.parent
+                    subprocess.run(["git", "-C", str(repo_root), "worktree", "remove", "--force", str(wt_p)], check=False, timeout=10)
+                    removed_wt = not wt_p.exists()
+                except Exception:
+                    pass
+        updated = store.update_agent(agent_id, status="stopped", pid=None, pgid=None, last_tool="")
+        store.append_message(agent_id, "system", "lifecycle", f"Agent {agent_id} stopped.")
+        self._notify()
+        return {"ok": True, "agent": updated, "worktree_removed": removed_wt}
+
+    def cleanup_stopped(self, workspace: Path) -> dict[str, Any]:
+        removed = self._store(workspace).cleanup_stopped()
+        self._notify()
+        return {"ok": True, "removed": removed}
+
+    def stop_all(self) -> None:
+        with self._lock:
+            runners = list(self._runners.values())
+            self._runners.clear()
+        for r in runners:
+            try:
+                r.stop()
+            except Exception:
+                pass
+
+    def build_hot_mesh(self, workspace: Path) -> dict[str, Any]:
+        ws = workspace.expanduser().resolve()
+        doc = self._cached_doctor()
+        active = str(doc.get("active_driver") or get_active_driver_kind()).lower()
+        store = self._store(ws)
+        workers = store.list_agents(include_stopped=True, limit=60)
+        now = time.time()
+        diag_by_kind = {str(d.get("kind") or "").lower(): d for d in (doc.get("diagnostics") or [])}
+        orch_diag = diag_by_kind.get(active, {})
+        ws_sig = self._cached_ws_signals(ws)
+        scores_map = ws_sig.get("scores") or {}
+
+        ready_drivers = [
+            {
+                "kind": str(d.get("kind") or "").lower(),
+                "display_name": str(d.get("display_name") or ""),
+                "protocol": str(d.get("protocol") or ""),
+                "gui_app_path": str(d.get("gui_app_path") or ""),
+                "installed": bool(d.get("installed")),
+                "auth_ok": bool(d.get("auth_ok")),
+                "has_cli": bool(d.get("binary_path")),
+            }
+            for d in (doc.get("diagnostics") or [])
+            if str(d.get("kind") or "").lower() != active
+        ]
+        orch_session, native_subs = self._observed_driver_sessions(ws, active)
+        orch_deep_link = str(orch_session.get("deep_link") or "") or self._fallback_driver_deep_link(active, orch_diag)
+        orch_title = str(orch_session.get("brief_preview") or ws.name)[:64]
+        for sub in native_subs:
+            if not sub.get("deep_link"):
+                sub["deep_link"] = orch_deep_link
+        active_w_count = sum(1 for w in workers if w.get("status") not in ("stopped", "error"))
+
+        # Group workers into Problem Squads + collect 4 Strategic Alerts
+        squad_groups: dict[str, list[dict[str, Any]]] = {}
+        strategic_alerts: list[dict[str, Any]] = []
+        for prob in ws_sig.get("escape_locked") or []:
+            strategic_alerts.append({
+                "id": f"esc-{prob}", "kind": "escape_zero", "problem": prob,
+                "agent_id": "", "label": f"{prob} ESCAPE_LOCK",
+            })
+
+        worker_rows: list[dict[str, Any]] = []
+        for w in workers:
+            drv = str(w["driver"]).lower()
+            w_diag = diag_by_kind.get(drv) or {}
+            w_dl, w_resume_cmd, w_jump_mode = self._build_worker_jump(ws, w, w_diag, orch_deep_link=orch_deep_link)
+            prob = str(w.get("problem") or ws.name)
+            streak = int(w.get("no_gain_streak") or 0)
+            if streak >= STAGNATION_STREAK_THRESHOLD and w.get("status") not in ("stopped",):
+                strategic_alerts.append({
+                    "id": f"stag-{w['agent_id']}", "kind": "stagnation", "problem": prob,
+                    "agent_id": w["agent_id"], "label": f"{prob} · {w['role_label']} ({streak}/6)",
+                })
+            row = {
+                "agent_id": w["agent_id"],
+                "driver": drv,
+                "gui_app_path": str(w_diag.get("gui_app_path") or ""),
+                "native_session_id": str(w.get("native_session_id") or ""),
+                "deep_link": w_dl,
+                "resume_command": w_resume_cmd,
+                "jump_mode": w_jump_mode,
+                "role_label": w["role_label"],
+                "status": w["status"],
+                "problem": prob,
+                "collab_mode": str(w.get("collab_mode") or "solo"),
+                "axis": str(w.get("axis") or ""),
+                "worktree": w["worktree"],
+                "worktree_mode": w["worktree_mode"],
+                "branch": w["branch"],
+                "turn_count": int(w.get("turn_count") or 0),
+                "no_gain_streak": streak,
+                "unread_count": int(w.get("unread_for_orch") or 0),
+                "last_tool": w.get("last_tool") or "",
+                "last_summary": w.get("last_summary") or "",
+                "last_commit_sha": w.get("last_commit_sha") or "",
+                "error": w.get("error") or "",
+                "elapsed_sec": max(0, int(now - float(w.get("last_active_epoch") or now))),
+                "last_msg_epoch": float(w.get("last_msg_epoch") or 0.0),
+                "last_msg_dir": w.get("last_msg_dir") or "",
+            }
+            worker_rows.append(row)
+            squad_groups.setdefault(prob, []).append(row)
+
+        pulses = store.recent_pulses(window_sec=12.0, limit=16)
+        for p in pulses:
+            if p["kind"] in ("breakthrough", "directive"):
+                strategic_alerts.append({
+                    "id": f"msg-{p['seq']}", "kind": p["kind"], "problem": p.get("problem") or "",
+                    "agent_id": p["agent_id"], "label": p["preview"][:40],
+                })
+
+        squads: list[dict[str, Any]] = []
+        for prob, items in squad_groups.items():
+            s_info = scores_map.get(prob) or {}
+            modes = {i["collab_mode"] for i in items}
+            squad_mode = "orthogonal" if "orthogonal" in modes else ("pipeline" if "pipeline" in modes else ("orthogonal" if len(items) > 1 else "solo"))
+            squads.append({
+                "problem": prob,
+                "difficulty": int(s_info.get("difficulty") or _cfg.DEFAULT_DIFFICULTIES.get(prob, 2)),
+                "current_score": float(s_info.get("score") or 0.0),
+                "collab_mode": squad_mode,
+                "escape_locked": bool(s_info.get("escape_locked", False)),
+                "worker_ids": [i["agent_id"] for i in items],
+                "active_count": sum(1 for i in items if i["status"] not in ("stopped", "error")),
+                "stagnated_count": sum(1 for i in items if i["no_gain_streak"] >= STAGNATION_STREAK_THRESHOLD),
+            })
+        squads.sort(key=lambda s: (-int(s["escape_locked"]), -s["difficulty"], -s["active_count"], s["problem"]))
+
+        return {
+            "orchestrator": {
+                "driver": active,
+                "display_name": str(orch_diag.get("display_name") or active.upper()),
+                "protocol": str(orch_diag.get("protocol") or ""),
+                "gui_app_path": str(orch_diag.get("gui_app_path") or ""),
+                "deep_link": orch_deep_link,
+                "session_title": orch_title,
+                "workspace_name": ws.name,
+                "active_workers": active_w_count,
+                "native_subagents": len(native_subs),
+                "squad_count": len(squads),
+                "status": "active" if (active_w_count > 0 or any(n["status"] == "running" for n in native_subs)) else "standby",
+            },
+            "ready_drivers": ready_drivers,
+            "native_subagents": native_subs,
+            "squads": squads,
+            "strategic_alerts": strategic_alerts[:12],
+            "workers": worker_rows,
+            "pulses": pulses,
+            "latest_seq": store.latest_seq(),
+            "ts": now,
+        }

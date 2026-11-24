@@ -160,14 +160,17 @@ def run_mcp(args: argparse.Namespace) -> int:
 
     if sub == "serve":
         ws = _resolve_ws(getattr(args, "workspace", None))
-        return serve_stdio(workspace=ws)
+        role = getattr(args, "role", "orchestrator") or "orchestrator"
+        agent_id = getattr(args, "agent_id", None)
+        return serve_stdio(workspace=ws, role=role, agent_id=agent_id)
 
     if sub == "list-tools":
-        tools = list_tool_schemas()
+        role = getattr(args, "role", "orchestrator") or "orchestrator"
+        tools = list_tool_schemas(role=role)
         if as_json:
-            print(json.dumps({"tools": tools}, ensure_ascii=False, indent=2))
+            print(json.dumps({"role": role, "tools": tools}, ensure_ascii=False, indent=2))
             return 0
-        print(f"=== Parhelion MCP Tools ({len(tools)}) ===")
+        print(f"=== Parhelion MCP Tools ({len(tools)}, role={role}) ===")
         for t in tools:
             req = ", ".join((t.get("inputSchema") or {}).get("required") or [])
             req_s = f" (required: {req})" if req else ""
@@ -176,6 +179,8 @@ def run_mcp(args: argparse.Namespace) -> int:
 
     if sub == "call":
         ws = _resolve_ws(getattr(args, "workspace", None))
+        role = getattr(args, "role", "orchestrator") or "orchestrator"
+        agent_id = getattr(args, "agent_id", None)
         raw_args = getattr(args, "args_json", None) or "{}"
         try:
             parsed_args: dict[str, Any] = json.loads(raw_args)
@@ -185,7 +190,7 @@ def run_mcp(args: argparse.Namespace) -> int:
             print(json.dumps({"ok": False, "error": f"Invalid --args-json: {exc}"}, ensure_ascii=False))
             return 1
         try:
-            res = call_tool(args.tool_name, parsed_args, ws)
+            res = call_tool(args.tool_name, parsed_args, ws, role=role, agent_id=agent_id)
             print(json.dumps(res, ensure_ascii=False, indent=2))
             return 0
         except Exception as exc:
@@ -254,15 +259,20 @@ def register_driver_and_mcp_subcommands(sub: argparse._SubParsersAction) -> None
 
     m_srv = mcp_sub.add_parser("serve", help="Run line-delimited JSON-RPC 2.0 MCP server on stdio")
     m_srv.add_argument("--workspace", "-w")
+    m_srv.add_argument("--role", choices=["orchestrator", "worker"], default="orchestrator")
+    m_srv.add_argument("--agent-id", default=None)
     m_srv.set_defaults(func=run_mcp)
 
     m_ls = mcp_sub.add_parser("list-tools", help="List all Parhelion MCP tool schemas")
+    m_ls.add_argument("--role", choices=["orchestrator", "worker"], default="orchestrator")
     m_ls.add_argument("--json", action="store_true")
     m_ls.set_defaults(func=run_mcp)
 
     m_ca = mcp_sub.add_parser("call", help="Invoke a Parhelion MCP tool directly from CLI")
     m_ca.add_argument("tool_name")
     m_ca.add_argument("--args-json", default="{}")
+    m_ca.add_argument("--role", choices=["orchestrator", "worker"], default="orchestrator")
+    m_ca.add_argument("--agent-id", default=None)
     m_ca.add_argument("--workspace", "-w")
     m_ca.add_argument("--json", action="store_true")
     m_ca.set_defaults(func=run_mcp)

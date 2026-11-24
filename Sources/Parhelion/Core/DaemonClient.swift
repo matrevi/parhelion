@@ -273,6 +273,48 @@ actor DaemonClient {
         }
     }
 
+    func requestAuthedData(
+        method: String,
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        body: [String: Any]? = nil,
+        workspace: String,
+        host: String,
+        timeout: TimeInterval = 12.0
+    ) async throws -> Data {
+        let meta = try await ensureConnected(workspace: workspace, host: host)
+        var comps = URLComponents(string: "http://127.0.0.1:\(meta.port)\(path)")!
+        var items = queryItems
+        items.append(URLQueryItem(name: "workspace", value: workspace))
+        comps.queryItems = items
+        var req = URLRequest(url: comps.url!)
+        req.httpMethod = method
+        req.setValue(meta.token, forHTTPHeaderField: "X-Opsb-Token")
+        req.timeoutInterval = timeout
+        if let body {
+            var payload = body
+            payload["workspace"] = workspace
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        }
+        let (data, resp) = try await httpSession.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw DaemonClientError.daemonUnavailable("Invalid HTTP response")
+        }
+        if http.statusCode == 401 {
+            cachedMeta = nil
+            throw DaemonClientError.unauthorized
+        }
+        if http.statusCode >= 400 {
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let err = obj["error"] as? String, !err.isEmpty {
+                throw DaemonClientError.daemonUnavailable(err)
+            }
+            throw DaemonClientError.badHttpStatus(http.statusCode)
+        }
+        return data
+    }
+
     private func clearCachedMeta() {
         cachedMeta = nil
     }

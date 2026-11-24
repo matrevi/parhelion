@@ -18,6 +18,7 @@ from .base import (
     which_binary,
     write_mcp_json_file,
 )
+from .macos_gui import inspect_macos_app_bundle
 
 
 def coerce_claude_uuid(raw_id: str | None) -> str:
@@ -72,15 +73,24 @@ class ClaudeDriver(BaseDriver):
     def _new_native_id(self, session_id: str, resume_id: str | None) -> str:
         return coerce_claude_uuid(resume_id or session_id)
 
+    def _gui_candidates(self) -> list[Path]:
+        return [Path("/Applications/Claude.app"), Path.home() / "Applications" / "Claude.app"]
+
+    def discover_gui(self) -> dict[str, Any]:
+        return inspect_macos_app_bundle(self._gui_candidates(), expected_bundle_ids={"com.anthropic.claudefordesktop"})
+
     def discover(self) -> DriverDiagnostic:
+        gui = self.discover_gui()
         bin_path = self._find_binary()
-        installed = bool(bin_path)
-        version = probe_binary_version(bin_path) if bin_path else ""
+        installed = bool(bin_path) or bool(gui["gui_installed"])
+        version = probe_binary_version(bin_path) if bin_path else str(gui.get("gui_version") or "")
         has_env = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"))
         claude_dir = Path.home() / ".claude"
         auth_ok = installed and (has_env or (claude_dir / ".credentials.json").is_file() or claude_dir.is_dir())
         if not installed:
             detail = "claude binary not found on PATH"
+        elif not bin_path and gui["gui_installed"]:
+            detail = "ready (Claude Desktop GUI; claude CLI not on PATH)"
         elif not auth_ok:
             detail = "installed; missing ANTHROPIC_API_KEY or ~/.claude session"
         else:
@@ -94,6 +104,11 @@ class ClaudeDriver(BaseDriver):
             auth_ok=auth_ok,
             protocol=self.protocol,
             detail=detail,
+            gui_installed=bool(gui["gui_installed"]),
+            gui_app_path=str(gui["gui_app_path"]),
+            gui_bundle_id=str(gui["gui_bundle_id"]),
+            gui_version=str(gui["gui_version"]),
+            url_scheme=str(gui["url_scheme"]),
         )
 
     def sync_workspace(self, workspace: Path, mcp_url: str | None = None) -> dict[str, Any]:
@@ -153,7 +168,9 @@ class ClaudeDriver(BaseDriver):
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "acceptEdits",
+            "bypassPermissions",
+            "--setting-sources",
+            "local",
             "--strict-mcp-config",
             "--mcp-config",
             str(cfg_path),

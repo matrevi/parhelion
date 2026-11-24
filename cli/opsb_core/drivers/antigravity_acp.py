@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import IO, Any
 
+from .. import __version__ as _OPSB_VERSION
 from .. import config as _cfg
 from .macos_gui import build_parhelion_mcp_command
 
@@ -22,14 +23,17 @@ class AcpSessionClient:
         stdout_stream: IO[str],
         log_stream: IO[str] | None = None,
         quiet_window_sec: float = 0.25,
+        on_event: Any = None,
     ) -> None:
         self._stdin = stdin_stream
         self._stdout = stdout_stream
         self._log = log_stream
         self.quiet_window_sec = quiet_window_sec
+        self._on_event = on_event
         self._next_id = 1
         self.notifications: list[dict[str, Any]] = []
         self.open_tool_calls: set[str] = set()
+        self.last_assistant_chunks: list[str] = []
 
     def _log_line(self, direction: str, payload: Any) -> None:
         if self._log is None:
@@ -44,6 +48,34 @@ class AcpSessionClient:
         self._stdin.write(line + "\n")
         self._stdin.flush()
 
+    def _handle_agent_request(self, msg: dict[str, Any]) -> None:
+        """Auto-reply to bidirectional agent-initiated JSON-RPC requests so headless ACP never deadlocks."""
+        req_id = msg.get("id")
+        method = str(msg.get("method") or "")
+        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
+        if method == "session/request_permission":
+            options = params.get("options") if isinstance(params.get("options"), list) else []
+            chosen = "allow_once"
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                oid = str(opt.get("optionId") or opt.get("id") or "")
+                kind = str(opt.get("kind") or "").lower()
+                if "allow" in kind or "allow" in oid.lower():
+                    chosen = oid or chosen
+                    break
+            self._write_msg({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {"outcome": {"outcome": "selected", "optionId": chosen}},
+            })
+            return
+        self._write_msg({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": f"Unsupported client callback in headless mode: {method}"},
+        })
+
     def _track_notification(self, msg: dict[str, Any]) -> None:
         self.notifications.append(msg)
         if msg.get("method") != "session/update":
@@ -55,6 +87,17 @@ class AcpSessionClient:
         u_type = str(update.get("sessionUpdate") or update.get("type") or "")
         tc_id = str(update.get("toolCallId") or update.get("id") or "")
         status = str(update.get("status") or "").lower()
+        if u_type in ("agent_message_chunk", "message_chunk", "text"):
+            content = update.get("content")
+            txt = ""
+            if isinstance(content, dict):
+                txt = str(content.get("text") or "")
+            elif isinstance(content, str):
+                txt = content
+            elif update.get("text"):
+                txt = str(update["text"])
+            if txt:
+                self.last_assistant_chunks.append(txt)
         if u_type == "tool_call" and tc_id and status in ("", "pending", "in_progress", "running"):
             self.open_tool_calls.add(tc_id)
         elif u_type in ("tool_call_update", "tool_call") and tc_id:
@@ -62,6 +105,11 @@ class AcpSessionClient:
                 self.open_tool_calls.discard(tc_id)
             elif status in ("pending", "in_progress", "running"):
                 self.open_tool_calls.add(tc_id)
+        if callable(self._on_event):
+            try:
+                self._on_event(update)
+            except Exception:
+                pass
 
     def _read_until_id(self, target_id: int) -> dict[str, Any]:
         while True:
@@ -76,9 +124,14 @@ class AcpSessionClient:
             except json.JSONDecodeError:
                 continue
             self._log_line("in", msg)
-            if isinstance(msg, dict) and msg.get("id") == target_id:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("id") == target_id and ("result" in msg or "error" in msg):
                 return msg
-            if isinstance(msg, dict) and "method" in msg:
+            if "id" in msg and "method" in msg and "result" not in msg and "error" not in msg:
+                self._handle_agent_request(msg)
+                continue
+            if "method" in msg:
                 self._track_notification(msg)
 
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -93,7 +146,7 @@ class AcpSessionClient:
             {
                 "protocolVersion": 1,
                 "clientCapabilities": {"fs": {"readTextFile": True, "writeTextFile": True}},
-                "clientInfo": {"name": "parhelion", "version": "3.1.1"},
+                "clientInfo": {"name": "parhelion", "version": _OPSB_VERSION},
             },
         )
         if "error" in resp:
@@ -154,17 +207,30 @@ class AcpSessionClient:
                 self._track_notification(msg)
 
     def send_prompt(self, session_id: str, prompt_text: str) -> dict[str, Any]:
+        self.last_assistant_chunks.clear()
         resp = self.request("session/prompt", {"sessionId": session_id, "prompt": [{"type": "text", "text": prompt_text}]})
         self.drain_quiet_window()
         if "error" in resp:
             raise RuntimeError(f"ACP session/prompt failed: {resp['error']}")
-        return resp.get("result") or {}
+        result = dict(resp.get("result") or {})
+        if self.last_assistant_chunks and "text" not in result:
+            result["text"] = "".join(self.last_assistant_chunks).strip()
+        return result
+
+    def cancel_session(self, session_id: str) -> None:
+        self._write_msg({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session_id}})
 
 
-def build_acp_mcp_servers(workspace: Path, mcp_url: str | None = None) -> list[dict[str, Any]]:
+def build_acp_mcp_servers(
+    workspace: Path,
+    mcp_url: str | None = None,
+    *,
+    role: str | None = None,
+    agent_id: str | None = None,
+) -> list[dict[str, Any]]:
     if mcp_url:
         return [{"name": "parhelion", "type": "http", "url": mcp_url}]
-    cmd, args, env = build_parhelion_mcp_command(workspace)
+    cmd, args, env = build_parhelion_mcp_command(workspace, role=role, agent_id=agent_id)
     return [{"name": "parhelion", "command": cmd, "args": args, "env": [{"name": k, "value": v} for k, v in env.items()]}]
 
 

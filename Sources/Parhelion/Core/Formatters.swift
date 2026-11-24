@@ -79,4 +79,76 @@ enum SystemNavigator {
     static func revealInFinder(_ path: String) {
         NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
     }
+
+    static func openTerminalCommand(_ shellCommand: String) -> Bool {
+        let trimmed = shellCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let scriptPath = NSTemporaryDirectory() + "parhelion-jump-\(UUID().uuidString.prefix(8)).command"
+        let script = "#!/bin/zsh\nrm -f \"$0\"\n\(trimmed)\n"
+        do {
+            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptPath)
+            return NSWorkspace.shared.open(URL(fileURLWithPath: scriptPath))
+        } catch {
+            return false
+        }
+    }
+
+    /// Jumps directly into a Harness conversation context (Codex direct thread, Desktop deep-link + clipboard, or Terminal resume).
+    @MainActor
+    static func jumpToHarnessContext(
+        driver: String,
+        deepLink: String,
+        resumeCommand: String = "",
+        jumpMode: String = "deeplink",
+        guiAppPath: String = "",
+        clipboardHint: String = "",
+        lang: AppLanguage = .zh
+    ) -> String? {
+        let drv = driver.lowercased()
+        let dl = deepLink.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cmd = resumeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if jumpMode == "terminal" && !cmd.isEmpty {
+            if openTerminalCommand(cmd) {
+                return lang.tr(
+                    "已在终端打开 \(driver) 对话上下文",
+                    "Opened \(driver) session context in Terminal"
+                )
+            }
+        }
+
+        let isDirectThread = dl.lowercased().hasPrefix("codex://threads/")
+            && !dl.lowercased().hasPrefix("codex://threads/new")
+        let hint = clipboardHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !isDirectThread && !hint.isEmpty {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(hint, forType: .string)
+        }
+
+        if let url = URL(string: dl), !dl.isEmpty, NSWorkspace.shared.open(url) {
+            if isDirectThread { return nil }
+            let tip = drv == "deepseek" ? "⌘K 粘贴" : "搜索粘贴"
+            return hint.isEmpty
+                ? lang.tr("已唤起 \(driver) 上下文窗口", "Focused \(driver) window")
+                : lang.tr(
+                    "已唤起 \(driver)（已复制「\(hint)」方便\(tip)直达对话）",
+                    "Focused \(driver) (copied \"\(hint)\" to locate thread)"
+                )
+        }
+
+        if !guiAppPath.isEmpty && FileManager.default.fileExists(atPath: guiAppPath) {
+            NSWorkspace.shared.openApplication(
+                at: URL(fileURLWithPath: guiAppPath),
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+            return lang.tr("已唤起 \(driver) 应用", "Focused \(driver) app")
+        }
+
+        if !cmd.isEmpty && openTerminalCommand(cmd) {
+            return lang.tr("已在终端打开 \(driver) 对话上下文", "Opened \(driver) session context in Terminal")
+        }
+
+        return lang.tr("未找到 \(driver) 可用的对话跳转入口", "No jump target available for \(driver)")
+    }
 }

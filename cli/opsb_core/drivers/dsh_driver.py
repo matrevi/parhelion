@@ -205,6 +205,7 @@ class DeepSeekDriver(BaseDriver):
         cfg_path = mcp_config_path or self._default_mcp_config_path(wt)
         cmd = [bin_path, "--profile", "acp"]
         env = {
+            "DSH_PERMISSION_MODE": "danger-full-access",
             "PARHELION_HOME": str(resolve_parhelion_home()),
             "PARHELION_MCP_CONFIG": str(cfg_path),
             "PARHELION_SESSION_ID": session_id,

@@ -6,12 +6,13 @@ import sys
 from pathlib import Path
 from typing import IO, Any
 
+from .. import __version__ as OPSB_VERSION
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
-from .tools import TOOL_HANDLERS, call_tool, list_tool_schemas
+from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool_schemas, normalize_role
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
-SERVER_INFO = {"name": "parhelion-mcp", "version": "3.1.1"}
+SERVER_INFO = {"name": "parhelion-mcp", "version": OPSB_VERSION}
 
 
 def _resolve_workspace(workspace: Path | str | None) -> Path:
@@ -32,8 +33,14 @@ def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
 
-def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dict[str, Any] | None:
-    """Dispatch a single decoded JSON-RPC 2.0 request/notification dict."""
+def handle_jsonrpc_message(
+    msg: Any,
+    workspace: Path | str | None = None,
+    *,
+    role: str = "orchestrator",
+    agent_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Dispatch a single decoded JSON-RPC 2.0 request/notification dict with role-scoped visibility."""
     if not isinstance(msg, dict):
         return _jsonrpc_error(None, -32600, "Invalid Request: expected JSON object")
 
@@ -54,6 +61,8 @@ def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dic
     if method == "ping":
         return _jsonrpc_result(req_id, {}) if req_id is not None else None
 
+    norm_role = normalize_role(role)
+
     if method == "initialize":
         return _jsonrpc_result(
             req_id,
@@ -65,7 +74,7 @@ def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dic
         )
 
     if method == "tools/list":
-        return _jsonrpc_result(req_id, {"tools": list_tool_schemas()})
+        return _jsonrpc_result(req_id, {"tools": list_tool_schemas(role=norm_role)})
 
     if method == "tools/call":
         params = msg.get("params")
@@ -76,6 +85,8 @@ def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dic
             return _jsonrpc_error(req_id, -32602, "Invalid params: missing tool name")
         if tool_name not in TOOL_HANDLERS:
             return _jsonrpc_error(req_id, -32602, f"Unknown tool: {tool_name}")
+        if not is_tool_allowed_for_role(tool_name, norm_role):
+            return _jsonrpc_error(req_id, -32601, f"Tool '{tool_name}' is disabled for role '{norm_role}'")
 
         raw_args = params.get("arguments")
         if raw_args is not None and not isinstance(raw_args, dict):
@@ -83,7 +94,7 @@ def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dic
 
         ws = _resolve_workspace(workspace)
         try:
-            payload = call_tool(tool_name, raw_args or {}, ws)
+            payload = call_tool(tool_name, raw_args or {}, ws, role=norm_role, agent_id=agent_id)
             text = json.dumps(payload, ensure_ascii=False, indent=2)
             return _jsonrpc_result(
                 req_id,
@@ -101,23 +112,31 @@ def handle_jsonrpc_message(msg: Any, workspace: Path | str | None = None) -> dic
     return _jsonrpc_error(req_id, -32601, f"Method not found: {method}")
 
 
-def handle_mcp_payload(payload: Any, workspace: Path | str | None = None) -> Any:
+def handle_mcp_payload(
+    payload: Any,
+    workspace: Path | str | None = None,
+    *,
+    role: str = "orchestrator",
+    agent_id: str | None = None,
+) -> Any:
     """Handle single JSON-RPC object or batch array."""
     if isinstance(payload, list):
         if not payload:
             return _jsonrpc_error(None, -32600, "Invalid Request: empty batch")
         responses = []
         for item in payload:
-            resp = handle_jsonrpc_message(item, workspace=workspace)
+            resp = handle_jsonrpc_message(item, workspace=workspace, role=role, agent_id=agent_id)
             if resp is not None:
                 responses.append(resp)
         return responses if responses else None
-    return handle_jsonrpc_message(payload, workspace=workspace)
+    return handle_jsonrpc_message(payload, workspace=workspace, role=role, agent_id=agent_id)
 
 
 def serve_stdio(
     workspace: Path | str | None = None,
     *,
+    role: str = "orchestrator",
+    agent_id: str | None = None,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
@@ -127,6 +146,7 @@ def serve_stdio(
     out_stream = stdout or sys.stdout
     err_stream = stderr or sys.stderr
     ws = _resolve_workspace(workspace)
+    norm_role = normalize_role(role)
 
     for raw_line in in_stream:
         line = raw_line.strip()
@@ -143,7 +163,7 @@ def serve_stdio(
             continue
 
         try:
-            resp = handle_mcp_payload(decoded, workspace=ws)
+            resp = handle_mcp_payload(decoded, workspace=ws, role=norm_role, agent_id=agent_id)
         except Exception as exc:
             err_stream.write(f"[parhelion-mcp] internal error: {exc}\n")
             err_stream.flush()
@@ -159,6 +179,9 @@ def serve_stdio(
 def handle_mcp_http_request(
     body_bytes: bytes,
     workspace: Path | str | None = None,
+    *,
+    role: str = "orchestrator",
+    agent_id: str | None = None,
 ) -> tuple[int, Any]:
     """In-process HTTP JSON-RPC 2.0 handler ready to mount at `POST /v1/mcp` in `opsb daemon`."""
     if not body_bytes or not body_bytes.strip():
@@ -169,7 +192,7 @@ def handle_mcp_http_request(
         return 400, _jsonrpc_error(None, -32700, f"Parse error: {exc}")
 
     ws = _resolve_workspace(workspace)
-    resp = handle_mcp_payload(decoded, workspace=ws)
+    resp = handle_mcp_payload(decoded, workspace=ws, role=role, agent_id=agent_id)
     if resp is None:
         return 202, None
     return 200, resp

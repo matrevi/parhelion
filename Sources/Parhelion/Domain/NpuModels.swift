@@ -151,12 +151,14 @@ struct HotStreamFrame: Codable {
     let pipeline: LivePipelineState
     let schedulerHot: SchedulerHotState
     let daemonStats: DaemonStats
+    let agentMesh: AgentMeshHotState?
 
     enum CodingKeys: String, CodingKey {
         case ts, workspace, npu, pipeline
         case coldEtag = "cold_etag"
         case schedulerHot = "scheduler_hot"
         case daemonStats = "daemon_stats"
+        case agentMesh = "agent_mesh"
     }
 }
 
