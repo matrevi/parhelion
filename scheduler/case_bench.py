@@ -126,7 +126,7 @@ def catalog(repo, sha, profile):
         raise ValueError("Empty or duplicate official case IDs")
     if (
         set(profile)
-        - {"version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32"}
+        - {"version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32", "reuse_session"}
         or profile.get("version", 1) != 1
     ):
         raise ValueError("Unsupported bench profile fields or version")

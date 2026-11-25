@@ -72,6 +72,7 @@ def test_ablation_selection(suite):
     ws, repo, sha = suite
     profile = {
         "version": 1,
+        "reuse_session": False,
         "variants": [{"id": "local/v", "base": "01", "seed": 9}],
         "buckets": {"mixed": ["01", "local/v"], "pair": ["01", "02"]},
     }
@@ -89,6 +90,7 @@ def test_ablation_selection(suite):
         dry_run=True,
     )
     assert plan["selected"] == ["01"] and not plan["formal"]
+    assert plan["settings"]["reuse_session"] is False
     assert len(plan["catalog"]) == 3
     assert set(plan["catalog"][0]["buckets"]) == {"official", "pair", "mixed"}
     assert not bench.run(ws, "Op", repo, sha, "npu", timing="perf", dry_run=True)[
