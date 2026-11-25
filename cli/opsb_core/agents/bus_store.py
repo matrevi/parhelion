@@ -253,8 +253,8 @@ class AgentBusStore:
                     (
                         agent_id, prob_val, direction, kind, str(priority or "normal"), str(body),
                         json.dumps(arts, ensure_ascii=False), str(commit_sha or ""),
-                        1 if direction == "orch_to_worker" else 0,
-                        1 if direction == "worker_to_orch" else 0,
+                        int(direction != "worker_to_orch"),
+                        int(direction not in ("orch_to_worker", "squad_to_worker")),
                         now_iso, now_ep, event_key,
                     ),
                 )
@@ -299,6 +299,8 @@ class AgentBusStore:
         strategic_only: bool = False,
         recipients: set[str] | None = None,
         for_orchestrator: bool = False,
+        include_squad: bool = True,
+        worker_inbox: bool = False,
         limit: int = 60,
     ) -> list[dict[str, Any]]:
         clauses = ["seq > ?"]
@@ -312,6 +314,10 @@ class AgentBusStore:
         if direction:
             clauses.append("direction = ?")
             params.append(direction)
+        if worker_inbox:
+            clauses.append("direction IN ('orch_to_worker','squad_to_worker')")
+        if not include_squad:
+            clauses.append("direction NOT IN ('squad_note','squad_to_worker')")
         if recipients:
             clauses.append("agent_id IN (" + ",".join("?" for _ in recipients) + ")")
             params.extend(sorted(recipients))
@@ -358,6 +364,14 @@ class AgentBusStore:
             finally:
                 conn.close()
 
+    def has_message(self, event_key: str) -> bool:
+        with self._lock:
+            conn = self._connect()
+            try:
+                return conn.execute("SELECT 1 FROM messages WHERE event_key = ?", (event_key,)).fetchone() is not None
+            finally:
+                conn.close()
+
     def recent_pulses(self, window_sec: float = 10.0, limit: int = 12) -> list[dict[str, Any]]:
         cutoff = time.time() - max(1.0, float(window_sec))
         with self._lock:
@@ -383,7 +397,8 @@ class AgentBusStore:
                         "agent_id": str(r["agent_id"]),
                         "problem": str(r["problem"]),
                         "driver": str(r["driver"]),
-                        "direction": "outbound" if r["direction"] == "orch_to_worker" else "inbound",
+                        "direction": ("squad" if r["direction"].startswith("squad_") else
+                                      "outbound" if r["direction"] == "orch_to_worker" else "inbound"),
                         "kind": str(r["kind"]),
                         "priority": str(r["priority"] or "normal"),
                         "preview": preview,

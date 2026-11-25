@@ -141,14 +141,15 @@ def tool_parhelion_agent_messages(args: dict[str, Any], workspace: Path) -> dict
     since_seq = int(args.get("since_seq") or 0)
     limit = int(args.get("limit") or 60)
     ack = bool(args.get("ack", True))
-    q_dict: dict[str, Any] = {"since_seq": since_seq, "limit": limit, "ack": "1" if ack else "0"}
+    q_dict: dict[str, Any] = {"since_seq": since_seq, "limit": limit, "ack": "1" if ack else "0", "audience": "orchestrator"}
     if problem:
         q_dict["problem"] = problem
     q = urllib.parse.urlencode(q_dict)
     path = f"/v1/agents/{urllib.parse.quote(agent_id, safe='')}/messages?{q}" if agent_id else f"/v1/agents/messages?{q}"
     if proxied := _proxy_daemon("GET", path, workspace):
         return proxied
-    return _mgr().read_messages(workspace, agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit, ack=ack)
+    return _mgr().read_messages(workspace, agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit, ack=ack,
+                                include_squad=False)
 
 
 def tool_parhelion_agent_stop(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
@@ -193,3 +194,13 @@ def tool_parhelion_agent_inbox(args: dict[str, Any], workspace: Path) -> dict[st
     if proxied := _proxy_daemon("GET", path, workspace):
         return proxied
     return _mgr().worker_inbox(workspace, agent_id, since_seq=since_seq, ack_seq=ack_seq)
+
+
+def tool_parhelion_squad(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    sender = args.get("_caller_agent_id")
+    if not sender:
+        raise ValueError("A bound worker identity is required")
+    body = {k: str(args.get(k) or "").strip() for k in ("recipient", "message", "request_id")}
+    if proxied := _proxy_daemon("POST", f"/v1/agents/{urllib.parse.quote(sender, safe='')}/squad", workspace, body):
+        return proxied
+    return _mgr().squad(workspace, sender, **body)

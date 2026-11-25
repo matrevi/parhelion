@@ -212,6 +212,12 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
     for name in ("bucket", "experiment", "timing", "repeats"):
         if args.get(name) is not None:
             opsb_cmd.extend(["--" + name, str(args[name])])
+    if args.get("profile"):
+        profile = (workspace / str(args["profile"])).resolve()
+        bench_specs = (_cfg.workspace_bench_specs_dir(workspace) / title).resolve()
+        if not profile.is_file() or not (profile.is_relative_to(workspace.resolve()) or profile.is_relative_to(bench_specs)):
+            raise ValueError("Choose a profile in this contest workspace or this problem's bench specs")
+        opsb_cmd.extend(["--profile", str(profile)])
 
     plan: dict[str, Any] = {"ok": True, "title": title, "sha": sha, "mode": mode, "lane": lane, "executed": execute, "command": opsb_cmd}
     if not execute:

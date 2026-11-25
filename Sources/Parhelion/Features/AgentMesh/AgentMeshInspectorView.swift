@@ -229,6 +229,7 @@ struct AgentMeshInspectorView: View {
     private func messageBubble(_ msg: AgentBusMessage, showAgentTag: Bool) -> some View {
         let isOut = msg.direction == "orch_to_worker"
         let isSys = msg.direction == "system"
+        let isSquad = msg.direction == "squad_note" || msg.direction == "squad_to_worker"
         let tint: Color = {
             switch msg.kind {
             case "breakthrough": return Color(red: 0.92, green: 0.68, blue: 0.05)
@@ -242,7 +243,7 @@ struct AgentMeshInspectorView: View {
 
         return VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 5) {
-                Text(msg.kind == "directive" ? "ADMIN 📣" : (isSys ? "SYS" : (isOut ? "ORCH →" : "← WORKER")))
+                Text(isSquad ? lang.tr("题组", "SQUAD") : msg.kind == "directive" ? "ADMIN 📣" : (isSys ? "SYS" : (isOut ? "ORCH →" : "← WORKER")))
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(tint)
                 if showAgentTag && !msg.agentId.isEmpty && msg.agentId != "admin" {

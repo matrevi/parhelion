@@ -18,7 +18,7 @@ from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
-from .judge_feedback import judge_feedback
+from .judge_feedback import calibration_evidence, judge_feedback
 
 AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
 MAX_WAIT_SEC = 45.0
@@ -98,16 +98,17 @@ class _WorkerRunner:
         self.store = store
         self.adapter = adapter
         self._on_notify = on_notify
-        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, bool] | None] = queue.Queue()
+        self.squad_turn = False
         self._stop_flag = threading.Event()
         self._context_percent: int | None = None
         self._stage_result = ""
         self._thread = threading.Thread(target=self._loop, name=f"agent-{agent_id}", daemon=True)
         self._thread.start()
 
-    def enqueue(self, prompt: str) -> None:
+    def enqueue(self, prompt: str, *, squad: bool = False) -> None:
         if not self._stop_flag.is_set():
-            self._queue.put(prompt)
+            self._queue.put((prompt, squad))
 
     def interrupt(self) -> None:
         self.adapter.interrupt()
@@ -126,7 +127,7 @@ class _WorkerRunner:
                 self._on_notify()
             return
         if kind == "model":
-            self.store.append_message(self.agent_id, "worker_to_orch", "model", label)
+            self.store.append_message(self.agent_id, self._reply_direction, "model", label)
             self._on_notify()
             return
         if kind == "tool":
@@ -139,12 +140,18 @@ class _WorkerRunner:
             self.store.update_agent(self.agent_id, **updates)
             self._on_notify()
 
+    @property
+    def _reply_direction(self):
+        return "squad_note" if self.squad_turn else "worker_to_orch"
+
     def _loop(self) -> None:
         while not self._stop_flag.is_set():
-            prompt = self._queue.get()
-            if prompt is None or self._stop_flag.is_set():
+            item = self._queue.get()
+            if item is None or self._stop_flag.is_set():
                 break
+            prompt, self.squad_turn = item
             rec = self.store.get_agent(self.agent_id) or {}
+            self.squad_turn = self.squad_turn or rec.get("role_label") == "bench-author"
             turn_n = int(rec.get("turn_count") or 0) + 1
             self.store.update_agent(self.agent_id, status="working", turn_count=turn_n, error="")
             self._stage_result = ""
@@ -164,7 +171,7 @@ class _WorkerRunner:
                 )
                 if not self._stop_flag.is_set() and reply:
                     self.store.append_message(
-                        self.agent_id, "worker_to_orch", "result", reply, commit_sha=sha7
+                        self.agent_id, self._reply_direction, "result", reply, commit_sha=sha7
                     )
                     if self._stage_result and (self._context_percent or 0) >= 60:
                         self.store.update_agent(self.agent_id, status="compacting")
@@ -173,7 +180,7 @@ class _WorkerRunner:
                         try:
                             outcome = self.adapter.compact(self._stage_result)
                             if outcome:
-                                self.store.append_message(self.agent_id, "worker_to_orch", "compact", outcome)
+                                self.store.append_message(self.agent_id, self._reply_direction, "compact", outcome)
                         finally:
                             if not self._stop_flag.is_set():
                                 self.store.update_agent(self.agent_id, status="idle",
@@ -185,6 +192,7 @@ class _WorkerRunner:
                     self.store.update_agent(self.agent_id, status="error", error=err_s, last_tool="")
                     self.store.append_message(self.agent_id, "worker_to_orch", "error", err_s)
             finally:
+                self.squad_turn = False
                 self._on_notify()
 
 
@@ -215,7 +223,10 @@ class AgentMeshManager:
         ledger = ws / "results/submit-queue-outcome.jsonl"
         if not ledger.is_file():
             return
-        version = ledger.stat().st_mtime_ns, ledger.stat().st_size
+        store = self._store(ws)
+        authors = {a["problem"]: a["agent_id"] for a in reversed(store.list_agents(include_stopped=False, limit=-1))
+                   if a["role_label"] == "bench-author"}
+        version = ledger.stat().st_mtime_ns, ledger.stat().st_size, tuple(sorted(authors.items()))
         if self._feedback_versions.get(ws) == version:
             return
         rows_by_title = {}
@@ -224,15 +235,25 @@ class AgentMeshManager:
                 rows_by_title.setdefault(row["title"], []).append(row)
         requests = {(r.get("title"), r.get("sha"), r.get("queued_at")): r.get("agent_id")
                     for r in _cfg.read_jsonl(ws / "results/submit-queue.jsonl") if r.get("agent_id")}
-        store = self._store(ws)
         for title, rows in rows_by_title.items():
             cal = _cfg.read_json(ws / "results" / title / "calibration.json", {})
             gamma = float(cal.get("decay_factor_gamma") or 1.0)
             results = list(judge_feedback(rows, threshold, gamma))
+            calibration_seqs = []
             for row, events in results:
                 sha, sid = row.get("sha") or "", row["submission_id"]
                 agent = row.get("agent_id") or requests.get((title, sha, row.get("queued_at")))
                 body = f"{title} {sha[:7]} · {row['status']} · score {row.get('score')} · submission {sid}"
+                revision = ":unscored" if row["status"] == "Pass" and row.get("score") is None else ""
+                author = authors.get(title)
+                if author:
+                    key = f"calibration:{sid}:{sha}:{author}{revision}"
+                    if not store.has_message(key):
+                        evidence, artifacts = calibration_evidence(ws, row)
+                        msg = store.append_message(author, "squad_to_worker", "calibration", evidence, artifacts=artifacts,
+                                                   problem=title, commit_sha=sha, event_key=key)
+                        if msg:
+                            calibration_seqs.append(msg["seq"])
                 if row["status"] in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
                     from ..services.queue_service import check_commit_safety_gate
                     if sha and check_commit_safety_gate(ws, title, sha):
@@ -240,7 +261,7 @@ class AgentMeshManager:
                 if agent:
                     feedback = body + " " + " ".join(message for _, message in events)
                     msg = store.append_message(agent, "orch_to_worker", "judge_result", feedback,
-                                               problem=title, commit_sha=sha, event_key=f"receipt:{sid}:{agent}")
+                                               problem=title, commit_sha=sha, event_key=f"receipt:{sid}:{agent}{revision}")
                     if msg:
                         with self._lock:
                             runner = self._runners.get(agent)
@@ -253,6 +274,12 @@ class AgentMeshManager:
                                                event_key=f"strategy:{sid}:{kind}")
                     if msg:
                         self._notify()
+            if calibration_seqs:
+                note = (f"{len(calibration_seqs)} official calibration receipt(s) for {title}. Read your inbox "
+                        f"starting at since_seq={calibration_seqs[0] - 1} through seq {calibration_seqs[-1]}. "
+                        "Use the linked reports to assess coverage, then send actionable findings to your teammates.")
+                self._enqueue_to_worker(ws, store.get_agent(authors[title]), note, squad=True)
+                self._notify()
         self._feedback_versions[ws] = version
 
     def _notify(self) -> None:
@@ -520,7 +547,7 @@ class AgentMeshManager:
         branch, sha7 = _git_branch_and_sha(wt)
         worker_prompt = (
             f"{prob_title or ws.name} · {safe_role}\n{task.strip()}\n\n"
-            "Use Parhelion for tests, candidate submissions and reports. Choose your approach."
+            "Use Parhelion for tests and candidate submissions. Use parhelion_squad to share findings with teammates."
         )
         if safe_role == "bench-author" and prob_title:
             worker_prompt = compose_bench_author_brief(ws, prob_title) + "\n\n" + task.strip()
@@ -557,20 +584,44 @@ class AgentMeshManager:
             raise RuntimeError(f"Agent '{agent_id}' is stopped; spawn a new worker instead.")
         kind = "interrupt" if delivery == "interrupt" else "followup"
         msg = store.append_message(agent_id, "orch_to_worker", kind, message.strip())
-        with self._lock:
-            runner = self._runners.get(agent_id)
-        if runner is None:
-            log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
-            adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
-            adapter.native_session_id = str(rec.get("native_session_id") or "")
-            runner = _WorkerRunner(agent_id, store, adapter, self._notify)
-            with self._lock:
-                self._runners[agent_id] = runner
-        if delivery == "interrupt":
-            runner.interrupt()
-        runner.enqueue(message.strip())
+        self._enqueue_to_worker(ws, rec, message.strip(), interrupt=delivery == "interrupt")
         self._notify()
         return {"ok": True, "agent_id": agent_id, "delivery": kind, "message": msg}
+
+    def _enqueue_to_worker(self, ws, rec, message, *, interrupt=False, squad=False):
+        store = self._store(ws)
+        agent_id = rec["agent_id"]
+        with self._lock:
+            runner = self._runners.get(agent_id)
+            if runner is None:
+                log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
+                adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
+                adapter.native_session_id = str(rec.get("native_session_id") or "")
+                runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+                self._runners[agent_id] = runner
+        if interrupt:
+            runner.interrupt()
+        runner.enqueue(message, squad=squad)
+
+    def squad(self, ws, sender, *, recipient="", message="", request_id=""):
+        store = self._store(ws)
+        me = store.get_agent(sender)
+        if not me or not me["problem"] or me["status"] in ("stopped", "error"):
+            raise ValueError("An active problem worker is required")
+        mates = {a["agent_id"]: a for a in store.list_agents(include_stopped=False, limit=-1)
+                 if a["problem"] == me["problem"] and a["agent_id"] != sender}
+        if not recipient and not message:
+            return {"ok": True, "problem": me["problem"], "peers": [
+                {k: a[k] for k in ("agent_id", "role_label", "axis", "driver", "status")} for a in mates.values()]}
+        if recipient not in mates or not message.strip() or len(message) > 4000 or len(request_id) > 128:
+            raise ValueError("Choose one active teammate and a message of up to 4000 characters")
+        body = f"[{sender} → {recipient}] {message.strip()}"
+        msg = store.append_message(recipient, "squad_to_worker", "peer", body, problem=me["problem"],
+                                   event_key=f"peer:{sender}:{recipient}:{request_id}" if request_id else None)
+        if msg:
+            self._enqueue_to_worker(ws, mates[recipient], body, squad=True)
+            self._notify()
+        return {"ok": True, "recipient": recipient, "duplicate": not bool(msg), "seq": msg.get("seq")}
 
     def wait_events(
         self,
@@ -649,10 +700,12 @@ class AgentMeshManager:
         since_seq: int = 0,
         limit: int = 60,
         ack: bool = True,
+        include_squad: bool = True,
     ) -> dict[str, Any]:
         ws = workspace.expanduser().resolve()
         store = self._store(ws)
-        msgs = store.list_messages(agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit)
+        msgs = store.list_messages(agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit,
+                                   include_squad=include_squad)
         if ack and agent_id and msgs:
             store.ack_messages(agent_id, max(int(m["seq"]) for m in msgs), reader="orch")
             self._notify()
@@ -684,9 +737,9 @@ class AgentMeshManager:
             raise KeyError(f"Unknown worker agent_id: {agent_id}")
         valid_kinds = ("progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error")
         norm_kind = kind if kind in valid_kinds else "progress"
+        with self._lock:
+            runner = self._runners.get(agent_id)
         if norm_kind in ("result", "breakthrough", "stagnation", "escape_zero"):
-            with self._lock:
-                runner = self._runners.get(agent_id)
             if runner is not None:
                 runner._stage_result = summary.strip()[:4000]
         streak = int(rec.get("no_gain_streak") or 0)
@@ -698,8 +751,9 @@ class AgentMeshManager:
         _, sha7 = _git_branch_and_sha(Path(rec["worktree"])) if rec.get("worktree") else ("", "")
         if norm_kind == "question":
             store.update_agent(agent_id, status="waiting_input")
+        local = rec["role_label"] == "bench-author" or bool(runner and runner.squad_turn)
         msg = store.append_message(
-            agent_id, "worker_to_orch", norm_kind, summary.strip()[:4000],
+            agent_id, "squad_note" if local and priority == "normal" else "worker_to_orch", norm_kind, summary.strip()[:4000],
             artifacts=artifacts, commit_sha=sha7, priority=priority, problem=str(rec.get("problem") or ""),
         )
         self._notify()
@@ -739,7 +793,7 @@ class AgentMeshManager:
         store = self._store(ws)
         if ack_seq is not None:
             store.ack_messages(agent_id, int(ack_seq), reader="worker")
-        msgs = store.list_messages(agent_id=agent_id, since_seq=since_seq, direction="orch_to_worker", limit=30)
+        msgs = store.list_messages(agent_id=agent_id, since_seq=since_seq, worker_inbox=True, limit=30)
         return {"ok": True, "agent_id": agent_id, "messages": msgs, "latest_seq": store.latest_seq()}
 
     def stop_agent(self, workspace: Path, agent_id: str, *, cleanup_worktree: bool = False) -> dict[str, Any]:

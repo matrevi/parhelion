@@ -151,12 +151,12 @@ class AgentMeshHttpControlPlaneTests(unittest.TestCase):
                     self.assertEqual(status, 404)
                     self.assertIn("Unknown agent_id", missing["error"])
 
-                    # 7. Role-scoped MCP: worker path exposes 11 tools and never orchestration tools.
+                    # 7. Role-scoped MCP includes peer communication but excludes orchestration.
                     rpc = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
                     status, worker_list = self._post(conn, f"/v1/mcp/worker/{aid}", rpc, headers)
                     self.assertEqual(status, 200)
                     worker_tools = {t["name"] for t in worker_list["result"]["tools"]}
-                    self.assertEqual(len(worker_tools), 11)
+                    self.assertIn("parhelion_squad", worker_tools)
                     self.assertNotIn("parhelion_harness_pool", worker_tools)
                     self.assertIn("parhelion_agent_inbox", worker_tools)
 

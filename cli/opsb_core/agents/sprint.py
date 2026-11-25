@@ -12,6 +12,7 @@ from ..services.contest_service import resolve_workspace_meta
 DIRECTIONS = {
     "algorithm": "Explore algorithmic and numerical changes. Compare against the passing baseline.",
     "dataflow": "Explore tiling, memory traffic and kernel launch costs on measured buckets.",
+    "calibration": "Use official receipts to improve this problem's local bench and cases. Compare baseline and candidate using the same experimental profile. Share reproduced gaps, run IDs and coverage changes with your squad.",
 }
 
 
@@ -56,6 +57,7 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                 else:
                     try:
                         result = manager.spawn_agent(ws, driver=driver, problem=title, axis=axis,
+                            role_label="bench-author" if axis == "calibration" else "worker",
                             task=task, track=track, collab_mode="orthogonal", _sprint=True)
                         agent = result["agent"]
                         occupied[(title, track)] = agent

@@ -212,7 +212,7 @@ def _clean_sprint_brief(ws: Path, probs: list[dict[str, Any]], goal: str) -> str
     brief = """# Parhelion Contest Orchestrator
 Read opsb.workspace.json. Use opsb --workspace with the launch root. Refresh team rank, quota and queues. Prioritize high-weight zeros and same-era gains.
 
-On start, call parhelion_sprint_start. Set enable_auto_submit=true when requested. Inspect the returned switch and blocked slots. It starts or reuses two isolated workers per manifest problem on algorithm and dataflow tracks. Monitor their messages.
+On start, call parhelion_sprint_start. Set enable_auto_submit=true when requested. Inspect the returned switch and blocked slots. It starts or reuses algorithm, dataflow and bench-author workers for each problem. They coordinate via parhelion_squad. Monitor strategic events.
 
 Discover each suite with opsb bench cases <op>. Use opsb test --case for diagnosis, opsb bench compare for ablations and opsb bench evolve for receipt-linked profiles. Buckets group case IDs. Preserve measured ICT strata: PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME.
 
@@ -247,7 +247,8 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
         return (f"# Case coverage for {title}\nInspect `opsb bench cases {title}`. Reuse the platform's "
                 "reference suite. Define seed or parameter variants in an experimental profile for the "
                 "specific coverage gap. Run the baseline and candidate on identical inputs with "
-                "`opsb test --profile`. Report the run IDs, failed cases and paired measurements.")
+                "parhelion_test_plan with the same shared profile. Send run IDs, findings and the profile path "
+                "directly to the optimizer with parhelion_squad. Escalate unresolved decisions only.")
     spec = _cfg.workspace_bench_specs_dir(ws) / title / "cases_perf.json"
     lines = [
         f"# Bench Bucket Author · {title} (Tier x{diff})",

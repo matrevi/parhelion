@@ -18,7 +18,8 @@ def handle_agent_get(path: str, q: dict[str, str], ws: Path, runtime: Any) -> tu
         limit = int(q.get("limit") or 60)
         ack = q.get("ack", "1") not in ("0", "false", "no")
         prob = q.get("problem") or None
-        return 200, runtime.agent_mesh.read_messages(ws, agent_id=None, problem=prob, since_seq=since_seq, limit=limit, ack=ack)
+        return 200, runtime.agent_mesh.read_messages(ws, agent_id=None, problem=prob, since_seq=since_seq, limit=limit, ack=ack,
+                                                    include_squad=q.get("audience") != "orchestrator")
 
     if path.startswith("/v1/agents/"):
         parts = [urllib.parse.unquote(p) for p in path[len("/v1/agents/"):].split("/") if p]
@@ -26,7 +27,8 @@ def handle_agent_get(path: str, q: dict[str, str], ws: Path, runtime: Any) -> tu
             since_seq = int(q.get("since_seq") or 0)
             limit = int(q.get("limit") or 50)
             ack = q.get("ack", "1") not in ("0", "false", "no")
-            return 200, runtime.agent_mesh.read_messages(ws, agent_id=parts[0], since_seq=since_seq, limit=limit, ack=ack)
+            return 200, runtime.agent_mesh.read_messages(ws, agent_id=parts[0], since_seq=since_seq, limit=limit, ack=ack,
+                                                        include_squad=q.get("audience") != "orchestrator")
         if len(parts) == 2 and parts[1] == "inbox":
             since_seq = int(q.get("since_seq") or 0)
             ack_seq = int(q["ack_seq"]) if q.get("ack_seq") is not None else None
@@ -84,6 +86,9 @@ def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: An
             parts = [urllib.parse.unquote(p) for p in path[len("/v1/agents/"):].split("/") if p]
             if len(parts) == 2:
                 aid, action = parts
+                if action == "squad":
+                    return 200, runtime.agent_mesh.squad(ws, aid, **{
+                        k: str(body_obj.get(k) or "").strip() for k in ("recipient", "message", "request_id")})
                 if action == "delete":
                     return 200, runtime.agent_mesh.cleanup_stopped(ws, aid)
                 if action == "send":

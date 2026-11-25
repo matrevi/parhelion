@@ -14,6 +14,7 @@ from .handlers_agents import (
     tool_parhelion_agent_wait,
     tool_parhelion_harness_pool,
     tool_parhelion_sprint_start,
+    tool_parhelion_squad,
 )
 from .handlers_bench import (
     tool_parhelion_bench_diagnose,
@@ -52,6 +53,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_agent_stop": tool_parhelion_agent_stop,
     "parhelion_agent_report": tool_parhelion_agent_report,
     "parhelion_agent_inbox": tool_parhelion_agent_inbox,
+    "parhelion_squad": tool_parhelion_squad,
 }
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [

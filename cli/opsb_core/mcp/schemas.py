@@ -125,6 +125,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "cases": {"type": "array", "items": {"type": "string"}},
                 "bucket": {"type": "string"},
                 "experiment": {"type": "string"},
+                "profile": {"type": "string", "description": "Path to a shared experimental case profile in this contest workspace."},
                 "timing": {"type": "string", "enum": ["off", "perf", "all"]},
                 "repeats": {"type": "integer", "minimum": 1},
             },
@@ -155,7 +156,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_sprint_start",
-        "description": "On a contest start request, launch or reuse two isolated workers per manifest problem. Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
+        "description": "On a contest start request, launch or reuse algorithm, dataflow and bench-author workers per problem. Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
         "roles": ("orchestrator",),
         "inputSchema": {"type": "object", "properties": {
             "driver": {"type": "string"}, "preview": {"type": "boolean"},
@@ -252,6 +253,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
             "required": ["summary"],
         },
+    },
+    {
+        "name": "parhelion_squad",
+        "roles": ("worker",),
+        "description": "List teammates for your problem, or send one teammate a finding, report path or calibration update.",
+        "inputSchema": {"type": "object", "properties": {
+            "recipient": {"type": "string"}, "message": {"type": "string"},
+            "request_id": {"type": "string", "description": "Reuse on retries to deliver only once."},
+        }},
     },
     {
         "name": "parhelion_agent_inbox",

@@ -287,6 +287,7 @@ struct AgentMeshCanvasView: View {
 
                     if !isQuiet && !reduceMotion {
                         for pulse in mesh.pulses.prefix(6) {
+                            guard pulse.direction != "squad" else { continue }
                             let age = now - pulse.epoch
                             guard age >= 0, age < 5.5 else { continue }
                             let destination = grouping == .byProblem ? "problem:" + pulse.problem : "driver:" + pulse.driver

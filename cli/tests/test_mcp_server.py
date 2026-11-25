@@ -118,9 +118,18 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
         slots = first["assignments"] + replay["assignments"]
         assert {s["state"] for s in slots} == {"started", "existing"}
         started = [s for s in slots if s["state"] == "started"]
-        assert len(started) == 4 and len({s["agent_id"] for s in slots}) == 4
+        assert len(started) == 6 and len({s["agent_id"] for s in slots}) == 6
         owners = [s["agent_id"] for s in started if s["problem"] == "PadV3Grad"]
-        assert len({mgr._store(ws).get_agent(a)["worktree"] for a in owners}) == 2
+        assert len({mgr._store(ws).get_agent(a)["worktree"] for a in owners}) == 3
+        author = next(s["agent_id"] for s in started if s["problem"] == "PadV3Grad" and s["axis"] == "calibration")
+        peers = call_tool("parhelion_squad", {}, ws, role="worker", agent_id=author)["peers"]
+        assert {p["agent_id"] for p in peers} == set(owners) - {author}
+        other = next(s["agent_id"] for s in started if s["problem"] == "Other")
+        with pytest.raises(ValueError, match="teammate"):
+            call_tool("parhelion_squad", dict(recipient=other, message="test"), ws, role="worker", agent_id=author)
+        payload = dict(recipient=owners[0], message="Repeat the small bucket", request_id="m1")
+        assert not call_tool("parhelion_squad", payload, ws, role="worker", agent_id=author)["duplicate"]
+        assert call_tool("parhelion_squad", payload, ws, role="worker", agent_id=author)["duplicate"]
         res = ws / "results" / "PadV3Grad" / sha
         res.mkdir(parents=True)
         (res / "result.json").write_text('{"exit_code": 0}')
@@ -139,6 +148,16 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
         OpsbDaemonRuntime.dispatch_next(mock.Mock(), ws, {"submission_queue": [
             dict(kind="pending", gates=gate["gates"], title="PadV3Grad", sha=sha)]}, {})
         mgr.deliver_judgements(ws, 5)
+        mgr.deliver_judgements(ws, 5)
+        author_inbox = mgr.worker_inbox(ws, author)["messages"]
+        calibration = [m for m in author_inbox if m["kind"] == "calibration"]
+        assert len(calibration) == 1 and json.loads(calibration[0]["body"])["sha"] == sha
+        mgr.worker_report(ws, author, kind="result", summary="Calibration checked")
+        visible = call_tool("parhelion_agent_messages", {"limit": 999}, ws)["messages"]
+        assert all(m["direction"] not in ("squad_to_worker", "squad_note") for m in visible)
+        assert mgr._store(ws).get_agent(author)["unread_for_orch"] == 0
+        mgr.worker_report(ws, author, kind="question", summary="Need administrator decision")
+        assert mgr._store(ws).get_agent(author)["unread_for_orch"] == 1
         for owner in owners:
             inbox = call_tool("parhelion_agent_inbox", {}, ws, role="worker", agent_id=owner)
             results = [m for m in inbox["messages"] if m["kind"] == "judge_result"]
@@ -146,6 +165,21 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
     finally:
         mgr.stop_all()
         bind_daemon_agent_manager(None)
+
+
+def test_calibration_selects_pre_submission_evidence(tmp_path):
+    from opsb_core.agents.judge_feedback import calibration_evidence
+    sha = "a" * 40
+    row = dict(title="Demo", sha=sha, submission_id="s1", submitted_at="2026-11-01T02:00:00Z", status="Wrong Answer", score=0)
+    for rid, hour, actual_sha in [("before", "01", sha), ("after", "03", sha), ("other", "00", "b"*40)]:
+        dest = tmp_path / "results" / "Demo" / sha / "bench-runs" / rid / "report.json"
+        dest.parent.mkdir(parents=True)
+        dest.write_text(json.dumps(dict(run_id=rid, title="Demo", sha=actual_sha, formal=True,
+            finished_at=f"2026-11-01T{hour}:00:00Z", cases=[dict(id="09", status="WA")])))
+    message, paths = calibration_evidence(tmp_path, row)
+    report = json.loads(message)["local"]["formal"]
+    assert report["run_id"] == "before" and report["failed_cases"] == ["09"]
+    assert len(paths) == 1 and (tmp_path / paths[0]).exists()
 
 
 def test_worker_mcp_case_plan_and_role(isolated_mcp_env, tmp_path):
