@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPSB_STREAM_PROBE_V1
+# OPSB_STREAM_PROBE_V2
 """Persistent, strictly read-only DCMI ctypes + /proc NPU telemetry stream probe.
 
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.
@@ -1289,6 +1289,7 @@ class StreamProbeSession:
                 tasks.append(
                     {
                         "pid": h_pid,
+                        "run_id": die_session.get("run_id") if sess_matches else None,
                         "die": die_idx,
                         "state": "ACTIVE",
                         "stage": stage,
@@ -1369,6 +1370,7 @@ class StreamProbeSession:
             wait_elapsed = int(max(0, round(now_epoch - tk_created))) if tk_created > 0 else procs[w_pid]["elapsed_sec"]
             wt_item = {
                 "pid": w_pid,
+                "run_id": tk.get("run_id"),
                 "die": None,
                 "state": "WAITING",
                 "stage": stage,
@@ -1385,7 +1387,7 @@ class StreamProbeSession:
             tasks.append(wt_item)
 
         parallel_cpu_builds: list[dict[str, Any]] = []
-        seen_build_keys: set[tuple[str, str]] = set()
+        seen_build_keys: set[tuple[str, str, str]] = set()
         cpu_build_tree_pids: set[int] = set()
         for b_pid, bd in cpu_builds_by_pid.items():
             rel_b = _collect_tree_and_driver_peers(b_pid, procs) if b_pid in procs else {b_pid}
@@ -1397,13 +1399,15 @@ class StreamProbeSession:
             el_s = int(now_epoch - st_ep) if st_ep > 0 else procs.get(b_pid, {}).get("elapsed_sec", 0)
             b_is_bf = str(bd.get("lane") or "").upper() == "B0" or str(bd.get("kind") or "").upper() == "BACKFILL"
             lane_str = "B0" if b_is_bf else "Q1"
-            b_key = (str(b_title).strip().lower(), lane_str)
+            b_key = (str(b_title).strip().lower(), lane_str, bd.get("run_id") or b_sha[:7])
             cpu_build_tree_pids.update(rel_b)
             if b_key not in seen_build_keys:
                 seen_build_keys.add(b_key)
                 parallel_cpu_builds.append(
                     {
                         "pid": b_pid,
+                        "run_id": bd.get("run_id"),
+                        "jobs": bd.get("jobs"),
                         "title": b_title,
                         "sha": b_sha,
                         "short_sha": b_sha[:7] or "—",
@@ -1432,7 +1436,7 @@ class StreamProbeSession:
                         pass
                 if prob:
                     lane_str = "B0" if b_is_bf else "Q1"
-                    b_key = (prob.strip().lower(), lane_str)
+                    b_key = (prob.strip().lower(), lane_str, (sha or "")[:7])
                     cpu_build_tree_pids.update(rel_c)
                     occupied_pids.update(rel_c)
                     if b_key not in seen_build_keys:
@@ -1454,6 +1458,7 @@ class StreamProbeSession:
             tasks.append(
                 {
                     "pid": cb["pid"],
+                    "run_id": cb.get("run_id"),
                     "die": None,
                     "state": "CPU_BUILD",
                     "stage": "BACKFILL-BUILD" if cb_bf else "CPU-BUILD",
@@ -1465,34 +1470,29 @@ class StreamProbeSession:
                     "detail": (
                         "Phase A baseline worktree build for perf-bucket backfill (B0)"
                         if cb_bf
-                        else "Phase A lock-free 32-core CPU build (0s NPU lock)"
+                        else f"CMake -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
                     ),
-                    "subprocesses": 4,
+                    "subprocesses": len(get_descendants(cb["pid"], procs)) - 1,
                 }
             )
 
-        # Canonical `(problem, lane)` deduplication (`ACTIVE > CPU_BUILD > WAITING`)
+        # Preserve independent runs while suppressing multiple observations of the same job.
         state_rank = {"ACTIVE": 3, "CPU_BUILD": 2, "WAITING": 1}
-        winners: dict[tuple[str, str], dict[str, Any]] = {}
+        winners = {}
         for t in tasks:
             p_raw = str(t.get("problem") or "").strip()
             p_key = p_raw.lower() if p_raw else f"pid:{t.get('pid')}"
             l_key = str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper()
-            k = (p_key, l_key)
+            k = (p_key, l_key, t.get("run_id") or str(t.get("sha") or "")[:7])
             prev = winners.get(k)
             cand_score = (state_rank.get(str(t.get("state") or ""), 0), int(t.get("subprocesses") or 0), 1 if t.get("sha") else 0)
             prev_score = (state_rank.get(str(prev.get("state") or ""), 0), int(prev.get("subprocesses") or 0), 1 if prev.get("sha") else 0) if prev else (-1, -1, -1)
             if prev is None or cand_score > prev_score:
                 winners[k] = t
-        tasks = [t for t in tasks if winners.get((str(t.get("problem") or "").strip().lower() or f"pid:{t.get('pid')}", str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper())) is t]
-        surviving_cpu_keys = {
-            (str(t.get("problem") or "").strip().lower(), str(t.get("lane") or ("B0" if t.get("is_backfill") else "Q1")).strip().upper())
-            for t in tasks if t.get("state") == "CPU_BUILD"
-        }
-        parallel_cpu_builds = [
-            cb for cb in parallel_cpu_builds
-            if (str(cb.get("title") or "").strip().lower(), str(cb.get("lane") or "Q1").strip().upper()) in surviving_cpu_keys
-        ]
+        selected = {id(t) for t in winners.values()}
+        tasks = [t for t in tasks if id(t) in selected]
+        build_pids = {t["pid"] for t in tasks if t["state"] == "CPU_BUILD"}
+        parallel_cpu_builds = [cb for cb in parallel_cpu_builds if cb["pid"] in build_pids]
         waiting_tasks_list = [t for t in tasks if t.get("state") == "WAITING"]
 
         primary_dev = (

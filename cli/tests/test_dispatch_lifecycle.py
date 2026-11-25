@@ -15,6 +15,28 @@ from opsb_core.daemon.server import OpsbDaemonRuntime
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_receipt_starts_only_its_account_cooldown(tmp_path, monkeypatch):
+    import datetime as dt
+    from opsb_core.services import submit_runner as runner
+
+    now = dt.datetime.now(dt.timezone.utc)
+    monkeypatch.setattr(runner, "utc_now", lambda: now)
+    monkeypatch.setattr(runner, "list_judge_accounts", lambda: [
+        {"id": name, "logged_in": True} for name in ("primary", "teammate")
+    ])
+    monkeypatch.setattr(runner, "inflight_file_for", lambda aid: tmp_path / aid)
+    receipt = tmp_path / "results/Demo/abcdef/submission-receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"submission_id": "sid", "account_id": "primary",
+                                   "submitted_at": (now - dt.timedelta(seconds=23)).isoformat()}))
+    outcomes = [{"submission_id": "sid", "status": "judged", "finished_at": now.isoformat()}]
+    slots = runner.compute_account_slots(tmp_path, outcomes, gap_sec=190)
+    assert [s["cooldown_remaining_sec"] for s in slots] == [167, 0]
+    monkeypatch.setattr(runner, "judge_cooldown_remaining", lambda ws: 45)
+    slots = runner.compute_account_slots(tmp_path, outcomes, gap_sec=190)
+    assert [s["cooldown_remaining_sec"] for s in slots] == [167, 45]
+
+
 def test_simultaneous_producers_and_held_writers(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()

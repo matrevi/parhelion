@@ -7,7 +7,6 @@ dependencies. Case generation and output comparison run outside the device lock.
 from __future__ import annotations
 
 import ast
-import fcntl
 import inspect
 import json
 import os
@@ -279,9 +278,9 @@ def run_case(repo, executable, cfg, item, groups, attrs):
                 env.pop("OPSB_CASE_TIMING", None)
                 if timed:
                     env["OPSB_CASE_TIMING"] = "1"
-                with open(cfg["lock"], "a") as lock:
-                    waiting = time.monotonic()
-                    fcntl.flock(lock, fcntl.LOCK_EX)
+                from lanes import device_lane
+                waiting = time.monotonic()
+                with device_lane(cfg):
                     lock_wait += time.monotonic() - waiting
                     try:
                         p = subprocess.run(
@@ -400,24 +399,15 @@ def main():
     )
     source.write_text(generated)
     (repo.parent / "schema.json").write_text(json.dumps([groups, attrs]))
-    subprocess.run(
-        [
-            "cmake",
-            "-S",
-            ".",
-            "-B",
-            "build-casebench",
-            "-DCMAKE_ASC_RUN_MODE=npu",
-            "-DCMAKE_ASC_ARCHITECTURES=" + cfg["arch"],
-        ],
-        check=True,
-        timeout=600,
-    )
-    subprocess.run(
-        ["cmake", "--build", "build-casebench", "--parallel", "4"],
-        check=True,
-        timeout=900,
-    )
+    from lanes import compile_lane
+    with compile_lane(cfg) as jobs:
+        subprocess.run(
+            ["cmake", "-S", ".", "-B", "build-casebench", "-DCMAKE_ASC_RUN_MODE=npu",
+             "-DCMAKE_ASC_ARCHITECTURES=" + cfg["arch"]], check=True, timeout=600,
+        )
+        subprocess.run(
+            ["cmake", "--build", "build-casebench", "--parallel", str(jobs)], check=True, timeout=900,
+        )
     emit("built")
     for i, item in enumerate(cfg["selected"]):
         emit("start", id=item["id"])

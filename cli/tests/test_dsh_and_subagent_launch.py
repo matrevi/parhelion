@@ -248,8 +248,8 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("kernel.asc", single)
             self.assertIn("opsb test NeighborListPbcFixedK", single)
             self.assertIn("git push origin main", single)
-            self.assertIn("parhelion_submit_gate", single)          # mentioned only as forbidden
-            self.assertIn("禁止 `opsb submit`", single)
+            self.assertNotIn("申请测试槽", single)
+            self.assertIn("自行运行 `opsb submit", single)
             self.assertLessEqual(len(single.encode("utf-8")), MAX_BRIEF_BYTES)
 
             bench = compose_bench_author_brief(ws, "NeighborListPbcFixedK")
@@ -263,9 +263,9 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertTrue(sprint.isascii())
             self.assertIn("NeighborListPbcFixedK", sprint)
             self.assertIn("RevINNorm", sprint)
-            self.assertIn("SLOT-REQ", sprint)
-            self.assertIn("device0.lock", sprint)
-            self.assertIn("Only the orchestrator enqueues via opsb submit", sprint)
+            self.assertIn("Each worker directly queues validation", sprint)
+            self.assertNotIn("SLOT-GRANT", sprint)
+            self.assertIn("Workers enqueue their own candidates via opsb submit", sprint)
             self.assertLessEqual(len(sprint.encode("utf-8")), MAX_BRIEF_BYTES)
 
     def test_new_contest_gui_stages_english_brief_before_templates_arrive(self) -> None:

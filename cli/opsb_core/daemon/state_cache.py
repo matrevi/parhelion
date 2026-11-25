@@ -32,7 +32,7 @@ from ..services.judge_sync import (
 from ..services.queue_service import _probe_queue_lock, compute_workspace_snapshot
 from ..services.quota_helpers import compute_effective_closing_reserve
 from ..services.skills_service import get_skills_status
-from ..services.submit_runner import MIN_RATE_GAP_SEC, inflight_file_for, judge_cooldown_remaining
+from ..services.submit_runner import MIN_RATE_GAP_SEC, account_cooldown, inflight_file_for, judge_cooldown_remaining
 from ..services.judge_quota import read_quota
 from ..services.sync_reconciler import collapse_reconciled_outcomes, reconcile_sync_errors_async
 
@@ -489,7 +489,7 @@ class _WorkspaceStateEntry:
 
         cfg = ConfigRepository.load()
         sched_cfg = cfg.get("scheduler", DEFAULT_CONFIG["scheduler"])
-        gap_sec = MIN_RATE_GAP_SEC
+        gap_sec = int(sched_cfg.get("rate_limit_gap_sec", MIN_RATE_GAP_SEC))
         daily_limit = int(sched_cfg.get("daily_quota_limit", 50))
         closing_reserve = int(sched_cfg.get("closing_reserve", 12))
         noise_floor = float(sched_cfg.get("noise_floor_delta", 2.7))
@@ -524,15 +524,18 @@ class _WorkspaceStateEntry:
                     today_sids_by_aid[aid].add(sid)
 
         used_24h_fallback = 0
+        receipt_ids = {r["submission_id"] for r in receipts}
         for o in outcome_rows:
             if o.get("status") not in ("rejected", "skipped", "duplicate") and o.get("submission_id"):
                 dt = parse_iso(o.get("submitted_at") or o.get("finished_at"))
                 if not dt:
                     continue
                 ts = dt.timestamp()
-                latest_sub_epoch = max(latest_sub_epoch, ts)
                 if ts >= cutoff_24h:
                     used_24h_fallback += 1
+                if str(o["submission_id"]) in receipt_ids:
+                    continue
+                latest_sub_epoch = max(latest_sub_epoch, ts)
                 aid = str(o.get("account_id") or "primary")
                 if aid not in last_epoch_by_aid:
                     aid = "primary"
@@ -547,8 +550,7 @@ class _WorkspaceStateEntry:
         for a in accounts:
             aid = str(a["id"])
             last_ep = last_epoch_by_aid.get(aid, 0.0)
-            ends_ep = now_epoch + observed_wait if observed_wait else 0.0
-            rem = observed_wait
+            ends_ep, rem = account_cooldown(now_epoch, last_ep, gap_sec, observed_wait)
             inf_path = inflight_file_for(aid)
             phase = "idle"
             active_title = None

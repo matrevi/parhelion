@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime
 import fcntl
 import json
+import math
 import os
 import pathlib
 import re
@@ -18,7 +19,7 @@ from typing import Any
 class _CooldownReservationCancelled(BaseException):
     """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
-from ..config import CLI_DIR, CONFIG_DIR, LOGS_DIR, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..config import CLI_DIR, CONFIG_DIR, DEFAULT_CONFIG, LOGS_DIR, ConfigRepository, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
 from .auth_service import list_judge_accounts
 from .inflight_io import (
     inflight_pid,
@@ -30,7 +31,7 @@ from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STAT
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
-MIN_RATE_GAP_SEC = 0  # only the judge's own 429 decides pacing
+MIN_RATE_GAP_SEC = DEFAULT_CONFIG["scheduler"]["rate_limit_gap_sec"]
 JUDGE_SUBMIT_GAP_SEC = 0
 POLL_TIMEOUT_SEC = 1800
 _LOCAL_ACTIVE_PHASES = ("waiting_cooldown", "packaging", "preparing", "uploading")
@@ -48,16 +49,23 @@ def lock_file_for(workspace: Path, account_id: str) -> Path:
     return (res / ".submit-queue.lock") if account_id == "primary" else (res / f".submit-queue-{account_id}.lock")
 
 
+def account_cooldown(now, last_submit, gap, judge_wait):
+    end = max(last_submit + gap if last_submit else 0, now + judge_wait if judge_wait else 0)
+    return end, max(0, math.ceil(end - now))
+
+
 def compute_account_slots(
     workspace: Path,
     outcome_rows: list[dict[str, Any]] | None = None,
-    gap_sec: int = MIN_RATE_GAP_SEC,
+    gap_sec: int | None = None,
     daily_limit: int = 50,
 ) -> list[dict[str, Any]]:
     """Compute per-teammate-account independent 190s cooldown, Beijing-day quota & live worker status."""
     import datetime as _dt
 
     results_dir = workspace / "results"
+    if gap_sec is None:
+        gap_sec = int(ConfigRepository.load().get("scheduler", {}).get("rate_limit_gap_sec", MIN_RATE_GAP_SEC))
     if outcome_rows is None:
         outcome_rows = read_jsonl(results_dir / "submit-queue-outcome.jsonl")
     outcome_rows = collapse_reconciled_outcomes(outcome_rows)
@@ -76,11 +84,13 @@ def compute_account_slots(
 
     last_epoch_by_aid: dict[str, float] = {str(a["id"]): 0.0 for a in accounts}
     today_sids_by_aid: dict[str, set[str]] = {str(a["id"]): set() for a in accounts}
+    receipt_ids = set()
 
     for r_file in results_dir.glob("*/*/submission-receipt.json"):
         rd = read_json(r_file, {})
+        sid = str(rd.get("submission_id") or "")
         dt = parse_iso(rd.get("submitted_at"))
-        if not dt:
+        if not dt or not sid:
             continue
         aid = str(rd.get("account_id") or "")
         if not aid or aid not in last_epoch_by_aid:
@@ -88,11 +98,13 @@ def compute_account_slots(
         if aid in last_epoch_by_aid:
             ts = dt.timestamp()
             last_epoch_by_aid[aid] = max(last_epoch_by_aid[aid], ts)
-            sid = str(rd.get("submission_id") or "")
+            receipt_ids.add(sid)
             if sid and ts >= bj_day_start_ep:
                 today_sids_by_aid[aid].add(sid)
 
     for o in outcome_rows:
+        if str(o.get("submission_id") or "") in receipt_ids:
+            continue
         if o.get("status") not in ("rejected", "skipped", "duplicate") and o.get("submission_id"):
             dt = parse_iso(o.get("submitted_at") or o.get("finished_at"))
             if not dt:
@@ -112,8 +124,7 @@ def compute_account_slots(
     for a in accounts:
         aid = str(a["id"])
         last_ep = last_epoch_by_aid.get(aid, 0.0)
-        ends_ep = now_ep + observed_wait if observed_wait else 0.0
-        rem = observed_wait
+        ends_ep, rem = account_cooldown(now_ep, last_ep, gap_sec, observed_wait)
         inf_path = inflight_file_for(aid)
         phase = "idle"
         active_title = None
@@ -538,6 +549,9 @@ def _spawn_jump_submit_locked(
         }
 
     aid = str(chosen["id"])
+    cooling = int(chosen.get("cooldown_remaining_sec") or 0)
+    if cooling:
+        return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling}
     inf_path = inflight_file_for(aid)
     lock_file = lock_file_for(workspace, aid)
 
@@ -693,7 +707,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             if my_slot is not None and _is_slot_exhausted(my_slot):
                 return 3
 
-            cooling = judge_cooldown_remaining(workspace)
+            cooling = max(judge_cooldown_remaining(workspace), int((my_slot or {}).get("cooldown_remaining_sec") or 0))
             if cooling > 0:
                 # Staying pending is the whole state: an item with no outcome row is retried
                 # by the consumer. Writing a cooldown row here flooded the history with one

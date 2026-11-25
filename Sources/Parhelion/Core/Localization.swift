@@ -60,7 +60,7 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
             return "B0 样例桶低优候卡 (让行所有算子验证任务)"
         }
         if raw.contains("Phase A lock-free") {
-            return "Phase A 32核无锁并行编译 (0s 占卡)"
+            return "CPU 无锁并行编译"
         }
         if raw.contains("Priority boosted") {
             return "已由调度器置顶优先 (下一顺位获卡)"
@@ -81,7 +81,7 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
             return raw.replacingOccurrences(of: "profiler (", with: "profiler 性能采集中 (")
         }
         if raw == "Compiling KernelC host/kernel package" {
-            return "正在编译 KernelC 算子工程 (-j4)"
+            return "正在编译 KernelC 算子工程"
         }
         if raw.lowercased().contains("fast-lane") {
             return "快速冒烟与公开测例校验"

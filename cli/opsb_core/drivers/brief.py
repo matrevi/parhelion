@@ -183,16 +183,16 @@ def _clean_session_brief(ws: Path, title: str, meta: dict[str, Any], p_meta: dic
         "## 硬约束",
         "- 本机没有 SDK：禁止本地编译/执行；唯一评测入口是 `opsb test " + title + "`（远端 npu，device0.lock 串行）",
         "- 测试前必须 `git add -A && git commit -m ... && git push origin main`，否则运行时拒绝",
-        "- 禁止 `opsb submit` / `parhelion_submit_gate`：会消耗每日额度，且需要 verified=true 的成功记录",
+        "- 候选就绪后，自行运行 `opsb submit " + title + " <sha> --note '<验证证据>'` 入队。平台负责门禁、额度和实际上传。",
         "",
         "## 迭代循环",
         "1. 读 `main.asc` / `reference.py` 明确形状、dtype、PBC 与排序规则",
         "2. 实现/修改 `kernel.asc`，commit 并 push `origin main`",
-        "3. `opsb test " + title + "`（如需并发，先向主控申请测试槽）",
+        "3. 自行运行 `opsb test " + title + " --sha <sha>` 进入验证队列。平台调度并行编译和设备使用。",
         "4. 读 `results/" + title + "/<sha>/validation.log`：VERIFY 失败先修正确性；通过后看 `result.json` 的 `timing_source`（profiler 时含 `MS_PROF median(us)`）",
         "",
         "## 汇报",
-        "- 首次 `verified=true`（kind=result）、连续 3 轮无 gain（stagnation）、线上清零（escape_zero）、需要决策（question）时用 `parhelion_agent_report`",
+        "- 自行诊断、修复、复测并跟踪回执。用 `parhelion_agent_report` 同步重要结果，只有自己无法判断下一步时才请主控决策。",
         "",
         "## 铁律",
         "- 不改其他题目录、不动 `results/` 与 `_stale_scaffold/`、不改只读模板",
@@ -210,15 +210,15 @@ def _clean_sprint_brief(ws: Path, probs: list[dict[str, Any]], goal: str) -> str
         key=lambda p: (-int(p.get("difficulty") or 2), str(p.get("title"))),
     )
     brief = """# Parhelion Contest Orchestrator
-Improve this team's official weighted score. Read opsb.workspace.json in the launch workspace. Pass that root via --workspace to opsb and refresh the leaderboard for its contest and team. Record the starting rank, score, remaining quota, active workers, queue and in-flight submissions. Mark missing data as unknown. Prioritize high-weight zeros and evidence-backed gains over the best judged SHA.
+Read opsb.workspace.json. Run opsb with --workspace set to the launch root. Refresh this contest and team's rank, score, quota, workers, queue and in-flight submissions. Prioritize high-weight zeros and gains over the best judged SHA.
 
 Run independent problems in parallel. Give each kernel one owner and an isolated worktree. Prefer native subagents. Use parhelion_agent_spawn for external Harnesses when the admin requests multi-Harness work. Claude workers require explicit admin authorization. Workers edit only files allowed by the official template and report the pushed SHA, evidence and expected gain.
 
 At contest start, inspect opsb bench cases <op>. For reference suites, the platform runs the declared cases. Use opsb test <op> --case <id> --experiment <label> to isolate failures, opsb bench compare <op> <before> <after> to compare runs, and opsb bench evolve <op> for a receipt-linked trial profile. Buckets group case IDs. Assign a bench-author only for a specific coverage gap. For legacy ICT suites keep PUBLIC anchors, S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME where measured. Leave unknown timings and scores unknown.
 
-Validate the pushed commit with opsb test <op> --sha <sha>. Use --build-only for parallel builds, --fast for a quick check and full validation for normal candidates. Coordinate up to four remote tests with SLOT-REQ, SLOT-GRANT and SLOT-REL. On-device runs share device0.lock.
+Each worker directly queues validation with opsb test <op> --sha <sha> (--build-only, --fast or full). Parhelion schedules CPU and device time. Diagnose, fix and retest independently. Escalate only unresolved decisions.
 
-Only the orchestrator enqueues via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds, in-flight work, pacing and quota. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the normal safety, gain, circuit and quota gates.
+Workers enqueue their own candidates via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds, in-flight work, pacing and quota. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the normal safety, gain, circuit and quota gates.
 
 Before changing a kernel, query opsb kb query --pillar bugs --text <problem> and inspect relevant receipts and prevention notes. Read local case counts from the commit catalog and online counts from the current contest's judge. Keep predictions separate from judged scores. Follow each queued SHA through its receipt and final verdict. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
     brief += f"\n\nLaunch workspace: {ws}"

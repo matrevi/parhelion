@@ -223,6 +223,7 @@ final class NpuLaneModel: ObservableObject {
     }
 
     private static func baseKey(_ task: NpuTaskItem) -> String {
+        if let runId = task.runId, !runId.isEmpty { return "run-\(runId)" }
         let kind = task.isBackfillTask ? "B0" : "Q"
         guard let problem = task.problem, !problem.isEmpty else { return "pid-\(task.pid)|\(kind)" }
         return "\(problem)|\(kind)"

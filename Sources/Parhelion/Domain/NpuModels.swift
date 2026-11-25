@@ -281,6 +281,7 @@ struct DieLockInfo: Codable, Identifiable {
 }
 
 struct NpuTaskItem: Codable, Identifiable {
+    let runId: String?
     var id: String { "\(pid)-\(state)-\(problem ?? "")" }
     let pid: Int
     let die: Int?
@@ -308,6 +309,7 @@ struct NpuTaskItem: Codable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case pid, die, state, stage, lane, problem, sha, difficulty, boosted, detail, subprocesses
+        case runId = "run_id"
         case isBackfill = "is_backfill"
         case shortSha = "short_sha"
         case wsptPriority = "wspt_priority"

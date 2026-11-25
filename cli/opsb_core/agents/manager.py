@@ -444,10 +444,9 @@ class AgentMeshManager:
             f"[Parhelion Autonomous Worker | id={agent_id} | role={safe_role} | squad={prob_title or ws.name} ({c_mode}{axis_line})]\n"
             f"Workspace: {ws}\nWorktree: {wt}\n"
             f"Autonomy Protocol: You operate autonomously under primary orchestrator ({active}).\n"
-            f"1. Run local bench (`opsb test` / `parhelion_test_plan`) and fast-feedback (`parhelion_pmu_card`, `parhelion_elf_cold3_check`, `parhelion_kb_query`).\n"
-            f"2. When local bench confirms a real gain, invoke `parhelion_submit_gate` directly (gate + auto-submitter handle safety & quota).\n"
-            f"3. Escalate to orchestrator via `parhelion_agent_report` ONLY for: `breakthrough` (for cross-problem generalization), "
-            f"`stagnation` (6 consecutive attempts without gain), `escape_zero` (online WA/TLE/RE zero), `question`, or final `result`.\n\n"
+            f"1. Queue your own validation with `opsb test`. Diagnose failures, fix and retest independently.\n"
+            f"2. Enqueue candidates directly via `parhelion_submit_gate`; the platform applies opening-probe rules, schedules uploads and manages quota.\n"
+            f"3. Share results via `parhelion_agent_report`. Ask the orchestrator for a decision only when you sdkot resolve it.\n\n"
             f"Task:\n{task.strip()}"
         )
         if safe_role == "bench-author" and prob_title:

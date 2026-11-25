@@ -1214,6 +1214,8 @@ import glob, json, os, pathlib, shlex, shutil, subprocess, sys, tempfile, time, 
 
 cfg = json.load(sys.stdin)
 title, sha = cfg['title'], cfg['sha']
+exec(cfg.pop('lanes_source'))
+cfg['run_id'] = f"{os.getpid()}-{time.time_ns()}"
 
 def _parse_task_durations(out_dir):
     import csv
@@ -1298,7 +1300,6 @@ accel_env = cfg.get('accel_env') or ''
 soc = cfg.get('soc') or 'soc-a'
 device_id = cfg.get('device_id', 0)
 arch = cfg.get('arch') or 'arch-v1'
-jobs = int(cfg.get('jobs') or 8)
 
 env = os.environ.copy()
 env['GIT_TERMINAL_PROMPT'] = '0'
@@ -1319,7 +1320,9 @@ def bash(script, cwd=None, check=True, timeout=None):
     return sh(['bash', '-lc', (f'source {accel_env} && ' if accel_env else '') + script],
               cwd=cwd, check=check, timeout=timeout)
 
-with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
+root.mkdir(parents=True, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='git-auth-') as auth, (root / (title + '.lock')).open('a') as repo_lock:
+    fcntl.flock(repo_lock, fcntl.LOCK_EX)
     askpass = pathlib.Path(auth) / 'askpass.py'
     askpass.write_text(
         '#!/usr/bin/env python3\nimport os,sys\n'
@@ -1340,10 +1343,11 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
     if build_dir.exists():
         shutil.rmtree(build_dir)
     t_a = time.monotonic()
-    print('[TEMPLATE] cmake configure', flush=True)
-    bash(f'cmake -S . -B build-npu -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
-    print(f'[TEMPLATE] cmake build (-j{jobs})', flush=True)
-    bash(f'cmake --build build-npu --parallel {jobs}', cwd=repo)
+    with compile_lane(cfg) as jobs:
+        print('[TEMPLATE] cmake configure', flush=True)
+        bash(f'cmake -S . -B build-npu -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
+        print(f'[TEMPLATE] cmake build (-j{jobs})', flush=True)
+        bash(f'cmake --build build-npu --parallel {jobs}', cwd=repo)
     print('[TEMPLATE] generating sample data', flush=True)
     bash('python3 sample.py generate --directory build-npu', cwd=repo)
     phase_a = round(time.monotonic() - t_a, 3)
@@ -1354,10 +1358,7 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth:
         print('OPSB_PHASE_METRICS ' + json.dumps(metrics), flush=True)
         raise SystemExit(0)
 
-    lock_path = pathlib.Path(cfg['device_lock'])
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open('a') as lock_file:
-        fcntl.flock(lock_file, fcntl.LOCK_EX)
+    with device_lane(cfg):
         t_b = time.monotonic()
         bash(f'cd build-npu && ./sample {device_id}', cwd=repo)
         run_wall = round(time.monotonic() - t_b, 3)
@@ -1525,15 +1526,16 @@ def run_3phase_validation(
         template_cfg.update(
             npu_host=npu_host,
             remote_root=_remote_root_for(workspace, manifest_doc),
-            device_lock="/srv/work-device0.lock",
+            lock="/srv/work-device0.lock",
+            lanes_source=(Path(__file__).parent / "npu_runtime/lanes.py").read_text(),
             accel_env=os.environ.get("OPSB_TOOLCHAIN_ENV", "/opt/toolchain/latest/set_env.sh"),
             device_id=str(os.environ.get("OPSB_DEVICE_ID", "0")),
             arch=os.environ.get("NPU_ARCH", "arch-v1"),
             soc=os.environ.get("OPSB_RUNTIME_SOC", "soc-a"),
-            jobs=str(os.environ.get("OPSB_BUILD_JOBS", "8")),
+            jobs=os.environ.get("OPSB_BUILD_JOBS"),
             build_only=build_only,
         )
-        for legacy_only in ("fast", "cold3", "pmu", "mlfq", "wspt_base", "aging_tau", "branch_ref", "sync_only"):
+        for legacy_only in ("cold3", "mlfq", "branch_ref", "sync_only"):
             template_cfg.pop(legacy_only, None)
         code, template_metrics = _stream_remote(
             REMOTE_TEMPLATE, template_cfg, destination, log_basename, stream_stdout

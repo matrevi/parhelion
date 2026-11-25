@@ -159,7 +159,8 @@ class SchedulerEngine:
                 cfg_dict["daily_limit"] = int(ph_sched["daily_quota_limit"])
             if ph_sched.get("circuit_breaker_limit") is not None:
                 cfg_dict["circuit_limit_shots"] = int(ph_sched["circuit_breaker_limit"])
-        cfg_dict["rate_limit_gap_sec"] = 0
+        if ph_sched.get("rate_limit_gap_sec") is not None:
+            cfg_dict["rate_limit_gap_sec"] = int(ph_sched["rate_limit_gap_sec"])
         cfg_dict.pop("probe_submissions_per_problem", None)  # Previously persisted default was two.
         self.config = GateConfig.from_dict(cfg_dict)
         self.overrides: dict[str, dict[str, Any]] = dict(self._raw_state.get("overrides", {}))

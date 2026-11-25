@@ -99,7 +99,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     bt_threshold = float(sched_cfg.get("breakthrough_threshold", 5.0))
     daily_limit = int(sched_cfg.get("daily_quota_limit", 50))
     closing_reserve = int(sched_cfg.get("closing_reserve", 12))
-    gap_sec = 0
+    gap_sec = int(sched_cfg.get("rate_limit_gap_sec", DEFAULT_CONFIG["scheduler"]["rate_limit_gap_sec"]))
     cb_limit = int(sched_cfg.get("circuit_breaker_limit", 6))
 
     now = utc_now()

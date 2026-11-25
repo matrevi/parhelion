@@ -62,7 +62,7 @@ STATUS_TAGS: tuple[str, ...] = (
 
 BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
 DAILY_HARD_LIMIT = 50
-MIN_SUBMIT_GAP_SEC = 0
+MIN_SUBMIT_GAP_SEC = 190
 
 
 @dataclasses.dataclass

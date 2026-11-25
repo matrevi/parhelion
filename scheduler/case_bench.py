@@ -193,6 +193,7 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
             archive.extract(member,repo)
     engine = root/'reference_cases.py'
     engine.write_text(cfg.pop('engine'))
+    (root/'lanes.py').write_text(cfg.pop('lanes'))
     (root/'config.json').write_text(json.dumps(cfg))
     sys.exit(subprocess.call([sys.executable,'-u',str(engine)],cwd=repo))
 """
@@ -222,6 +223,8 @@ def run(
     timing=None,
     repeats=None,
     official_only=None,
+    wspt_base=1.0,
+    aging_tau=600.0,
     runner=None,
     dry_run=False,
     stream=True,
@@ -265,6 +268,11 @@ def run(
     ):
         raise ValueError("Invalid timing, repeats or case_timeout")
     cfg = {
+        "title": title,
+        "sha": sha,
+        "jobs": os.getenv("OPSB_BUILD_JOBS"),
+        "wspt_base": wspt_base,
+        "aging_tau": aging_tau,
         "selected": selected,
         "timing": timing,
         "repeats": repeat_count,
@@ -275,6 +283,7 @@ def run(
     }
     engine = (Path(runner) if runner else RUNNER).read_text()
     run_id = uuid.uuid4().hex
+    cfg["run_id"] = run_id
     folder = ws / "results" / title / sha
     dest = folder / "bench-runs" / run_id
     report = {
@@ -329,7 +338,8 @@ def run(
                 + shlex.quote(BOOTSTRAP)
             )
             with tempfile.TemporaryFile() as payload:
-                payload.write((json.dumps({**cfg, "engine": engine}) + "\n").encode())
+                lanes = RUNNER.with_name("lanes.py").read_text()
+                payload.write((json.dumps({**cfg, "engine": engine, "lanes": lanes}) + "\n").encode())
                 payload.flush()
                 subprocess.run(
                     ["git", "-C", repo, "archive", "--format=tar.gz", sha],

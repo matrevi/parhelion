@@ -734,6 +734,7 @@ def build_snapshot() -> dict[str, Any]:
             parallel_cpu_builds.append(
                 {
                     "pid": b_pid,
+                    "jobs": bd.get("jobs"),
                     "title": b_title,
                     "sha": b_sha,
                     "short_sha": b_sha[:7] or "—",
@@ -788,9 +789,9 @@ def build_snapshot() -> dict[str, Any]:
                 "detail": (
                     "Phase A baseline worktree build for perf-bucket backfill (B0)"
                     if cb_bf
-                    else "Phase A lock-free 32-core CPU build (0s NPU lock)"
+                    else f"CMake -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
                 ),
-                "subprocesses": 4,
+                "subprocesses": len(get_descendants(cb["pid"], procs)) - 1,
             }
         )
 

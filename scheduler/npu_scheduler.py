@@ -1009,7 +1009,9 @@ class NpuTaskScheduler:
         if reference_suite and pmu:
             raise ValueError("This template supports device event timing; use --timing all for a timing experiment")
         if reference_suite and not (fast or build_only):
+            priority, _, _, _ = self.compute_wspt(title, fast=False, wait_sec=0)
             res = case_bench.run(self.workspace,title,repo,sha,self.npu_host,
+                                 wspt_base=priority, aging_tau=self.config.aging_tau_sec,
                                  dry_run=dry_run,stream=stream_stdout,**(case_options or {}))
             return res if dry_run else {"title":title,"result":res}
         if case_options:
