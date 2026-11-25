@@ -12,6 +12,10 @@ from pathlib import Path
 
 CLI_DIR = Path(__file__).resolve().parent
 BENCH_ROOT = CLI_DIR.parents[1]
+if CLI_DIR.parent.name == "Resources" and CLI_DIR.parent.parent.name == "Contents":
+    # Preserve the signature of the installed app, including in child Python processes.
+    sys.dont_write_bytecode = True
+    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 
 
 def _ensure_venv_python() -> None:
