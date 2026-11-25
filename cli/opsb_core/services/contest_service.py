@@ -250,6 +250,13 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
     }
 
 
+def judge_case_count(board, live, receipt_total):
+    for value in (receipt_total,live.get("total_testcase_count"),board.get("meta",{}).get("total_testcase_count")):
+        if type(value) is int and value > 0:
+            return value
+    return None
+
+
 def build_problem_models(
     workspace: Path,
     meta: dict[str, Any],
@@ -260,6 +267,11 @@ def build_problem_models(
     results_dir = workspace / "results"
     snapshot = read_json(results_dir / "score-snapshot.json", {})
     boards = load_slim_boards(results_dir / "scoring-evidence" / "board-summary.json")
+    live_boards = read_json(results_dir/"scoring-evidence/live-board-tbest.json",{}).get("problems",{})
+    reconciled = read_json(results_dir/"scoring-evidence/board-reconciled.json",{}).get("board",[])
+    judge_counts = {p["title"]:next((a["cases_total"] for a in sorted(p.get("attempts",[]),
+                    key=lambda a:str(a.get("judge_at") or ""),reverse=True) if a.get("cases_total")),None)
+                    for p in reconciled if p.get("title")}
     est_lookup: dict[tuple[str, str], float] = {}
     for q_row in read_jsonl(results_dir / "submit-queue.jsonl"):
         if q_row.get("title") and q_row.get("sha") and q_row.get("estimated_score") is not None:
@@ -336,6 +348,12 @@ def build_problem_models(
 
         b_info = boards.get(title, {})
         tcs_raw = b_info.get("testcases") or []
+        live = live_boards.get(title) or {}
+        if live.get("problem_id") and p.get("problem_id") and live["problem_id"] != p["problem_id"]:
+            live = {}
+        case_count = judge_case_count(b_info,live,judge_counts.get(title))
+        if not tcs_raw:
+            tcs_raw = [{"tbest":v} for v in live.get("tbest",[])]
         b_rows = b_info.get("rows") or []
         total_teams = (b_info.get("meta") or {}).get("total") or len(b_rows)
         ldr = b_rows[0] if b_rows else {}
@@ -344,21 +362,25 @@ def build_problem_models(
         leader_times = [float(x) for x in (ldr.get("times") or []) if x is not None]
 
         pub_tbest, pub_ratios = [], []
-        for idx in range(min(5, len(tcs_raw))):
+        for idx in range(len(tcs_raw)):
+            if tcs_raw[idx].get("hidden"):
+                continue
             tb = tcs_raw[idx].get("tbest")
             if tb is not None:
                 pub_tbest.append(float(tb))
                 if idx < len(ours_pub) and ours_pub[idx] > 0:
                     pub_ratios.append(min(1.0, float(tb) / ours_pub[idx]))
 
-        public_pts = round(2.0 * sum(pub_ratios), 2) if pub_ratios else 0.0
+        slot_points = 100 / case_count if case_count else None
+        public_pts = round(slot_points * sum(pub_ratios), 2) if slot_points and pub_ratios else 0.0
         hidden_pts = round(max(0.0, cur_score - public_pts), 2) if cur_score > 0 else 0.0
-        implied_r = round(hidden_pts / 90.0, 4) if cur_score > 0 else 0.0
+        hidden_max = 100 - (slot_points or 0) * sum(not x.get("hidden") for x in tcs_raw)
+        implied_r = round(hidden_pts / hidden_max, 4) if slot_points and hidden_max > 0 else 0.0
 
         all_cases = []
-        for i in range(max(50, len(tcs_raw)) if tcs_raw else 50):
+        for i in range(case_count or len(tcs_raw)):
             tc = tcs_raw[i] if i < len(tcs_raw) else {}
-            is_hid = bool(tc.get("hidden")) if tc else (i >= 5)
+            is_hid = bool(tc.get("hidden")) if tc else True
             tb = float(tc["tbest"]) if tc.get("tbest") is not None else None
             ot = ours_pub[i] if i < len(ours_pub) else None
             lt = leader_times[i] if i < len(leader_times) else None
@@ -373,7 +395,7 @@ def build_problem_models(
                     "ours_us": round(ot, 4) if ot is not None else None,
                     "leader_us": round(lt, 4) if lt is not None else None,
                     "ratio": r,
-                    "points": round(2.0 * r, 3) if r is not None else None,
+                    "points": round(slot_points * r, 3) if r is not None and slot_points else None,
                 }
             )
 
@@ -448,7 +470,8 @@ def build_problem_models(
                 "implied_hidden_ratio": implied_r,
                 "public_times_us": [round(x, 3) for x in ours_pub],
                 "public_tbest_us": [round(x, 3) for x in pub_tbest],
-                "leader_times_us": [round(x, 3) for x in leader_times[:5]],
+                "leader_times_us": [round(x, 3) for x in leader_times],
+                "judge_case_count": case_count,
                 "public_ratios": [round(x, 4) for x in pub_ratios],
                 "wspt_priority": wspt,
                 "wspt_tag": tag,

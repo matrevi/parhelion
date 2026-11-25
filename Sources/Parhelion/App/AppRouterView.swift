@@ -14,14 +14,14 @@ enum NavigationRoute: String, CaseIterable, Identifiable {
         case .contest: return lang.tr("赛题与榜单", "Contest & Operators")
         case .npuMonitor: return lang.tr("NPU 遥测与队列", "NPU & Task Queues")
         case .agentMesh: return lang.tr("Agent 协作流", "Agent Mesh")
-        case .breakthroughs: return lang.tr("四元知识库", "4-Pillar KB")
+        case .breakthroughs: return lang.tr("五元知识库", "5-Pillar KB")
         case .workspaces: return lang.tr("工作区管理", "Workspaces")
         }
     }
 
     func caption(_ lang: AppLanguage) -> String {
         switch self {
-        case .contest: return lang.tr("实时总分 · 50 例对标", "Leaderboard · 50-Case Ratios")
+        case .contest: return lang.tr("实时总分 · 测例对标", "Leaderboard · Case Ratios")
         case .npuMonitor: return lang.tr("示波遥测 · 提交与门禁", "Telemetry · Queue · Gate")
         case .agentMesh: return lang.tr("主控编排 · 跨 Harness 通信", "Orchestrator · MCP Flow")
         case .breakthroughs: return lang.tr("突破 · 积木 · 硬件 · 社区", "Breakthrough · Snippets · Hardware · Community")

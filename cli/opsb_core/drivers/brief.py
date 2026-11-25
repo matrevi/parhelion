@@ -220,7 +220,7 @@ Validate the pushed commit with opsb test <op> --sha <sha>. Use --build-only for
 
 Only the orchestrator enqueues via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds, in-flight work, pacing and quota. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the normal safety, gain, circuit and quota gates.
 
-Follow each queued SHA through its receipt and final verdict. Keep predictions separate from judged scores. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
+Before changing a kernel, query opsb kb query --pillar bugs --text <problem> and inspect relevant receipts and prevention notes. Read local case counts from the commit catalog and online counts from the current contest's judge. Keep predictions separate from judged scores. Follow each queued SHA through its receipt and final verdict. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
     brief += f"\n\nLaunch workspace: {ws}"
     if goal.strip():
         brief += f"\n\nUser goal: {goal.strip()}"
@@ -236,7 +236,7 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
     """Stage-0 task: one agent per problem authors its local bench buckets.
 
     The judge's own testcases are hidden and the opening submissions happen before any
-    calibration exists, so the 50-case local bucket must be authored from the problem
+    calibration exists, so the local benchmark must be authored from the problem
     semantics (reference.py / sample.py) instead of copied from public anchors.
     """
     ws = workspace.expanduser().resolve()
@@ -400,7 +400,7 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
         "",
         "## Subagent Orchestration Protocol",
         "1. **Coordinate via Subagents**: Spawn isolated subagents (1 per high-ROI operator in dedicated git worktrees under `<op>/.worktrees/<track>`) to optimize operators in parallel, prioritizing Tier x3 & largest leader/restore gaps.",
-        "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 4-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
+        "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 5-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
         "3. **Lock-Safe Validation & Gated Submission**: Use `opsb test --build-only` / `--fast` / full (respecting Die 0 lock) and enqueue only gate-approved gains via `parhelion_submit_gate` / `opsb submit`.",
         "4. **Shared Memory**: Record verified silicon findings into `pillar=hardware` and reusable blocks into `pillar=snippets` via `parhelion_kb_record`.",
         "",

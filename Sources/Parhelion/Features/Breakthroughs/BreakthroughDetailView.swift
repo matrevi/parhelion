@@ -65,7 +65,7 @@ struct BreakthroughDetailView: View {
             HStack(spacing: 8) {
                 SemanticPill(text: kb.portability, compact: true)
                 TriadConfidenceBadge(entry: kb)
-                Text(lang.tr("四元经验反馈：", "KB Feedback:"))
+                Text(lang.tr("知识库反馈：", "KB Feedback:"))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Button {

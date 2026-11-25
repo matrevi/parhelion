@@ -175,8 +175,8 @@ struct TriadEvolutionLogView: View {
             HStack(spacing: 10) {
                 Label(
                     lang.tr(
-                        "四元知识库进化审计日志 (\(store.triadEvolutionEvents.count) 条)",
-                        "4-Pillar KB Evolution Audit Log (\(store.triadEvolutionEvents.count) event(s))"
+                        "五元知识库进化审计日志 (\(store.triadEvolutionEvents.count) 条)",
+                        "5-Pillar KB Evolution Audit Log (\(store.triadEvolutionEvents.count) event(s))"
                     ),
                     systemImage: "clock.arrow.2.circlepath"
                 )

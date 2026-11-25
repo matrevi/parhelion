@@ -390,7 +390,7 @@ def sync_breakthroughs_from_items(
             + (f" Top paired hardware speedups: {top_sp_txt}." if top_sp_txt else "")
         )
         prec_txt = (
-            f"Verified locally ({ext_summary or 'EXTENDED_PASSED'}, exit_code=0) and passed online 50-case Judge evaluation at {after_sc:.2f} pts."
+            f"Verified locally ({ext_summary or 'EXTENDED_PASSED'}, exit_code=0) and passed online Judge evaluation at {after_sc:.2f} pts."
         )
         rule_txt = (
             f"When optimizing `{cat}` bottlenecks ({', '.join(tags[:4])}), isolate hot regimes via dedicated `schMode`/static UB layout and verify paired `profiler` Task Duration across S/M/L/X strata."

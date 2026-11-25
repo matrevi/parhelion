@@ -98,6 +98,7 @@ struct TriadKBDetailView: View {
                         .controlSize(.small)
                     }
                 }
+                .disabled(entry.pillar == "bugs")
             }
         }
     }

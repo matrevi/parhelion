@@ -362,7 +362,7 @@ class TriadKBTests(unittest.TestCase):
                     ["kb", "query", "--bottleneck", "cold-launch-tax", "--regime", "S_SMALL_CORE", "--digest"]
                 )
                 self.assertEqual(rc, 0)
-                self.assertIn("Parhelion 4-Pillar KB Digest", out)
+                self.assertIn("Parhelion 5-Pillar KB Digest", out)
 
                 rc, out, _ = _run_kb_cli(["kb", "show", "SNP-direct-gm-tiling-64b", "--json"])
                 self.assertEqual(rc, 0)

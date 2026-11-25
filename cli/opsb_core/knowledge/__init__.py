@@ -1,4 +1,4 @@
-"""Self-Evolving 4-Pillar Knowledge Base package (`breakthrough` + `snippets` + `hardware` + `community`)."""
+"""Self-Evolving 5-Pillar Knowledge Base package (`breakthrough` + `snippets` + `hardware` + `community`)."""
 from __future__ import annotations
 
 from .audit import get_kb_evolution_history, revert_event, rollback_last

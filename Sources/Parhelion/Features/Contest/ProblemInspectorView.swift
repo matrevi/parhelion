@@ -87,6 +87,8 @@ struct ProblemInspectorView: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(lang.tr("本地逐例验证", "Local case results")).font(.headline)
+                    Text(lang.tr("线上用例", "Judge cases") + " " + (problem.judgeCaseCount.map(String.init) ?? "—"))
+                        .font(.caption)
                     Text(String(problem.headSha.prefix(7))).font(.caption.monospaced())
                     Spacer()
                     if let path = run.report {
@@ -156,8 +158,8 @@ struct ProblemInspectorView: View {
                     }
                 }
                 HStack(spacing: 12) {
-                    miniStat(lang.tr("公开例 (5)", "Public (5)"), String(format: "%.2f / 10", problem.publicPts), .blue)
-                    miniStat(lang.tr("隐藏例 (45)", "Hidden (45)"), String(format: "%.2f / 90", problem.hiddenPts), .purple)
+                    miniStat(lang.tr("公开例", "Public") + " (\(problem.testcases.filter { !$0.isHidden }.count))", String(format: "%.2f", problem.publicPts), .blue)
+                    miniStat(lang.tr("隐藏例", "Hidden") + " (\(problem.testcases.filter { $0.isHidden }.count))", String(format: "%.2f", problem.hiddenPts), .purple)
                     miniStat(lang.tr("隐藏均比 r̄_h", "Hidden r̄_h"), String(format: "%.1f%%", problem.impliedHiddenRatio * 100), .teal)
                     if let g = problem.tbestDecayGamma {
                         miniStat("tbest γ", String(format: "%.3f", g), g < 0.98 ? .orange : .secondary)

@@ -268,7 +268,7 @@ def refresh_board_and_recalibrate(
                     continue
 
                 tbest_list: list[float] = []
-                total_cases = 50
+                total_cases = None
                 frontier_top1: float | None = None
                 frontier_top5: float | None = None
                 our_row: dict[str, Any] | None = None
@@ -277,10 +277,10 @@ def refresh_board_and_recalibrate(
                 for page in range(1, 7):
                     d = _get_json(base, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100")
                     if page == 1:
-                        total_cases = int(d.get("total_testcase_count") or len(d.get("testcases") or []) or 50)
+                        total_cases = int(d["total_testcase_count"]) if d.get("total_testcase_count") else None
                         tcs = d.get("testcases") or []
-                        tbest_list = [float(x["tbest"]) for x in tcs if x.get("tbest") is not None][:5]
-                        tc_ids = [str(x.get("id") or x.get("_id") or "") for x in tcs[:5]]
+                        tbest_list = [float(x["tbest"]) for x in tcs if x.get("tbest") is not None]
+                        tc_ids = [str(x.get("id") or x.get("_id") or "") for x in tcs if x.get("tbest") is not None]
                         rows1 = d.get("rows") or []
                         if rows1:
                             frontier_top1 = round(float(rows1[0].get("score") or 0.0), 2)
@@ -308,7 +308,7 @@ def refresh_board_and_recalibrate(
                 prev_entry = prev_boards.get(title) or {}
                 prev_tbest = prev_entry.get("tbest") or []
                 tbest_delta_pct = None
-                if len(tbest_list) == 5 and len(prev_tbest) == 5 and sum(prev_tbest) > 0:
+                if tbest_list and len(tbest_list) == len(prev_tbest) and sum(prev_tbest) > 0:
                     tbest_delta_pct = round(((sum(tbest_list) - sum(prev_tbest)) / sum(prev_tbest)) * 100.0, 2)
 
                 our_times: list[float] = []
@@ -320,9 +320,9 @@ def refresh_board_and_recalibrate(
                             float(x["time"])
                             for x in res_list
                             if (not id_set or str(x.get("testcase_id") or "") in id_set) and x.get("time") is not None
-                        ][:5]
+                        ]
                     elif isinstance(our_row.get("times"), list):
-                        our_times = [float(x) for x in our_row["times"][:5] if x is not None]
+                        our_times = [float(x) for x in our_row["times"] if x is not None]
                     # Fallback: query /api/submissions/{sid} using whichever teammate session owns it
                     sub_id = str(our_row.get("submission_id") or "")
                     if not our_times and sub_id:
@@ -331,11 +331,11 @@ def refresh_board_and_recalibrate(
                                 sd = _get_json(s_base, s_cookie, f"/api/submissions/{sub_id}")
                                 s_body = sd.get("data") if isinstance(sd, dict) and isinstance(sd.get("data"), dict) else sd
                                 s_res = s_body.get("result") or [] if isinstance(s_body, dict) else []
-                                times_from_sub = [float(x["time"]) for x in s_res if isinstance(x, dict) and x.get("time") is not None][:5]
+                                times_from_sub = [float(x["time"]) for x in s_res if isinstance(x, dict) and x.get("time") is not None]
                                 if times_from_sub:
                                     our_times = times_from_sub
                                     if not tbest_list:
-                                        tbest_list = [float(x["best_time"]) for x in s_res if isinstance(x, dict) and x.get("best_time") is not None][:5]
+                                        tbest_list = [float(x["best_time"]) for x in s_res if isinstance(x, dict) and x.get("best_time") is not None]
                                     break
                             except Exception:
                                 continue

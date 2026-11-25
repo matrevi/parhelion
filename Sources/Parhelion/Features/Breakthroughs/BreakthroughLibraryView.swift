@@ -126,7 +126,7 @@ struct BreakthroughLibraryView: View {
 
     private var topHubBar: some View {
         HStack(spacing: 12) {
-            Label(lang.tr("四元知识库 (4-Pillar KB)", "4-Pillar Knowledge Hub"), systemImage: "sparkles.rectangle.stack.fill")
+            Label(lang.tr("五元知识库 (5-Pillar KB)", "5-Pillar Knowledge Hub"), systemImage: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 13.5, weight: .bold))
 
             Picker("", selection: $selectedPillar) {
@@ -263,7 +263,7 @@ struct BreakthroughLibraryView: View {
                 breakthroughDetailPane
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .snippets, .hardware, .community:
+        case .snippets, .hardware, .community, .bugs:
             HSplitView {
                 TriadKBListPane(
                     entries: filteredTriadEntries,
@@ -301,7 +301,7 @@ struct BreakthroughLibraryView: View {
     @ViewBuilder
     private var triadDetailPane: some View {
         if let entry = activeTriadEntry {
-            let detailed = detailCache[entry.id]
+            let detailed = entry.pillar == "bugs" ? nil : detailCache[entry.id]
             TriadKBDetailView(
                 entry: detailed ?? entry,
                 loadedContent: detailed?.content,
@@ -325,7 +325,7 @@ struct BreakthroughLibraryView: View {
     }
 
     private func ensureActiveDetailLoaded() {
-        guard selectedPillar == .snippets || selectedPillar == .hardware || selectedPillar == .community,
+        guard selectedPillar == .snippets || selectedPillar == .hardware || selectedPillar == .community || selectedPillar == .bugs,
               let target = activeTriadEntry else { return }
         if detailCache[target.id]?.content != nil || loadingDetailId == target.id { return }
         let targetId = target.id

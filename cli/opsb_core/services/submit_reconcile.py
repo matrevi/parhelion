@@ -195,8 +195,8 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                 ) if status == "Pass" else None
                 entry["score"], _, _ = resolve_score_and_times(detail, ranking, status)
                 cases = detail.get("result") or []
-                entry["cases_total"] = len(cases)
-                entry["cases_passed"] = sum(case.get("testcase_status") == "Pass" for case in cases)
+                entry["cases_total"] = len(cases) or None
+                entry["cases_passed"] = sum(case.get("testcase_status") == "Pass" for case in cases) if cases else None
                 if sid not in receipts:
                     receipts[sid] = {"sha": _match_manifest(workspace, p["title"], detail)}
             histories[p["title"]] = entries
@@ -275,13 +275,15 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                                   "finished_at": prev.get("finished_at") or att["judge_at"],
                                   "account_id": prev.get("account_id") or att["account_id"],
                                   "cases_passed": att["cases_passed"], "cases_total": att["cases_total"],
-                                  "note": f"Judge · {att['cases_passed']}/{att['cases_total']} cases",
+                                  "note": f"Judge · {att['cases_passed']}/{att['cases_total']} cases" if att['cases_total'] else "Judge",
                                   "source": "judge-history"}
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                         added += 1
             report["history_backfilled"] = added
             from scheduler.parhelion_paths import atomic_write_json
             atomic_write_json(ev / "board-reconciled.json", report)
+        from ..knowledge.bugs import sync_bugs
+        sync_bugs(workspace)
     return report
 
 

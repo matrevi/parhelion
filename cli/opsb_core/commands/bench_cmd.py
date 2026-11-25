@@ -296,6 +296,9 @@ def run_bench(args: argparse.Namespace) -> int:
         elif getattr(args, "sha", None):
             extra += ["--sha", args.sha]
         rc, parsed, raw_out = _call_bridge_subcmd(ws, sub, extra, timeout=180.0)
+        if sub == "verify-escape" and rc == 0 and parsed and parsed.get("ok"):
+            from ..knowledge.bugs import sync_bugs
+            sync_bugs(ws)
         invalidate_ttl_cache("scheduler_bridge")
         if rc != 127:
             if args.json and parsed is not None:

@@ -226,7 +226,7 @@ struct WorkspaceWizardView: View {
                 3. Commit & push to `\(gitOwner)/\(repoPrefix)-<slug>`, then validate on NPU (`\(npuHost)`):
                    $ opsb test <Operator> --fast
                    $ opsb test <Operator>
-                4. Inspect 50-case ratios & enqueue into the 4-Stage Gate:
+                4. Inspect per-case ratios & enqueue into the 4-Stage Gate:
                    $ opsb history <Operator>
                    $ opsb submit <Operator> $(git rev-parse HEAD) --note "tile + dbuf speedup"
                 """)

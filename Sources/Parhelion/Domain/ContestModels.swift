@@ -125,6 +125,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let headSha: String
     let headSubject: String
     var caseRun: CaseRunSummary? = nil
+    var judgeCaseCount: Int? = nil
     let headAgeMin: Int?
     let calibration: ProblemCalibration?
     let testcases: [TestcaseItem]
@@ -164,6 +165,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case headSha = "head_sha"
         case headSubject = "head_subject"
         case caseRun = "case_run"
+        case judgeCaseCount = "judge_case_count"
         case headAgeMin = "head_age_min"
     }
     // NOTE: Equatable/Hashable are synthesized over ALL fields on purpose. A hand-written `==`

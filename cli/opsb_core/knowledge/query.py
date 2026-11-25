@@ -83,6 +83,8 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
         "related_snippets": [str(s) for s in (raw.get("related_snippets") or []) if str(s).strip()],
         "doc_path": doc_path, "abs_doc_path": str(abs_doc) if abs_doc else None,
     }
+    if pillar == "bugs":
+        normalized.update(lesson=raw.get("lesson"),fix=raw.get("fix"),workspace=raw.get("workspace"))
     if raw.get("legacy_id"):
         normalized["legacy_id"] = str(raw["legacy_id"]).strip()
     for key in ("problem", "difficulty", "sha", "baseline_sha", "timestamp", "score_before", "score_after", "delta_raw", "delta_weighted"):
@@ -284,7 +286,7 @@ def format_prompt_cache_digest(query_result: dict[str, Any], max_chars: int = 24
         *([f"dtype={q_meta['dtype']}"] if q_meta.get("dtype") else []),
     ]
     ctx = f" ({'; '.join(tags)})" if tags else ""
-    lines: list[str] = [f"### Parhelion 4-Pillar KB Digest{ctx}"]
+    lines: list[str] = [f"### Parhelion 5-Pillar KB Digest{ctx}"]
 
     anti_list = list(query_result.get("anti_patterns") or [])
     if anti_list:

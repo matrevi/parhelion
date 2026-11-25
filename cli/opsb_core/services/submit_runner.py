@@ -877,6 +877,9 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             fcntl.flock(iolf, fcntl.LOCK_UN)
 
     # Closed-loop calibration + auto-archive into `breakthrough/` on terminal evaluation
+    if out_rec.get("status") in TERMINAL_JUDGE_STATUSES:
+        from ..knowledge.bugs import sync_bugs
+        sync_bugs(workspace)
     if out_rec.get("status") not in ("rejected", "skipped", "duplicate", "sync_error"):
         try:
             from ..config import SUPERVISOR_ROOT

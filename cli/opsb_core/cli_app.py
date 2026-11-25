@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     s_st.add_argument("--json", action="store_true")
     s_st.set_defaults(func=run_status)
 
-    s_hi = sub.add_parser("history", help="Inspect problem score history and 50-case ratios")
+    s_hi = sub.add_parser("history", help="Inspect problem score history and per-case ratios")
     s_hi.add_argument("problem", nargs="?")
     s_hi.add_argument("--workspace", "-w")
     s_hi.add_argument("--json", action="store_true")

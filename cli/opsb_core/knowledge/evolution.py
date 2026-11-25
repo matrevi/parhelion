@@ -248,6 +248,8 @@ def record_kb_feedback(
     if loc is None:
         raise ValueError(f"KB entry {entry_id!r} not found across {VALID_PILLARS}.")
     pillar, idx_path, _, matched_raw = loc
+    if pillar == "bugs":
+        raise ValueError("Use opsb kb annotate-bug to record a prevention note for a judge incident")
     canonical_id = str(matched_raw.get("id") or entry_id)
     p_dir = dirs[pillar]
 

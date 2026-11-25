@@ -54,14 +54,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_query",
-        "description": "Query 4-Pillar KB (breakthrough + snippets + hardware + community + anti-patterns) by symptom, regime, or dtype.",
+        "description": "Query 5-Pillar KB (breakthrough + snippets + hardware + community + anti-patterns) by symptom, regime, or dtype.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "bottlenecks": {"type": "array", "items": {"type": "string"}},
                 "regime": {"type": "string"},
                 "dtype": {"type": "string"},
-                "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "all"]},
+                "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "bugs", "all"]},
                 "text": {"type": "string"},
                 "include_anti_patterns": {"type": "boolean"},
                 "limit": {"type": "integer"},

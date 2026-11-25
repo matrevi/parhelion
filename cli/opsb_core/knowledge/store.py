@@ -15,7 +15,7 @@ from typing import Any, Callable
 from .. import config as cfg_mod
 from ..config import append_jsonl_locked, read_json, utc_now
 
-VALID_PILLARS = ("breakthrough", "snippets", "hardware", "community")
+VALID_PILLARS = ("breakthrough", "snippets", "hardware", "community", "bugs")
 WRITABLE_PILLARS = ("snippets", "hardware", "community")
 VALID_PORTABILITIES = ("native-accel", "portable", "remap-to-accel", "anti-pattern")
 VALID_STATUSES = ("verified", "unverified", "deprecated", "anti-pattern")
@@ -75,6 +75,7 @@ def triad_kb_dirs(parhelion_home: Path | str | None = None) -> dict[str, Path]:
         "snippets": home / "snippets",
         "hardware": home / "hardware",
         "community": home / "community",
+        "bugs": home / "bugs",
         "evolution_log": home / "kb-evolution.jsonl",
     }
 

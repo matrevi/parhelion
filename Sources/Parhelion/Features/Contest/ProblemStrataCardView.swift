@@ -15,7 +15,7 @@ struct StrataAndSlotsCardView: View {
                 HStack {
                     Picker("", selection: $mode) {
                         Text(lang.tr("5层校准权重与挖潜", "Calibrated Strata (5)")).tag(0)
-                        Text(lang.tr("50 测例槽位", "50 Slots")).tag(1)
+                        Text(lang.tr("测例槽位", "Case Slots")).tag(1)
                     }
                     .pickerStyle(.segmented)
                     .controlSize(.small)
@@ -33,7 +33,7 @@ struct StrataAndSlotsCardView: View {
                 if mode == 0 {
                     strataBarsView
                 } else {
-                    slots50DrawerView
+                    caseSlotsDrawerView
                 }
             }
         }
@@ -97,17 +97,17 @@ struct StrataAndSlotsCardView: View {
         }
     }
 
-    private var slots50DrawerView: some View {
+    private var caseSlotsDrawerView: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack {
                 Spacer()
                 Button(expandedGroups.isEmpty ? lang.tr("全部展开", "Expand All") : lang.tr("全部收起", "Fold All")) {
-                    expandedGroups = expandedGroups.isEmpty ? Set(0..<5) : []
+                    expandedGroups = expandedGroups.isEmpty ? Set(0..<((problem.testcases.count + 9) / 10)) : []
                 }
                 .buttonStyle(.link)
                 .font(.system(size: 10.5))
             }
-            ForEach(0..<5, id: \.self) { g in
+            ForEach(0..<((problem.testcases.count + 9) / 10), id: \.self) { g in
                 let s = g * 10
                 let e = min(problem.testcases.count, s + 10)
                 if s < e {

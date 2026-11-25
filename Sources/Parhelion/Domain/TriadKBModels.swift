@@ -5,6 +5,7 @@ enum TriadKBPillar: String, CaseIterable, Identifiable {
     case snippets
     case hardware
     case community
+    case bugs
     case evolution
 
     var id: String { rawValue }
@@ -15,6 +16,7 @@ enum TriadKBPillar: String, CaseIterable, Identifiable {
         case .snippets: return lang.tr("代码积木", "Snippets")
         case .hardware: return lang.tr("硬件规律", "Hardware")
         case .community: return lang.tr("社区方案", "Community")
+        case .bugs: return lang.tr("Bug 档案", "Bugs")
         case .evolution: return lang.tr("进化日志", "Evolution Log")
         }
     }
@@ -25,6 +27,7 @@ enum TriadKBPillar: String, CaseIterable, Identifiable {
         case .snippets: return "chevron.left.forwardslash.chevron.right"
         case .hardware: return "cpu.fill"
         case .community: return "books.vertical.fill"
+        case .bugs: return "ladybug.fill"
         case .evolution: return "clock.arrow.2.circlepath"
         }
     }

@@ -285,7 +285,7 @@ def _handle_seed(args: argparse.Namespace) -> int:
         print(json.dumps(res, ensure_ascii=False, indent=2))
         return 0
     print(
-        f"Seeded 4-Pillar KB at {res['parhelion_home']}: seeded={res['seeded_pillars']}, "
+        f"Seeded 5-Pillar KB at {res['parhelion_home']}: seeded={res['seeded_pillars']}, "
         f"copied={res['copied_count']} file(s)."
     )
     return 0
@@ -314,6 +314,19 @@ def _handle_migrate_hardware(args: argparse.Namespace) -> int:
 def run_kb(args: argparse.Namespace) -> int:
     as_json = bool(getattr(args, "json", False))
     cmd = getattr(args, "kb_cmd", "list") or "list"
+    if cmd in ("sync-bugs","annotate-bug"):
+        from ..config import ConfigRepository
+        from ..knowledge.bugs import sync_bugs, annotate_bug
+        if cmd == "sync-bugs":
+            ws = ConfigRepository.resolve_workspace(args.workspace, ConfigRepository.load())
+            result = sync_bugs(ws)
+        else:
+            try:
+                result = annotate_bug(args.entry_id,args.lesson)
+            except ValueError as exc:
+                return _print_error(str(exc),as_json)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     handlers = {
         "query": _handle_query,
         "list": _handle_list,
@@ -337,19 +350,26 @@ def run_kb(args: argparse.Namespace) -> int:
 
 def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     """Register `opsb kb` subcommands onto the main `opsb` subparsers."""
-    s_kb = sub.add_parser("kb", help="Self-evolving 4-Pillar Knowledge Base (breakthrough / snippets / hardware / community)")
+    s_kb = sub.add_parser("kb", help="Self-evolving 5-Pillar Knowledge Base (breakthrough / snippets / hardware / community)")
     kb_sub = s_kb.add_subparsers(dest="kb_cmd")
-    s_kb.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default="all")
+    sync = kb_sub.add_parser("sync-bugs", help="Reconcile incident cards with this contest's judge ledger")
+    sync.add_argument("--workspace","-w")
+    sync.set_defaults(func=run_kb)
+    note = kb_sub.add_parser("annotate-bug", help="Update a reproduction or prevention note")
+    note.add_argument("entry_id")
+    note.add_argument("--lesson",required=True)
+    note.set_defaults(func=run_kb)
+    s_kb.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "bugs", "all"], default="all")
     s_kb.add_argument("--status", "-s", choices=["verified", "unverified", "deprecated", "anti-pattern", "all"], default="all")
     s_kb.add_argument("--portability", choices=["native-accel", "portable", "remap-to-accel", "anti-pattern"], default=None)
     s_kb.add_argument("--json", action="store_true")
     s_kb.set_defaults(func=run_kb, kb_cmd="list")
 
-    k_q = kb_sub.add_parser("query", help="Query 4-Pillar KB across all 4 pillars by hardware symptom")
+    k_q = kb_sub.add_parser("query", help="Query 5-Pillar KB across all five pillars by hardware symptom")
     k_q.add_argument("--bottleneck", "-b", action="append", help="Bottleneck tag (repeatable or comma-separated)")
     k_q.add_argument("--regime", "-r", help="Regime (PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED, X_EXTREME)")
     k_q.add_argument("--dtype", "-d", help="Data type (float32, float16, bfloat16, int8, int32)")
-    k_q.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default=argparse.SUPPRESS)
+    k_q.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "bugs", "all"], default=argparse.SUPPRESS)
     k_q.add_argument("--text", "-q", default="", help="Free-text search terms")
     k_q.add_argument("--limit", type=int, default=8)
     k_q.add_argument("--no-anti-patterns", action="store_true")
@@ -358,8 +378,8 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_q.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_q.set_defaults(func=run_kb)
 
-    k_ls = kb_sub.add_parser("list", help="List 4-Pillar KB entries")
-    k_ls.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "all"], default=argparse.SUPPRESS)
+    k_ls = kb_sub.add_parser("list", help="List 5-Pillar KB entries")
+    k_ls.add_argument("--pillar", "-p", choices=["breakthrough", "snippets", "hardware", "community", "bugs", "all"], default=argparse.SUPPRESS)
     k_ls.add_argument("--status", "-s", choices=["verified", "unverified", "deprecated", "anti-pattern", "all"], default=argparse.SUPPRESS)
     k_ls.add_argument("--portability", choices=["native-accel", "portable", "remap-to-accel", "anti-pattern"], default=argparse.SUPPRESS)
     k_ls.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
@@ -423,7 +443,7 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_pr.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_pr.set_defaults(func=run_kb)
 
-    k_sd = kb_sub.add_parser("seed", help="Non-destructively seed 4-Pillar KB snippets, hardware & community templates")
+    k_sd = kb_sub.add_parser("seed", help="Non-destructively seed 5-Pillar KB snippets, hardware & community templates")
     k_sd.add_argument("--templates-root", default=None)
     k_sd.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_sd.set_defaults(func=run_kb)

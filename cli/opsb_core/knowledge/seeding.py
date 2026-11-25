@@ -94,11 +94,11 @@ def project_readonly_skills(
     skill_md = (
         "---\n"
         "name: parhelion-kb\n"
-        "description: Read-only canonical KernelC 4-Pillar Knowledge Base index (Breakthroughs, Snippets, Hardware Laws, Community & Anti-Patterns).\n"
+        "description: Read-only canonical KernelC 5-Pillar Knowledge Base index (Breakthroughs, Snippets, Hardware Laws, Community & Anti-Patterns).\n"
         "---\n\n"
-        "# Parhelion 4-Pillar Knowledge Base (`parhelion-kb`)\n\n"
+        "# Parhelion 5-Pillar Knowledge Base (`parhelion-kb`)\n\n"
         "- Query dynamically by bottleneck/regime/dtype via `opsb kb query` or MCP `parhelion_kb_query`.\n"
-        "- Pillar distinction: `hardware` = silicon/doc/compiler-discovered hardware laws & traps; `community` = ready-made community/cross-platform acceleration algorithms; `snippets` = reusable KernelC `.h` blocks; `breakthrough` = verified online wins.\n"
+        "- Pillars: hardware laws, community algorithms, reusable snippets, verified breakthroughs and judge-backed bug incidents. Query bugs by problem before changing a kernel.\n"
         "- Record new verified patterns or negative anti-patterns only with verifiable `problem`, `sha`, `verdict`, and measurable metrics (`opsb kb record` / `opsb kb feedback`).\n"
         "- Inspect `KB_INDEX.md` and `snippets/*.h` in this directory for read-only verified building blocks.\n"
     )
@@ -113,7 +113,7 @@ def project_readonly_skills(
     coms = [e for e in entries if e["pillar"] == "community" and e not in anti]
 
     idx_lines = [
-        "# Parhelion 4-Pillar KB Snapshot Index (Read-Only)",
+        "# Parhelion 5-Pillar KB Snapshot Index (Read-Only)",
         "",
         f"- Total entries: `{len(entries)}` (`breakthrough={len(bts)}`, `snippets={len(snips)}`, `hardware={len(hws)}`, `community={len(coms)}`, `anti-patterns={len(anti)}`)",
         "",

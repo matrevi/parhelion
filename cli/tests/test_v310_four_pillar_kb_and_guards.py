@@ -37,7 +37,7 @@ from scheduler.pairwise_anchor import evaluate_pairwise_anchor  # noqa: E402
 
 class FourPillarKBAndV31Tests(unittest.TestCase):
     def test_four_pillars_and_v310_version_alignment(self) -> None:
-        self.assertEqual(VALID_PILLARS, ("breakthrough", "snippets", "hardware", "community"))
+        self.assertEqual(VALID_PILLARS, ("breakthrough", "snippets", "hardware", "community", "bugs"))
         self.assertEqual(WRITABLE_PILLARS, ("snippets", "hardware", "community"))
         self.assertRegex(opsb_core.__version__, r"^\d+\.\d+\.\d+$")
         self.assertEqual(SERVER_INFO["version"], opsb_core.__version__)
