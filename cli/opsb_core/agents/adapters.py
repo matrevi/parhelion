@@ -87,10 +87,16 @@ class BaseWorkerAdapter:
 
     def _spawn_proc(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        child_env = {**os.environ, **env}
+        if self.driver_kind == "deepseek":
+            # DSH filters indexed Git keys from its shell tool but retains COUNT.
+            # Use the worker account's normal Git configuration and credential store.
+            child_env = {k: v for k, v in child_env.items() if k != "GIT_CONFIG_COUNT"
+                         and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
         proc = subprocess.Popen(
             cmd,
             cwd=str(self.worktree),
-            env={**os.environ, **env},
+            env=child_env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
