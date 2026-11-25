@@ -259,14 +259,42 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertLessEqual(len(bench.encode("utf-8")), MAX_BRIEF_BYTES)
 
             sprint = compose_contest_subagent_brief(ws)
-            self.assertIn("Subagent", sprint)
+            self.assertTrue(sprint.startswith("# Parhelion Contest Orchestrator"))
+            self.assertTrue(sprint.isascii())
             self.assertIn("NeighborListPbcFixedK", sprint)
             self.assertIn("RevINNorm", sprint)
             self.assertIn("SLOT-REQ", sprint)
             self.assertIn("device0.lock", sprint)
-            self.assertIn("禁止 `opsb submit`", sprint)
+            self.assertIn("Only the orchestrator enqueues via opsb submit", sprint)
             self.assertLessEqual(len(sprint.encode("utf-8")), MAX_BRIEF_BYTES)
 
+    def test_new_contest_gui_stages_english_brief_before_templates_arrive(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ws = Path(td).resolve() / "new-contest"
+            ws.mkdir()
+            manifest = ws / "opsb.workspace.json"
+            manifest.write_text(json.dumps({"problems": []}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PARHELION_HOME": str(ws.parent / "phome")}):
+                launch = launch_problem_session(ws, "ALL", driver_kind="deepseek", mode="gui", dry_run=True)
+            brief = launch["brief"]
+            self.assertEqual(Path(launch["brief_path"]).read_text().strip(), brief)
+            self.assertIn(str(ws), brief)
+            self.assertTrue(brief.isascii())
+            self.assertNotIn("10-Operator", brief)
+            for rule in (
+                "PUBLIC", "S_SMALL_CORE", "M_MID_UB", "L_HBM_TILED", "X_EXTREME",
+                "first three distinct judge submission IDs", "even after an early AC",
+                "HTTP 429 without a judge ID", "From attempt four", "Respect manual holds",
+                "opsb submit <op> <sha>", "predictions separate from judged scores",
+            ):
+                self.assertIn(rule, brief)
+
+            problems = [{"title": f"Operator{i:04d}"} for i in range(300)]
+            manifest.write_text(json.dumps({"problems": problems}), encoding="utf-8")
+            self.assertEqual(compose_contest_subagent_brief(ws, goal="优先恢复零分"), brief + "\n\nUser goal: 优先恢复零分")
+            long_goal = compose_contest_subagent_brief(ws, goal="测试" * MAX_BRIEF_BYTES)
+            self.assertTrue(long_goal.startswith(brief))
+            self.assertLessEqual(len(long_goal.encode("utf-8")), MAX_BRIEF_BYTES)
 
     def test_subagent_capacity_is_pinned_to_twenty_idempotently(self) -> None:
         from opsb_core.drivers.dsh_driver import ensure_subagent_capacity

@@ -203,50 +203,33 @@ def _clean_session_brief(ws: Path, title: str, meta: dict[str, Any], p_meta: dic
     return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
 
 
-def _clean_sprint_brief(ws: Path, meta: dict[str, Any], probs: list[dict[str, Any]], goal: str) -> str:
-    """Master brief: spawn one worker per problem, gate remote tests, never auto-submit."""
+def _clean_sprint_brief(ws: Path, probs: list[dict[str, Any]], goal: str) -> str:
+    """English first turn for a contest orchestrator, including before template sync."""
     ranked = sorted(
         (p for p in probs if p.get("title")),
         key=lambda p: (-int(p.get("difficulty") or 2), str(p.get("title"))),
     )
-    weighted = sum(int(p.get("difficulty") or 2) for p in ranked)
-    lines = [
-        f"# Parhelion {len(ranked)}-Operator Subagent Sprint · {ws.name}",
-        f"- Workspace: `{ws}` | layout=clean-agents-first | 难度 = 计分权重(1-5)，当前权重合计 {weighted}",
-        "- 每题一个独立 git 仓库（官方模板：`kernel.asc` 可改，`main.asc`/`sample.py`/`reference.py`/`CMakeLists.txt` 只读）",
-        "",
-        "## 资源模型（决定并发）",
-        "- 本机没有 SDK：唯一评测入口 `opsb test <Title>`，远端 npu，device0.lock 串行",
-        "- cmake 编译可并行，但**同时跑测试不超过 4 个**；其余 agent 继续写代码，不要空转重试",
-        "- 测试前必须 push 到 origin/main；禁止 `opsb submit` / `parhelion_submit_gate`（额度 + 需 verified 记录）",
-        "",
-        "## 题目与权重（先打高权重）",
-    ]
-    for p in ranked:
-        title = str(p.get("title"))
-        diff = int(p.get("difficulty") or 2)
-        repo = str(p.get("repo_slug") or "")
-        lines.append(f"- `{title}` x{diff} · `{repo}`")
-    lines += [
-        "",
-        "## 派发策略（管理员规则）",
-        "- 默认优先主控**自身 harness 的原生 subagent**拆分全部题目；只有管理员明确要求「多 Harness 协作」时才用 `parhelion_agent_spawn` 派外部 worker",
-        "- **禁止派 claude worker**，除非管理员提示词明确同意（`PARHELION_ALLOW_CLAUDE_WORKERS=1` 或 config `allow_claude_workers`）；外部池已按该策略过滤",
-        "",
-        "## 阶段 0：先派 bench 作者（冷启动，未提交前）",
-        "- 逐题检查 bench-specs/<Title>/cases_perf.json；hidden_buckets 为空时先派 role=bench-author，以官方样例为基线补充本题测试",
-        "- bench 作者只写 bench-specs 目录，不改 kernel；产出用于给 50 例桶排序，不消耗判题额度",
-        "",
-        "## 编排协议",
-        "1. 每题 spawn 一个 worker（driver 不能等于自己的 active_driver），role=kernel-impl，collab_mode=orthogonal，axis=`<kernel_pattern>/<tier>`",
-        "2. 测试闸门：worker 发 `SLOT-REQ <Title> <sha7>` → 主控最多放 4 个 `SLOT-GRANT` → worker 完成后 `SLOT-REL`；坏构建连续 3 次同因失败改为静态修复后再申请",
-        "3. worker 纪律：只改 `kernel.asc`(+同目录 `*.asc`/`*.h`)，push 后再测，读 `results/<Title>/<sha>/validation.log`，VERIFY 失败先修正确性",
-        "4. 汇聚：`verified=true` 才记录 `MS_PROF median(us)`；跨题可复用结论与反模式用 `parhelion_kb_record`（带 sha + profiler 证据）",
-        "5. 停滞（连续 3 轮无 gain）换独立方案或遣散重派；任何 ESCAPE_LOCK / 线上 WA/TLE/RE 立刻降级为只读复现",
-    ]
+    brief = """# Parhelion Contest Orchestrator
+Improve this team's official weighted score. Read opsb.workspace.json in the launch workspace. Pass that root via --workspace to opsb and refresh the leaderboard for its contest and team. Record the starting rank, score, remaining quota, active workers, queue and in-flight submissions. Mark missing data as unknown. Prioritize high-weight zeros and evidence-backed gains over the best judged SHA.
+
+Run independent problems in parallel. Give each kernel one owner and an isolated worktree. Prefer native subagents. Use parhelion_agent_spawn for external Harnesses when the admin requests multi-Harness work. Claude workers require explicit admin authorization. Workers edit only files allowed by the official template and report the pushed SHA, evidence and expected gain.
+
+At contest start, assign a bench-author per problem alongside kernel work. Bench authors edit only bench-specs/<op>/cases_perf.json using the official sample and reference oracle. Keep PUBLIC anchors and append problem-specific S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME cases. Cover valid shapes, dtypes, tails and boundary attributes. Compare baseline and candidate on the same inputs. Leave unmeasured timings unknown.
+
+Validate the pushed commit with opsb test <op> --sha <sha>. Use --build-only for parallel builds, --fast for a quick check and full validation for normal candidates. Coordinate up to four remote tests with SLOT-REQ, SLOT-GRANT and SLOT-REL. On-device runs share device0.lock.
+
+Only the orchestrator enqueues via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds, in-flight work, pacing and quota. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the normal safety, gain, circuit and quota gates.
+
+Follow each queued SHA through its receipt and final verdict. Keep predictions separate from judged scores. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
+    brief += f"\n\nLaunch workspace: {ws}"
     if goal.strip():
-        lines.insert(2, f"- Goal: {goal.strip()}")
-    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+        brief += f"\n\nUser goal: {goal.strip()}"
+    if ranked:
+        roster = ", ".join(f"{p['title']} (x{p.get('difficulty') or 2})" for p in ranked)
+        with_roster = f"{brief}\n\nManifest problems: {roster}"
+        if len(with_roster.encode("utf-8")) <= MAX_BRIEF_BYTES:
+            return with_roster
+    return _truncate_utf8(brief, MAX_BRIEF_BYTES)
 
 
 def compose_bench_author_brief(workspace: Path, problem: str) -> str:
@@ -359,12 +342,14 @@ def compose_session_brief(workspace: Path, problem: str, goal: str = "") -> str:
 
 
 def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
-    """Compose a `< 3 KB` workspace-wide 10-operator subagent orchestration brief."""
+    """Compose a workspace-wide orchestration brief for the active contest layout."""
     ws = workspace.expanduser().resolve()
     meta = resolve_workspace_meta(ws)
     probs = meta.get("problems") or []
-    if any(_template_layout(ws / str(p.get("path") or p.get("title"))) for p in probs):
-        return _clean_sprint_brief(ws, meta, probs, goal)
+    if meta["layout"] == "clean-agents-first" or any(
+        _template_layout(ws / str(p.get("path") or p.get("title"))) for p in probs
+    ):
+        return _clean_sprint_brief(ws, probs, goal)
     snapshot = _cfg.read_json(ws / "results" / "score-snapshot.json", {})
     if not isinstance(snapshot, dict):
         snapshot = {}
@@ -391,7 +376,7 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
 
     rows.sort(key=lambda x: (-x[0], -x[1], x[2]))
     lines: list[str] = [
-        f"# Parhelion 10-Operator Subagent Sprint · {ws.name}",
+        f"# Parhelion {len(rows)}-Operator Subagent Sprint · {ws.name}",
         f"- Workspace: `{ws}` | Weighted Total: **{weighted_total:.2f}** ({len(rows)} ops)",
     ]
     if goal.strip():
@@ -409,7 +394,7 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
     lines.extend([
         "",
         "## Subagent Orchestration Protocol",
-        "1. **Coordinate via Subagents**: Spawn isolated subagents (1 per high-ROI operator in dedicated git worktrees under `<op>/.worktrees/<track>`) to optimize all 10 operators in parallel, prioritizing Tier x3 & largest leader/restore gaps.",
+        "1. **Coordinate via Subagents**: Spawn isolated subagents (1 per high-ROI operator in dedicated git worktrees under `<op>/.worktrees/<track>`) to optimize operators in parallel, prioritizing Tier x3 & largest leader/restore gaps.",
         "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 4-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
         "3. **Lock-Safe Validation & Gated Submission**: Use `opsb test --build-only` / `--fast` / full (respecting Die 0 lock) and enqueue only gate-approved gains via `parhelion_submit_gate` / `opsb submit`.",
         "4. **Shared Memory**: Record verified silicon findings into `pillar=hardware` and reusable blocks into `pillar=snippets` via `parhelion_kb_record`.",

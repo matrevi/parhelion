@@ -56,15 +56,15 @@ struct ProblemTableView: View {
                 Button {
                     Task { await store.launchContestSubagentSession(mode: "gui") }
                 } label: {
-                    Label(lang.tr("新开对话", "New 10-Op Chat"), systemImage: "plus.bubble.fill")
+                    Label(lang.tr("新开对话", "New Contest Chat"), systemImage: "plus.bubble.fill")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(store.isLaunchingSession || store.selectedWorkspace.isEmpty)
                 .help(lang.tr(
-                    "在工作区根目录新开对话，以 Subagent 编排形式并行优化全部 10 道题",
-                    "Launch workspace-root session to optimize all 10 operators via parallel subagents"
+                    "为当前比赛新开主控对话，协调各题并行优化",
+                    "Start an orchestrator chat for the selected contest"
                 ))
 
                 Toggle(isOn: $sortByROI) {

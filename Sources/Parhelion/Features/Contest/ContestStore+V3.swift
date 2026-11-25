@@ -212,8 +212,8 @@ extension ContestStore {
                 let notes = clipNote + dshNote
                 bannerMessage = isAllOps
                     ? tr(
-                        "已通过 \(drvName) 新开 10 题 Subagent 并行优化对话 [\(wtName)]\(notes)",
-                        "Launched \(drvName) 10-op subagent orchestration session [\(wtName)]\(notes)"
+                        "已通过 \(drvName) 新开比赛主控对话 [\(wtName)]\(notes)",
+                        "Opened a contest orchestrator chat with \(drvName) [\(wtName)]\(notes)"
                     )
                     : tr(
                         "已通过 \(drvName) 为 \(problem) 新开调优对话 [\(wtName)]\(notes)",
