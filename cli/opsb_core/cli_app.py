@@ -15,6 +15,20 @@ from .commands.tools_cmd import register_fast_tools_subcommands
 from .daemon.server import run_daemon
 
 
+def run_bench_suite(args: argparse.Namespace) -> int:
+    """Forward `opsb bench suite` to `scheduler.cli_bridge suite`, which refuses workers."""
+    import subprocess
+
+    from .config import CLI_DIR, ConfigRepository, resolve_python_exe
+
+    ws = ConfigRepository.resolve_workspace(args.workspace, ConfigRepository.load())
+    cmd = [resolve_python_exe(ws), "-m", "scheduler.cli_bridge", "suite", args.suite_action,
+           "--workspace", str(ws), "--title", args.problem]
+    if args.variant_json is not None:
+        cmd += ["--json", args.variant_json]
+    return subprocess.call(cmd, cwd=str(CLI_DIR.parent))
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="opsb", description="Parhelion · Unified KernelC Contest & NPU CLI")
     p.add_argument("--lang", choices=["zh", "en"], help="Output language (zh / en)")
@@ -183,7 +197,10 @@ def build_parser() -> argparse.ArgumentParser:
     s_ts.add_argument("--profile", help="Use a JSON experiment profile")
     s_ts.add_argument("--experiment", help="Label an isolated run")
     s_ts.add_argument("--remeasure", action="store_true", help="Repeat a completed reference measurement")
-    s_ts.add_argument("--suite", choices=["adaptive", "all"], help="Select a targeted probe or the complete reference suite")
+    s_ts.add_argument("--level", choices=["smoke", "standard", "final"],
+                      help="Suite level: smoke self-check, standard evidence (default) or final candidate run")
+    s_ts.add_argument("--suite", choices=["adaptive", "all"],
+                      help="Deprecated; use --level (adaptive = smoke, all = standard)")
     s_ts.add_argument("--runner", help="Use an experimental Python runner implementing the case event protocol")
     s_ts.add_argument("--official-only", action="store_true", help="Omit local variants for an ablation")
     s_ts.add_argument("--timing", choices=["off","perf","all"])
@@ -211,6 +228,13 @@ def build_parser() -> argparse.ArgumentParser:
     s_bn.add_argument("--workspace", "-w")
     s_bn.add_argument("--json", action="store_true")
     s_bn.set_defaults(func=run_bench, bench_cmd="status", problem=None)
+
+    bn_su = bn_sub.add_parser("suite", help="Show, migrate or extend the platform-owned test suite")
+    bn_su.add_argument("suite_action", choices=["show", "migrate", "add-variant"])
+    bn_su.add_argument("problem")
+    bn_su.add_argument("--json", dest="variant_json", help="Variant object for add-variant")
+    bn_su.add_argument("--workspace", "-w")
+    bn_su.set_defaults(func=run_bench_suite)
 
     bn_st = bn_sub.add_parser("status", help="Show 5-stratum learned weights, efficiency & headroom")
     bn_st.add_argument("problem", nargs="?")

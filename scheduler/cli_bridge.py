@@ -7,7 +7,8 @@ Directly embedded by `OpsSupervisor.app` and invoked by the `opsb` CLI:
     python3 -m scheduler.cli_bridge drain [--once] [--dry-run]
     python3 -m scheduler.cli_bridge override --title <Title> --sha <SHA> --action <approve|skip|rollback>
     python3 -m scheduler.cli_bridge config [--noise-floor <pts>] [--reserve <n>]
-    python3 -m scheduler.cli_bridge schedule-test --title <Title> [--fast] [--dry-run]
+    python3 -m scheduler.cli_bridge schedule-test --title <Title> [--level smoke|standard|final] [--fast] [--dry-run]
+    python3 -m scheduler.cli_bridge suite <show|migrate|add-variant> --title <Title> [--json <variant>]
     python3 -m scheduler.cli_bridge retrospect
 """
 from __future__ import annotations
@@ -1585,7 +1586,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tst.add_argument("--profile")
     p_tst.add_argument("--experiment")
     p_tst.add_argument("--remeasure", action="store_true", default=None)
-    p_tst.add_argument("--suite", choices=["adaptive", "all"])
+    p_tst.add_argument("--suite", choices=["adaptive", "all"], help="Deprecated: adaptive=--level smoke, all=--level standard")
+    p_tst.add_argument("--level", choices=["smoke", "standard", "final"], default=None,
+                       help="Suite level (default standard)")
     p_tst.add_argument("--runner")
     p_tst.add_argument("--official-only",action="store_true",default=None)
     p_tst.add_argument("--timing", choices=["off","perf","all"])
@@ -1632,12 +1635,56 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ves.add_argument("--review", default="", help="Repair rationale for one exact-SHA online WA review")
 
     sub.add_parser("retrospect", parents=[common], help="Replay historical outcomes against 4-stage gate")
+
+    p_su = sub.add_parser("suite", parents=[common], help="Show, migrate or extend the platform test suite")
+    p_su.add_argument("op", choices=["show", "migrate", "add-variant"])
+    p_su.add_argument("--title", required=True, help="Operator problem title")
+    p_su.add_argument("--json", dest="variant_json", default=None, help="Variant object for add-variant")
     return parser
+
+
+def _worker_suite_violation(args) -> str | None:
+    """Workers pick a level; the suite, timing protocol and runner stay platform-owned."""
+    from .suite import WORKER_FORBIDDEN, WORKER_MESSAGE, is_worker
+
+    if args.command == "schedule-test" and is_worker() and any(
+        getattr(args, name, None) is not None for name in WORKER_FORBIDDEN
+    ):
+        return WORKER_MESSAGE
+    return None
+
+
+def _suite_command(args) -> int:
+    from . import case_bench
+    from .suite import manage
+
+    ws = pathlib.Path(args.workspace).resolve()
+    try:
+        try:
+            repo = case_bench.problem_repo(ws, args.title)
+            repo = repo if case_bench.has_reference(repo, "HEAD") else None
+        except (ValueError, OSError, KeyError, subprocess.CalledProcessError):
+            repo = None
+        payload = manage(ws, args.title, args.op, args.variant_json, repo)
+    except PermissionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+        print(json.dumps({"ok": False, "command": "suite", "error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    violation = _worker_suite_violation(args)
+    if violation:
+        print(violation, file=sys.stderr)
+        return 2
+    if args.command == "suite":
+        return _suite_command(args)
     engine = SchedulerEngine(
         workspace=args.workspace,
         state_dir=args.state_dir,
@@ -1690,6 +1737,10 @@ def main(argv: list[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
         elif args.command == "schedule-test":
+            # The level travels in the `suite` slot, which `case_bench.run` resolves as a level
+            # and the extended (non-reference) path already ignores. Build-only and fast runs
+            # never reach the case bench, so a level there is moot.
+            level = args.suite if (args.fast or args.build_only) else (args.level or args.suite)
             payload = engine.npu_scheduler.schedule_test(
                 title=args.title,
                 sha=args.sha,
@@ -1698,7 +1749,7 @@ def main(argv: list[str] | None = None) -> int:
                 pmu=getattr(args, "pmu", False),
                 case_options={k:v for k,v in dict(ids=args.case_ids,bucket=args.bucket,
                     profile_path=args.profile,experiment=args.experiment,timing=args.timing,
-                    repeats=args.repeats,runner=args.runner,remeasure=args.remeasure,suite=args.suite,official_only=args.official_only).items() if v is not None},
+                    repeats=args.repeats,runner=args.runner,remeasure=args.remeasure,suite=level,official_only=args.official_only).items() if v is not None},
                 dry_run=args.dry_run,
                 stream_stdout=not args.dry_run,
             )
@@ -1708,7 +1759,9 @@ def main(argv: list[str] | None = None) -> int:
                 # can exist yet -> strictly bounded, silent, never raises.
                 if not args.build_only and res.get("formal", True) and not (res.get("reused") or res.get("joined") or res.get("deferred")) and not any((args.case_ids,args.profile,args.experiment,args.bucket,args.timing,args.repeats,args.official_only,args.runner)):
                     engine.backfill_auto()
-                print(json.dumps(sanitize_json_value(res), ensure_ascii=False, allow_nan=False))
+                from .case_bench import result_line
+
+                print(json.dumps(sanitize_json_value(result_line(res)), ensure_ascii=False, allow_nan=False))
                 return int(res.get("exit_code", 0))
         elif args.command == "backfill":
             payload = engine.backfill(

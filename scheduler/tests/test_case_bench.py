@@ -216,3 +216,222 @@ def test_evolution_and_escape_use_observations(suite):
     assert bench.load_profile(ws, "Op") == {}
     assert regression_evidence(folder, good)["case_ids"] == ["01"]
     assert not regression_evidence(folder, {**good, "engine": "other"})
+
+
+# ---- 4.0 unified suite: levels, warm timing, digest -------------------------------
+
+FAKE_SSH = '''
+import json, os, sys, time
+cfg = json.loads(sys.stdin.buffer.readline())
+sys.stdin.buffer.read()
+out = os.environ.get("FAKE_CFG_OUT")
+if out:
+    with open(out, "a") as fh:
+        fh.write(json.dumps({k: v for k, v in cfg.items() if k not in ("engine", "lanes", "case_batch", "device_broker")}) + "\\n")
+time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
+status = json.loads(os.environ.get("FAKE_STATUS", "{}"))
+def emit(event, **fields):
+    print("OPSB_CASE " + json.dumps(dict(event=event, **fields)), flush=True)
+emit("environment", host="fake", sdk="1.0")
+emit("built")
+emit("device_batch", wait_sec=0.1, hold_sec=0.2, acquisitions=1, broker=True, segments=1)
+code = 0
+for item in cfg["selected"]:
+    state = status.get(item["id"], "PASS")
+    timed = item["timed"] and state == "PASS"
+    warm = [10.0 + r for r in range(cfg["repeats"])] if timed else []
+    cold = [550.0 + k for k in range(cfg["warmup"])] if timed else []
+    detail = {} if state == "PASS" else {"detail": "mismatch in y"}
+    emit("case", id=item["id"], status=state, device_us=warm, cold_us=cold, **detail)
+    code = code or (state != "PASS")
+sys.exit(code)
+'''
+
+
+@pytest.fixture
+def device(suite, monkeypatch):
+    import sys
+
+    ws, repo, sha = suite
+    bindir = ws / "fakebin"
+    bindir.mkdir()
+    script = bindir / "ssh"
+    script.write_text("#!" + sys.executable + "\n" + FAKE_SSH)
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}:{bench.os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_CFG_OUT", str(ws / "cfg.jsonl"))
+    monkeypatch.delenv("PARHELION_MCP_ROLE", raising=False)
+    return ws, repo, sha
+
+
+def sent(ws):
+    return [json.loads(line) for line in (ws / "cfg.jsonl").read_text().splitlines()]
+
+
+def write_suite(ws, **fields):
+    from scheduler import suite as suites
+
+    path = suites.suite_path(ws, "Op")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"version": 2, **fields}))
+
+
+def test_standard_run_announces_and_reports_warm_timing(device, capsys):
+    ws, repo, sha = device
+    res = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    out = capsys.readouterr().out.splitlines()
+    started = [line for line in out if line.startswith("OPSB_RUN_STARTED ")]
+    assert len(started) == 1
+    announced = json.loads(started[0].split(" ", 1)[1])
+    assert announced == {"run_id": res["run_id"], "level": "standard", "selected": 2,
+                         "dir": str((ws / "results" / "Op" / sha / "bench-runs" / res["run_id"]).resolve())}
+    assert res["exit_code"] == 0 and res["formal"] and res["level"] == "standard"
+    assert res["timing_source"] == "event_warm" and res["timing_score_eligible"] is True
+    row = next(c for c in res["cases"] if c["id"] == "02")
+    assert row["min_us"] == 10.0 and row["median_us"] == 12.0 and row["cold_us"] == 550.0 and row["samples"] == 5
+    assert not next(c for c in res["cases"] if c["id"] == "01")["timed"]
+    cfg = sent(ws)[0]
+    assert cfg["timing"] == "perf" and cfg["warmup"] == 2 and cfg["repeats"] == 5 and cfg["tier"] == 1
+    assert cfg["job_timeout"] == 15 * 2 and [c["timed"] for c in cfg["selected"]] == [False, True]
+    line = bench.result_line(res)
+    for key in bench.RESULT_KEYS:
+        assert key in line
+    assert line["report"] == str(ws / "results" / "Op" / sha / "bench-runs" / res["run_id"] / "report.json")
+    assert len(json.dumps(line["digest"], ensure_ascii=False).encode()) <= 2048
+    stored = json.loads((ws / "results" / "Op" / sha / "bench-runs" / res["run_id"] / "report.json").read_text())
+    assert stored["digest"] == res["digest"] and stored["level"] == "standard" and stored["suite_version"] == 0
+    digest = res["digest"]
+    assert set(digest) == {"level", "suite_version", "formal", "summary", "failures", "timing",
+                           "public", "baseline", "hint"}
+    assert digest["timing"]["cases"] == {"02": {"min_us": 10.0, "median_us": 12.0, "cold_us": 550.0}}
+    assert digest["public"] is None and digest["baseline"] is None
+
+
+def test_zero_warmup_is_not_score_eligible(device):
+    ws, repo, sha = device
+    write_suite(ws, warmup=0)
+    res = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    assert res["timing_score_eligible"] is False and "warmup" in res["digest"]["hint"]
+    assert next(c for c in res["cases"] if c["id"] == "02")["cold_us"] is None
+
+
+def test_smoke_and_final_protocols(device):
+    ws, repo, sha = device
+    write_suite(ws, case_timeout=30, variants=[{"id": "local/v", "base": "01", "seed": 9}])
+    smoke = bench.run(ws, "Op", repo, sha, "npu", level="smoke", stream=False)
+    assert smoke["level"] == "smoke" and not smoke["formal"] and smoke["timing_score_eligible"]
+    final = bench.run(ws, "Op", repo, sha, "npu", level="final", stream=False)
+    assert final["formal"] and final["selected"] == ["01", "02", "local/v"]
+    smoke_cfg, final_cfg = sent(ws)
+    assert (smoke_cfg["warmup"], smoke_cfg["repeats"], smoke_cfg["timeout"], smoke_cfg["tier"]) == (1, 3, 8, 2)
+    assert (final_cfg["repeats"], final_cfg["timeout"], final_cfg["tier"]) == (7, 30, 1)
+    assert final_cfg["job_timeout"] == 90
+
+
+def test_digest_reports_public_efficiency_and_baseline(device):
+    ws, repo, sha = device
+    base_sha = "f" * 40
+    ledger = ws / "results" / "submit-queue-outcome.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"title": "Op", "sha": base_sha, "status": "Pass", "score": 80.0, "submission_id": "s1",
+         "public_tbest_us": [9.0, 5.0]},
+        {"title": "Op", "sha": "e" * 40, "status": "Pass", "score": 70.0, "submission_id": "s0"},
+        {"title": "Other", "sha": "d" * 40, "status": "Pass", "score": 99.0, "public_tbest_us": [1.0]},
+    ]
+    ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    first = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    assert first["digest"]["public"] == {"efficiency": 0.5, "cases": {"02": 0.5}, "tbest_from": "s1"}
+    assert first["digest"]["baseline"] is None and "ffffff" in first["digest"]["hint"]
+    prior = ws / "results" / "Op" / base_sha / "bench-runs" / ("1" * 32) / "report.json"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(json.dumps({"run_id": "1" * 32, "sha": base_sha, "suite_version": 0,
+                                 "timing_score_eligible": True, "finished_at": bench.now(),
+                                 "cases": [{"id": "02", "min_us": 20.0}]}))
+    second = bench.run(ws, "Op", repo, sha, "npu", stream=False, remeasure=True)
+    baseline = second["digest"]["baseline"]
+    assert baseline == {"sha": "fffffff", "run_id": "1" * 32, "geomean_speedup": 2.0, "cases": {"02": 2.0}}
+
+
+def test_failures_reach_the_digest(device, monkeypatch):
+    ws, repo, sha = device
+    monkeypatch.setenv("FAKE_STATUS", json.dumps({"01": "WA"}))
+    res = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    assert res["exit_code"] == 2
+    assert res["digest"]["failures"] == [{"id": "01", "status": "WA", "detail": "mismatch in y"}]
+    assert "01" in res["digest"]["hint"]
+
+
+def test_digest_stays_under_two_kilobytes():
+    doc = {
+        "level": "standard", "suite_version": 3, "formal": True,
+        "summary": {"total": 60, "passed": 50, "counts": {"PASS": 50, "WA": 10}},
+        "failures": [{"id": f"local/case-{i}", "status": "WA", "detail": "x" * 200} for i in range(5)],
+        "timing": {"eligible": True, "source": "event_warm", "warmup": 2, "repeats": 5,
+                   "cases": {f"local/case-{i:02}": {"min_us": 1234.567, "median_us": 1240.5, "cold_us": 5580.25}
+                             for i in range(20)}},
+        "public": {"efficiency": 0.8, "cases": {f"{i:02}": 0.812 for i in range(10)}, "tbest_from": "s" * 30},
+        "baseline": {"sha": "abcdef1", "run_id": "a" * 32, "geomean_speedup": 1.07,
+                     "cases": {f"{i:02}": 1.123 for i in range(10)}},
+        "hint": "h" * 200,
+    }
+    small = bench.shrink_digest(doc)
+    assert len(json.dumps(small, ensure_ascii=False, separators=(",", ":")).encode()) <= 2048
+    assert set(small) == {"level", "suite_version", "formal", "summary", "failures", "timing", "public",
+                          "baseline", "hint"}
+
+
+def test_worker_custom_options_are_rejected(device, monkeypatch, capsys):
+    from scheduler import cli_bridge
+
+    ws, repo, sha = device
+    monkeypatch.setenv("PARHELION_MCP_ROLE", "worker")
+    code = cli_bridge.main(["schedule-test", "--title", "Op", "--profile", str(ws / "p.json"),
+                            "--workspace", str(ws)])
+    assert code == 2
+    assert "Workers select a level (smoke|standard|final); the platform owns the suite" in capsys.readouterr().err
+    with pytest.raises(ValueError, match="platform owns the suite"):
+        bench.run(ws, "Op", repo, sha, "npu", timing="all", worker_request=True, dry_run=True)
+    assert bench.run(ws, "Op", repo, sha, "npu", level="smoke", ids=["02"], worker_request=True,
+                     dry_run=True)["selection"] == "explicit"
+
+
+def test_standard_evidence_ignores_final_tier_variants(device):
+    ws, repo, sha = device
+    write_suite(ws, variants=[{"id": "local/v", "base": "01", "seed": 9, "tier": "final"}])
+    res = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    assert res["selected"] == ["01", "02"]
+    assert next(c for c in res["cases"] if c["id"] == "local/v")["status"] == "NOT_RUN"
+    folder = ws / "results" / "Op" / sha
+    record = json.loads((folder / "result.json").read_text())
+    assert bench.formal_evidence(folder, repo, record)
+    write_suite(ws, variants=[{"id": "local/v", "base": "01", "seed": 9, "tier": "standard"}])
+    assert not bench.formal_evidence(folder, repo, record)
+
+
+def test_level_is_part_of_the_dedup_key(device):
+    ws, repo, sha = device
+    standard = bench.run(ws, "Op", repo, sha, "npu", stream=False)
+    smoke = bench.run(ws, "Op", repo, sha, "npu", level="smoke", stream=False)
+    assert smoke["run_id"] != standard["run_id"] and not smoke.get("reused")
+    again = bench.run(ws, "Op", repo, sha, "npu", suite="all", stream=False)
+    assert again["reused"] and again["run_id"] == standard["run_id"]
+    assert again["report"].endswith(standard["run_id"] + "/report.json")
+
+
+def test_identical_request_joins_the_running_bench(device, monkeypatch, capsys):
+    ws, repo, sha = device
+    monkeypatch.setenv("FAKE_SLEEP", "1.5")
+    runs = ws / "results" / "Op" / sha / "bench-runs"
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(bench.run, ws, "Op", repo, sha, "npu", stream=False)
+        for _ in range(100):
+            if any(runs.glob("*/plan.json")):
+                break
+            threading.Event().wait(0.05)
+        second = pool.submit(bench.run, ws, "Op", repo, sha, "npu", stream=False)
+        owner, joined = first.result(timeout=30), second.result(timeout=30)
+    assert joined["joined"] and joined["run_id"] == owner["run_id"]
+    assert len(sent(ws)) == 1
+    started = [line for line in capsys.readouterr().out.splitlines() if line.startswith("OPSB_RUN_STARTED ")]
+    assert len(started) == 2 and all(owner["run_id"] in line for line in started)
