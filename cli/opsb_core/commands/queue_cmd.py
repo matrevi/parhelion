@@ -285,8 +285,7 @@ def run_queue(args: argparse.Namespace) -> int:
         return run_submit(argparse.Namespace(problem=prob["title"], sha=prob["best_sha"], note=f"restore best validated SHA ({prob['best_score']:.2f})", force=True, workspace=str(ws), json=True))
 
     if args.q_cmd == "submit-now":
-        snap = compute_workspace_snapshot(ws, cfg)
-        prob = next((p for p in snap["problems"] if p["title"].lower() == args.problem.lower()), None)
+        prob = next((p for p in resolve_workspace_meta(ws)["problems"] if p["title"].lower() == args.problem.lower()), None)
         if not prob:
             raise SystemExit(f"Unknown problem: {args.problem}")
         sha = resolve_commit_sha(ws / prob["path"], args.sha) or args.sha
@@ -299,6 +298,7 @@ def run_queue(args: argparse.Namespace) -> int:
             account_id=getattr(args, "account_id", None),
             enforce_operator_mutex=not getattr(args, "force", False),
             force=bool(getattr(args, "force", False)),
+            confirm_start=True,
         )
         print(json.dumps(res, ensure_ascii=False))
         return 0 if res.get("ok") else 2

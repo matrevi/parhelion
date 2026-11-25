@@ -100,6 +100,35 @@ def test_promote_requested_candidate_preserves_worker(tmp_path, monkeypatch):
     launch.assert_not_called()
 
 
+@pytest.mark.parametrize("outcome", ["packaging", "rejected", "early_exit"])
+def test_manual_dispatch_waits_for_worker(tmp_path, monkeypatch, outcome):
+    from opsb_core.services import submit_runner as runner
+    from opsb_core.cli_app import build_parser
+
+    args = build_parser().parse_args(["queue", "_worker-submit-one", "Op", "abcdef1",
+                                     "--account-id", "demo", "--force"])
+    assert args.force and args.account_id == "demo"
+
+    worker = tmp_path / "worker.py"
+    worker.write_text("import os, sys, json\n"
+                      "if os.environ['OUTCOME'] == 'early_exit': sys.exit(2)\n"
+                      "with os.fdopen(int(os.environ['OPSB_START_ACK_FD']), 'w') as ack:\n"
+                      "    print(json.dumps({'ok': os.environ['OUTCOME'] == 'packaging', 'error': 'held'}), file=ack)\n")
+    monkeypatch.setenv("OUTCOME", outcome)
+    monkeypatch.setattr(runner, "LOGS_DIR", tmp_path / "logs")
+    monkeypatch.setattr(runner, "resolve_python_exe", lambda _: sys.executable)
+    monkeypatch.setattr(runner, "inflight_file_for", lambda _: tmp_path / "inflight")
+    monkeypatch.setattr(runner, "judge_cooldown_remaining", lambda _: 0)
+    monkeypatch.setattr(runner, "compute_account_slots", lambda _: [
+        dict(id="demo", phase="idle", label="Demo", logged_in=True, enabled=True)])
+    result = runner.spawn_jump_submit(worker, tmp_path, "Op", "abcdef1", "test", force=True, confirm_start=True)
+    assert result["ok"] == (outcome == "packaging")
+    if outcome == "rejected":
+        assert result["error"] == "held"
+    if outcome == "early_exit":
+        assert "exit 2" in result["error"]
+
+
 def test_reference_acl_timings_remain_diagnostic():
     from scheduler.estimator import parse_validation_perf
     key = "a" * 64 + "-" + "b" * 64

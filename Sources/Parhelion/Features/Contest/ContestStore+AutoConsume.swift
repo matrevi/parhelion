@@ -21,10 +21,9 @@ extension ContestStore {
                 force: force
             )
             if res.ok {
-                markLaunching(problem: problem, sha: sha)
                 bannerMessage = tr(
-                    "已启动提交 \(problem) (\(String(sha.prefix(7))))",
-                    "Launched submit for \(problem) (\(String(sha.prefix(7))))"
+                    "正在打包 \(problem) (\(String(sha.prefix(7))))",
+                    "Packaging \(problem) (\(String(sha.prefix(7))))"
                 )
                 await daemonClient.invalidate(workspace: selectedWorkspace)
                 await refreshLocal(force: true)

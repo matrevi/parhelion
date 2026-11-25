@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -423,6 +424,7 @@ def spawn_jump_submit(
     force: bool = False,
     enforce_operator_mutex: bool = False,
     pipeline: dict[str, Any] | None = None,
+    confirm_start: bool = False,
 ) -> dict[str, Any]:
     # Workspace-wide dispatch gate: the UI asks to submit every queued problem at once. Only
     # one may enter the send path; the rest must stay "pending" instead of showing 提交中.
@@ -444,6 +446,7 @@ def spawn_jump_submit(
         return _spawn_jump_submit_locked(
             opsb_bin, workspace, title, sha, note, account_id=account_id, force=force,
             enforce_operator_mutex=enforce_operator_mutex, pipeline=pipeline, dispatch_fd=dlf.fileno(),
+            confirm_start=confirm_start,
         )
 
 
@@ -457,7 +460,7 @@ def _spawn_jump_submit_locked(
     force: bool = False,
     enforce_operator_mutex: bool = False,
     pipeline: dict[str, Any] | None = None,
-    *, dispatch_fd: int,
+    *, dispatch_fd: int, confirm_start: bool,
 ) -> dict[str, Any]:
     slots = compute_account_slots(workspace)
     # Global anti-collision guard: NEVER let two teammate accounts submit the exact same (title, sha)
@@ -551,7 +554,8 @@ def _spawn_jump_submit_locked(
     aid = str(chosen["id"])
     cooling = int(chosen.get("cooldown_remaining_sec") or 0)
     if cooling:
-        return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling}
+        return {"ok": False, "deferred": True, "reason": "cooldown", "retry_after": cooling,
+                "error": f"{chosen['label']} 冷却中，{cooling}s 后再试"}
     inf_path = inflight_file_for(aid)
     lock_file = lock_file_for(workspace, aid)
 
@@ -584,7 +588,16 @@ def _spawn_jump_submit_locked(
     py_exe = resolve_python_exe(workspace)
     LOGS_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     log_path = LOGS_DIR / "last_jump_submit.log"
-    with log_path.open("a", encoding="utf-8") as log_fh:
+    with ExitStack() as stack:
+        log_fh = stack.enter_context(log_path.open("a", encoding="utf-8"))
+        env = {**os.environ, "OPSB_DISPATCH_FD": str(dispatch_fd)}
+        pass_fds = (dispatch_fd,)
+        if confirm_start:
+            read_fd, write_fd = os.pipe()
+            reader = stack.enter_context(os.fdopen(read_fd, "r"))
+            writer = stack.enter_context(os.fdopen(write_fd, "w"))
+            env["OPSB_START_ACK_FD"] = str(write_fd)
+            pass_fds += (write_fd,)
         proc = subprocess.Popen(
             [
                 py_exe,
@@ -601,14 +614,25 @@ def _spawn_jump_submit_locked(
                 str(workspace),
                 *(["--force"] if force else []),
             ],
-            pass_fds=(dispatch_fd,),
-            env={**os.environ, "OPSB_DISPATCH_FD": str(dispatch_fd)},
+            pass_fds=pass_fds,
+            env=env,
             start_new_session=True,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             close_fds=True,
         )
+        if confirm_start:
+            writer.close()
+            ack = reader.readline()
+            if not ack:
+                rc = proc.wait()
+                reason = {2: "通道被占用或启动参数错误", 3: "账号额度已用尽",
+                          4: "冷却中或门禁暂缓", 5: "提交已冻结"}.get(rc, "提交进程提前退出")
+                return {"ok": False, "error": f"{title} 未启动提交：{reason} (exit {rc})"}
+            response = json.loads(ack)
+            if not response["ok"]:
+                return response
 
     invalidate_ttl_cache("scheduler_bridge")
     invalidate_ttl_cache("remote_judge")
@@ -641,6 +665,13 @@ def _write_inflight_phase(title: str, sha: str, workspace: Path, started_iso: st
         )
     except Exception:
         pass
+
+
+def _ack_start(ok: bool, error: str = "") -> None:
+    fd = os.environ.pop("OPSB_START_ACK_FD", None)
+    if fd is not None:
+        with os.fdopen(int(fd), "w") as channel:
+            print(json.dumps({"ok": ok, "error": error}), file=channel)
 
 
 def run_worker_submit_one(workspace: Path, title: str, sha: str, note: str, account_id: str = "primary", force: bool = False) -> int:
@@ -724,8 +755,10 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             gate_args = ["--title", title, "--sha", sha, "--note", note] + (["--force"] if force else [])
             verdict = invoke_bridge(workspace, "evaluate", gate_args)
             if not verdict or not verdict.get("approved"):
+                _ack_start(False, (verdict or {}).get("gate_reason") or "平台门禁未放行")
                 return 4
             _write_inflight_phase(title, sha, workspace, started_iso, "packaging", aid, acc_label)
+            _ack_start(True)
 
             # Reuse existing pending queue entry if present, otherwise append audit record
             with io_lock_path.open("a") as iolf:

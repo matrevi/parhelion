@@ -103,7 +103,7 @@ struct OpsRepository: Sendable {
     func jumpSubmitNow(workspace: String, problem: String, sha: String, note: String, force: Bool = false) async throws -> JumpSubmitResult {
         var args = ["queue", "submit-now", problem, sha, "--note", note, "--workspace", workspace]
         if force { args.append("--force") }
-        let data = try await client.execute(args, timeout: 10.0, allowNonZeroExit: true)
+        let data = try await client.execute(args, timeout: 30.0, allowNonZeroExit: true)
         return JumpSubmitResult.parse(from: data, problem: problem, sha: sha)
     }
 

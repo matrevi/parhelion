@@ -163,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     q_wk.add_argument("sha")
     q_wk.add_argument("--note", default="")
     q_wk.add_argument("--account-id", default="primary")
+    q_wk.add_argument("--force", action="store_true")
     q_wk.add_argument("--workspace", "-w")
     q_wk.set_defaults(func=run_queue)
     q_dr = q_sub.add_parser("drain")
@@ -416,4 +417,3 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     return args.func(args)
-    q_wk.add_argument("--force", action="store_true")
