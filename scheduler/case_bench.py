@@ -21,6 +21,7 @@ from collections import Counter
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from . import suite as suites
 from .parhelion_paths import (
     atomic_write_json,
     atomic_write_text,
@@ -150,7 +151,8 @@ def catalog(repo, sha, profile):
             or key in by_id
             or variant["base"] not in by_id
             or by_id[variant["base"]]["source"] != "official"
-            or set(variant) - {"id", "base", "params", "seed", "name", "perf"}
+            or set(variant) - suites.VARIANT_FIELDS
+            or variant.get("tier", "final") not in suites.VARIANT_TIERS
         ):
             raise ValueError(f"Invalid local variant: {key}")
         row = {**by_id[variant["base"]], **variant, "source": "local"}
@@ -182,6 +184,11 @@ def catalog(repo, sha, profile):
 
 
 def load_profile(ws, title, path=None):
+    """Catalog profile of the platform suite, of an explicit file, or of the legacy profile."""
+    if not path and suites.suite_path(ws, title).exists():
+        return suites.to_profile(suites.load_suite(ws, title))
+    if path and read_doc(Path(path)).get("version") == 2:
+        return suites.to_profile(suites.load_suite(ws, title, path))
     file = (
         Path(path)
         if path
@@ -215,6 +222,9 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
     engine.write_text(cfg.pop('engine'))
     (root/'lanes.py').write_text(cfg.pop('lanes'))
     (root/'case_batch.py').write_text(cfg.pop('case_batch'))
+    broker = cfg.pop('device_broker', None)
+    if broker is not None:
+        (root/'device_broker.py').write_text(broker)
     (root/'config.json').write_text(json.dumps(cfg))
     sys.exit(subprocess.call([sys.executable,'-u',str(engine)],cwd=repo))
 """
@@ -300,14 +310,15 @@ def reusable_report(report, run_id, folder):
     return 0 <= age <= 1800
 
 
-def adaptive_cases(folder, cases):
-    """Retest a known failure first; otherwise probe one anchor and one performance case."""
+def adaptive_cases(folder, cases, timed=None):
+    """Retest a known failure first; otherwise probe one correctness anchor and one timed case."""
     by_id = {case["id"]: case for case in cases}
+    timed = {c["id"] for c in cases if c["perf"]} if timed is None else set(timed)
     # Profiles can change the input behind a local ID. Only reuse failure identity
     # when the catalog also matches, and let a later pass supersede that failure.
     seen = set()
     reports = sorted((folder / "bench-runs").glob("*/report.json"),
-                     key=lambda p: p.stat().st_mtime_ns, reverse=True)
+                     key=lambda p: p.stat().st_mtime_ns, reverse=True) if folder else []
     for path in reports:
         report = read_doc(path)
         keys = {c["id"]: c.get("key") for c in report.get("catalog", [])}
@@ -319,8 +330,8 @@ def adaptive_cases(folder, cases):
                 return [by_id[cid]], "retest_failure"
             if result.get("status") == "PASS":
                 seen.add(cid)
-    anchor = next((c for c in cases if c["source"] == "official" and not c["perf"]), cases[0])
-    perf = next((c for c in cases if c["perf"] and c["id"] != anchor["id"]), None)
+    anchor = next((c for c in cases if c["source"] == "official" and c["id"] not in timed), cases[0])
+    perf = next((c for c in cases if c["id"] in timed and c["id"] != anchor["id"]), None)
     return [anchor] + ([perf] if perf else []), "anchor_and_performance"
 
 
@@ -344,74 +355,88 @@ def run(
     remeasure=False,
     worker_request=False,
     suite=None,
+    level=None,
     dry_run=False,
     stream=True,
 ):
+    """Run one level of the platform suite (or a custom experiment) as one device job.
+
+    `level` is smoke, standard or final; None means standard, except that a custom
+    experiment without a level keeps the legacy targeted probe. The deprecated `suite`
+    maps adaptive to smoke and all to standard, and also accepts the level names.
+    """
     sha = committed(repo, rev or "HEAD")
-    profile = load_profile(ws, title, profile_path)
+    requested = suites.requested_level(level, suite)
+    custom = any(v is not None for v in (profile_path, experiment, timing, repeats, runner, bucket, official_only))
+    if custom and worker_request:
+        raise ValueError(suites.WORKER_MESSAGE)
+    spec = suites.load_suite(ws, title, profile_path)
+    profile = suites.to_profile(spec)
     oracle, cases = catalog(repo, sha, profile)
     if ids and set(ids) - {r["id"] for r in cases}:
         raise ValueError("Unknown case ID for this commit")
     if bucket and not any(bucket in r["buckets"] for r in cases):
         raise ValueError(f"Unknown bucket: {bucket}")
-    selected = [
-        r
-        for r in cases
-        if (not ids or r["id"] in ids)
-        and (not bucket or bucket in r["buckets"])
-        and (not official_only or r["source"] == "official")
-    ]
+    folder = ws / "results" / title / sha
+    base = requested or ("smoke" if custom else "standard")
+    if ids or bucket or official_only:
+        selected = [
+            r
+            for r in cases
+            if (not ids or r["id"] in ids)
+            and (not bucket or bucket in r["buckets"])
+            and (not official_only or r["source"] == "official")
+        ]
+        selection, formal = "explicit", False
+    else:
+        selected, selection, formal = suites.select(cases, spec, base, folder=folder)
     if not selected:
         raise ValueError("Empty case selection")
-    folder = ws / "results" / title / sha
-    adaptive = (suite == "adaptive" or (suite is None and (worker_request or
-                any(v is not None for v in (experiment, timing, repeats, profile_path))))) and not (ids or bucket or official_only)
-    selection = "explicit" if ids or bucket or official_only else "all"
-    if adaptive:
-        selected, selection = adaptive_cases(folder, selected)
-    formal = not adaptive and all(
-        v is None
-        for v in (
-            ids,
-            bucket,
-            profile_path,
-            experiment,
-            timing,
-            repeats,
-            official_only,
-            runner,
-        )
-    )
-    timing = timing if timing is not None else profile.get("timing", "perf")
-    repeat_count = repeats if repeats is not None else (1 if adaptive else profile.get("repeats", 3))
-    timeout = profile.get("case_timeout", 15)
-    if (
-        timing not in ("off", "perf", "all")
-        or not 1 <= repeat_count <= 100
-        or type(timeout) is not int or not 1 <= timeout <= 7200
-    ):
-        raise ValueError("Invalid timing, repeats or case_timeout")
-    reuse_session = profile.get("reuse_session", True)
-    if not isinstance(reuse_session, bool):
-        raise ValueError("reuse_session must be true or false")
+    formal = formal and not custom
+    probe = selection not in ("explicit", "standard", "final")
+    # An explicit case list measures like standard; it keeps the requested level's device tier.
+    proto = suites.protocol(spec, "standard" if selection == "explicit" else base)
+    proto["tier"] = suites.TIERS[base]
+    if custom:
+        if timing is None:
+            timing = read_doc(Path(profile_path)).get("timing", "perf") if profile_path else "perf"
+        proto["repeats"] = repeats if repeats is not None else proto["repeats"]
+        proto["timeout"] = min(spec["case_timeout"], 8 if probe else 60)
+        if (timing not in ("off", "perf", "all") or type(proto["repeats"]) is not int
+                or not 1 <= proto["repeats"] <= 100):
+            raise ValueError("Invalid timing, repeats or case_timeout")
+    if timing == "off":
+        timed = set()
+    elif timing == "all":
+        timed = {c["id"] for c in cases}
+    else:
+        timed = suites.timed_ids(cases, spec)
+    level_label = "custom" if custom else base
     cfg = {
-        "reuse_session": reuse_session,
+        "reuse_session": spec["reuse_session"],
         "title": title,
         "sha": sha,
         "jobs": os.getenv("OPSB_BUILD_JOBS"),
         "wspt_base": wspt_base,
         "aging_tau": aging_tau,
-        "selected": selected,
-        "strict_fp32": profile.get("strict_fp32", False),
-        "timing": timing,
-        "repeats": repeat_count,
-        "timeout": min(timeout, 8 if adaptive else 60),
+        "selected": [{**c, "timed": c["id"] in timed} for c in selected],
+        "strict_fp32": spec["strict_fp32"],
+        # Each selected case carries its own `timed` flag; the device side reads it first.
+        "timing": "perf",
+        "warmup": proto["warmup"],
+        "repeats": proto["repeats"],
+        "timeout": proto["timeout"],
+        "tier": proto["tier"],
+        "job_timeout": min(proto["timeout"] * len(selected), 1800),
         "arch": os.getenv("NPU_ARCH", _dev("arch")),
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
     }
     engine = (Path(runner) if runner else RUNNER).read_text()
     modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch")}
+    broker = RUNNER.with_name("device_broker.py")
+    if broker.is_file():
+        modules["device_broker"] = broker.read_text()
     run_id = uuid.uuid4().hex
     cfg["run_id"] = run_id
     dest = folder / "bench-runs" / run_id
@@ -422,12 +447,16 @@ def run(
         "sha": sha,
         "run_id": run_id,
         "experiment": experiment,
+        "level": level_label,
+        "suite_version": spec["suite_version"],
         "formal": formal,
         "oracle": oracle,
         "engine": digest([engine, modules]),
         "profile": profile,
+        "weights": spec["weights"],
         "catalog": cases,
         "selected": [c["id"] for c in selected],
+        "timed": [c["id"] for c in selected if c["id"] in timed],
         "selection": selection,
         "started_at": now(),
         "host": host,
@@ -437,12 +466,24 @@ def run(
         return {**report, "dry_run": True, "exit_code": 0}
     key = digest([host, engine, profile, formal, oracle,
                   {k: v for k, v in cfg.items() if k not in ("run_id", "wspt_base", "aging_tau")},
-                  os.getenv("OPSB_TOOLCHAIN_ENV"), modules])
+                  os.getenv("OPSB_TOOLCHAIN_ENV"), modules, level_label, base, spec["suite_version"]])
     with active_bench(folder, key, run_id, remeasure=remeasure,
                       limit_experiments=worker_request and not formal) as shared:
-        if shared is not None:
-            return shared
-        return _execute_run(repo, cfg, report, engine, modules, runner, dest, stream)
+        if shared is None:
+            return _execute_run(repo, cfg, report, engine, modules, runner, dest, stream)
+    if shared.get("deferred"):
+        return {"run_id": None, "level": level_label, "formal": formal, "summary": None,
+                "digest": None, "report": None, **shared}
+    path = folder / "bench-runs" / shared["run_id"] / "report.json"
+    announce(shared["run_id"], path.parent, shared.get("level", level_label), len(shared.get("selected", [])))
+    return {**shared, "report": str(path)}
+
+
+def announce(run_id, folder, level, selected):
+    """The `OPSB_RUN_STARTED` line of the `opsb test` stdout protocol."""
+    print("OPSB_RUN_STARTED " + json.dumps(
+        {"run_id": run_id, "dir": str(Path(folder).resolve()), "level": level, "selected": selected}),
+        flush=True)
 
 
 def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
@@ -455,6 +496,7 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
     built, completed = False, set()
     rc = 1
     atomic_write_json(dest / "plan.json", report)
+    announce(run_id, dest, report.get("level"), len(report["selected"]))
     with (
         (dest / "validation.log").open("w") as log,
         (dest / "events.jsonl").open("w") as events,
@@ -524,16 +566,19 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
                                 or msg.get("status") not in STATUSES
                             ):
                                 raise ValueError("Unexpected case result")
-                            samples = msg.get("device_us", [])
-                            if not isinstance(samples, list) or any(
-                                type(n) not in (int, float)
-                                or not math.isfinite(n)
-                                or n <= 0
-                                for n in samples
-                            ):
-                                raise ValueError(
-                                    f"Invalid device timing for case {key}"
-                                )
+                            # `device_us` holds warm samples only; `cold_us` holds the discarded warmups.
+                            cold = msg.pop("cold_us", None) or []
+                            for samples in (msg.get("device_us", []), cold):
+                                if not isinstance(samples, list) or any(
+                                    type(n) not in (int, float)
+                                    or not math.isfinite(n)
+                                    or n <= 0
+                                    for n in samples
+                                ):
+                                    raise ValueError(
+                                        f"Invalid device timing for case {key}"
+                                    )
+                            rows[key]["cold_samples_us"] = cold
                             completed.add(key)
                             rows[key].update(
                                 {
@@ -573,10 +618,11 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
             official=summarize([r for r in results if r["source"] == "official"]),
         )
         event("finish", exit_code=report["exit_code"], summary=summary)
-        # Process-scoped ACL samples include setup overhead. Keep them in the report
-        # for diagnostics; exporting them as kernel times contaminates score calibration.
-        report["timing_source"] = "reference_acl_event"
-        report["timing_score_eligible"] = False
+        # Warmup executions absorb kernel load and session setup; only warm samples count.
+        reasons = warm_timing(rows, report, cfg)
+        report["timing_source"] = "event_warm"
+        report["timing_score_eligible"] = not reasons
+        report["digest"] = build_digest(folder.parents[2], report, rows, reasons)
         env = report.get("environment", {})
         if formal and ok and env.get("soc"):
             print("RUNTIME_SOC=" + env["soc"], file=log)
@@ -633,7 +679,214 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
                     "fast_lane": False,
                 },
             )
-    return report
+    return {**report, "report": str(dest / "report.json")}
+
+
+def warm_timing(rows, report, cfg):
+    """Write warm statistics on every timed case; return why the run is not score-eligible."""
+    timed = set(report.get("timed", []))
+    reasons = []
+    if cfg.get("warmup", 0) < 1:
+        reasons.append("warmup is 0, so samples include the cold start")
+    if cfg.get("repeats", 0) < 3:
+        reasons.append("fewer than 3 warm repeats")
+    if not timed:
+        reasons.append("no timed case selected")
+    for key in report["selected"]:
+        row = rows[key]
+        row["timed"] = key in timed
+        if key not in timed:
+            continue
+        samples = row.get("device_us") or []
+        cold = row.get("cold_samples_us") or []
+        row.update(
+            min_us=min(samples) if samples else None,
+            median_us=statistics.median(samples) if samples else None,
+            cold_us=cold[0] if cold else None,
+            samples=len(samples),
+        )
+        if row["status"] != "PASS" or not samples:
+            reasons.append(f"timed case {key} has no warm samples ({row['status']})")
+    return reasons
+
+
+def _ledger(ws):
+    rows = []
+    try:
+        lines = (ws / "results" / "submit-queue-outcome.jsonl").read_text().splitlines()
+    except OSError:
+        return rows
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _row_sha(row):
+    return row.get("canonical_sha") or row.get("sha") or ""
+
+
+def public_estimate(ledger, title, rows):
+    """Ratio of the latest official public tbest to the local warm minimum per public case."""
+    latest = None
+    for row in ledger:
+        tbest = row.get("public_tbest_us")
+        if row.get("title") == title and isinstance(tbest, list) and tbest:
+            latest = row
+    if latest is None:
+        return None
+    official = sorted(r["id"] for r in rows.values() if r["source"] == "official")
+    ratios = {}
+    for cid, tbest in zip(official, latest["public_tbest_us"]):
+        mine = rows[cid].get("min_us")
+        if type(tbest) in (int, float) and tbest > 0 and mine:
+            ratios[cid] = round(min(tbest / mine, 1.5), 3)
+    return {
+        "efficiency": round(sum(ratios.values()) / len(ratios), 3) if ratios else None,
+        "cases": dict(sorted(ratios.items(), key=lambda kv: kv[1])[:10]) or None,
+        "tbest_from": latest.get("submission_id"),
+    }
+
+
+def baseline_comparison(ws, ledger, report, rows):
+    """Geometric-mean warm speedup against the best official Pass SHA; returns (baseline, missing_sha)."""
+    title, sha = report["title"], report["sha"]
+    best = None
+    for row in ledger:
+        if row.get("title") != title or row.get("status") != "Pass" or _row_sha(row) in ("", sha):
+            continue
+        score = row.get("score")
+        if type(score) in (int, float) and (best is None or score > best[0]):
+            best = (score, _row_sha(row))
+    if best is None:
+        return None, None
+    base_sha = best[1]
+    candidates = []
+    for path in (ws / "results" / title / base_sha).glob("bench-runs/*/report.json"):
+        doc = read_doc(path)
+        if (doc.get("suite_version") == report.get("suite_version")
+                and doc.get("timing_score_eligible") is True and doc.get("sha") == base_sha):
+            candidates.append(doc)
+    if not candidates:
+        return None, base_sha
+    base = max(candidates, key=lambda d: d.get("finished_at") or "")
+    before = {c["id"]: c.get("min_us") for c in base.get("cases", []) if c.get("min_us")}
+    speedups = {}
+    for key, row in rows.items():
+        if row.get("min_us") and before.get(key):
+            speedups[key] = before[key] / row["min_us"]
+    geomean = math.exp(sum(math.log(v) for v in speedups.values()) / len(speedups)) if speedups else None
+    ranked = sorted(speedups.items(), key=lambda kv: abs(math.log(kv[1])), reverse=True)[:10]
+    return {
+        "sha": base_sha[:7],
+        "run_id": base.get("run_id"),
+        "geomean_speedup": round(geomean, 4) if geomean else None,
+        "cases": {k: round(v, 3) for k, v in ranked} or None,
+    }, None
+
+
+DIGEST_LIMIT = 2048
+
+
+def failure_detail(row):
+    """The device detail, or the first failing output check of a wrong answer."""
+    if row.get("detail"):
+        return str(row["detail"])
+    for name, check in (row.get("outputs") or {}).items():
+        if isinstance(check, dict) and not check.get("pass", True):
+            reason = check.get("reason") or {k: v for k, v in check.items() if k != "pass"}
+            return f"{name}: {reason}"
+    return ""
+
+
+def build_digest(ws, report, rows, reasons=()):
+    """One-level summary of a run for tool replies and inboxes; at most 2KB serialized."""
+    summary = report.get("summary") or {}
+    weights = report.get("weights") or {}
+    selected = [rows[k] for k in report.get("selected", []) if k in rows]
+    failures = sorted(
+        (r for r in selected if r["status"] not in ("PASS", "NOT_RUN")),
+        key=lambda r: -weights.get(r["id"], 1.0 if r["source"] == "official" else 0.0),
+    )[:5]
+    timed = sorted((r for r in selected if r.get("min_us")), key=lambda r: -r["min_us"])[:20]
+    ledger = _ledger(ws)
+    public = public_estimate(ledger, report["title"], rows)
+    baseline, missing = baseline_comparison(ws, ledger, report, rows)
+    hints = list(reasons[:2])
+    if failures:
+        hints.append(f"fix {failures[0]['id']} ({failures[0]['status']}) before timing work")
+    if missing:
+        hints.append(f"run standard on {missing[:7]} first to enable baseline comparison")
+    doc = {
+        "level": report.get("level"),
+        "suite_version": report.get("suite_version"),
+        "formal": report.get("formal"),
+        "summary": {k: summary.get(k) for k in ("total", "passed", "counts")},
+        "failures": [{"id": r["id"], "status": r["status"],
+                      "detail": failure_detail(r)[:200]} for r in failures],
+        "timing": {
+            "eligible": not reasons,
+            "source": "event_warm",
+            "warmup": report.get("settings", {}).get("warmup"),
+            "repeats": report.get("settings", {}).get("repeats"),
+            "cases": {r["id"]: {"min_us": round(r["min_us"], 3),
+                                "median_us": round(r["median_us"], 3),
+                                "cold_us": None if r.get("cold_us") is None else round(r["cold_us"], 3)}
+                      for r in timed} or None,
+        },
+        "public": public,
+        "baseline": baseline,
+        "hint": "; ".join(hints)[:200],
+    }
+    return shrink_digest(doc)
+
+
+def _size(doc):
+    return len(json.dumps(doc, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode())
+
+
+def shrink_digest(doc, limit=DIGEST_LIMIT):
+    """Drop the least informative detail first until the digest fits."""
+    for failure in doc["failures"] if _size(doc) > limit else []:
+        failure["detail"] = failure["detail"][:60]
+    for part in (("timing", "cases"), ("public", "cases"), ("baseline", "cases")):
+        holder = doc.get(part[0])
+        while _size(doc) > limit and holder and holder.get(part[1]):
+            entries = holder[part[1]]
+            entries.pop(next(reversed(entries)))
+            if not entries:
+                holder[part[1]] = None
+    while _size(doc) > limit and len(doc["failures"]) > 1:
+        doc["failures"].pop()
+    if _size(doc) > limit:
+        doc["hint"] = doc["hint"][:40]
+    return doc
+
+
+RESULT_KEYS = ("run_id", "exit_code", "level", "formal", "summary", "digest", "report")
+RESULT_OPTIONAL = ("title", "sha", "suite_version", "verified", "built", "selection", "selected",
+                   "timing_score_eligible", "finished_at", "reused", "joined", "deferred", "active_run",
+                   "reason", "error")
+
+
+def result_line(result):
+    """Compact final stdout object of `opsb test`; other result shapes pass through unchanged."""
+    if not isinstance(result, dict) or not ("oracle" in result or result.get("deferred")):
+        return result
+    line = {k: result.get(k) for k in RESULT_KEYS}
+    line.update({k: result[k] for k in RESULT_OPTIONAL if k in result})
+    return line
+
+
+def _warm_us(row):
+    """Warm minimum of a case; the median of its device samples for reports without one."""
+    if row.get("min_us"):
+        return row["min_us"]
+    return statistics.median(row["device_us"]) if row.get("device_us") else None
 
 
 def compare_runs(left, right):
@@ -659,16 +912,9 @@ def compare_runs(left, right):
             "after": b["status"],
             "buckets": b["buckets"],
         }
-        if (
-            same_env
-            and a["status"] == b["status"] == "PASS"
-            and a.get("device_us")
-            and b.get("device_us")
-        ):
-            row.update(
-                before_us=statistics.median(a["device_us"]),
-                after_us=statistics.median(b["device_us"]),
-            )
+        before_us, after_us = _warm_us(a), _warm_us(b)
+        if same_env and a["status"] == b["status"] == "PASS" and before_us and after_us:
+            row.update(before_us=before_us, after_us=after_us)
             row["speedup"] = row["before_us"] / row["after_us"]
         paired.append(row)
     groups = {}
@@ -683,8 +929,9 @@ def compare_runs(left, right):
         "before": left["run_id"],
         "after": right["run_id"],
         "same_environment": same_env,
-        "timing_source": "reference_acl_event",
-        "timing_score_eligible": False,
+        "timing_source": right.get("timing_source", "reference_acl_event"),
+        "timing_score_eligible": bool(same_env and left.get("timing_score_eligible")
+                                      and right.get("timing_score_eligible")),
         "cases": paired,
         "buckets": groups,
         "selected_before": len(left["selected"]),
@@ -724,15 +971,17 @@ def formal_evidence(folder, repo, record):
     ):
         return {}
     try:
-        profile = load_profile(folder.parents[2], folder.parent.name)
-        oracle, cases = catalog(repo, folder.name, profile)
-        required = {c["id"]: c["key"] for c in cases}
+        # The required set is what `standard` selects under the current suite; final-tier
+        # variants are optional, and unselected catalog rows appear as NOT_RUN.
+        spec = suites.load_suite(folder.parents[2], folder.parent.name)
+        oracle, cases = catalog(repo, folder.name, suites.to_profile(spec))
+        standard, _, _ = suites.select(cases, spec, "standard")
+        required = {c["id"]: c["key"] for c in standard}
         rows = report["cases"]
         if (
             report["oracle"] == oracle
-            and bool(report.get("settings", {}).get("strict_fp32")) == bool(profile.get("strict_fp32"))
-            and len(rows) == len(required)
-            and {r["id"]: r["key"] for r in rows if r["status"] == "PASS"} == required
+            and bool(report.get("settings", {}).get("strict_fp32")) == bool(spec["strict_fp32"])
+            and {r["id"]: r["key"] for r in rows if r["id"] in required and r["status"] == "PASS"} == required
         ):
             return report
     except (KeyError, OSError, TypeError, ValueError, subprocess.CalledProcessError):

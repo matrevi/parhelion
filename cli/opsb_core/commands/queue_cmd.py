@@ -373,6 +373,8 @@ def run_test(args: argparse.Namespace) -> int:
             b_cmd.append("--remeasure")
         if getattr(args, "suite", None):
             b_cmd.extend(["--suite", args.suite])
+        if getattr(args, "level", None):
+            b_cmd.extend(["--level", args.level])
         if getattr(args,"official_only",False):
             b_cmd.append("--official-only")
         for option in ("bucket","profile","experiment","timing","repeats","runner"):
