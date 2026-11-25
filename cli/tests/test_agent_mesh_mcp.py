@@ -134,6 +134,7 @@ class AgentMeshAndMcpTests(unittest.TestCase):
         cx_res = cx.start_turn("thr-1", "run bench", approval_policy="never", sandbox="workspace-write")
         self.assertEqual(cx_res["text"], "Done!")
         cx_sent = [json.loads(ln) for ln in cx_in.getvalue().splitlines()]
+        self.assertEqual(cx_sent[0]["params"]["sandboxPolicy"], {"type": "workspaceWrite"})
         appr_reply = next(m for m in cx_sent if m.get("id") == 77)
         self.assertEqual(appr_reply["result"]["decision"], "accept")
 

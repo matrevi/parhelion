@@ -264,7 +264,15 @@ class CodexAppServerClient:
         if approval_policy:
             params["approvalPolicy"] = approval_policy
         if sandbox:
-            params["sandboxPolicy"] = {"type": sandbox}
+            # Thread requests take a SandboxMode; turn overrides take a tagged SandboxPolicy.
+            policy_types = {
+                "workspace-write": "workspaceWrite",
+                "read-only": "readOnly",
+                "danger-full-access": "dangerFullAccess",
+            }
+            if sandbox not in policy_types:
+                raise ValueError(f"Unsupported Codex sandbox mode: {sandbox!r}")
+            params["sandboxPolicy"] = {"type": policy_types[sandbox]}
         resp = self.request("turn/start", params)
         if "error" in resp:
             raise RuntimeError(f"Codex turn/start failed: {resp['error']}")
