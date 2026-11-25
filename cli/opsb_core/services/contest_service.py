@@ -6,13 +6,14 @@ import os
 import re
 import statistics
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from ..config import CACHE_DIR, CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
 from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
-from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, extract_numeric_score
 from .sync_reconciler import collapse_reconciled_outcomes, is_sync_error_outcome
 
 
@@ -161,27 +162,33 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
 
     history_by_prob: dict[str, list[dict[str, Any]]] = {}
     sha_pass_scores: dict[tuple[str, str], list[float]] = {}
-    seen_keys: set[tuple[str, str]] = set()
+    by_receipt = {}
+    legacy_by_run = {}
 
     for row in score_table:
         t, sha, at = row.get("title", ""), row.get("sha", ""), row.get("at", "")
-        sc = float(row.get("score") or 0.0)
+        sc = extract_numeric_score(row)
         st = row.get("status", "Pass")
-        seen_keys.add((t, f"{sha[:7]}|{at[:16]}"))
-        history_by_prob.setdefault(t, []).append(
-            {
-                "at": at,
-                "sha": sha,
-                "status": st,
-                "score": sc,
-                "public_pts": round(float(row.get("public_pts") or 0.0), 2),
-                "hidden_pts": round(float(row.get("hidden_pts") or 0.0), 2),
-                "note": "",
-                "submission_id": None,
-            }
-        )
-        if st == "Pass" and sc > 0:
-            sha_pass_scores.setdefault((t, sha), []).append(sc)
+        entry = {
+            "at": at,
+            "sha": sha,
+            "status": st,
+            "score": sc,
+            "public_pts": row.get("public_pts"),
+            "hidden_pts": row.get("hidden_pts"),
+            "note": "",
+            "submission_id": row.get("submission_id"),
+        }
+        sid = entry["submission_id"]
+        if sid and (previous := by_receipt.get((t, sid))):
+            if sc is not None:
+                previous["score"] = sc
+            continue
+        history_by_prob.setdefault(t, []).append(entry)
+        if sid:
+            by_receipt[t, sid] = entry
+        elif sha and at:
+            legacy_by_run.setdefault((t, sha, parse_iso(at)), []).append(entry)
 
     last_sub_dt = None
     used_24h = 0
@@ -190,9 +197,12 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
     best_12h: dict[str, float] = {}
 
     chron = sorted(outcome_rows, key=lambda r: r.get("submitted_at") or r.get("finished_at") or r.get("queued_at") or "")
+    # Older tables lack receipt IDs. Only join an unambiguous full run identity.
+    run_counts = Counter((r.get("title"), r.get("sha"), parse_iso(r.get("submitted_at") or r.get("finished_at")))
+                         for r in chron if r.get("status") != "skipped")
     for out in chron:
         t, sha, st = out.get("title", ""), out.get("sha", ""), out.get("status", "")
-        sc = out.get("score")
+        sc = extract_numeric_score(out)
         sub_at = out.get("submitted_at") or out.get("finished_at")
         dt = parse_iso(sub_at)
 
@@ -203,39 +213,35 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
             if ts >= cutoff_24h:
                 used_24h += 1
             if ts >= cutoff_12h and not is_sync_error_outcome(out) and st != "sync_error":
-                val = float(sc or 0.0)
-                if st == "Pass" and val > best_12h.get(t, -1.0):
-                    best_12h[t] = val
+                if st == "Pass" and sc is None:
+                    consec_fail_12h[t] = 0
+                elif st == "Pass" and sc > best_12h.get(t, -1.0):
+                    best_12h[t] = sc
                     pressure_12h[t] = 0
                     consec_fail_12h[t] = 0
                 else:
                     pressure_12h[t] = pressure_12h.get(t, 0) + 1
                     consec_fail_12h[t] = 0 if st == "Pass" else consec_fail_12h.get(t, 0) + 1
 
-        if st == "Pass" and sc is not None and float(sc) > 0:
-            sha_pass_scores.setdefault((t, sha), []).append(float(sc))
-
-        dkey = (t, f"{sha[:7]}|{(sub_at or '')[:16]}")
-        if dkey not in seen_keys and st != "skipped":
-            seen_keys.add(dkey)
-            history_by_prob.setdefault(t, []).append(
-                {
-                    "at": sub_at or out.get("queued_at", ""),
-                    "sha": sha,
-                    "status": st,
-                    "score": float(sc) if sc is not None else None,
-                    "public_pts": None,
-                    "hidden_pts": None,
-                    "note": out.get("note", ""),
-                    "submission_id": out.get("submission_id"),
-                    "estimated_score": float(out["estimated_score"]) if out.get("estimated_score") is not None else None,
-                }
-            )
-        else:
-            for h in history_by_prob.get(t, []):
-                if h["sha"].startswith(sha[:7]) and h["at"][:16] == (sub_at or "")[:16]:
-                    h["note"] = h["note"] or out.get("note", "")
-                    h["submission_id"] = h["submission_id"] or out.get("submission_id")
+        if st == "skipped":
+            continue
+        sid = out.get("submission_id")
+        entry = by_receipt.get((t, sid))
+        run = (t, sha, dt)
+        legacy = legacy_by_run.get(run, [])
+        if entry is None and dt and run_counts[run] == len(legacy) == 1:
+            entry = legacy[0]
+        if entry is None:
+            entry = {"public_pts": None, "hidden_pts": None}
+            history_by_prob.setdefault(t, []).append(entry)
+        if st in TERMINAL_JUDGE_STATUSES or entry.get("status") not in TERMINAL_JUDGE_STATUSES:
+            entry["status"] = st
+            if sc is not None or "score" not in entry:
+                entry["score"] = sc
+        entry.update(at=sub_at or entry.get("at") or out.get("queued_at", ""),
+                     sha=sha or entry.get("sha", ""), submission_id=sid,
+                     note=out.get("note") or entry.get("note", ""),
+                     estimated_score=out.get("estimated_score"))
 
     raw_best_by_prob: dict[str, tuple[float, str, str]] = {}
     latest_sub_by_prob: dict[str, dict[str, Any]] = {}
@@ -257,6 +263,7 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
                         eff_prev = prev_pass * max(0.84, 1.0 - 0.0048 * gap_days)
                 h["delta"] = round(float(sc) - eff_prev, 2)
                 if h.get("status") == "Pass" and float(sc) > 0:
+                    sha_pass_scores.setdefault((t, h["sha"]), []).append(float(sc))
                     prev_pass = float(sc)
                     prev_dt = cur_dt
                     if float(sc) >= raw_best_by_prob.get(t, (0.0, "", ""))[0]:
@@ -285,6 +292,24 @@ def judge_case_count(board, live, receipt_total):
         if type(value) is int and value > 0:
             return value
     return None
+
+
+def latest_score_evidence(submission, live_board):
+    """Resolve a judged score without attributing another receipt's team score to it."""
+    score = extract_numeric_score(submission)
+    if score is not None:
+        return score, "submission"
+    if submission.get("status") != "Pass":
+        return None, None
+    sid = submission.get("submission_id")
+    board_sid = live_board.get("board_submission_id")
+    if live_board.get("listed") is True and sid and board_sid:
+        if sid != board_sid:
+            return None, "other_submission_ranked"
+        score = extract_numeric_score({"score": live_board.get("our_score")})
+        if score is not None:
+            return score, "matching_board"
+    return None, "unpublished"
 
 
 def build_problem_models(
@@ -334,6 +359,7 @@ def build_problem_models(
         # Non-stationary tbest(t) decay & Contemporary Equiv Best (Ŝ_best)
         now_dt = utc_now()
         latest_sub = hist_idx["latest_sub_by_prob"].get(title, {})
+        latest_score, latest_score_source = latest_score_evidence(latest_sub, live)
         board_id = snap_row.get("submission_id")
         if board_id:
             active_sub = next((h for h in hist_idx["history_by_prob"].get(title, [])
@@ -494,7 +520,9 @@ def build_problem_models(
                 "total_teams": total_teams,
                 "current_score": round(cur_score, 2),
                 "latest_status": latest_sub.get("status"),
-                "latest_score": latest_sub.get("score"),
+                "latest_score": latest_score,
+                "latest_score_source": latest_score_source,
+                "board_submission_id": live.get("board_submission_id"),
                 "latest_sha": latest_sub.get("sha"),
                 "latest_at": latest_sub.get("at"),
                 "board_listed": listed,

@@ -181,9 +181,10 @@ struct ProblemTableView: View {
                 .frame(width: columns.verdict, alignment: .center)
 
             Text(p.latestScoreText(lang))
-                .font(.system(size: 13.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(p.latestScore == 0 ? .red : .primary)
+                .font(p.latestScore == nil ? .caption : .system(size: 13.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(p.latestScore == nil ? Color.secondary : (p.latestScore == 0 ? .red : .primary))
                 .frame(width: 66, alignment: .trailing)
+                .help(p.scoreExplanation(lang) ?? p.latestScoreText(lang))
             Text(p.boardScoreText(lang))
                 .font(.system(size: 12, design: .monospaced))
                 .frame(width: 56, alignment: .trailing)

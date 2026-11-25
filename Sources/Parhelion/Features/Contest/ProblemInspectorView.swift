@@ -55,6 +55,10 @@ struct ProblemInspectorView: View {
                     Text(problem.boardScoreText(lang))
                 }
                 .font(.caption.monospacedDigit())
+                if let explanation = problem.scoreExplanation(lang) {
+                    Text(explanation).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             HStack(spacing: 6) {

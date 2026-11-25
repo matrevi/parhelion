@@ -118,13 +118,30 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let currentScore: Double
     let latestStatus: String?
     let latestScore: Double?
+    let latestScoreSource: String?
     let latestSha: String?
     let latestAt: String?
     let boardListed: Bool?
     let boardScore: Double?
+    let boardSubmissionId: String?
     func latestScoreText(_ lang: AppLanguage) -> String {
         if let latestScore { return String(format: "%.2f", latestScore) }
-        return latestStatus == "Pass" ? lang.tr("未给分", "Unreported") : "—"
+        return latestStatus == "Pass" ? lang.tr("仅报通过", "Pass only") : "—"
+    }
+    func scoreExplanation(_ lang: AppLanguage) -> String? {
+        switch latestScoreSource {
+        case "other_submission_ranked":
+            let sha = activeSha.flatMap { $0.isEmpty ? nil : String($0.prefix(7)) }
+            let ref = sha ?? boardSubmissionId ?? "—"
+            return lang.tr("本次回执仅报告通过。当前榜单记录为 \(ref)，在榜分 \(boardScoreText(lang))。",
+                           "The judge reported a pass. The board lists \(ref) at \(boardScoreText(lang)).")
+        case "matching_board":
+            return lang.tr("回执仅报告通过，显示该提交在当前榜单的分数。", "The judge reported a pass. The score comes from this submission’s current ranking.")
+        case "unpublished":
+            return lang.tr("本次回执仅报告通过，尚无可对应到本次提交的官方分数。", "The judge reported a pass. No official score is available for this submission.")
+        default:
+            return nil
+        }
     }
     func boardScoreText(_ lang: AppLanguage) -> String {
         if boardListed == false { return lang.tr("未上榜", "Unranked") }
@@ -171,6 +188,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case totalTeams = "total_teams"
         case currentScore = "current_score"
         case latestStatus = "latest_status", latestScore = "latest_score", latestSha = "latest_sha"
+        case latestScoreSource = "latest_score_source", boardSubmissionId = "board_submission_id"
         case latestAt = "latest_at"
         case boardListed = "board_listed", boardScore = "board_score"
         case weightedScore = "weighted_score"

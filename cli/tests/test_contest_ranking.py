@@ -109,3 +109,42 @@ def test_captain_switch_and_registration_changes(tmp_path, monkeypatch):
     assert ranking.team_ranking(tmp_path, force=True)["ranking_state"] == "no_team"
     accounts[1]["logged_in"] = False
     assert ranking.team_ranking(tmp_path, force=True)["ranking_state"] == "unavailable"
+
+
+def test_latest_pass_only_uses_its_own_live_ranking():
+    from opsb_core.services.contest_service import latest_score_evidence
+
+    latest = {"status": "Pass", "submission_id": "new"}
+    row = {"listed": True, "board_submission_id": "old", "our_score": 37.71}
+    assert latest_score_evidence(latest, row) == (None, "other_submission_ranked")
+    assert latest_score_evidence(latest, {}) == (None, "unpublished")
+    assert latest_score_evidence(latest, {**row, "listed": False}) == (None, "unpublished")
+    assert latest_score_evidence({**latest, "submission_id": None}, row) == (None, "unpublished")
+    row["board_submission_id"] = "new"
+    assert latest_score_evidence(latest, row) == (37.71, "matching_board")
+    assert latest_score_evidence({**latest, "score": 38}, row) == (38, "submission")
+    assert latest_score_evidence(latest, {**row, "our_score": 0}) == (0, "matching_board")
+    assert latest_score_evidence(latest, {**row, "our_score": None}) == (None, "unpublished")
+
+
+def test_history_preserves_distinct_receipts_and_missing_scores(tmp_path):
+    from opsb_core.services.contest_service import index_submission_history
+
+    ev = tmp_path / "results/scoring-evidence"
+    ev.mkdir(parents=True)
+    run = {"title": "Op", "sha": "1" * 40, "status": "Pass"}
+    first, second = "2026-11-25T08:00:03Z", "2026-11-25T08:00:45Z"
+    (ev / "my-score-table.json").write_text(json.dumps([
+        {**run, "at": first, "score": 37.71, "submission_id": "old"},
+        {**run, "at": second},  # Legacy record awaiting an official receipt.
+    ]))
+    journal = ev.parent / "submit-queue-outcome.jsonl"
+    journal.write_text("\n".join(json.dumps({**run, "submitted_at": at, "submission_id": sid})
+                                 for at, sid in [(first, "old"), (second, "new")]) + "\n")
+    history = index_submission_history(tmp_path)
+    assert [(h["submission_id"], h["score"]) for h in history["history_by_prob"]["Op"]] == [
+        ("old", 37.71), ("new", None)]
+    assert history["latest_sub_by_prob"]["Op"]["delta"] is None
+    with journal.open("a") as handle:
+        handle.write(json.dumps({**run, "submitted_at": second, "submission_id": "new", "score": 0}) + "\n")
+    assert index_submission_history(tmp_path)["latest_sub_by_prob"]["Op"]["score"] == 0
