@@ -134,15 +134,11 @@ def _latest_submit_epoch(workspace: Path) -> float:
 
 
 def _resolve_team_name(workspace: Path) -> str:
-    tr = read_json(workspace / "results" / "scoring-evidence" / "team-ranking.json", {})
-    if isinstance(tr, dict) and tr.get("team_name"):
-        return str(tr["team_name"]).strip()
-    cd = read_json(workspace / "results" / "scoring-evidence" / "contest-detail.json", {})
-    if isinstance(cd, dict):
-        tname = (cd.get("signup_status") or {}).get("team_name")
-        if tname:
-            return str(tname).strip()
-    return ""
+    from . import ranking_service
+    from .contest_service import resolve_workspace_meta
+
+    ranking = ranking_service.team_ranking(workspace, allow_fetch=False) or {}
+    return ranking.get("team_name") or resolve_workspace_meta(workspace).get("team_name") or ""
 
 
 def inspect_board_freshness(
@@ -252,14 +248,10 @@ def refresh_board_and_recalibrate(
             if user_id:
                 team_user_ids.add(user_id)
             team_name = _resolve_team_name(workspace)
-            probs_path = workspace / "bench" / "problems.json"
-            problems = read_json(probs_path, [])
+            from .contest_service import resolve_workspace_meta
+            problems = resolve_workspace_meta(workspace)["problems"]
             if not isinstance(problems, list) or not problems:
-                manifest = read_json(workspace / "opsb.workspace.json", {})
-                if isinstance(manifest, dict) and isinstance(manifest.get("problems"), list):
-                    problems = manifest["problems"]
-            if not isinstance(problems, list) or not problems:
-                return {"ok": False, "error": f"missing or empty {probs_path}"}
+                return {"ok": False, "error": f"no contest problems under {workspace}"}
 
             snap_path = workspace / "results" / "score-snapshot.json"
             snap = read_json(snap_path, {}) if snap_path.is_file() else {}

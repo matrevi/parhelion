@@ -386,6 +386,9 @@ def test_npu_stream_handoff_smoothing_and_deterministic_sort() -> None:
 
 def test_multi_account_team_best_snapshot_preserved_and_drift_refresh(iso_env: Path, tmp_path: Path) -> None:
     ws = _make_ws(tmp_path, iso_env)
+    (ws / "results" / "scoring-evidence" / "contest-detail.json").write_text(
+        json.dumps({"_id": "a" * 24, "signup_status": {"team_name": "XJU第二少年团"}})
+    )
     (ws / "results" / "scoring-evidence" / "team-ranking.json").write_text(
         json.dumps({"team_name": "XJU第二少年团", "rank": 3, "total": 794, "score": 466.52, "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}),
         encoding="utf-8",

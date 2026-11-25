@@ -123,13 +123,9 @@ struct ContestOverviewView: View {
                     icon: "checkmark.seal.fill",
                     accent: snap.contest.passingCount == snap.contest.problemCount ? .green : .orange
                 )
-                let bestRank = snap.problems.compactMap { $0.rank }.min()
-                let bestTeams = snap.problems.compactMap { $0.totalTeams }.max()
                 let teamRank = snap.contest.teamRank
-                let teams = snap.contest.totalTeams ?? bestTeams
                 let rankValue: String = {
-                    if let r = teamRank, let n = teams { return "#\(r) / \(n)" }
-                    if let r = bestRank, let n = bestTeams { return "#\(r) / \(n)" }
+                    if let r = teamRank, let n = snap.contest.totalTeams { return "#\(r) / \(n)" }
                     if let r = teamRank { return "#\(r)" }
                     return "—"
                 }()
@@ -137,9 +133,6 @@ struct ContestOverviewView: View {
                     if teamRank != nil {
                         let score = snap.contest.teamRankScore.map { String(format: "%.2f 分 · ", $0) } ?? ""
                         return lang.tr("\(score)全队总榜", "\(score)team board")
-                    }
-                    if bestRank != nil {
-                        return lang.tr("暂无队伍总榜 · 显示最好单题名次", "No team board yet · best placement")
                     }
                     return lang.tr("等待拉取排行榜", "Awaiting ranking fetch")
                 }()

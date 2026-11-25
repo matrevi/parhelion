@@ -29,7 +29,7 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
             "layout": clean_manifest.get("layout", "clean-agents-first"),
             "contest_id": cid,
             "title": clean_manifest.get("title", workspace.name),
-            "team_name": "",
+            "team_name": clean_manifest.get("team_name") or "",
             "git_owner": owner,
             "repo_prefix": clean_manifest.get("repo_prefix", ""),
             "npu_ssh_host": clean_manifest.get("npu_ssh_host", "npu"),
@@ -61,9 +61,9 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
             }
         )
 
-    cid = contest_detail.get("id") or contest_detail.get("_id") or "6a9e2d04bf41025d60f21804"
+    cid = contest_detail.get("id") or contest_detail.get("_id") or contest_detail.get("name") or ""
     g_slug = str(contest_detail.get("group_name") or "public").strip("/")
-    c_slug = str(contest_detail.get("name") or "ictcompetition").strip("/")
+    c_slug = str(contest_detail.get("name") or cid).strip("/")
     contest_url = f"https://judge.invalid/{g_slug}/{c_slug}"
     for item in normalized:
         item["problem_url"] = f"{contest_url}/{item['slug']}"
@@ -91,7 +91,7 @@ def load_slim_boards(board_path: Path) -> dict[str, Any]:
         mtime = board_path.stat().st_mtime_ns
         if cache_path.is_file():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if cached.get("mtime") == mtime and isinstance(cached.get("boards"), dict):
+            if cached.get("path") == str(board_path) and cached.get("mtime") == mtime and isinstance(cached.get("boards"), dict):
                 return cached["boards"]
     except Exception:
         mtime = 0
@@ -110,7 +110,7 @@ def load_slim_boards(board_path: Path) -> dict[str, Any]:
         CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         tmp = cache_path.with_name(f".{cache_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
-            tmp.write_text(json.dumps({"mtime": mtime, "boards": slim}, separators=(",", ":")), encoding="utf-8")
+            tmp.write_text(json.dumps({"path": str(board_path), "mtime": mtime, "boards": slim}, separators=(",", ":")), encoding="utf-8")
             os.replace(tmp, cache_path)
         finally:
             tmp.unlink(missing_ok=True)
@@ -476,14 +476,12 @@ def build_problem_models(
     try:
         from . import ranking_service
 
-        cid = str(meta.get("contest_id") or ranking_service.DEFAULT_CONTEST_ID)
-        tname = str(meta.get("team_name") or ranking_service.DEFAULT_TEAM_NAME)
-        rk = ranking_service.team_ranking(workspace, contest_id=cid, team_name=tname, allow_fetch=False)
+        rk = ranking_service.team_ranking(workspace, allow_fetch=False)
         contest_summary.update(ranking_service.summary_fields(rk))
         stale = (rk is None) or (ranking_service._age_sec(rk) > ranking_service.CACHE_TTL_SEC)
         score_shifted = bool(rk is not None and abs(round(weighted_total, 2) - float(rk.get("score") or 0.0)) >= 0.5)
         if stale or score_shifted:
-            ranking_service.refresh_async(workspace, contest_id=cid, team_name=tname, force=False)
+            ranking_service.refresh_async(workspace, force=False)
     except Exception:
         import os
         if os.environ.get("OPSB_RANKING_DEBUG"):
