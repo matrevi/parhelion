@@ -21,7 +21,7 @@ from ..services.auth_service import (
 from ..services.contest_service import resolve_workspace_meta
 from ..services.contest_scrape_service import ContestScrapeError, fetch_contest_problems
 from ..services.problem_repo_service import bootstrap_workspace_repos
-from ..services.scaffold_service import scaffold_workspace
+from ..services.scaffold_service import scaffold_workspace, write_agent_guides
 from ..services.skills_service import get_skills_status, install_skills
 from ..services.ssh_service import parse_ssh_hosts, upsert_ssh_config_block
 
@@ -191,16 +191,9 @@ def run_workspace(args: argparse.Namespace) -> int:
         target = Path(args.target_dir).expanduser().resolve()
         if DEFAULT_BENCH_ROOT is not None and target == DEFAULT_BENCH_ROOT:
             raise SystemExit("Refused on legacy ops-bench root; clean gen-agents targets opsb clean workspaces.")
-        meta = resolve_workspace_meta(target)
-        res = scaffold_workspace(
-            target_dir=target,
-            contest_title=meta["title"],
-            contest_id=meta["contest_id"],
-            git_owner=meta["git_owner"],
-            repo_prefix=meta.get("repo_prefix", ""),
-            npu_host=meta.get("npu_ssh_host", "npu"),
-            problems=meta["problems"],
-        )
+        meta = json.loads((target / "opsb.workspace.json").read_text())
+        write_agent_guides(target, meta)
+        res = {"workspace": str(target), "problem_count": len(meta["problems"]), "agents_md": str(target / "AGENTS.md")}
         print(json.dumps({"ok": True, **res}, ensure_ascii=False) if args.json else f"Regenerated AGENTS.md across {res['problem_count']} problems")
         return 0
     return 1

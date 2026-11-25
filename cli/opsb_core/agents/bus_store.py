@@ -296,6 +296,8 @@ class AgentBusStore:
         since_seq: int = 0,
         direction: str | None = None,
         strategic_only: bool = False,
+        recipients: set[str] | None = None,
+        for_orchestrator: bool = False,
         limit: int = 60,
     ) -> list[dict[str, Any]]:
         clauses = ["seq > ?"]
@@ -309,8 +311,13 @@ class AgentBusStore:
         if direction:
             clauses.append("direction = ?")
             params.append(direction)
+        if recipients:
+            clauses.append("agent_id IN (" + ",".join("?" for _ in recipients) + ")")
+            params.extend(sorted(recipients))
+        if for_orchestrator:
+            clauses.append("(direction = 'worker_to_orch' OR kind = 'directive')")
         if strategic_only:
-            clauses.append("(priority = 'strategic' OR kind IN ('breakthrough', 'stagnation', 'escape_zero', 'question', 'error', 'result', 'directive'))")
+            clauses.append("kind IN ('breakthrough', 'stagnation', 'escape_zero', 'question', 'error', 'directive')")
         params.append(max(1, int(limit)))
         sql = f"SELECT * FROM messages WHERE {' AND '.join(clauses)} ORDER BY seq ASC LIMIT ?"
         with self._lock:

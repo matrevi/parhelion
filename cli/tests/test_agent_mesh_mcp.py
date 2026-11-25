@@ -50,6 +50,30 @@ class _FakeAdapter(BaseWorkerAdapter):
 
 
 class AgentMeshAndMcpTests(unittest.TestCase):
+    def test_wait_finds_target_after_unrelated_message_backlog(self):
+        from opsb_core.agents.bus_store import AgentBusStore
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp)
+            mgr = AgentMeshManager()
+            store = AgentBusStore(ws / "bus.db")
+            with mock.patch.object(mgr, "_store", return_value=store):
+                for i in range(85):
+                    store.append_message("unrelated", "worker_to_orch", "question", str(i))
+                store.append_message("owner", "worker_to_orch", "result", "normal turn")
+                msg = store.append_message("owner", "worker_to_orch", "question", "needs decision")
+                reply = mgr.wait_events(ws, agent_ids=["owner"], timeout_sec=0.5)
+                self.assertEqual([m["seq"] for m in reply["messages"]], [msg["seq"]])
+
+    def test_paid_stagnation_counts_unique_terminal_receipts(self):
+        from opsb_core.agents.judge_feedback import judge_feedback
+        def receipt(i, score):
+            return dict(submission_id=str(i), submitted_at=f"2026-11-01T00:00:{i:02}Z", status="Pass", score=score)
+        rows = [receipt(1, 40)] + [receipt(i, 41) for i in range(2, 8)]
+        rows.extend([rows[-1], dict(receipt(8, 0), status="Running")])
+        events = [(r["submission_id"], k) for r, kinds in judge_feedback(rows, 5, 1)
+                  for k, _ in kinds]
+        self.assertEqual(events, [("1", "breakthrough"), ("7", "stagnation")])
+
     def test_role_scoped_mcp_visibility_and_enforcement(self) -> None:
         orch_tools = {t["name"] for t in list_tool_schemas(role="orchestrator")}
         worker_tools = {t["name"] for t in list_tool_schemas(role="worker")}
@@ -179,13 +203,13 @@ class AgentMeshAndMcpTests(unittest.TestCase):
                     aid = spawned["agent"]["agent_id"]
 
                     # 3. Wait wakes immediately when worker turn posts result
-                    waited = call_tool("parhelion_agent_wait", {"since_seq": 0, "agent_ids": [aid], "timeout_sec": 3.0}, ws, role="orchestrator")
+                    waited = call_tool("parhelion_agent_wait", {"since_seq": 0, "agent_ids": [aid], "strategic_only": False, "timeout_sec": 3.0}, ws, role="orchestrator")
                     self.assertFalse(waited["timed_out"])
                     self.assertGreaterEqual(len(waited["messages"]), 1)
                     self.assertIn("completed turn #1", waited["messages"][-1]["body"])
                     self.assertTrue(any("PadV3Grad" in d for d in waited["squad_digest"]))
 
-                    # 4. Worker reports 6-shot stagnation -> auto-escalates to strategic 'stagnation'
+                    # Local iterations do not count as paid judge receipts.
                     rep = call_tool(
                         "parhelion_agent_report",
                         {"kind": "progress", "no_gain_streak": 6, "summary": "6 tries stuck at +0.1"},
@@ -194,8 +218,8 @@ class AgentMeshAndMcpTests(unittest.TestCase):
                         agent_id=aid,
                     )
                     self.assertTrue(rep["ok"])
-                    self.assertEqual(rep["kind"], "stagnation")
-                    self.assertEqual(rep["priority"], "strategic")
+                    self.assertEqual(rep["kind"], "progress")
+                    self.assertEqual(rep["priority"], "normal")
 
                     # 4b. Admin directive posts strategic directive
                     adm = mgr.post_admin_directive(ws, "Prioritize 16KB L1I hot packing", problem="PadV3Grad", broadcast_workers=False)
@@ -210,7 +234,7 @@ class AgentMeshAndMcpTests(unittest.TestCase):
                         role="orchestrator",
                     )
                     self.assertTrue(sent["ok"])
-                    w2 = call_tool("parhelion_agent_wait", {"since_seq": adm["message"]["seq"], "agent_ids": [aid], "timeout_sec": 3.0}, ws, role="orchestrator")
+                    w2 = call_tool("parhelion_agent_wait", {"since_seq": adm["message"]["seq"], "agent_ids": [aid], "strategic_only": False, "timeout_sec": 3.0}, ws, role="orchestrator")
                     self.assertFalse(w2["timed_out"])
                     self.assertIn("completed turn #2", w2["messages"][-1]["body"])
 
@@ -220,7 +244,7 @@ class AgentMeshAndMcpTests(unittest.TestCase):
                     self.assertNotIn("codex", {d["kind"] for d in hot["ready_drivers"]})
                     self.assertEqual(len(hot["squads"]), 1)
                     self.assertEqual(hot["squads"][0]["collab_mode"], "orthogonal")
-                    self.assertTrue(any(a["kind"] == "stagnation" for a in hot["strategic_alerts"]))
+                    self.assertFalse(any(a["kind"] == "stagnation" for a in hot["strategic_alerts"]))
                     self.assertTrue(any(a["kind"] == "directive" for a in hot["strategic_alerts"]))
 
                     # 7. Stop worker cleanly

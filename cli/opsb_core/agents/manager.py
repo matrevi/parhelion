@@ -18,6 +18,7 @@ from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
+from .judge_feedback import judge_feedback
 
 AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
 MAX_WAIT_SEC = 45.0
@@ -26,38 +27,6 @@ STAGNATION_STREAK_THRESHOLD = 6
 STRATEGIC_KINDS = frozenset({"breakthrough", "stagnation", "escape_zero", "directive", "question", "error"})
 
 
-def judge_feedback(rows, threshold, gamma):
-    import sys
-    if str(_cfg.SUPERVISOR_ROOT) not in sys.path:
-        sys.path.insert(0, str(_cfg.SUPERVISOR_ROOT))
-    from scheduler.estimator import ScoreEstimator
-    from ..services.judge_score_fetch import TERMINAL_JUDGE_STATUSES
-
-    receipts = {}
-    for row in rows:
-        sid = row.get("submission_id")
-        stamp = _cfg.parse_iso(row.get("submitted_at") or row.get("finished_at"))
-        if sid and stamp and row.get("status") in TERMINAL_JUDGE_STATUSES:
-            receipts[sid] = (stamp, row)
-    ordered = sorted(receipts.values(), key=lambda item: (item[0], str(item[1]["submission_id"])))
-    previous = []
-    last_rotation = 0
-    for stamp, row in ordered:
-        if row["status"] == "Pass" and row.get("score") is None:
-            continue
-        score = float(row.get("score") or 0)
-        def peak(history):
-            return max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp)
-                        for ts, s in history), default=0.0)
-        prior = peak(previous)
-        previous.append((stamp, score))
-        events = []
-        if row["status"] == "Pass" and score * gamma - prior > threshold:
-            events.append(("breakthrough", "Review the measured gain and delegate a reusable KB entry with evidence."))
-        if len(previous) - last_rotation >= 6 and peak(previous[-6:]) - peak(previous[:-6]) <= threshold:
-            events.append(("stagnation", "Summarize the last six paid attempts and assign a new worker an orthogonal direction."))
-            last_rotation = len(previous)
-        yield row, events
 
 
 def _git_branch_and_sha(path: Path) -> tuple[str, str]:
@@ -181,7 +150,7 @@ class _WorkerRunner:
                 )
                 if not self._stop_flag.is_set() and reply:
                     self.store.append_message(
-                        self.agent_id, "worker_to_orch", "result", reply[:4000], commit_sha=sha7
+                        self.agent_id, "worker_to_orch", "result", reply, commit_sha=sha7
                     )
             except Exception as exc:
                 if not self._stop_flag.is_set():
@@ -523,7 +492,7 @@ class AgentMeshManager:
             f"[Parhelion Autonomous Worker | id={agent_id} | role={safe_role} | squad={prob_title or ws.name} ({c_mode}{axis_line})]\n"
             f"Workspace: {ws}\nWorktree: {wt}\n"
             f"Autonomy Protocol: You operate autonomously under primary orchestrator ({active}).\n"
-            f"1. Queue your own validation with `opsb test`. Diagnose failures, fix and retest independently.\n"
+            f"1. Queue validation via parhelion_test_plan (execute=true) or `opsb test`. Diagnose, fix and retest independently.\n"
             f"2. Enqueue candidates directly via `parhelion_submit_gate`; the platform applies opening-probe rules, schedules uploads and manages quota.\n"
             f"3. Share results via `parhelion_agent_report`. Ask the orchestrator for a decision only when you sdkot resolve it.\n\n"
             f"Task:\n{task.strip()}"
@@ -595,17 +564,14 @@ class AgentMeshManager:
         deadline = time.monotonic() + cap_timeout
 
         def _collect() -> list[dict[str, Any]]:
-            msgs = store.list_messages(
+            return store.list_messages(
                 problem=problem or None,
                 since_seq=since_seq,
                 strategic_only=strategic_only,
+                recipients=id_set,
+                for_orchestrator=True,
                 limit=40,
             )
-            return [
-                m for m in msgs
-                if (m["direction"] == "worker_to_orch" or m["kind"] == "directive")
-                and (not id_set or m["agent_id"] in id_set)
-            ]
 
         with self._cond:
             matched = _collect()
@@ -693,18 +659,15 @@ class AgentMeshManager:
             raise KeyError(f"Unknown worker agent_id: {agent_id}")
         valid_kinds = ("progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error")
         norm_kind = kind if kind in valid_kinds else "progress"
-        streak = int(no_gain_streak) if no_gain_streak is not None else int(rec.get("no_gain_streak") or 0)
-        if norm_kind == "breakthrough":
-            streak = 0
-        elif streak >= STAGNATION_STREAK_THRESHOLD and norm_kind == "progress":
-            norm_kind = "stagnation"
-
-        priority = "strategic" if (norm_kind in STRATEGIC_KINDS or norm_kind == "result") else "normal"
+        streak = int(rec.get("no_gain_streak") or 0)
+        # Judged receipt analysis owns these automatic alerts. Workers can always
+        # raise an explicit question when a decision is needed.
+        if norm_kind in ("stagnation", "breakthrough", "escape_zero"):
+            norm_kind = "progress"
+        priority = "strategic" if norm_kind in STRATEGIC_KINDS else "normal"
         _, sha7 = _git_branch_and_sha(Path(rec["worktree"])) if rec.get("worktree") else ("", "")
-        updates: dict[str, Any] = {"no_gain_streak": streak}
-        if norm_kind in ("question", "stagnation", "escape_zero"):
-            updates["status"] = "waiting_input"
-        store.update_agent(agent_id, **updates)
+        if norm_kind == "question":
+            store.update_agent(agent_id, status="waiting_input")
         msg = store.append_message(
             agent_id, "worker_to_orch", norm_kind, summary.strip()[:4000],
             artifacts=artifacts, commit_sha=sha7, priority=priority, problem=str(rec.get("problem") or ""),
@@ -877,7 +840,7 @@ class AgentMeshManager:
 
         pulses = store.recent_pulses(window_sec=12.0, limit=16)
         for p in pulses:
-            if p["kind"] in ("breakthrough", "directive"):
+            if p["kind"] in ("breakthrough", "directive", "stagnation"):
                 strategic_alerts.append({
                     "id": f"msg-{p['seq']}", "kind": p["kind"], "problem": p.get("problem") or "",
                     "agent_id": p["agent_id"], "label": p["preview"][:40],

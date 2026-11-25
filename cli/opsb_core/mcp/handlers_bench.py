@@ -10,7 +10,6 @@ from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
-from ..services.git_fast import resolve_commit_sha
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
 
@@ -18,6 +17,20 @@ from ..services.sync_reconciler import has_pending_sync_error_for_commit
 def _find_problem(problems: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
     q = query.strip().lower()
     return next((p for p in problems if str(p.get("title", "")).lower() == q), None)
+
+
+def _problem_commit(workspace: Path, problem: str, revision: str) -> tuple[str, str]:
+    prob = _find_problem(resolve_workspace_meta(workspace).get("problems") or [], problem)
+    if not prob:
+        raise ValueError(f"Unknown problem: {problem}")
+    repo = workspace / prob["path"]
+    if not (repo / ".git").exists():
+        raise ValueError(f"No local problem repository for {problem}")
+    ref = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
+                          revision + "^{commit}"], capture_output=True, text=True, timeout=3)
+    if ref.returncode:
+        raise ValueError(f"Cannot resolve {revision} for {problem}")
+    return prob["title"], ref.stdout.strip()
 
 
 def _latest_result_dir(workspace: Path, title: str, sha: str | None = None) -> Path | None:
@@ -179,22 +192,26 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
         raise ValueError("Invalid 'mode': must be 'build-only', 'fast', or 'full'.")
     execute = bool(args.get("execute", False))
 
-    prob = _find_problem(resolve_workspace_meta(workspace).get("problems") or [], problem)
-    title = str(prob["title"]) if prob else problem
-    repo_dir = (workspace / prob["path"]) if prob else (workspace / title)
-    raw_sha = str(args.get("sha") or "HEAD")
-    sha = resolve_commit_sha(repo_dir, raw_sha) or raw_sha
+    title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
 
     lane = {
         "build-only": {"phase": "Phase A CPU Compile", "queue": "CPU", "estimated_die_lock_sec": 0, "flag": "--build-only"},
-        "fast": {"phase": "Phase A+B+C Fast Lane", "queue": "Q0", "estimated_die_lock_sec": 10, "flag": "--fast"},
-        "full": {"phase": "Phase A+B+C Full Adversarial + profiler", "queue": "Q1", "estimated_die_lock_sec": 18, "flag": None},
+        "fast": {"phase": "Fast validation", "queue": "Q0", "estimated_die_lock_sec": None, "flag": "--fast"},
+        "full": {"phase": "Full validation", "queue": "Q1", "estimated_die_lock_sec": None, "flag": None},
     }[mode]
     opsb_cmd = [_cfg.resolve_python_exe(workspace), str(_cfg.CLI_DIR / "opsb"), "test", title, "--workspace", str(workspace)]
     if sha and sha != "HEAD":
         opsb_cmd.extend(["--sha", sha])
     if lane["flag"]:
         opsb_cmd.append(str(lane["flag"]))
+    case_ids = args.get("cases", [])
+    if not isinstance(case_ids, list) or not all(isinstance(k, str) and k for k in case_ids):
+        raise ValueError("cases must contain nonempty case IDs")
+    for case_id in case_ids:
+        opsb_cmd.extend(["--case", case_id])
+    for name in ("bucket", "experiment", "timing", "repeats"):
+        if args.get(name) is not None:
+            opsb_cmd.extend(["--" + name, str(args[name])])
 
     plan: dict[str, Any] = {"ok": True, "title": title, "sha": sha, "mode": mode, "lane": lane, "executed": execute, "command": opsb_cmd}
     if not execute:
@@ -211,13 +228,7 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
         raise ValueError("'problem' is required for parhelion_submit_gate")
     note, enqueue, force = str(args.get("note") or "").strip(), bool(args.get("enqueue", False)), bool(args.get("force", False))
 
-    prob = _find_problem(resolve_workspace_meta(workspace)["problems"], problem)
-    if not prob:
-        raise ValueError(f"Unknown problem: {problem}")
-    title = prob["title"]
-    sha = resolve_commit_sha(workspace / prob["path"], args.get("sha") or "HEAD")
-    if not sha:
-        raise ValueError(f"Cannot resolve commit for {title}")
+    title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
     options = ["--title", title, "--sha", sha, "--note", note]
     if force:
         options.append("--force")
@@ -234,11 +245,14 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
         return {"title": title, "sha": sha, "enqueued": False, "gates": {"all_pass": False},
                 "reason": "Submission gate unavailable", "estimated_score": None}
     estimate = verdict["estimate"]
+    anchored = estimate.get("estimation_method") == "anchor_fallback" or "no perf telemetry" in str(estimate.get("detail", "")).lower()
+    if anchored:
+        estimate = {**estimate, "estimated_score": None, "delta_expected": None}
     stages = {s["stage"]: s["passed"] for s in verdict["stages"]}
     gates = {key: stages.get(stage, False) for key, stage in (
         ("safety_ok", "SAFETY"), ("noise_ok", "NOISE_FLOOR"),
         ("circuit_ok", "CIRCUIT_BREAKER"), ("quota_ok", "QUOTA_RESERVE"))}
-    return {**verdict, "gates": {**gates, "all_pass": verdict["approved"]},
+    return {**verdict, "estimate": estimate, "gates": {**gates, "all_pass": verdict["approved"]},
             "estimated_score": estimate.get("estimated_score"), "current_score": estimate.get("current_score"),
             "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
             "reasons": [s["reason"] for s in verdict["stages"] if not s["passed"]],

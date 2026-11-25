@@ -7,6 +7,7 @@ struct AgentMeshView: View {
     @UIState private var grouping: AgentMeshGrouping = .byProblem
     @UIState private var selection: AgentMeshSelection = .orchestrator
     @UIState private var messages: [AgentBusMessage] = []
+    @UIState private var messageScope = ""
     @UIState private var diffStat: String = ""
     @UIState private var isSending: Bool = false
     @UIState private var showSpawnSheet: Bool = false
@@ -219,6 +220,13 @@ struct AgentMeshView: View {
     }
 
     private func reloadMessages() async {
+        let workspace = store.selectedWorkspace
+        let scope = "\(workspace)::\(selectionKey)"
+        if scope != messageScope {
+            messageScope = scope
+            messages = []
+            diffStat = ""
+        }
         guard !store.selectedWorkspace.isEmpty, hotStore.daemonOnline else { return }
         let agentId: String? = {
             if case .worker(let wid) = selection { return wid }
@@ -228,12 +236,17 @@ struct AgentMeshView: View {
             if case .squad(let p) = selection { return p }
             return nil
         }()
-        if let resp = try? await store.daemonClient.fetchAgentMessages(
-            workspace: store.selectedWorkspace, host: store.activeSSHHost,
-            agentId: agentId, problem: problem, sinceSeq: 0, ack: agentId != nil
-        ) {
-            messages = resp.messages
+        while !Task.isCancelled {
+            let cursor = messages.last?.seq ?? 0
+            guard let resp = try? await store.daemonClient.fetchAgentMessages(
+                workspace: workspace, host: store.activeSSHHost,
+                agentId: agentId, problem: problem, sinceSeq: cursor, ack: false
+            ), !Task.isCancelled, workspace == store.selectedWorkspace,
+               scope == "\(workspace)::\(selectionKey)", messageScope == scope else { return }
+            let last = messages.last?.seq ?? 0
+            messages.append(contentsOf: resp.messages.filter { $0.seq > last })
             diffStat = resp.diffStat ?? ""
+            if resp.messages.count < 80 || (messages.last?.seq ?? 0) >= resp.latestSeq { return }
         }
     }
 

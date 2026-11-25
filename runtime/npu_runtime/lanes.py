@@ -33,13 +33,18 @@ def compile_lane(cfg):
     directory = Path.home() / ".opsb/cpu_builds"
     directory.mkdir(parents=True, exist_ok=True)
     record = directory / f"{os.getpid()}.json"
-    with (directory / ".allocation.lock").open("a") as allocation:
-        fcntl.flock(allocation, fcntl.LOCK_EX)
-        cores = os.cpu_count() or 1
-        concurrent = 1 + sum(1 for r in _live_records(directory) if r["pid"] != os.getpid())
-        available = max(1, cores - max(2, cores // 10))
-        jobs = max(1, min(cores, int(cfg.get("jobs") or min(16, available // concurrent))))
-        _lane_write(record, dict(_identity(cfg), state="building", started_epoch=time.time(), jobs=jobs))
+    cores = os.cpu_count() or 1
+    budget = max(1, cores - max(2, cores // 10))
+    requested = max(1, int(cfg.get("jobs") or 16))
+    while True:
+        with (directory / ".allocation.lock").open("a") as allocation:
+            fcntl.flock(allocation, fcntl.LOCK_EX)
+            reserved = sum(int(r.get("jobs") or 1) for r in _live_records(directory))
+            jobs = min(requested, budget - reserved)
+            if jobs > 0:
+                _lane_write(record, dict(_identity(cfg), state="building", started_epoch=time.time(), jobs=jobs))
+                break
+        time.sleep(0.2)
     try:
         yield jobs
     finally:

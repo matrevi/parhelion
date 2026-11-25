@@ -61,8 +61,7 @@ _TOOL_ROLES: dict[str, tuple[str, ...]] = {t["name"]: t["roles"] for t in TOOL_D
 
 
 def normalize_role(role: str | None) -> str:
-    norm = str(role or "orchestrator").strip().lower()
-    return norm if norm in VALID_ROLES else "orchestrator"
+    return "orchestrator" if role is None else str(role).strip().lower()
 
 
 def is_tool_allowed_for_role(name: str, role: str | None = None) -> bool:
@@ -98,6 +97,7 @@ def call_tool(
     if arguments is not None and not isinstance(arguments, dict):
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
+    call_args.pop("_caller_agent_id", None)
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")
     if agent_id:

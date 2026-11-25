@@ -64,6 +64,38 @@ def isolated_mcp_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return p_home
 
 
+def test_refresh_guides_preserves_workspace_policy(isolated_mcp_env, tmp_path):
+    from opsb_core.services.scaffold_service import scaffold_workspace, write_agent_guides
+    ws = tmp_path / "contest"
+    problem = dict(title="Demo", difficulty=3)
+    scaffold_workspace(ws, contest_id="test", problems=[problem])
+    manifest = ws / "opsb.workspace.json"
+    meta = json.loads(manifest.read_text())
+    meta["bench_strict_fp32"] = True
+    meta["bench_observations"] = {"Demo": ["measured floor"]}
+    meta["problems"][0]["custom_field"] = 17
+    meta["frozen_oracles"]["Demo"] = "existing-pin"
+    manifest.write_text(json.dumps(meta))
+    before = manifest.read_bytes()
+    write_agent_guides(ws, meta)
+    assert manifest.read_bytes() == before
+    scaffold_workspace(ws, contest_id="test", problems=[problem])
+    assert json.loads(manifest.read_text()) == meta
+    corr = json.loads((ws / "Demo/bench/cases_correctness.json").read_text())
+    assert all(c["verified"] is False for c in corr["cases"])
+
+
+def test_worker_mcp_case_plan_and_role(isolated_mcp_env, tmp_path):
+    ws, _, sha = _make_mcp_workspace(tmp_path)
+    plan = call_tool("parhelion_test_plan", dict(problem="PadV3Grad", cases=["01", "03"],
+                     timing="all", repeats=3, experiment="paired"), ws, role="worker")
+    assert plan["sha"] == sha and not plan["executed"]
+    assert plan["command"][-10:] == ["--case", "01", "--case", "03", "--experiment", "paired", "--timing", "all", "--repeats", "3"]
+    assert list_tool_schemas(role="typo") == []
+    with pytest.raises(ValueError, match="Unknown problem"):
+        call_tool("parhelion_test_plan", {"problem": "missing"}, ws, role="worker")
+
+
 def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path: Path) -> None:
     ws, _, _ = _make_mcp_workspace(tmp_path)
 

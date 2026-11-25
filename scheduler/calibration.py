@@ -212,17 +212,6 @@ class BenchmarkCalibrator:
         case_counts = [[0 for _ in DATA_COLS] for _ in GEOM_ROWS]
         d5_escapes: list[dict[str, Any]] = []
 
-        # Also inspect problem repo's live `validation/extended.py` to upgrade cells dynamically
-        ext_py = self.workspace / "bench" / title / "validation" / "extended.py"
-        ext_txt = ext_py.read_text(errors="replace").lower() if ext_py.is_file() else ""
-        live_col_boost = {
-            0: True,
-            1: any(k in ext_txt for k in ("1e4", "1e5", "65504", "large", "overflow")),
-            2: any(k in ext_txt for k in ("1e-5", "1e-6", "1e-7", "eps", "tiny")),
-            3: any(k in ext_txt for k in ("1000", "offset", "cancel", "welford")),
-            4: any(k in ext_txt for k in ("inf", "nan", "0.5", "rint", "identical")),
-        }
-
         if corr_path.is_file():
             try:
                 doc = json.loads(corr_path.read_text())
@@ -236,13 +225,13 @@ class BenchmarkCalibrator:
                             "id": c.get("id"),
                             "sha_bad": c.get("sha_bad"),
                             "description": c.get("desc") or c.get("description", ""),
-                            "verified": bool(c.get("verified", True)),
+                            "verified": c.get("verified") is True,
                         })
                         continue
                     gi = next((i for i, r in enumerate(GEOM_ROWS) if r.startswith(geom[:2].upper())), 0)
                     di = next((i for i, col in enumerate(DATA_COLS) if col.startswith(dist[:2].upper())), 0)
                     case_counts[gi][di] += len(c.get("seeds") or [1])
-                    ver = bool(c.get("verified", False) or live_col_boost.get(di, False))
+                    ver = c.get("verified") is True
                     cells[gi][di] = 2 if ver else max(cells[gi][di], 1)
             except Exception:
                 pass

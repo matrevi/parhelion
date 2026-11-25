@@ -41,9 +41,9 @@ def scaffold_operator_bench(op_dir: Path, title: str) -> dict[str, Any]:
                 "distribution": ["D0_STD", "D1_OVERFLOW", "D2_SUBNORM", "D3_CANCEL", "D4_ULP_INF", "D5_ESCAPE_REPRO"],
             },
             "cases": [
-                {"id": "g0_d0_scalar", "geometry": "G0_DEGEN", "distribution": "D0_STD", "shape": [1], "dtype": "float32", "verified": True},
-                {"id": "g1_d3_odd33", "geometry": "G1_ODD_ALIGN", "distribution": "D3_CANCEL", "shape": [5, 33], "dtype": "bfloat16", "verified": True},
-                {"id": "g2_d1_tile41", "geometry": "G2_CORE_TILE", "distribution": "D1_OVERFLOW", "shape": [41, 4097], "dtype": "float16", "verified": True},
+                {"id": "g0_d0_scalar", "geometry": "G0_DEGEN", "distribution": "D0_STD", "shape": [1], "dtype": "float32", "verified": False},
+                {"id": "g1_d3_odd33", "geometry": "G1_ODD_ALIGN", "distribution": "D3_CANCEL", "shape": [5, 33], "dtype": "bfloat16", "verified": False},
+                {"id": "g2_d1_tile41", "geometry": "G2_CORE_TILE", "distribution": "D1_OVERFLOW", "shape": [41, 4097], "dtype": "float16", "verified": False},
             ],
         }
         corr_path.write_text(json.dumps(corr_spec, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -87,6 +87,11 @@ def scaffold_workspace(
 ) -> dict[str, Any]:
     target_dir = target_dir.expanduser().resolve()
     target_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = target_dir / "opsb.workspace.json"
+    previous = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+    if previous.get("contest_id") != contest_id:
+        previous = {}
+    previous_rows = {p["title"]: p for p in previous.get("problems", [])}
 
     if not problems:
         problems = [{"title": "SampleCustomOp", "difficulty": 2, "sdk_version": "9.1.0"}]
@@ -99,6 +104,8 @@ def scaffold_workspace(
         repo_slug = p.get("repo_slug") or (f"{repo_prefix}-{slug}" if repo_prefix else slug)
         normalized.append(
             {
+                **previous_rows.get(title, {}),
+                **p,
                 "title": title,
                 "slug": slug,
                 "repo_slug": repo_slug,
@@ -141,16 +148,6 @@ def scaffold_workspace(
             (p_dir / sub).mkdir(parents=True, exist_ok=True)
         b_info = scaffold_operator_bench(p_dir, p["title"])
         frozen_oracles[p["title"]] = b_info["reference_sha256"]
-        (p_dir / "AGENTS.md").write_text(
-            PROBLEM_AGENTS_MD.format(
-                problem=p["title"],
-                difficulty=p["difficulty"],
-                git_owner=git_owner,
-                repo_slug=p["repo_slug"],
-                npu_host=npu_host,
-            ),
-            encoding="utf-8",
-        )
         if not (p_dir / "PROBLEM.md").exists():
             (p_dir / "PROBLEM.md").write_text(
                 PROBLEM_SPEC_MD.format(
@@ -168,9 +165,10 @@ def scaffold_workspace(
         created_dirs.append(str(p_dir))
 
     ws_meta = {
+        **previous,
         "schema_version": 2,
         "layout": "clean-agents-first",
-        "created_at": utc_now().isoformat(),
+        "created_at": previous.get("created_at") or utc_now().isoformat(),
         "title": contest_title,
         "contest_id": contest_id,
         "contest_url": contest_url,
@@ -178,11 +176,12 @@ def scaffold_workspace(
         "repo_prefix": repo_prefix,
         "npu_ssh_host": npu_host,
         "problems": normalized,
-        "frozen_oracles": frozen_oracles,
+        "frozen_oracles": {title: previous.get("frozen_oracles", {}).get(title, digest)
+                           for title, digest in frozen_oracles.items()},
     }
     (target_dir / "opsb.workspace.json").write_text(json.dumps(ws_meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     (target_dir / ".gitignore").write_text(".opsb/\n.DS_Store\n__pycache__/\n*.pyc\nbuild_out/\nPROF_*\n*.svg\nsession.json\n", encoding="utf-8")
-    (target_dir / "AGENTS.md").write_text(WORKSPACE_AGENTS_MD.format(contest_title=contest_title), encoding="utf-8")
+    write_agent_guides(target_dir, ws_meta)
 
     return {
         "workspace": str(target_dir),
@@ -191,3 +190,12 @@ def scaffold_workspace(
         "problem_count": len(normalized),
         "problem_dirs": created_dirs,
     }
+
+
+def write_agent_guides(workspace: Path, manifest: dict) -> None:
+    for problem in manifest["problems"]:
+        guide = workspace / problem["path"] / "AGENTS.md"
+        guide.write_text(PROBLEM_AGENTS_MD.format(problem=problem["title"], difficulty=problem["difficulty"],
+                         git_owner=manifest["git_owner"], repo_slug=problem["repo_slug"],
+                         npu_host=manifest["npu_ssh_host"]), encoding="utf-8")
+    (workspace / "AGENTS.md").write_text(WORKSPACE_AGENTS_MD.format(contest_title=manifest["title"]), encoding="utf-8")
