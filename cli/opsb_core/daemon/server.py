@@ -37,6 +37,7 @@ from .agent_routes import handle_agent_get, handle_agent_post
 from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
 from ..services.submit_runner import spawn_jump_submit
+from ..ipc_bridge import invoke_bridge
 
 DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
@@ -161,11 +162,27 @@ class OpsbDaemonRuntime:
         now = time.monotonic()
         queue = snapshot.get("submission_queue", [])
         for item in queue:
-            if item.get("kind") not in ("pending", "candidate") or not item.get("gates", {}).get("all_pass"):
+            if not item.get("gates", {}).get("all_pass"):
+                continue
+            promote = item.get("kind") == "candidate" and item.get("requested_submission")
+            if item.get("kind") != "pending" and not promote:
                 continue
             title, sha = item["title"], item["sha"]
             key = (workspace, title, sha)
             if backoff.get(key, 0) > now:
+                continue
+            if promote:
+                args = ["--title", title, "--sha", sha, "--note", item.get("request_note") or ""]
+                if item.get("agent_id"):
+                    args.extend(["--agent-id", item["agent_id"]])
+                if item.get("speedup") is not None:
+                    args.extend(["--speedup", str(item["speedup"])])
+                reply = invoke_bridge(workspace, "submit", args) or {}
+                if reply.get("enqueued"):
+                    self.state_cache.invalidate(workspace)
+                    self.notify_subscribers()
+                    return
+                backoff[key] = now + 5
                 continue
             result = spawn_jump_submit(CLI_DIR / "opsb", workspace, title, sha, item.get("note") or "",
                                        enforce_operator_mutex=True)
@@ -184,10 +201,11 @@ class OpsbDaemonRuntime:
         while not stop.wait(1):
             try:
                 cfg = ConfigRepository.load()
-                if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
-                    continue
                 ws = Path(cfg.get("active_workspace") or self.workspace).expanduser().resolve()
                 if not (ws / "results").is_dir():
+                    continue
+                self.agent_mesh.deliver_judgements(ws, float(cfg.get("scheduler", {}).get("breakthrough_threshold", 5.0)))
+                if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
                     continue
                 _, _, data = self.state_cache.get_snapshot(ws)
                 backoff = {key: until for key, until in backoff.items() if until > time.monotonic()}

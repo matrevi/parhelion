@@ -27,12 +27,13 @@ struct AccountsSettingsTab: View {
     }
 
     var body: some View {
+        GeometryReader { geometry in
         HStack(alignment: .top, spacing: 14) {
             SurfaceCard(padding: 12) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Label(lang.tr("Judge 团队多账号提交器", "Judge Team Submitters"), systemImage: "person.2.badge.gearshape.fill")
+                            Label(lang.tr("Judge 队员账号", "Judge Accounts"), systemImage: "person.2.badge.gearshape.fill")
                                 .font(.system(size: 13.5, weight: .bold))
                             Spacer()
                             let activeCnt = accountSlots.filter { $0.enabled && $0.loggedIn }.count
@@ -134,6 +135,7 @@ struct AccountsSettingsTab: View {
                                 Text(lang.tr("刷新主账号", "Primary Slot")).tag("primary")
                             }
                             .pickerStyle(.segmented)
+                            .labelsHidden()
                             .controlSize(.small)
 
                             Button {
@@ -290,10 +292,10 @@ struct AccountsSettingsTab: View {
                     if let fb = gcFeedback {
                         Text(fb).font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                    Spacer()
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(width: max(200, (geometry.size.width - 14) * 0.34), alignment: .top)
+        }
         }
     }
 

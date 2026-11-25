@@ -744,9 +744,7 @@ def read_locks_procfs() -> list[dict[str, Any]]:
                     dev = os.makedev(int(parts[0], 16), int(parts[1], 16))
                     matched_path = by_dev_ino.get((dev, ino))
                 except ValueError:
-                    pass
-                if matched_path is None:
-                    matched_path = by_ino.get(ino)
+                    continue
                 if matched_path is None:
                     continue
                 locks.append(
@@ -921,7 +919,6 @@ class StreamProbeSession:
         self._proc_lock = threading.Lock()
         self._procs_cache: dict[int, dict[str, Any]] = {}
         self._procs_ts: float = 0.0
-        self._locks_cache: list[dict[str, Any]] = []
 
         # Incremental die_ledger.jsonl mtime/size cache
         self._ledger_sig: tuple[int, int] | None = None
@@ -951,7 +948,6 @@ class StreamProbeSession:
         self._prev_cpu_stat = _parse_proc_stat()
         with self._proc_lock:
             self._procs_cache = read_processes_procfs()
-            self._locks_cache = read_locks_procfs()
             self._procs_ts = time.monotonic()
 
         if self.dcmi_ok:
@@ -983,9 +979,6 @@ class StreamProbeSession:
                 if not self.dcmi_ok:
                     self._refresh_smi_if_needed(force=False)
 
-                locks = read_locks_procfs()
-                with self._proc_lock:
-                    self._locks_cache = locks
                 if (time.monotonic() - self._procs_ts) >= 2.0:
                     procs = read_processes_procfs()
                     with self._proc_lock:
@@ -1137,13 +1130,6 @@ class StreamProbeSession:
         cpu = self._read_cpu_and_load_mem()
         mem = read_memory()
 
-        # 3. Read locks (cached in stream mode, live in --once) + high-freq session/tickets/cpu_builds files
-        if self.stream_mode:
-            with self._proc_lock:
-                locks = [lk for lk in self._locks_cache if os.path.exists(f"/proc/{lk['pid']}")]
-        else:
-            locks = read_locks_procfs()
-
         die_session: dict[str, Any] = {}
         sess_file = self.opsb_home / "die_session.json"
         if sess_file.is_file():
@@ -1170,6 +1156,7 @@ class StreamProbeSession:
                 except Exception:
                     continue
 
+        locks = read_locks_procfs()
         hint_pids: set[int] = {int(lk["pid"]) for lk in locks}
         if die_session.get("pid"):
             hint_pids.add(int(die_session["pid"]))

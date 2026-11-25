@@ -79,11 +79,54 @@ def test_dispatch_skips_held_and_busy_title(tmp_path, monkeypatch):
     runtime = Mock()
     launch = Mock(side_effect=[{"operator_inflight": True}, {"ok": True}])
     monkeypatch.setattr("opsb_core.daemon.server.spawn_jump_submit", launch)
-    rows = [{"kind": "candidate", "gates": {"all_pass": passed}, "title": t, "sha": "0123456789"}
+    rows = [{"kind": "pending", "gates": {"all_pass": passed}, "title": t, "sha": "0123456789"}
             for t, passed in (("held", False), ("busy", True), ("ready", True), ("later", True))]
+    rows.insert(0, {"kind": "candidate", "title": "tested-only", "sha": "0123456789", "gates": {"all_pass": True}})
     OpsbDaemonRuntime.dispatch_next(runtime, tmp_path, {"submission_queue": rows}, {})
     assert [c.args[2] for c in launch.call_args_list] == ["busy", "ready"]
     assert all(c.kwargs["enforce_operator_mutex"] for c in launch.call_args_list)
+
+
+def test_promote_requested_candidate_preserves_worker(tmp_path, monkeypatch):
+    promote = Mock(return_value={"enqueued": True})
+    launch = Mock()
+    monkeypatch.setattr("opsb_core.daemon.server.invoke_bridge", promote)
+    monkeypatch.setattr("opsb_core.daemon.server.spawn_jump_submit", launch)
+    row = dict(kind="candidate", requested_submission=True, title="Op", sha="abc1234",
+               gates={"all_pass": True}, agent_id="worker", request_note="measured")
+    OpsbDaemonRuntime.dispatch_next(Mock(), tmp_path, {"submission_queue": [row]}, {})
+    assert promote.call_args.args == (tmp_path, "submit", [
+        "--title", "Op", "--sha", "abc1234", "--note", "measured", "--agent-id", "worker"])
+    launch.assert_not_called()
+
+
+def test_reference_acl_timings_remain_diagnostic():
+    from scheduler.estimator import parse_validation_perf
+    key = "a" * 64 + "-" + "b" * 64
+    log = "\n".join(json.dumps(dict(case=k, dev_us=540.0)) for k in (key, "legacy-case"))
+    assert parse_validation_perf(log)["dev_event_cases"] == {"legacy-case": 540.0}
+
+
+def test_review_trial_binds_changed_root_kernel_and_receipt(tmp_path):
+    from scheduler.case_feedback import authorize_review_trial
+    def git(*args):
+        return subprocess.check_output(["git", "-C", tmp_path, *args], text=True).strip()
+    git("init", "-q")
+    def commit(content):
+        (tmp_path / "kernel.asc").write_text(content)
+        git("add", "kernel.asc")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", content)
+        return git("rev-parse", "HEAD")
+    bad_sha, good_sha = commit("old"), commit("fixed")
+    folder = tmp_path / bad_sha
+    folder.mkdir()
+    bad = dict(sha=bad_sha, run_id="old", engine="e", oracle="o",
+               environment={"soc": "a"}, settings={"strict_fp32": True})
+    good = dict(bad, sha=good_sha, run_id="new")
+    state = dict(escape_lock=True, escape_sha=bad_sha, escape_submission_id="sid", escape_status="Wrong Answer")
+    result = authorize_review_trial(tmp_path, folder, bad, good, state, "reviewed")
+    assert result["ok"] and not result["cleared"]
+    assert not authorize_review_trial(tmp_path, folder, bad, dict(good, sha=commit("different")), state, "new")["ok"]
 
 
 def test_second_worker_uploads_while_first_is_polling(tmp_path, monkeypatch):

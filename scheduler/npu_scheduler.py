@@ -253,7 +253,7 @@ waiting_roots = set()
 try:
     for line in pathlib.Path("/proc/locks").read_text().splitlines():
         for ikey, bname in inodes.items():
-            if ikey in line:
+            if ikey in line.split():
                 parts = line.split()
                 is_blocked = len(parts) > 1 and parts[1] == "->"
                 off = 1 if is_blocked else 0

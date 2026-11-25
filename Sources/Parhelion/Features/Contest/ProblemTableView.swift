@@ -79,6 +79,29 @@ struct ProblemTableView: View {
 
             Divider()
 
+            GeometryReader { geometry in
+                ScrollView(.horizontal) {
+                    VStack(spacing: 0) {
+                        tableHeader
+                        Divider()
+                        ScrollView {
+                            LazyVStack(spacing: 1) {
+                                ForEach(displayed) { p in
+                                    row(p)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture { store.selectedProblemTitle = p.title }
+                                }
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .frame(width: max(geometry.size.width, 776), height: geometry.size.height)
+                }
+            }
+        }
+    }
+
+    private var tableHeader: some View {
             HStack(spacing: 6) {
                 Text(lang.tr("级别", "Tier")).frame(width: 36, alignment: .leading)
                 Text(lang.tr("算子", "Operator")).frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
@@ -96,19 +119,6 @@ struct ProblemTableView: View {
             .padding(.vertical, 8)
             .background(Color.primary.opacity(0.025))
 
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 1) {
-                    ForEach(displayed) { p in
-                        row(p)
-                            .contentShape(Rectangle())
-                            .onTapGesture { store.selectedProblemTitle = p.title }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-        }
     }
 
     private func row(_ p: ProblemItem) -> some View {
@@ -123,6 +133,7 @@ struct ProblemTableView: View {
                 Text(p.title)
                     .font(.system(size: 13.5, weight: .semibold))
                     .lineLimit(1)
+                    .help(p.title)
                 HStack(spacing: 5) {
                     if !p.headSha.isEmpty {
                         Text(String(p.headSha.prefix(7)))

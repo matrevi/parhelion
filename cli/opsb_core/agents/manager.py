@@ -26,6 +26,40 @@ STAGNATION_STREAK_THRESHOLD = 6
 STRATEGIC_KINDS = frozenset({"breakthrough", "stagnation", "escape_zero", "directive", "question", "error"})
 
 
+def judge_feedback(rows, threshold, gamma):
+    import sys
+    if str(_cfg.SUPERVISOR_ROOT) not in sys.path:
+        sys.path.insert(0, str(_cfg.SUPERVISOR_ROOT))
+    from scheduler.estimator import ScoreEstimator
+    from ..services.judge_score_fetch import TERMINAL_JUDGE_STATUSES
+
+    receipts = {}
+    for row in rows:
+        sid = row.get("submission_id")
+        stamp = _cfg.parse_iso(row.get("submitted_at") or row.get("finished_at"))
+        if sid and stamp and row.get("status") in TERMINAL_JUDGE_STATUSES:
+            receipts[sid] = (stamp, row)
+    ordered = sorted(receipts.values(), key=lambda item: (item[0], str(item[1]["submission_id"])))
+    previous = []
+    last_rotation = 0
+    for stamp, row in ordered:
+        if row["status"] == "Pass" and row.get("score") is None:
+            continue
+        score = float(row.get("score") or 0)
+        def peak(history):
+            return max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp)
+                        for ts, s in history), default=0.0)
+        prior = peak(previous)
+        previous.append((stamp, score))
+        events = []
+        if row["status"] == "Pass" and score * gamma - prior > threshold:
+            events.append(("breakthrough", "Review the measured gain and delegate a reusable KB entry with evidence."))
+        if len(previous) - last_rotation >= 6 and peak(previous[-6:]) - peak(previous[:-6]) <= threshold:
+            events.append(("stagnation", "Summarize the last six paid attempts and assign a new worker an orthogonal direction."))
+            last_rotation = len(previous)
+        yield row, events
+
+
 def _git_branch_and_sha(path: Path) -> tuple[str, str]:
     if not path.is_dir():
         return "", ""
@@ -174,10 +208,55 @@ class AgentMeshManager:
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._stores: dict[str, AgentBusStore] = {}
+        self._feedback_versions = {}
         self._runners: dict[str, _WorkerRunner] = {}
         self._doctor_cache: tuple[float, dict[str, Any]] = (0.0, {})
         self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
         self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    def deliver_judgements(self, ws: Path, threshold: float) -> None:
+        ledger = ws / "results/submit-queue-outcome.jsonl"
+        if not ledger.is_file():
+            return
+        version = ledger.stat().st_mtime_ns, ledger.stat().st_size
+        if self._feedback_versions.get(ws) == version:
+            return
+        rows_by_title = {}
+        for row in _cfg.read_jsonl(ledger):
+            if row.get("submission_id") and row.get("title"):
+                rows_by_title.setdefault(row["title"], []).append(row)
+        requests = {(r.get("title"), r.get("sha"), r.get("queued_at")): r.get("agent_id")
+                    for r in _cfg.read_jsonl(ws / "results/submit-queue.jsonl") if r.get("agent_id")}
+        store = self._store(ws)
+        for title, rows in rows_by_title.items():
+            cal = _cfg.read_json(ws / "results" / title / "calibration.json", {})
+            gamma = float(cal.get("decay_factor_gamma") or 1.0)
+            results = list(judge_feedback(rows, threshold, gamma))
+            for row, events in results:
+                sha, sid = row.get("sha") or "", row["submission_id"]
+                agent = row.get("agent_id") or requests.get((title, sha, row.get("queued_at")))
+                body = f"{title} {sha[:7]} · {row['status']} · score {row.get('score')} · submission {sid}"
+                if row["status"] in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
+                    from ..services.queue_service import check_commit_safety_gate
+                    if sha and check_commit_safety_gate(ws, title, sha):
+                        events.append(("escape_zero", "Review the local/online divergence, add a regression case, and assign an independent KB review."))
+                if agent:
+                    feedback = body + " " + " ".join(message for _, message in events)
+                    msg = store.append_message(agent, "orch_to_worker", "judge_result", feedback,
+                                               problem=title, commit_sha=sha, event_key=f"receipt:{sid}:{agent}")
+                    if msg:
+                        with self._lock:
+                            runner = self._runners.get(agent)
+                        if runner:
+                            runner.enqueue(feedback)
+                        self._notify()
+                for kind, message in events:
+                    msg = store.append_message(agent or "platform", "worker_to_orch", kind, body + " " + message,
+                                               problem=title, priority="strategic", commit_sha=sha,
+                                               event_key=f"strategy:{sid}:{kind}")
+                    if msg:
+                        self._notify()
+        self._feedback_versions[ws] = version
 
     def _notify(self) -> None:
         with self._cond:

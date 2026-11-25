@@ -125,7 +125,7 @@ def catalog(repo, sha, profile):
         raise ValueError("Empty or duplicate official case IDs")
     if (
         set(profile)
-        - {"version", "variants", "buckets", "timing", "repeats", "case_timeout"}
+        - {"version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32"}
         or profile.get("version", 1) != 1
     ):
         raise ValueError("Unsupported bench profile fields or version")
@@ -173,7 +173,13 @@ def load_profile(ws, title, path=None):
         if path
         else workspace_bench_specs_dir(ws) / title / "case-profile.json"
     )
-    return json.loads(file.read_text()) if path or file.exists() else {}
+    profile = json.loads(file.read_text()) if path or file.exists() else {}
+    strict = profile.get("strict_fp32", read_doc(ws / "opsb.workspace.json").get("bench_strict_fp32", False))
+    if not isinstance(strict, bool):
+        raise ValueError("strict_fp32 must be true or false")
+    if strict:
+        profile["strict_fp32"] = True
+    return profile
 
 
 # The source archive contains exactly the named commit. The remote process owns and
@@ -274,6 +280,7 @@ def run(
         "wspt_base": wspt_base,
         "aging_tau": aging_tau,
         "selected": selected,
+        "strict_fp32": profile.get("strict_fp32", False),
         "timing": timing,
         "repeats": repeat_count,
         "timeout": timeout,
@@ -429,22 +436,13 @@ def run(
             official=summarize([r for r in results if r["source"] == "official"]),
         )
         event("finish", exit_code=report["exit_code"], summary=summary)
-        # Existing score calibration consumes device events separately from profiler timings.
+        # Process-scoped ACL samples include setup overhead. Keep them in the report
+        # for diagnostics; exporting them as kernel times contaminates score calibration.
+        report["timing_source"] = "reference_acl_event"
+        report["timing_score_eligible"] = False
         env = report.get("environment", {})
         if formal and ok and env.get("soc"):
             print("RUNTIME_SOC=" + env["soc"], file=log)
-            protocol = digest([env, host, report["engine"]])
-            for row in results:
-                if row.get("device_us"):
-                    print(
-                        json.dumps(
-                            {
-                                "case": protocol + "-" + row["key"],
-                                "dev_us": statistics.median(row["device_us"]),
-                            }
-                        ),
-                        file=log,
-                    )
     atomic_write_json(dest / "report.json", report)
     # The UI follows the most recently finished run. The gate follows its own formal pointer.
     with (folder / ".bench-publish.lock").open("a") as lock:
@@ -548,6 +546,8 @@ def compare_runs(left, right):
         "before": left["run_id"],
         "after": right["run_id"],
         "same_environment": same_env,
+        "timing_source": "reference_acl_event",
+        "timing_score_eligible": False,
         "cases": paired,
         "buckets": groups,
         "selected_before": len(left["selected"]),
@@ -587,13 +587,13 @@ def formal_evidence(folder, repo, record):
     ):
         return {}
     try:
-        oracle, cases = catalog(
-            repo, folder.name, load_profile(folder.parents[2], folder.parent.name)
-        )
+        profile = load_profile(folder.parents[2], folder.parent.name)
+        oracle, cases = catalog(repo, folder.name, profile)
         required = {c["id"]: c["key"] for c in cases}
         rows = report["cases"]
         if (
             report["oracle"] == oracle
+            and bool(report.get("settings", {}).get("strict_fp32")) == bool(profile.get("strict_fp32"))
             and len(rows) == len(required)
             and {r["id"]: r["key"] for r in rows if r["status"] == "PASS"} == required
         ):
@@ -634,6 +634,7 @@ def list_cases(ws, title, repo, rev, profile_path=None):
             )
         return {
             "scheme": "reference",
+            "measurement_notes": read_doc(ws / "opsb.workspace.json").get("bench_observations", {}).get(title, []),
             "sha": sha,
             "oracle": oracle,
             "cases": cases,

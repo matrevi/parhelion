@@ -89,13 +89,11 @@ struct ChevronStackGlyph: View {
             let halfW: CGFloat = 4.6
             let chevH: CGFloat = 3.1
             let steps = CGFloat(max(1, level - 1))
-            let margin: CGFloat = 1.6
-            let fitStep = min(Self.legacyStepY, max(1.4, (size.height - chevH - margin * 2) / steps))
-            let stepY = level <= 3 ? Self.legacyStepY : fitStep
+            let stepY = level <= 3 ? Self.legacyStepY : 2 * Self.legacyStepY / steps
             let lineWidth = level <= 3
                 ? Self.legacyLineWidth
                 : max(1.15, Self.legacyLineWidth * (stepY / Self.legacyStepY))
-            let totalH = chevH + steps * stepY
+            let totalH = chevH + CGFloat(max(0, level - 1)) * stepY
             let startY = (size.height - totalH) / 2.0
 
             for i in 0..<level {

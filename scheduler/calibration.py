@@ -1944,6 +1944,7 @@ class BenchmarkCalibrator:
         title: str,
         bad_sha: str,
         good_sha: str,
+        review: str = "",
     ) -> dict[str, Any]:
         """Verify that a regression test separates `bad_sha` from passing `good_sha`, clearing `ESCAPE_LOCK`."""
         c_bad = resolve_sha(self.workspace, title, bad_sha)
@@ -1979,6 +1980,12 @@ class BenchmarkCalibrator:
             good = formal_evidence(good_res.parent,repo,good_record)
             if good:
                 evidence = regression_evidence(good_res.parent.parent/c_bad,good)
+            if not evidence and review.strip() and good and good["settings"].get("strict_fp32"):
+                from .case_bench import formal_evidence, read_doc
+                from .case_feedback import authorize_review_trial
+                bad_folder = good_res.parent.parent / c_bad
+                bad = formal_evidence(bad_folder, repo, read_doc(bad_folder / "result.json"))
+                return authorize_review_trial(repo, bad_folder, bad, good, self.inspect_escape_state(title), review)
             if not evidence:
                 return {"ok":False,"cleared":False,"title":title,"reason":"Need a matching failed case on bad SHA and a full formal pass on good SHA"}
         elif g_rc != 0 or "EXTENDED_PASSED" not in g_txt or "FAST_LANE=1" in g_txt:

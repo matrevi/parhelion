@@ -527,6 +527,8 @@ class SchedulerEngine:
             est = verdict.estimate
             items.append({
                 "queue_state": "HELD",
+                "agent_id": h_rec.get("agent_id", ""),
+                "speedup": h_rec.get("speedup"),
                 "title": verdict.title,
                 "sha": verdict.sha,
                 "short_sha": verdict.short_sha,
@@ -755,6 +757,7 @@ class SchedulerEngine:
         speedup: float | None = None,
         force: bool = False,
         dry_run: bool = False,
+        agent_id: str = "",
     ) -> dict[str, Any]:
         """Gate-checked submission enqueue entry point (`opsb submit`)."""
         self.refresh_models()
@@ -778,6 +781,8 @@ class SchedulerEngine:
                 }
                 if speedup is not None:
                     q_rec["speedup"] = speedup
+                if agent_id:
+                    q_rec["agent_id"] = agent_id
                 if verdict.forced or verdict.is_critical_restore:
                     q_rec["force"] = True
                 enqueued = _append_jsonl(self.workspace / "results" / "submit-queue.jsonl", q_rec)
@@ -787,13 +792,14 @@ class SchedulerEngine:
             else:
                 enqueued = True
         else:
-            if not dry_run and verdict.status_tag in ("HOLD_LOW_GAIN", "CIRCUIT_OPEN"):
+            if not dry_run and verdict.status_tag != "SKIPPED":
                 self.held_items[h_key] = {
                     "title": verdict.title,
                     "sha": verdict.sha,
                     "note": note,
                     "speedup": speedup,
                     "held_at": _utc_now(),
+                    "agent_id": agent_id,
                     "status_tag": verdict.status_tag,
                     "gate_reason": verdict.gate_reason,
                 }
@@ -871,6 +877,7 @@ class SchedulerEngine:
                         "title": title,
                         "sha": canonical_sha,
                         "note": reason or held.get("note") or "operator approved override",
+                        "agent_id": held.get("agent_id", ""),
                         "queued_at": _utc_now(),
                         "status": "queued",
                         "force": True,
@@ -1300,13 +1307,13 @@ class SchedulerEngine:
         except Exception:
             return None
 
-    def verify_escape(self, title: str, bad_sha: str, good_sha: str) -> dict[str, Any]:
+    def verify_escape(self, title: str, bad_sha: str, good_sha: str, review: str = "") -> dict[str, Any]:
         """Verify regression test between escaped `bad_sha` and passing `good_sha`, clearing `ESCAPE_LOCK`."""
         self.refresh_models()
         if title not in self.estimator.problems_meta:
             raise ValueError(f"Unknown problem title: {title}")
-        res = self.calibrator.verify_escape(title=title, bad_sha=bad_sha, good_sha=good_sha)
-        if res.get("ok"):
+        res = self.calibrator.verify_escape(title=title, bad_sha=bad_sha, good_sha=good_sha, review=review)
+        if res.get("ok") and not res.get("review_trial"):
             self.verified_escapes.update(self.calibrator.verified_escapes)
             self._save_state()
         return res
@@ -1532,6 +1539,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sub.add_argument("--speedup", type=float, default=None, help="Optional explicit speedup ratio k")
     p_sub.add_argument("--force", action="store_true", help="Force restore / bypass noise floor")
     p_sub.add_argument("--dry-run", action="store_true", help="Evaluate without mutating queue files")
+    p_sub.add_argument("--agent-id", default="", help="Worker inbox for the official result")
 
     p_dr = sub.add_parser("drain", parents=[common], help="Run WSPT single-consumer submission drain")
     p_dr.add_argument("--once", action="store_true", default=True, help="Drain current pending queue once")
@@ -1604,6 +1612,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ves.add_argument("--title", required=True, help="Operator problem title")
     p_ves.add_argument("--bad-sha", required=True, help="Commit SHA that escaped local validation and failed online")
     p_ves.add_argument("--good-sha", required=True, help="Fixed commit SHA with regression reproducer passing Q1")
+    p_ves.add_argument("--review", default="", help="Repair rationale for one exact-SHA online WA review")
 
     sub.add_parser("retrospect", parents=[common], help="Replay historical outcomes against 4-stage gate")
     return parser
@@ -1631,6 +1640,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "submit":
             payload = engine.submit(
+                agent_id=args.agent_id,
                 title=args.title,
                 sha=args.sha,
                 note=args.note,
@@ -1706,7 +1716,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_corr=args.min_corr,
             )
         elif args.command == "verify-escape":
-            payload = engine.verify_escape(title=args.title, bad_sha=args.bad_sha, good_sha=args.good_sha)
+            payload = engine.verify_escape(title=args.title, bad_sha=args.bad_sha, good_sha=args.good_sha, review=args.review)
             if not payload.get("ok", True):
                 print(json.dumps(sanitize_json_value(payload), indent=2, ensure_ascii=False, allow_nan=False))
                 return 1

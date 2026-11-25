@@ -108,6 +108,7 @@ class AgentBusStore:
             conn = self._connect()
             try:
                 conn.executescript(_SCHEMA_SQL)
+                conn.execute("BEGIN IMMEDIATE")
                 # Idempotent column migration for existing agent_bus.db
                 a_cols = {r[1] for r in conn.execute("PRAGMA table_info(agents)").fetchall()}
                 for col, ddl in (
@@ -121,9 +122,11 @@ class AgentBusStore:
                 for col, ddl in (
                     ("problem", "TEXT NOT NULL DEFAULT ''"),
                     ("priority", "TEXT NOT NULL DEFAULT 'normal'"),
+                    ("event_key", "TEXT"),
                 ):
                     if col not in m_cols:
                         conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {ddl}")
+                conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS messages_event ON messages(event_key)")
                 conn.commit()
             finally:
                 conn.close()
@@ -226,6 +229,7 @@ class AgentBusStore:
         commit_sha: str = "",
         priority: str = "normal",
         problem: str = "",
+        event_key: str | None = None,
     ) -> dict[str, Any]:
         now_iso = _cfg.utc_now().isoformat()
         now_ep = time.time()
@@ -242,17 +246,19 @@ class AgentBusStore:
                     """
                     INSERT INTO messages (
                         agent_id, problem, direction, kind, priority, body, artifacts_json, commit_sha,
-                        acked_by_orch, acked_by_worker, created_at, epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        acked_by_orch, acked_by_worker, created_at, epoch, event_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING
                     """,
                     (
                         agent_id, prob_val, direction, kind, str(priority or "normal"), str(body),
                         json.dumps(arts, ensure_ascii=False), str(commit_sha or ""),
                         1 if direction == "orch_to_worker" else 0,
                         1 if direction == "worker_to_orch" else 0,
-                        now_iso, now_ep,
+                        now_iso, now_ep, event_key,
                     ),
                 )
+                if not cur.rowcount:
+                    return {}
                 seq = int(cur.lastrowid or 0)
                 if direction == "worker_to_orch" and agent_id:
                     conn.execute(

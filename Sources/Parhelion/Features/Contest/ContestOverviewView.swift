@@ -20,7 +20,7 @@ struct ContestOverviewView: View {
 
                 HSplitView {
                     ProblemTableView(problems: snap.problems)
-                        .frame(minWidth: 700, idealWidth: 760)
+                        .frame(minWidth: 535, idealWidth: 820)
 
                     if let sel = selectedProblem {
                         ProblemInspectorView(problem: sel, gitOwner: snap.contest.gitOwner)

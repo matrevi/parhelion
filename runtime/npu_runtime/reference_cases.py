@@ -161,6 +161,18 @@ def compare(got, want, tolerance):
     return result
 
 
+def compare_output(got, want, tolerance, strict_fp32):
+    result = compare(got, want, tolerance)
+    if strict_fp32 and want.dtype.name == "float32":
+        limit = 6 * 1024 * 1024
+        rtol, atol, fraction = tolerance
+        limits = min(rtol, 1e-4), min(atol, 2e-6), fraction
+        strict = compare(got.reshape(-1)[:limit], want.reshape(-1)[:limit], limits)
+        result["strict_fp32"] = dict(strict, rtol=limits[0], atol=limits[1], mismatch_fraction=fraction)
+        result["pass"] = result["pass"] and strict["pass"]
+    return result
+
+
 def parts(golden, names, case, defaults):
     if set(golden) == set(names):
         return [({}, golden)]
@@ -310,8 +322,8 @@ def run_case(repo, executable, cfg, item, groups, attrs):
                 for name, want in outputs.items():
                     path = work / "output" / f"{name}.bin"
                     check = (
-                        compare(
-                            np.fromfile(path, dtype=want.dtype), want, tolerances[name]
+                        compare_output(
+                            np.fromfile(path, dtype=want.dtype), want, tolerances[name], cfg.get("strict_fp32", False)
                         )
                         if path.stat().st_size == want.nbytes
                         else {"pass": False, "reason": "byte size"}

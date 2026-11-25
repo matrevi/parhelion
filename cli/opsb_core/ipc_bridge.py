@@ -180,10 +180,13 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
 
     extra_cands: list[dict[str, Any]] = []
     bt_thresh = float(sched.get("breakthrough_threshold", 5.0))
-    candidates = list(bridge.get("unsubmitted_candidates") or [])
+    held = {(sq["title"], sq["sha"]): sq for sq in bridge.get("submit_queue") or []
+            if sq.get("queue_state") == "HELD"}
+    candidates = [uc for uc in bridge.get("unsubmitted_candidates") or []
+                  if (uc.get("title"), uc.get("sha")) not in held]
     for sq in bridge.get("submit_queue") or []:
         if sq.get("queue_state") == "HELD" and (sq["title"], sq["sha"]) not in existing:
-            candidates.append({**sq, "approved": all(st["passed"] for st in sq.get("stages", [])),
+            candidates.append({**sq, "approved": bool(sq.get("stages")) and all(st["passed"] for st in sq["stages"]),
                                "estimate": sq})
     for uc in candidates:
         t, sha = uc.get("title", ""), uc.get("sha", "")
@@ -257,6 +260,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                 {
                     "id": f"live-{t}-{sha[:7].lower()}" if sha[:7] else f"bridge-{t}",
                     "kind": "candidate",
+                    "requested_submission": (t, sha) in held,
+                    "agent_id": uc.get("agent_id"),
+                    "request_note": uc.get("note"),
+                    "speedup": uc.get("speedup"),
                     "title": t,
                     "difficulty": prob_diff.get(t, int(est_obj.get("difficulty") or 2)),
                     "sha": sha,

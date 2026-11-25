@@ -529,7 +529,7 @@ def build_snapshot() -> dict[str, Any]:
         m_die = re.search(r"device(\d+)\.lock$", path)
         if m_die:
             die_idx = int(m_die.group(1))
-            if "WRITE" in mode:
+            if mode == "WRITE":
                 # Prefer earliest ancestor holding the lock if child inherited fd
                 prev = die_holders.get(die_idx)
                 if prev is None or procs.get(pid, {}).get("elapsed_sec", 0) > procs.get(prev, {}).get("elapsed_sec", 0):

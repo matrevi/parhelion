@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import re
 import subprocess
 import tempfile
@@ -12,6 +13,33 @@ from .case_bench import catalog, committed, digest, load_profile, now, read_doc
 from .parhelion_paths import atomic_write_json, workspace_bench_specs_dir
 
 FAILURES = {"Wrong Answer": "WA", "Runtime Error": "RE", "Time Limit Exceeded": "TLE"}
+
+
+def trial_path(folder, submission_id):
+    return folder / ("escape-trial-" + hashlib.sha256(submission_id.encode()).hexdigest() + ".json")
+
+
+def authorize_review_trial(repo, folder, bad, good, state, reason):
+    sid = state.get("escape_submission_id")
+    if not (sid and state.get("escape_lock") and state.get("escape_status") == "Wrong Answer"
+            and state.get("escape_sha") == folder.name and bad
+            and bad["engine"] == good["engine"] and bad["oracle"] == good["oracle"]
+            and bad.get("environment") and bad["environment"] == good["environment"]
+            and bad["settings"].get("strict_fp32") and good["settings"].get("strict_fp32")):
+        return {"ok": False, "reason": "Need the active judge WA and matching full strict runs on both commits"}
+    diff = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", folder.name, good["sha"],
+                           "--", "kernel.asc", "op_host", "op_kernel"], check=False)
+    if diff.returncode != 1:
+        return {"ok": False, "reason": "No implementation change between reviewed commits"}
+    path = trial_path(folder, sid)
+    with (folder / ".escape-trial.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if path.exists() and read_doc(path).get("good_sha") != good["sha"]:
+            return {"ok": False, "reason": "Another repair commit is already bound to this receipt"}
+        record = {"bad_sha": folder.name, "good_sha": good["sha"], "submission_id": sid,
+                  "good_run": good["run_id"], "bad_run": bad["run_id"], "review": reason.strip()}
+        atomic_write_json(path, record)
+    return {"ok": True, "cleared": False, "review_trial": True, **record}
 
 
 def match_escape_submission(repo, bad_sha, problem_id, row):
@@ -67,6 +95,7 @@ def regression_evidence(folder, good):
             or bad.get("title") != good["title"]
             or bad.get("scheme") != "reference"
             or bad.get("engine") != good["engine"]
+            or bool(bad.get("settings", {}).get("strict_fp32")) != bool(good.get("settings", {}).get("strict_fp32"))
             or bad.get("oracle") != good["oracle"]
             or not bad.get("environment")
             or bad["environment"] != good["environment"]

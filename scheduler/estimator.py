@@ -586,7 +586,10 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
         "kernel_binary_stats": kernel_binary_stats,
         "cold_start_stats": cold_start_stats,
         "same_soc_exec_cases": same_soc_exec_cases,
-        "dev_event_cases": dev_event_cases,
+        # Legacy reference runs exported process-scoped timings under a pair of
+        # SHA-256 digests (protocol and input). Retain other event producers.
+        "dev_event_cases": {k: v for k, v in dev_event_cases.items()
+                            if not re.fullmatch(r"[0-9a-f]{64}-[0-9a-f]{64}", k)},
         "torch_cases": torch_cases,
         # additive: `PROF_SUMMARY` aggregates are kernel-level evidence, never case ids
         "prof_kernel_stats": prof_kernel_stats,

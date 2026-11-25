@@ -293,6 +293,8 @@ def run_bench(args: argparse.Namespace) -> int:
         extra = ["--title", args.problem] if getattr(args, "problem", None) else []
         if sub == "verify-escape":
             extra += ["--bad-sha", args.bad, "--good-sha", args.good]
+            if getattr(args, "review", None):
+                extra += ["--review", args.review]
         elif getattr(args, "sha", None):
             extra += ["--sha", args.sha]
         rc, parsed, raw_out = _call_bridge_subcmd(ws, sub, extra, timeout=180.0)

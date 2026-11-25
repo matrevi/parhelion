@@ -270,6 +270,7 @@ def build_parser() -> argparse.ArgumentParser:
     bn_ve.add_argument("problem")
     bn_ve.add_argument("--bad", required=True)
     bn_ve.add_argument("--good", required=True)
+    bn_ve.add_argument("--review", help="Request a scoped review trial when the official WA stays locally green")
     bn_ve.add_argument("--workspace", "-w")
     bn_ve.add_argument("--json", action="store_true")
     bn_ve.set_defaults(func=run_bench)

@@ -122,7 +122,12 @@ final class NpuLaneModel: ObservableObject {
             gone[prev.id] = (lingeringCard, laneIndex, now)
         }
         for id in used { gone[id] = nil }
-        gone = gone.filter { now.timeIntervalSince($0.value.since) < Self.lingerSec }
+        let livePids = Set(live.map { $0.task.pid })
+        gone = gone.filter {
+            let card = $0.value.card
+            return card.lane != .active && !livePids.contains(card.task.pid)
+                && now.timeIntervalSince($0.value.since) < Self.lingerSec
+        }
 
         let aliveIds = used.union(gone.keys)
         slotRank = slotRank.filter { aliveIds.contains($0.key) }

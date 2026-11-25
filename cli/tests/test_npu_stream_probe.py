@@ -50,10 +50,11 @@ class TestNpuStreamProbe(unittest.TestCase):
                     f"5: -> FLOCK  ADVISORY  WRITE 1002 08:10:{st0.st_ino} 0 EOF",
                     f"6: FLOCK  ADVISORY  READ 1003 08:10:{stv.st_ino} 0 EOF",
                     "7: FLOCK  ADVISORY  WRITE 9999 08:10:999999999 0 EOF",
+                    f"8: FLOCK  ADVISORY  WRITE 1234 08:11:{st0.st_ino} 0 EOF",
                 ]
             )
             fake_map = (
-                {(st0.st_dev, st0.st_ino): str(dev0), (stv.st_dev, stv.st_ino): str(val)},
+                {(os.makedev(8, 16), st0.st_ino): str(dev0), (os.makedev(8, 16), stv.st_ino): str(val)},
                 {st0.st_ino: str(dev0), stv.st_ino: str(val)},
             )
             orig_open = open

@@ -508,6 +508,18 @@ class SubmissionGate:
             if not report:
                 return StageResult(stage="SAFETY",passed=False,code="REFERENCE_SUITE_REQUIRED",
                                    reason="Run opsb test on this commit with the full current case profile")
+            state = self.estimator.get_calibrator().inspect_escape_state(title, as_of=as_of)
+            prior = self._prior_online_pass_shas.get((title, sha))
+            if state.get("escape_lock") and not (prior and (as_of is None or prior < as_of)):
+                from .case_bench import read_doc
+                from .case_feedback import trial_path
+                sid = state.get("escape_submission_id")
+                bad = state.get("escape_sha") or ""
+                trial = read_doc(trial_path(val_dir.parent / bad, sid)) if sid and re.fullmatch(r"[a-f0-9]{40}", bad) and as_of is None else {}
+                if trial.get("good_sha") != sha or trial.get("good_run") != report["run_id"]:
+                    return StageResult(stage="SAFETY", passed=False, code="ESCAPE_LOCK_ACTIVE",
+                                       reason="ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial",
+                                       metrics={"submission_id": sid, "bad_sha": bad})
             return StageResult(stage="SAFETY",passed=True,code="PASS",
                                reason=f"Full reference suite passed ({len(report['cases'])} cases)",
                                metrics={"run_id":report["run_id"],"extended_cases":len(report["cases"])})
