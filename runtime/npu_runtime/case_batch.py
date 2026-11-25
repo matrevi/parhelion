@@ -6,69 +6,32 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import deque
 from pathlib import Path
 
+from device_broker import SampleProcess, ensure_broker
 from lanes import case_series, device_lane
 
 
-class SampleProcess:
-    def __init__(self, executable, cfg):
-        self.executable, self.cfg = executable, cfg
-        self.proc = None
+def _timed(cfg, item):
+    if item.get("timed") is not None:
+        return bool(item["timed"])
+    timing = cfg.get("timing", "perf")
+    return timing == "all" or (timing == "perf" and bool(item.get("perf")))
 
-    def start(self):
-        self.log = tempfile.TemporaryFile()
-        self.channel, child = socket.socketpair()
-        try:
-            self.proc = subprocess.Popen(
-                [self.executable, self.cfg["device"]], stdin=subprocess.PIPE,
-                stdout=self.log, stderr=self.log, pass_fds=(child.fileno(),),
-                env={**os.environ, "OPSB_BATCH_FD": str(child.fileno())},
-            )
-        finally:
-            child.close()
-        self.reply = self.channel.makefile("rb")
 
-    def close(self, kill=False):
-        if self.proc is None:
-            return
-        if kill:
-            self.proc.kill()
-        try:
-            self.proc.stdin.close()
-        except BrokenPipeError:
-            pass
-        try:
-            self.proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait()
-        self.reply.close()
-        self.channel.close()
-        self.log.close()
-        self.proc = None
+def _workdir(base, name):
+    path = base / name
+    path.mkdir()
+    (path / "case.desc").symlink_to(base / "case.desc")
+    (path / "input").symlink_to(base / "input")
+    (path / "output").mkdir()
+    return path
 
-    def execute(self, path, timed, deadline):
-        if self.proc is None:
-            self.start()
-        try:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            self.channel.settimeout(remaining)
-            self.proc.stdin.write(f"{int(timed)} {path}\n".encode())
-            self.proc.stdin.flush()
-            fields = self.reply.readline(128).split()
-            if len(fields) == 2 and fields[0] == b"0":
-                return {"status": "PASS", "us": float(fields[1])}
-            detail = os.pread(self.log.fileno(), 1500, max(0, os.fstat(self.log.fileno()).st_size - 1500))
-            result = {"status": "RE", "detail": detail.decode(errors="replace")}
-        except TimeoutError:
-            result = {"status": "TLE", "detail": f"Device execution exceeded the {self.cfg['timeout']}s case budget"}
-        except (OSError, ValueError) as exc:
-            result = {"status": "RE", "detail": str(exc)}
-        self.close(kill=True)
-        return result
+
+def _sum_parts(groups):
+    """The r-th sample of a case is the sum of the r-th sample of every part."""
+    return [sum(group) for group in zip(*groups)]
 
 
 def prepare(repo, cfg, root, update):
@@ -78,8 +41,7 @@ def prepare(repo, cfg, root, update):
         update(progress)
         case = root / str(index)
         case.mkdir()
-        plan = dict(progress=progress, parts=[], samples=[], timed=cfg["timing"] == "all" or
-                    (cfg["timing"] == "perf" and item["perf"]))
+        plan = dict(progress=progress, parts=[], samples=[], cold=[], timed=_timed(cfg, item))
         plans.append(plan)
         try:
             proc = subprocess.run([sys.executable, str(repo.parent / "reference_cases.py"), str(index-1), str(case)],
@@ -87,17 +49,12 @@ def prepare(repo, cfg, root, update):
             if proc.returncode:
                 raise ValueError((proc.stderr or proc.stdout)[-1500:])
             plan["parts"] = json.loads((case / "parts.json").read_text())
+            count = cfg["repeats"] if plan["timed"] else 1
+            warmup = max(0, int(cfg.get("warmup") or 0)) if plan["timed"] else 0
             for part in plan["parts"]:
                 base = Path(part["path"])
-                count = cfg["repeats"] if plan["timed"] else 1
-                part["runs"] = []
-                for repeat in range(count):
-                    path = base / f"run-{repeat}"
-                    path.mkdir()
-                    (path / "case.desc").symlink_to(base / "case.desc")
-                    (path / "input").symlink_to(base / "input")
-                    (path / "output").mkdir()
-                    part["runs"].append(path)
+                part["warm"] = [_workdir(base, f"warm-{k}") for k in range(warmup)]
+                part["runs"] = [_workdir(base, f"run-{r}") for r in range(count)]
             if not plan["parts"]:
                 raise ValueError("Reference case produced no invocations")
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -106,25 +63,31 @@ def prepare(repo, cfg, root, update):
 
 
 def execute_case(sample, cfg, plan, update):
+    """Fallback lane execution: warm paths run first and only feed ``cold``."""
     deadline = time.monotonic() + cfg["timeout"]
     progress = dict(plan["progress"], phase="execute", started_epoch=time.time(), timeout_sec=cfg["timeout"])
     for index, part in enumerate(plan["parts"], 1):
-        samples = []
-        for repeat, path in enumerate(part["runs"], 1):
-            update(dict(progress, part=index, parts=len(plan["parts"]), repeat=repeat, repeats=len(part["runs"])))
-            result = sample.execute(path, plan["timed"], deadline)
-            if result["status"] != "PASS":
-                plan["error"] = result
-                return
-            samples.append(result["us"])
-            if not cfg.get("reuse_session", True):
-                sample.close()
-        plan["samples"].append(samples)
+        for stage, paths, sink in (("warm", part.get("warm") or [], plan.setdefault("cold", [])),
+                                   ("run", part["runs"], plan["samples"])):
+            samples = []
+            for repeat, path in enumerate(paths, 1):
+                update(dict(progress, part=index, parts=len(plan["parts"]), repeat=repeat, repeats=len(paths),
+                            stage=stage))
+                result = sample.execute(path, plan["timed"], deadline)
+                if result["status"] != "PASS":
+                    if result["status"] == "TLE":
+                        result = dict(result, detail=result["detail"] + " (broker unavailable)")
+                    plan["error"] = result
+                    return
+                samples.append(result["us"])
+                if not cfg.get("reuse_session", True):
+                    sample.close()
+            sink.append(samples)
 
 
-def execute_batch(repo, cfg, plans):
-    from collections import deque
-    ready = deque(plan for plan in plans if "error" not in plan)
+def _execute_lane(repo, cfg, ready):
+    """3.6.2 path: this run process takes its own ticket and the device flock."""
+    ready = deque(ready)
     sample = SampleProcess(repo / "build-casebench/sample", cfg)
     wait = hold = 0.0
     acquisitions = 0
@@ -146,7 +109,84 @@ def execute_batch(repo, cfg, plans):
             finally:
                 sample.close()
                 hold += time.monotonic() - started
-    return {"wait_sec": round(wait, 3), "hold_sec": round(hold, 3), "acquisitions": acquisitions}
+    return {"wait_sec": wait, "hold_sec": hold, "acquisitions": acquisitions}
+
+
+def broker_job(repo, cfg, ready):
+    """The broker submission for every ready plan (protocol in device_broker)."""
+    tier = cfg.get("tier")
+    return {
+        "run_id": cfg.get("run_id"), "title": cfg.get("title"), "sha": cfg.get("sha"),
+        "client_pid": os.getpid(), "tier": int(tier if tier is not None else 2 if cfg.get("fast") else 1),
+        "prio": float(cfg.get("wspt_base", 1.0)), "aging_tau": float(cfg.get("aging_tau", 600)),
+        "created": time.time(), "fast": bool(cfg.get("fast")),
+        "executable": str(repo / "build-casebench/sample"), "device": str(cfg["device"]),
+        "reuse_session": bool(cfg.get("reuse_session", True)), "case_timeout": cfg["timeout"],
+        "job_timeout": cfg.get("job_timeout") or min(1800, cfg["timeout"] * len(ready)),
+        "cases": [{"index": plan["progress"]["index"], "id": plan["progress"]["id"], "timed": bool(plan["timed"]),
+                   "warmup": len(plan["parts"][0].get("warm") or []) if plan["parts"] else 0,
+                   "parts": [{"warm": [str(p) for p in part.get("warm") or []],
+                              "runs": [str(p) for p in part["runs"]]} for part in plan["parts"]]}
+                  for plan in ready],
+    }
+
+
+def _execute_broker(path, repo, cfg, ready, update):
+    """Submit every ready plan as one job; return (done event or None, indices with a result)."""
+    by_index = {plan["progress"]["index"]: plan for plan in ready}
+    reported = set()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.connect(path)
+            conn.sendall((json.dumps({"op": "submit", "job": broker_job(repo, cfg, ready)}) + "\n").encode())
+            with conn.makefile("rb") as reader:
+                for line in reader:
+                    msg = json.loads(line)
+                    kind = msg.get("event")
+                    if kind == "queued":
+                        head = next(p for p in ready if p["progress"]["index"] not in reported)
+                        update(dict(head["progress"], phase="waiting", position=msg.get("position")))
+                    elif kind == "progress":
+                        plan = by_index[msg["index"]]
+                        update(dict(plan["progress"], phase="execute", part=msg["part"], parts=msg["parts"],
+                                    repeat=msg["repeat"], repeats=msg["repeats"], stage=msg["phase"],
+                                    timeout_sec=cfg["timeout"]))
+                    elif kind == "case":
+                        plan = by_index[msg["index"]]
+                        reported.add(msg["index"])
+                        if msg["status"] == "PASS":
+                            plan["samples"], plan["cold"] = [msg.get("samples") or []], [msg.get("cold") or []]
+                        else:
+                            plan["error"] = {"status": msg["status"], "detail": msg.get("detail", "")}
+                    elif kind == "done":
+                        return msg, reported
+                    elif kind == "error":
+                        print("device broker: " + str(msg.get("detail")), file=sys.stderr, flush=True)
+                        break
+    except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+        print(f"device broker unavailable: {exc!r}", file=sys.stderr, flush=True)
+    return None, reported
+
+
+def execute_batch(repo, cfg, plans, update=None):
+    update = update or (lambda progress: None)
+    ready = [plan for plan in plans if "error" not in plan]
+    path = ensure_broker(cfg, Path(__file__).with_name("device_broker.py").read_text(encoding="utf-8"))
+    result = {"wait_sec": 0.0, "hold_sec": 0.0, "segments": 0, "broker": path is not None}
+    if path is not None and ready:
+        done, reported = _execute_broker(path, repo, cfg, ready, update)
+        ready = [plan for plan in ready if plan["progress"]["index"] not in reported]
+        if done is not None:
+            result.update(wait_sec=done.get("wait_sec", 0.0), hold_sec=done.get("hold_sec", 0.0),
+                          segments=done.get("segments", 0))
+    if ready:
+        # Broker unavailable, or it went away mid-job: finish the unreported plans on the 3.6.2 lane.
+        lane = _execute_lane(repo, cfg, ready)
+        result.update(broker=False, wait_sec=result["wait_sec"] + lane["wait_sec"],
+                      hold_sec=result["hold_sec"] + lane["hold_sec"],
+                      segments=result["segments"] + lane["acquisitions"])
+    return {"wait_sec": round(result["wait_sec"], 3), "hold_sec": round(result["hold_sec"], 3),
+            "acquisitions": result["segments"], "segments": result["segments"], "broker": result["broker"]}
 
 
 def verify(plan, cfg, compare):
@@ -168,18 +208,20 @@ def verify(plan, cfg, compare):
                 checks[f"{index}/{name}"] = check
                 if not check["pass"]:
                     return {"status": "WA", "outputs": checks, "repeat": repeat}
-    times = [sum(group) for group in zip(*plan["samples"])] if plan["timed"] else []
-    return {"status": "PASS", "outputs": checks, "device_us": [t for t in times if t > 0]}
+    times = _sum_parts(plan["samples"]) if plan["timed"] else []
+    cold = _sum_parts(plan.get("cold") or []) if plan["timed"] else []
+    return {"status": "PASS", "outputs": checks, "device_us": [t for t in times if t > 0],
+            "cold_us": [t for t in cold if t > 0]}
 
 
 def run_series(repo, cfg, compare, emit):
     with case_series(cfg) as update, tempfile.TemporaryDirectory(dir=repo.parent) as tmp:
         plans = prepare(repo, cfg, Path(tmp), update)
-        emit("device_batch", **execute_batch(repo, cfg, plans))
+        emit("device_batch", **execute_batch(repo, cfg, plans, update))
         for plan in plans:
             update(dict(plan["progress"], phase="verify"))
             try:
                 result = plan.get("error") or verify(plan, cfg, compare)
             except (ValueError, OSError) as exc:
                 result = {"status": "ERROR", "detail": str(exc)}
-            emit("case", id=plan["progress"]["id"], **result)
+            emit("case", id=plan["progress"]["id"], **dict({"cold_us": []}, **result))

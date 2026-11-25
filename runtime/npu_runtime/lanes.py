@@ -84,6 +84,30 @@ def compile_lane(cfg, units=None):
         record.unlink(missing_ok=True)
 
 
+def ticket_directory():
+    return Path(os.environ.get("OPSB_TICKET_DIR") or "/tmp/opsb-npu-tickets")
+
+
+def reap_dead_tickets(directory):
+    """Delete admission tickets whose owning process no longer exists; return how many."""
+    removed = 0
+    for path in Path(directory).glob("*.json"):
+        try:
+            pid = int(json.loads(path.read_text())["pid"])
+            if pid <= 0:
+                continue
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return removed
+
+
 def _priority(ticket):
     return ticket["tier"], ticket["prio"], -ticket["created"]
 
@@ -120,7 +144,7 @@ def wait_as_queue_head(handle, directory, is_head, deadline=None):
 
 @contextmanager
 def device_lane(cfg):
-    directory = Path("/tmp/opsb-npu-tickets")
+    directory = ticket_directory()
     directory.mkdir(parents=True, exist_ok=True)
     owner = _identity(cfg)
     owner["case_progress"] = cfg.get("case_progress")
@@ -132,6 +156,7 @@ def device_lane(cfg):
     with Path(cfg["lock"]).open("a") as handle:
         try:
             while True:
+                reap_dead_tickets(directory)
                 wait = max(0, time.time() - created)
                 tier = 2 if fast or wait >= 1800 else 1
                 if ticket.exists():
