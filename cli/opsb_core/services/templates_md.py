@@ -6,9 +6,9 @@ Use the contest manifest to identify problems, repositories and team. Read the o
 
 ## Scoring workflow
 
-Assign each problem an owner and a measurable hypothesis. Compare a candidate against a passing baseline on matching inputs, environment and timing protocol. Review weighted gain over the contemporary board score, uncertainty, failed cases and historical escapes. Count actual judge receipts toward the three opening probes and the six-attempt stagnation window.
+When asked to start the contest, call `parhelion_sprint_start` and check the returned assignment states. Each problem gets independent algorithm and dataflow workers in separate worktrees. Inspect worker errors and retry blocked slots once resolved. Compare each candidate against a passing baseline on matching inputs, environment and timing protocol. Review weighted gain over the contemporary board score, uncertainty, failed cases and historical escapes. Count actual judge receipts toward the three opening probes and the six-attempt stagnation window.
 
-Workers independently request tests, preview their gate and enqueue the exact SHA through MCP. The platform owns device access, account selection, cooldown, quota and uploads. Use the returned evidence to plan the next experiment while waiting for the official verdict in the worker inbox.
+Set enable_auto_submit=true on start when the user asks for automatic submission. Verify the switch in the start receipt. Workers independently request tests, preview their gate and enqueue the exact SHA through MCP. The platform owns device access, account selection, cooldown, quota and uploads. Use the returned evidence to plan the next experiment while waiting for the official verdict in the worker inbox.
 
 The orchestrator can dispatch other Harnesses through the platform and inspect the ordered message history in Agent Mesh. Route admin directives, review local-pass/online-fail escapes, delegate verified breakthroughs for the five-pillar KB, and hand stagnant problems to a new worker with an orthogonal hypothesis. Record reusable lessons with evidence and applicability.
 """
@@ -18,7 +18,7 @@ PROBLEM_AGENTS_MD = """# {problem} · Operator Guide
 Repository `{git_owner}/{repo_slug}` · contest weight {difficulty} · NPU {npu_host}
 
 1. Read the official problem contract and inspect recent receipts, current board score and known Bugs. Find the case or bucket with measured headroom.
-2. Choose one change and a baseline SHA. Push the candidate, then call `parhelion_test_plan` with the problem, SHA and execute=true. Select individual cases for diagnosis and ablation. Run the full suite for formal evidence. Keep strict precision checks and the golden oracle intact.
+2. Choose one change and a baseline SHA. Commit in your assigned worktree, publish your branch with `git push origin HEAD`, then call `parhelion_test_plan` with the problem, explicit SHA and execute=true. Select individual cases for diagnosis and ablation. Run the full suite for formal evidence. Keep strict precision checks and the golden oracle intact.
 3. Compare identical inputs at matching settings. Use judge per-case times or calibrated local measurements. Record the hypothesis, SHA, cases, environment, result and uncertainty. Use `opsb bench compare` and `opsb bench evolve` to compare runs or propose a receipt-linked trial.
 4. Call `parhelion_submit_gate` to preview, then use enqueue=true to hand off a candidate. Check `parhelion_agent_inbox` for the official verdict. Review discrepancies before the next change. Escalate unresolved decisions through `parhelion_agent_report`.
 

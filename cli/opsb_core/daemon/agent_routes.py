@@ -37,6 +37,12 @@ def handle_agent_get(path: str, q: dict[str, str], ws: Path, runtime: Any) -> tu
 
 def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: Any) -> tuple[int, Any] | None:
     try:
+        if path == "/v1/agents/sprint":
+            from ..agents.sprint import start_sprint
+            return 200, start_sprint(runtime.agent_mesh, ws, driver=body_obj.get("driver") or "",
+                                     preview=body_obj.get("preview") is True,
+                                     enable_auto_submit=body_obj.get("enable_auto_submit") is True)
+
         if path == "/v1/agents/spawn":
             res = runtime.agent_mesh.spawn_agent(
                 ws,

@@ -212,7 +212,7 @@ class AgentBusStore:
             try:
                 rows = conn.execute(
                     f"SELECT * FROM agents {where} ORDER BY last_active_epoch DESC LIMIT ?",
-                    (max(1, int(limit)),),
+                    (-1 if limit == -1 else max(1, int(limit)),),
                 ).fetchall()
                 return [_row_to_agent(r) for r in rows]
             finally:

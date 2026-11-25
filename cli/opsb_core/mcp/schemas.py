@@ -154,6 +154,15 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "parhelion_sprint_start",
+        "description": "On a contest start request, launch or reuse two isolated workers per manifest problem. Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
+        "roles": ("orchestrator",),
+        "inputSchema": {"type": "object", "properties": {
+            "driver": {"type": "string"}, "preview": {"type": "boolean"},
+            "enable_auto_submit": {"type": "boolean", "description": "Enable the existing queue consumer for the active contest when the user requests automatic submission. Defaults to preserving the switch."}
+        }},
+    },
+    {
         "name": "parhelion_agent_spawn",
         "description": "Spawn a non-blocking autonomous external Harness worker (blocks active_driver self-dispatch; no concurrency cap; full bench+gate autonomy).",
         "roles": ("orchestrator",),

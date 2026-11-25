@@ -173,7 +173,7 @@ def _clean_session_brief(ws: Path, title: str, meta: dict[str, Any], p_meta: dic
     repo = str((p_meta or {}).get("repo_slug") or "")
     lines = [
         f"# Parhelion Kernel Session · {title} (Tier x{diff})",
-        f"- Workspace: `{ws}` | layout=clean-agents-first | repo `{repo}` (private, origin/main)",
+        f"- Workspace: `{ws}` | layout=clean-agents-first | repo `{repo}`",
         "",
         "## 官方模板所有权",
         "- 只读：`main.asc` `sample.py` `reference.py` `CMakeLists.txt` `run.sh`（改了判题会拒绝）",
@@ -182,12 +182,12 @@ def _clean_session_brief(ws: Path, title: str, meta: dict[str, Any], p_meta: dic
         "",
         "## 硬约束",
         "- 本机没有 SDK：禁止本地编译/执行；唯一评测入口是 `opsb test " + title + "`（远端 npu，device0.lock 串行）",
-        "- 测试前必须 `git add -A && git commit -m ... && git push origin main`，否则运行时拒绝",
+        "- 在分配的工作树中提交修改，用 `git push origin HEAD` 发布自己的分支，记录完整 SHA",
         "- 候选就绪后，自行运行 `opsb submit " + title + " <sha> --note '<验证证据>'` 入队。平台负责门禁、额度和实际上传。",
         "",
         "## 迭代循环",
         "1. 读 `main.asc` / `reference.py` 明确形状、dtype、PBC 与排序规则",
-        "2. 实现/修改 `kernel.asc`，commit 并 push `origin main`",
+        "2. 在自己的分支上实现一个可与基线比较的改动",
         "3. 自行运行 `opsb test " + title + " --sha <sha>` 进入验证队列。平台调度并行编译和设备使用。",
         "4. 验证失败先读逐例报告；用 parhelion_bench_diagnose 查看本题计时与分值的实测记录。小形状消融优先比较同一用例的 judge time。",
         "",
@@ -212,7 +212,7 @@ def _clean_sprint_brief(ws: Path, probs: list[dict[str, Any]], goal: str) -> str
     brief = """# Parhelion Contest Orchestrator
 Read opsb.workspace.json. Use opsb --workspace with the launch root. Refresh team rank, quota and queues. Prioritize high-weight zeros and same-era gains.
 
-Run problems in parallel, one owner and worktree per kernel. Prefer native workers. Use parhelion_agent_spawn for requested external Harnesses; Claude requires admin opt-in. Follow the editable template paths.
+On start, call parhelion_sprint_start. Set enable_auto_submit=true when requested. Inspect the returned switch and blocked slots. It starts or reuses two isolated workers per manifest problem on algorithm and dataflow tracks. Monitor their messages.
 
 Discover each suite with opsb bench cases <op>. Use opsb test --case for diagnosis, opsb bench compare for ablations and opsb bench evolve for receipt-linked profiles. Buckets group case IDs. Preserve measured ICT strata: PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME.
 
@@ -400,7 +400,7 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
     lines.extend([
         "",
         "## Subagent Orchestration Protocol",
-        "1. **Coordinate via Subagents**: Spawn isolated subagents (1 per high-ROI operator in dedicated git worktrees under `<op>/.worktrees/<track>`) to optimize operators in parallel, prioritizing Tier x3 & largest leader/restore gaps.",
+        "1. On start call parhelion_sprint_start with enable_auto_submit=true when requested. Inspect the switch, blocked slots and worker errors. Two isolated workers cover every manifest problem.",
         "2. **Fast-Feedback First**: Each subagent starts with `parhelion_bench_diagnose` / `parhelion_pmu_card` / `parhelion_elf_cold3_check` and queries the 5-Pillar KB (`parhelion_kb_query` — check `hardware` iron laws & anti-patterns before coding).",
         "3. **Lock-Safe Validation & Gated Submission**: Use `opsb test --build-only` / `--fast` / full (respecting Die 0 lock) and enqueue only gate-approved gains via `parhelion_submit_gate` / `opsb submit`.",
         "4. **Shared Memory**: Record verified silicon findings into `pillar=hardware` and reusable blocks into `pillar=snippets` via `parhelion_kb_record`.",

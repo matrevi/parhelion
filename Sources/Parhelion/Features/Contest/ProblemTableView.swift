@@ -16,9 +16,34 @@ enum ProblemFilter: String, CaseIterable, Identifiable {
     }
 }
 
+struct ProblemTableColumns {
+    let name: CGFloat
+    let verdict: CGFloat
+    let priority: CGFloat
+    let chat: CGFloat
+    // Tier, current, board, equivalent best and rank, plus the row's horizontal insets.
+    private var fields: CGFloat { name + verdict + priority + chat + 36 + 66 + 56 + 74 + 58 + 32 }
+    var idealWidth: CGFloat { fields + 8 * 8 }
+    var minimumWidth: CGFloat { fields + 8 * 3 }
+    func spacing(for width: CGFloat) -> CGFloat { min(8, max(3, (width - fields) / 8)) }
+
+    init(_ problems: [ProblemItem], _ lang: AppLanguage) {
+        func width(_ label: String, _ size: CGFloat) -> CGFloat {
+            ceil((label as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: size, weight: .semibold)]).width)
+        }
+        name = max(104, problems.map { width($0.title, 13.5) + 2 }.max() ?? 0)
+        verdict = max(width(lang.tr("最近判题", "Last verdict"), 11.5),
+                      problems.map { width($0.latestStatus.map { lang.evalStatus($0) } ?? "—", 10) + 17 }.max() ?? 0)
+        priority = max(width(lang.tr("调度建议", "Priority"), 11.5),
+                       problems.map { width(lang.wsptTag($0.wsptTag), 10) + 17 }.max() ?? 0)
+        chat = width(lang.tr("新开", "Launch"), 10) + 34
+    }
+}
+
 struct ProblemTableView: View {
     @EnvironmentObject var store: ContestStore
     let problems: [ProblemItem]
+    let columns: ProblemTableColumns
 
     @UIState private var filter: ProblemFilter = .all
     @UIState private var sortByROI: Bool = false
@@ -80,14 +105,16 @@ struct ProblemTableView: View {
             Divider()
 
             GeometryReader { geometry in
+                let width = max(geometry.size.width, columns.minimumWidth)
+                let spacing = columns.spacing(for: width)
                 ScrollView(.horizontal) {
                     VStack(spacing: 0) {
-                        tableHeader
+                        tableHeader(spacing: spacing)
                         Divider()
                         ScrollView {
                             LazyVStack(spacing: 1) {
                                 ForEach(displayed) { p in
-                                    row(p)
+                                    row(p, spacing: spacing)
                                         .contentShape(Rectangle())
                                         .onTapGesture { store.selectedProblemTitle = p.title }
                                 }
@@ -95,23 +122,23 @@ struct ProblemTableView: View {
                             .padding(.vertical, 4)
                         }
                     }
-                    .frame(width: max(geometry.size.width, 776), height: geometry.size.height)
+                    .frame(width: width, height: geometry.size.height)
                 }
             }
         }
     }
 
-    private var tableHeader: some View {
-            HStack(spacing: 6) {
+    private func tableHeader(spacing: CGFloat) -> some View {
+            HStack(spacing: spacing) {
                 Text(lang.tr("级别", "Tier")).frame(width: 36, alignment: .leading)
-                Text(lang.tr("算子", "Operator")).frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
-                Text(lang.tr("最近判题", "Last verdict")).frame(width: 74, alignment: .center)
+                Text(lang.tr("算子", "Operator")).frame(minWidth: columns.name, maxWidth: .infinity, alignment: .leading)
+                Text(lang.tr("最近判题", "Last verdict")).frame(width: columns.verdict, alignment: .center)
                 Text(lang.tr("当前分", "Current")).frame(width: 66, alignment: .trailing)
                 Text(lang.tr("在榜分", "Board")).frame(width: 56, alignment: .trailing)
                 Text(lang.tr("同代最优", "Equiv Best")).frame(width: 74, alignment: .trailing)
                 Text(lang.tr("排名", "Rank")).frame(width: 58, alignment: .trailing)
-                Text(lang.tr("调度建议", "Priority")).frame(width: 110, alignment: .trailing)
-                Text(lang.tr("对话", "Chat")).frame(width: 56, alignment: .trailing)
+                Text(lang.tr("调度建议", "Priority")).frame(width: columns.priority, alignment: .trailing)
+                Text(lang.tr("对话", "Chat")).frame(width: columns.chat, alignment: .trailing)
             }
             .font(.system(size: 11.5, weight: .semibold))
             .foregroundStyle(.secondary)
@@ -121,11 +148,11 @@ struct ProblemTableView: View {
 
     }
 
-    private func row(_ p: ProblemItem) -> some View {
+    private func row(_ p: ProblemItem, spacing: CGFloat) -> some View {
         let selected = p.title == store.selectedProblemTitle
         let gap = p.bestScore - p.currentScore
 
-        return HStack(spacing: 6) {
+        return HStack(spacing: spacing) {
             DifficultyBadge(difficulty: p.difficulty)
                 .frame(width: 36, alignment: .leading)
 
@@ -148,10 +175,10 @@ struct ProblemTableView: View {
                     }
                 }
             }
-            .frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: columns.name, maxWidth: .infinity, alignment: .leading)
 
             SemanticPill(text: p.latestStatus.map { lang.evalStatus($0) } ?? "—", compact: true)
-                .frame(width: 74, alignment: .center)
+                .frame(width: columns.verdict, alignment: .center)
 
             Text(p.latestScore.map { String(format: "%.2f", $0) } ?? "—")
                 .font(.system(size: 13.5, weight: .bold, design: .monospaced))
@@ -184,7 +211,7 @@ struct ProblemTableView: View {
                 .frame(width: 58, alignment: .trailing)
 
             SemanticPill(text: lang.wsptTag(p.wsptTag), compact: true)
-                .frame(width: 110, alignment: .trailing)
+                .frame(width: columns.priority, alignment: .trailing)
 
             Button {
                 Task { await store.launchOperatorSession(problem: p.title, mode: "gui") }
@@ -196,7 +223,7 @@ struct ProblemTableView: View {
             .controlSize(.mini)
             .disabled(store.isLaunchingSession)
             .help(lang.tr("新开调优对话 (opsb driver launch \(p.title) --mode gui)", "Launch tuning session for \(p.title)"))
-            .frame(width: 56, alignment: .trailing)
+            .frame(width: columns.chat, alignment: .trailing)
         }
         .contextMenu {
             Button {

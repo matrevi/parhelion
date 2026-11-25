@@ -13,6 +13,7 @@ from .handlers_agents import (
     tool_parhelion_agent_stop,
     tool_parhelion_agent_wait,
     tool_parhelion_harness_pool,
+    tool_parhelion_sprint_start,
 )
 from .handlers_bench import (
     tool_parhelion_bench_diagnose,
@@ -43,6 +44,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_test_plan": tool_parhelion_test_plan,
     "parhelion_submit_gate": tool_parhelion_submit_gate,
     "parhelion_harness_pool": tool_parhelion_harness_pool,
+    "parhelion_sprint_start": tool_parhelion_sprint_start,
     "parhelion_agent_spawn": tool_parhelion_agent_spawn,
     "parhelion_agent_send": tool_parhelion_agent_send,
     "parhelion_agent_wait": tool_parhelion_agent_wait,

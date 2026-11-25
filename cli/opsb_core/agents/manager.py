@@ -175,6 +175,7 @@ class AgentMeshManager:
         self._adapter_factory = adapter_factory
         self.max_workers = int(max_workers) if max_workers is not None else None
         self._lock = threading.Lock()
+        self.sprint_lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._stores: dict[str, AgentBusStore] = {}
         self._feedback_versions = {}
@@ -444,13 +445,14 @@ class AgentMeshManager:
         axis: str = "",
         worktree_mode: str = "isolated",
         track: str = "",
+        _sprint: bool = False,
     ) -> dict[str, Any]:
         ws = workspace.expanduser().resolve()
         drv_kind = str(driver or "").strip().lower()
         if drv_kind not in VALID_DRIVERS:
             raise ValueError(f"Unknown driver '{driver}'. Supported: {', '.join(VALID_DRIVERS)}")
         active = get_active_driver_kind()
-        if drv_kind == active:
+        if drv_kind == active and not _sprint:
             raise ValueError(
                 f"Self-dispatch blocked: '{drv_kind}' is the primary orchestrator. "
                 "Manage homogeneous subagents natively; use Parhelion MCP only for OTHER Harnesses."
@@ -466,7 +468,7 @@ class AgentMeshManager:
 
         store = self._store(ws)
         if self.max_workers is not None:
-            live_count = len(store.list_agents(include_stopped=False))
+            live_count = len(store.list_agents(include_stopped=False, limit=-1))
             if live_count >= self.max_workers:
                 raise RuntimeError(f"External worker limit reached ({live_count}/{self.max_workers}); stop an idle worker first.")
 
@@ -481,6 +483,8 @@ class AgentMeshManager:
             prob_title = resolved_title
             if mode == "isolated":
                 wt = prepare_session_worktree(ws, resolved_title, track_name=track or f"{drv_kind}-{safe_role}-{agent_id[-4:]}")
+                if _sprint and wt == repo_dir:
+                    raise ValueError(f"Cannot isolate a sprint worker in {repo_dir}; check the repository HEAD")
             else:
                 wt = repo_dir if repo_dir.is_dir() else ws
         else:
@@ -492,8 +496,8 @@ class AgentMeshManager:
             f"[Parhelion Autonomous Worker | id={agent_id} | role={safe_role} | squad={prob_title or ws.name} ({c_mode}{axis_line})]\n"
             f"Workspace: {ws}\nWorktree: {wt}\n"
             f"Autonomy Protocol: You operate autonomously under primary orchestrator ({active}).\n"
-            f"1. Queue validation via parhelion_test_plan (execute=true) or `opsb test`. Diagnose, fix and retest independently.\n"
-            f"2. Enqueue candidates directly via `parhelion_submit_gate`; the platform applies opening-probe rules, schedules uploads and manages quota.\n"
+            f"1. Read the problem guide. Commit on your assigned branch and push it with git push origin HEAD. Queue validation via parhelion_test_plan (execute=true, explicit SHA). Diagnose, fix and retest independently.\n"
+            f"2. Enqueue the exact SHA via parhelion_submit_gate (enqueue=true); the platform schedules uploads and returns official feedback to your inbox. Continue the next experiment while it judges.\n"
             f"3. Share results via `parhelion_agent_report`. Ask the orchestrator for a decision only when you sdkot resolve it.\n\n"
             f"Task:\n{task.strip()}"
         )

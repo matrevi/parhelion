@@ -18,13 +18,18 @@ struct ContestOverviewView: View {
                 headerSection(snap: snap)
                 Divider()
 
-                HSplitView {
-                    ProblemTableView(problems: snap.problems)
-                        .frame(minWidth: 535, idealWidth: 820)
-
-                    if let sel = selectedProblem {
-                        ProblemInspectorView(problem: sel, gitOwner: snap.contest.gitOwner)
-                            .frame(minWidth: 380, idealWidth: 460)
+                GeometryReader { geometry in
+                    let columns = ProblemTableColumns(snap.problems, lang)
+                    let available = max(0, geometry.size.width - 1)
+                    let detailMinimum = min(380, available * 0.44)
+                    let fitted = min(columns.idealWidth, available - detailMinimum)
+                    HSplitView {
+                        ProblemTableView(problems: snap.problems, columns: columns)
+                            .frame(minWidth: fitted, idealWidth: fitted)
+                        if let sel = selectedProblem {
+                            ProblemInspectorView(problem: sel, gitOwner: snap.contest.gitOwner)
+                                .frame(minWidth: detailMinimum, idealWidth: available - fitted)
+                        }
                     }
                 }
             }

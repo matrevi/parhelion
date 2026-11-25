@@ -85,6 +85,69 @@ def test_refresh_guides_preserves_workspace_policy(isolated_mcp_env, tmp_path):
     assert all(c["verified"] is False for c in corr["cases"])
 
 
+def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from opsb_core.agents.adapters import BaseWorkerAdapter
+    from opsb_core.agents.manager import AgentMeshManager
+    from opsb_core.config import ConfigRepository
+    from opsb_core.daemon.server import OpsbDaemonRuntime
+    from opsb_core.mcp.handlers_agents import bind_daemon_agent_manager
+    ws, repo, sha = _make_mcp_workspace(tmp_path)
+    second = repo.parent / "Other"
+    subprocess.run(["git", "clone", "-q", str(repo), str(second)], check=True)
+    manifest = repo.parent / "problems.json"
+    manifest.write_text(json.dumps(json.loads(manifest.read_text()) + [{"title": "Other", "path": "bench/Other"}]))
+    config = ConfigRepository.load()
+    config["active_workspace"] = str(ws)
+    ConfigRepository.save(config)
+    class TestAdapter(BaseWorkerAdapter):
+        def send_turn(self, prompt, on_event=None):
+            return "experiment done"
+    mgr = AgentMeshManager(adapter_factory=TestAdapter)
+    driver = "deepseek"
+    monkeypatch.setattr(mgr, "_cached_doctor", lambda: {"diagnostics": [
+        dict(kind=driver, auth_ok=True, binary_path="dsh", installed=True)]})
+    bind_daemon_agent_manager(mgr)
+    def start(preview=False):
+        return call_tool("parhelion_sprint_start", dict(driver=driver, enable_auto_submit=True, preview=preview), ws)
+    try:
+        assert not start(True)["auto_submit_enabled"]
+        with ThreadPoolExecutor(2) as pool:
+            first, replay = pool.map(lambda _: start(), range(2))
+        assert first["ok"] and replay["ok"] and first["auto_submit_enabled"]
+        slots = first["assignments"] + replay["assignments"]
+        assert {s["state"] for s in slots} == {"started", "existing"}
+        started = [s for s in slots if s["state"] == "started"]
+        assert len(started) == 4 and len({s["agent_id"] for s in slots}) == 4
+        owners = [s["agent_id"] for s in started if s["problem"] == "PadV3Grad"]
+        assert len({mgr._store(ws).get_agent(a)["worktree"] for a in owners}) == 2
+        res = ws / "results" / "PadV3Grad" / sha
+        res.mkdir(parents=True)
+        (res / "result.json").write_text('{"exit_code": 0}')
+        (res / "validation.log").write_text("EXTENDED_PASSED 40 cases\nEXTENDED_RC=0\n")
+        gate = call_tool("parhelion_submit_gate", dict(problem="PadV3Grad", sha=sha, enqueue=True),
+                         ws, role="worker", agent_id=owners[0])
+        assert gate["enqueued"]
+        record = json.loads((ws / "results/submit-queue.jsonl").read_text().splitlines()[-1])
+        assert record["agent_id"] == owners[0]
+        def judge(_cli, _ws, title, uploaded_sha, _note, **kwargs):
+            receipt = dict(title=title, sha=uploaded_sha, submitted_at="2026-11-01T00:00:04Z",
+                           status="Pass", score=45, queued_at=record["queued_at"], submission_id="sprint-test")
+            (ws / "results/submit-queue-outcome.jsonl").write_text(json.dumps(receipt) + "\n")
+            return {"ok": True}
+        monkeypatch.setattr("opsb_core.daemon.server.spawn_jump_submit", judge)
+        OpsbDaemonRuntime.dispatch_next(mock.Mock(), ws, {"submission_queue": [
+            dict(kind="pending", gates=gate["gates"], title="PadV3Grad", sha=sha)]}, {})
+        mgr.deliver_judgements(ws, 5)
+        for owner in owners:
+            inbox = call_tool("parhelion_agent_inbox", {}, ws, role="worker", agent_id=owner)
+            results = [m for m in inbox["messages"] if m["kind"] == "judge_result"]
+            assert len(results) == int(owner == owners[0])
+    finally:
+        mgr.stop_all()
+        bind_daemon_agent_manager(None)
+
+
 def test_worker_mcp_case_plan_and_role(isolated_mcp_env, tmp_path):
     ws, _, sha = _make_mcp_workspace(tmp_path)
     plan = call_tool("parhelion_test_plan", dict(problem="PadV3Grad", cases=["01", "03"],
@@ -126,7 +189,7 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
     assert init_resp["result"]["capabilities"] == {"tools": {}}
 
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 15
+    assert len(tools) == 16
     assert {t["name"] for t in tools} == {t["name"] for t in list_tool_schemas()}
 
     assert status_resp["result"]["isError"] is False
@@ -346,7 +409,7 @@ def test_mcp_cli_subcommands(isolated_mcp_env: Path, tmp_path: Path, capsys: pyt
     args = parser.parse_args(["mcp", "list-tools", "--json"])
     assert args.func(args) == 0
     tools_out = json.loads(capsys.readouterr().out)
-    assert len(tools_out["tools"]) == 15
+    assert len(tools_out["tools"]) == 16
 
     args = parser.parse_args(["mcp", "call", "parhelion_status", "--args-json", '{"include_npu":false}', "--workspace", str(ws)])
     assert args.func(args) == 0

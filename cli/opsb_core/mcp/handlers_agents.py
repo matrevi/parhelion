@@ -81,6 +81,18 @@ def tool_parhelion_harness_pool(args: dict[str, Any], workspace: Path) -> dict[s
     return _mgr().get_harness_pool(workspace)
 
 
+def tool_parhelion_sprint_start(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    from ..agents.sprint import start_sprint
+    body = {"driver": args.get("driver") or "", "preview": args.get("preview") is True,
+            "enable_auto_submit": args.get("enable_auto_submit") is True}
+    if _ACTIVE_DAEMON_MANAGER is not None:
+        return start_sprint(_ACTIVE_DAEMON_MANAGER, workspace, **body)
+    result = _proxy_daemon("POST", "/v1/agents/sprint", workspace, body, timeout=180)
+    if result is None:
+        raise RuntimeError("Start the Parhelion daemon for this workspace before starting a sprint")
+    return result
+
+
 def tool_parhelion_agent_spawn(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     body = {
         "driver": str(args.get("driver") or ""),
