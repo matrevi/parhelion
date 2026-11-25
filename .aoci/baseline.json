@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-25T08:32:44Z",
+  "updated_at": "2026-11-25T08:46:33Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "248d2ad7a6261fa8701186d5313d81f1de24988bd7e8ff6cd6189a0e31177539",
-      "size": 86109,
-      "normalized_sha256": "248d2ad7a6261fa8701186d5313d81f1de24988bd7e8ff6cd6189a0e31177539"
+      "sha256": "34e5613dbca13374b7e2433c4b0da7a5f2e7778f56ef45899a5495f5ac52904e",
+      "size": 86081,
+      "normalized_sha256": "34e5613dbca13374b7e2433c4b0da7a5f2e7778f56ef45899a5495f5ac52904e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -479,9 +479,9 @@
     },
     "cli/opsb_core/agents/adapters.py": {
       "role": "index",
-      "sha256": "157f7afdf13237efec813831f2c563d049cdcb19c8ba4ad30e07f634db83de29",
-      "size": 17472,
-      "normalized_sha256": "157f7afdf13237efec813831f2c563d049cdcb19c8ba4ad30e07f634db83de29"
+      "sha256": "bcdfbe5f0a1094e29f7cfcbbe03dda0c89ad2181a37eb1b0ffbabfd8cbbc8d81",
+      "size": 17889,
+      "normalized_sha256": "bcdfbe5f0a1094e29f7cfcbbe03dda0c89ad2181a37eb1b0ffbabfd8cbbc8d81"
     },
     "cli/opsb_core/agents/bus_store.py": {
       "role": "index",
