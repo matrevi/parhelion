@@ -867,6 +867,10 @@ class BenchmarkCalibrator:
             if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error") and csha:
                 vlog = self.workspace / "results" / title / csha / "validation.log"
                 local_passed = vlog.is_file() and "EXTENDED_PASSED" in vlog.read_text(errors="replace")
+                if not local_passed:
+                    from .case_bench import read_doc
+                    record = read_doc(vlog.parent/"result.json")
+                    local_passed = record.get("layout")=="template" and record.get("verified") is True
                 if local_passed and csha not in seen_esc:
                     seen_esc.add(csha)
                     ver_rec = self.verified_escapes.get(f"{title}:{csha}") or self.verified_escapes.get(f"{title}:{csha[:7]}")
@@ -1860,6 +1864,12 @@ class BenchmarkCalibrator:
         self._cal_cache.clear()
         self._perf_spec_cache.pop(title, None)
 
+        from .case_bench import has_reference
+        from .case_feedback import evolve
+        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"bench/{title}")
+        if has_reference(repo,"HEAD"):
+            return evolve(self.workspace,title,repo,self.estimator._filtered_outcomes(title),apply)
+
         cal_before = self.calibrate_problem(title, persist=False)
         spec_path = self.specs_root / title / "cases_perf.json"
         spec_doc = json.loads(spec_path.read_text(encoding="utf-8")) if spec_path.is_file() else {
@@ -1945,9 +1955,21 @@ class BenchmarkCalibrator:
                 "good_sha": c_good,
                 "reason": f"Good commit {c_good[:7]} has no server validation record in results/{title}/{c_good[:7]}/",
             }
-        g_rc = json.loads(good_res.read_text()).get("exit_code")
+        good_record = json.loads(good_res.read_text())
+        g_rc = good_record.get("exit_code")
         g_txt = good_log.read_text(errors="replace")
-        if g_rc != 0 or "EXTENDED_PASSED" not in g_txt or "FAST_LANE=1" in g_txt:
+        from .case_bench import has_reference,formal_evidence
+        from .case_feedback import regression_evidence
+        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"bench/{title}")
+        reference_suite = has_reference(repo,c_good)
+        evidence = {}
+        if reference_suite:
+            good = formal_evidence(good_res.parent,repo,good_record)
+            if good:
+                evidence = regression_evidence(good_res.parent.parent/c_bad,good)
+            if not evidence:
+                return {"ok":False,"cleared":False,"title":title,"reason":"Need a matching failed case on bad SHA and a full formal pass on good SHA"}
+        elif g_rc != 0 or "EXTENDED_PASSED" not in g_txt or "FAST_LANE=1" in g_txt:
             return {
                 "ok": False,
                 "cleared": False,
@@ -1958,7 +1980,6 @@ class BenchmarkCalibrator:
             }
 
         # Check that either validation/ or bench-specs/ grew or references the escape fix vs bad_sha
-        repo = self.workspace / "bench" / title
         diff_files: list[str] = []
         if (repo / ".git").exists():
             dp = self.estimator  # check git diff between bad_sha and good_sha
@@ -1979,7 +2000,7 @@ class BenchmarkCalibrator:
         if corr_path.is_file():
             spec_mentions_bad = c_bad[:7] in corr_path.read_text(errors="replace")
 
-        if not (has_validation_update or spec_mentions_bad):
+        if not (evidence or has_validation_update or spec_mentions_bad):
             return {
                 "ok": False,
                 "cleared": False,
@@ -1994,6 +2015,7 @@ class BenchmarkCalibrator:
             }
 
         rec = {
+            **evidence,
             "bad_sha": c_bad,
             "good_sha": c_good,
             "verified_at": _utc_now(),
@@ -2006,6 +2028,7 @@ class BenchmarkCalibrator:
         return {
             "ok": True,
             "cleared": not cal["escape_lock"],
+            **evidence,
             "title": title,
             "bad_sha": c_bad,
             "good_sha": c_good,

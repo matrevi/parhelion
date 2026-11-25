@@ -214,7 +214,7 @@ Improve this team's official weighted score. Read opsb.workspace.json in the lau
 
 Run independent problems in parallel. Give each kernel one owner and an isolated worktree. Prefer native subagents. Use parhelion_agent_spawn for external Harnesses when the admin requests multi-Harness work. Claude workers require explicit admin authorization. Workers edit only files allowed by the official template and report the pushed SHA, evidence and expected gain.
 
-At contest start, assign a bench-author per problem alongside kernel work. Bench authors edit only bench-specs/<op>/cases_perf.json using the official sample and reference oracle. Keep PUBLIC anchors and append problem-specific S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME cases. Cover valid shapes, dtypes, tails and boundary attributes. Compare baseline and candidate on the same inputs. Leave unmeasured timings unknown.
+At contest start, inspect opsb bench cases <op>. For reference suites, the platform runs the declared cases. Use opsb test <op> --case <id> --experiment <label> to isolate failures, opsb bench compare <op> <before> <after> to compare runs, and opsb bench evolve <op> for a receipt-linked trial profile. Buckets group case IDs. Assign a bench-author only for a specific coverage gap. For legacy ICT suites keep PUBLIC anchors, S_SMALL_CORE, M_MID_UB, L_HBM_TILED and X_EXTREME where measured. Leave unknown timings and scores unknown.
 
 Validate the pushed commit with opsb test <op> --sha <sha>. Use --build-only for parallel builds, --fast for a quick check and full validation for normal candidates. Coordinate up to four remote tests with SLOT-REQ, SLOT-GRANT and SLOT-REL. On-device runs share device0.lock.
 
@@ -242,6 +242,11 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
     ws = workspace.expanduser().resolve()
     title, repo_dir, p_meta = resolve_problem_repo(ws, problem)
     diff = int((p_meta or {}).get("difficulty") or 2)
+    if (repo_dir/"reference.py").is_file() and (repo_dir/"main.asc").is_file():
+        return (f"# Case coverage for {title}\nInspect `opsb bench cases {title}`. Reuse the platform's "
+                "reference suite. Define seed or parameter variants in an experimental profile for the "
+                "specific coverage gap. Run the baseline and candidate on identical inputs with "
+                "`opsb test --profile`. Report the run IDs, failed cases and paired measurements.")
     spec = _cfg.workspace_bench_specs_dir(ws) / title / "cases_perf.json"
     lines = [
         f"# Bench Bucket Author · {title} (Tier x{diff})",
@@ -321,7 +326,7 @@ def compose_session_brief(workspace: Path, problem: str, goal: str = "") -> str:
     esc_locked = bool(cal.get("escape_lock") or (isinstance(disk_cal, dict) and disk_cal.get("escape_lock")))
     esc_sha = cal.get("escape_sha") or (disk_cal.get("escape_sha") if isinstance(disk_cal, dict) else None)
     if esc_locked:
-        lines.append(f"- **ESCAPE_LOCK ACTIVE** (bad SHA `{esc_sha}`): add reproducer to `bench/cases_correctness.json` & run `opsb bench verify-escape`.")
+        lines.append(f"- **ESCAPE_LOCK ACTIVE** (bad SHA `{esc_sha}`): reproduce the failure on the bad SHA, run full validation on the fix, then use `opsb bench verify-escape`.")
     if goal.strip():
         lines.append(f"- Goal: {goal.strip()}")
 

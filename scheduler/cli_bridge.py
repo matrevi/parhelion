@@ -1120,6 +1120,10 @@ class SchedulerEngine:
             if t not in self.estimator.problems_meta:
                 raise ValueError(f"Unknown problem title: {t}")
             doc = self.calibrator.calibrate_problem(t, persist=True)
+            from .case_bench import has_reference
+            repo = self.workspace/self.estimator.problems_meta[t]["path"]
+            if has_reference(repo):
+                doc["case_experiment"] = self.calibrator.evolve_bench(t)
             results[t] = doc
             if isinstance(doc.get("mae_pts"), (int, float)):
                 maes.append(float(doc["mae_pts"]))
@@ -1552,6 +1556,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_tst = sub.add_parser("schedule-test", parents=[common], help="3-Phase MLFQ (Q0/Q1) NPU test runner")
     p_tst.add_argument("--title", required=True, help="Operator problem title")
+    p_tst.add_argument("--case", dest="case_ids", action="append")
+    p_tst.add_argument("--bucket")
+    p_tst.add_argument("--profile")
+    p_tst.add_argument("--experiment")
+    p_tst.add_argument("--runner")
+    p_tst.add_argument("--official-only",action="store_true",default=None)
+    p_tst.add_argument("--timing", choices=["off","perf","all"])
+    p_tst.add_argument("--repeats", type=int)
     p_tst.add_argument("--sha", default=None, help="Commit SHA (defaults to repo HEAD)")
     p_tst.add_argument("--fast", action="store_true", help="Route through Q0 fast-lane")
     p_tst.add_argument("--build-only", action="store_true", help="Run Phase A 32-core CPU compile only (0.0s NPU lock)")
@@ -1656,6 +1668,9 @@ def main(argv: list[str] | None = None) -> int:
                 fast=args.fast,
                 build_only=args.build_only,
                 pmu=getattr(args, "pmu", False),
+                case_options={k:v for k,v in dict(ids=args.case_ids,bucket=args.bucket,
+                    profile_path=args.profile,experiment=args.experiment,timing=args.timing,
+                    repeats=args.repeats,runner=args.runner,official_only=args.official_only).items() if v is not None},
                 dry_run=args.dry_run,
                 stream_stdout=not args.dry_run,
             )
@@ -1663,7 +1678,7 @@ def main(argv: list[str] | None = None) -> int:
                 res = payload.get("result") or {}
                 # Event-driven B0 tick: the die was just released and no operator ticket
                 # can exist yet -> strictly bounded, silent, never raises.
-                if not args.build_only:
+                if not args.build_only and not any((args.case_ids,args.profile,args.experiment,args.bucket,args.timing,args.repeats,args.official_only,args.runner)):
                     engine.backfill_auto()
                 print(json.dumps(sanitize_json_value(res), ensure_ascii=False, allow_nan=False))
                 return int(res.get("exit_code", 0))

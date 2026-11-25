@@ -501,6 +501,17 @@ class SubmissionGate:
                 reason="validation.log missing alongside result.json",
             )
 
+        from .case_bench import formal_evidence, has_reference
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
+        if res_data.get("scheme") == "reference" or has_reference(repo,sha):
+            report = formal_evidence(val_dir, repo, res_data)
+            if not report:
+                return StageResult(stage="SAFETY",passed=False,code="REFERENCE_SUITE_REQUIRED",
+                                   reason="Run opsb test on this commit with the full current case profile")
+            return StageResult(stage="SAFETY",passed=True,code="PASS",
+                               reason=f"Full reference suite passed ({len(report['cases'])} cases)",
+                               metrics={"run_id":report["run_id"],"extended_cases":len(report["cases"])})
+
         log_text = log_file.read_text(errors="replace")
 
         if "FAST_LANE=1" in log_text:

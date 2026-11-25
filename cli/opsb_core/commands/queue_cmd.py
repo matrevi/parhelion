@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
@@ -365,6 +366,16 @@ def run_test(args: argparse.Namespace) -> int:
         ]
         if getattr(args, "sha", None):
             b_cmd += ["--sha", args.sha]
+        for cid in getattr(args, "case_ids", None) or []:
+            b_cmd += ["--case", cid]
+        if getattr(args,"official_only",False):
+            b_cmd.append("--official-only")
+        for option in ("bucket","profile","experiment","timing","repeats","runner"):
+            value = getattr(args, option, None)
+            if value is not None:
+                if option in ("profile","runner"):
+                    value = str(Path(value).expanduser().resolve())
+                b_cmd += ["--"+option,str(value)]
         if getattr(args, "fast", False):
             b_cmd.append("--fast")
         if getattr(args, "pmu", False) and "--pmu" in help_out:

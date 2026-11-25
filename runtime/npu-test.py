@@ -1453,6 +1453,17 @@ def run_3phase_validation(
     fast_mode = bool(fast or os.environ.get("OPSB_FAST_LANE") == "1")
     cold3_mode = bool(cold3 or os.environ.get("OPSB_COLD3") == "1")
     pmu_mode = bool(pmu or os.environ.get("OPSB_PMU") == "1")
+    if (repo/"main.asc").is_file() and (repo/"reference.py").is_file() and not (sync_only or build_only or fast_mode):
+        supervisor = Path(__file__).resolve().parents[1]
+        if not (supervisor/"scheduler/case_bench.py").is_file():
+            supervisor = _resolve_parhelion_root()
+        if supervisor and str(supervisor) not in sys.path:
+            sys.path.insert(0,str(supervisor))
+        from scheduler.case_bench import has_reference,run
+        if has_reference(repo,sha):
+            if pmu_mode:
+                raise ValueError("Use opsb test --timing all for reference template device timing")
+            return run(workspace,title,repo,sha,npu_host,stream=stream_stdout)
     try:
         branch_ref = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     except Exception:

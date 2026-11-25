@@ -397,6 +397,10 @@ def build_problem_models(
             tag = "STEADY"
 
         head_sha, head_age_min, head_subject = read_head_fast(workspace / p["path"])
+        repo_dir = workspace / p["path"]
+        case_run = None
+        if (repo_dir/"reference.py").is_file() and (repo_dir/"main.asc").is_file():
+            case_run = read_json(workspace/"results"/title/head_sha/"latest-bench.json",{})
         cb_trips = hist_idx["pressure_12h"].get(title, 0)
         cb_open = cb_trips >= cb_limit or hist_idx["consec_fail_12h"].get(title, 0) >= 2
         rev_history = [dict(h) for h in reversed(hist_idx["history_by_prob"].get(title, []))]
@@ -451,6 +455,7 @@ def build_problem_models(
                 "circuit_open": cb_open,
                 "pressure_12h": cb_trips,
                 "head_sha": head_sha,
+                "case_run": case_run,
                 "head_subject": head_subject,
                 "head_age_min": head_age_min,
                 "calibration": calibration,

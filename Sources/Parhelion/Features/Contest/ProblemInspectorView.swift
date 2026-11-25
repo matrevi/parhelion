@@ -19,10 +19,14 @@ struct ProblemInspectorView: View {
                     restoreCallout
                 }
 
-                accountingCard
-                StrataAndSlotsCardView(problem: problem)
-                publicRatioCard
-                BenchCoverageCardView(problem: problem)
+                if let run = problem.caseRun {
+                    referenceBench(run)
+                } else {
+                    accountingCard
+                    StrataAndSlotsCardView(problem: problem)
+                    publicRatioCard
+                    BenchCoverageCardView(problem: problem)
+                }
                 FastFeedbackDiagnosticCardView(problem: problem)
                 timelineCard
             }
@@ -74,6 +78,37 @@ struct ProblemInspectorView: View {
                     SystemNavigator.openURL("https://gitcode.com/\(gitOwner)/\(problem.repoSlug)")
                 } label: { Image(systemName: "arrow.up.forward.square") }
                 .help(lang.tr("打开 GitCode 仓库", "Open GitCode Repository"))
+            }
+        }
+    }
+
+    private func referenceBench(_ run: CaseRunSummary) -> some View {
+        SurfaceCard(padding: 11) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text(lang.tr("本地逐例验证", "Local case results")).font(.headline)
+                    Text(String(problem.headSha.prefix(7))).font(.caption.monospaced())
+                    Spacer()
+                    if let path = run.report {
+                        Button {
+                            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                        } label: { Image(systemName: "folder") }
+                        .help(lang.tr("查看运行报告与日志", "Show report and logs"))
+                    }
+                }
+                if let passed = run.passed, let selected = run.selected, let total = run.total {
+                    HStack(spacing: 12) {
+                        miniStat(run.formal == true ? lang.tr("正式验证", "Formal") : (run.experiment ?? lang.tr("实验", "Experiment")),
+                                 "\(passed)/\(selected)", passed == selected ? .green : .orange)
+                        miniStat(lang.tr("已选 / 全集", "Selected / total"), "\(selected)/\(total)", .secondary)
+                    }
+                    if let failures = run.failures, !failures.isEmpty {
+                        Text(lang.tr("失败用例 ", "Failed cases ") + failures.joined(separator: ", "))
+                            .font(.caption.monospaced()).textSelection(.enabled)
+                    }
+                } else {
+                    Text(lang.tr("当前提交尚无逐例报告", "No case report for this commit")).foregroundStyle(.secondary)
+                }
             }
         }
     }

@@ -112,10 +112,16 @@ def _format_diagnose_report(doc: dict[str, Any]) -> str:
 
 
 def _format_evolve_report(doc: dict[str, Any]) -> str:
+    if doc.get("scheme")=="reference":
+        return (f"{doc['title']} · {doc['receipts']} judge receipts · reproduced {doc['matching_cases']}\n"
+                f"Experimental variants: {doc['proposed_variants']}\nProfile: {doc['profile']}")
     if "problems" in doc and isinstance(doc["problems"], dict):
         mode = "APPLIED" if doc.get("applied") else "DRY-RUN"
         lines = [f"=== Parhelion Bench Evolve [{mode}] (total appended: +{doc.get('total_appended_buckets', 0)} buckets) ==="]
         for t, r in sorted(doc["problems"].items()):
+            if r.get("scheme")=="reference":
+                lines.append(_format_evolve_report(r))
+                continue
             ids = r.get("appended_ids") or []
             lines.append(
                 f"  {t:<25} spec: {r.get('spec_buckets_before')} -> {r.get('spec_buckets_after')} (+{len(ids)})  "
@@ -148,6 +154,17 @@ def run_bench(args: argparse.Namespace) -> int:
     ws = ConfigRepository.resolve_workspace(getattr(args, "workspace", None), cfg)
     zh = (getattr(args, "lang", None) or cfg.get("language", "zh")) == "zh"
     sub = args.bench_cmd
+    if sub in ("cases","compare"):
+        cmd = [resolve_python_exe(ws), "-m","scheduler.case_bench",sub,str(ws),args.problem]
+        if sub == "compare":
+            cmd.extend([args.before,args.after])
+        else:
+            cmd.extend(["--sha",args.sha])
+            if args.profile:
+                cmd.extend(["--profile",str(Path(args.profile).expanduser().resolve())])
+        if args.json:
+            cmd.append("--json")
+        return subprocess.call(cmd,cwd=SUPERVISOR_ROOT)
 
     if sub == "refresh-board":
         res = refresh_board_and_recalibrate(
@@ -275,7 +292,7 @@ def run_bench(args: argparse.Namespace) -> int:
     if sub in ("diagnose", "backfill", "verify-escape"):
         extra = ["--title", args.problem] if getattr(args, "problem", None) else []
         if sub == "verify-escape":
-            extra += ["--bad", args.bad, "--good", args.good]
+            extra += ["--bad-sha", args.bad, "--good-sha", args.good]
         elif getattr(args, "sha", None):
             extra += ["--sha", args.sha]
         rc, parsed, raw_out = _call_bridge_subcmd(ws, sub, extra, timeout=180.0)
@@ -297,14 +314,8 @@ def run_bench(args: argparse.Namespace) -> int:
             return 1
         cal = prob.get("calibration") or {}
         if sub == "verify-escape":
-            cal["escape_lock"] = False
-            cal["verified_escape"] = {"bad": args.bad, "good": args.good, "verified_at": utc_now().isoformat()}
-            cal_path = ws / "results" / prob["title"] / "calibration.json"
-            cal_path.parent.mkdir(parents=True, exist_ok=True)
-            cal_path.write_text(json.dumps(cal, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            msg = {"ok": True, "title": prob["title"], "escape_lock": False, "bad": args.bad, "good": args.good}
-            print(json.dumps(msg, ensure_ascii=False) if args.json else f"Cleared ESCAPE_LOCK for {prob['title']} ({args.bad[:7]} -> {args.good[:7]})")
-            return 0
+            print(json.dumps({"ok":False,"reason":"Escape verification backend unavailable"}))
+            return 1
         top_s = sorted(cal.get("strata") or [], key=lambda s: float(s.get("headroom_pts", 0)), reverse=True)
         diag = {
             "title": prob["title"],

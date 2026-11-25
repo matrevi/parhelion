@@ -75,6 +75,16 @@ struct ContestSummary: Codable {
     }
 }
 
+struct CaseRunSummary: Codable, Hashable {
+    let formal: Bool?
+    let experiment: String?
+    let passed: Int?
+    let selected: Int?
+    let total: Int?
+    let failures: [String]?
+    let report: String?
+}
+
 struct ProblemItem: Codable, Identifiable, Hashable {
     var id: String { title }
     let title: String
@@ -114,6 +124,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let pressure12h: Int
     let headSha: String
     let headSubject: String
+    var caseRun: CaseRunSummary? = nil
     let headAgeMin: Int?
     let calibration: ProblemCalibration?
     let testcases: [TestcaseItem]
@@ -152,6 +163,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case pressure12h = "pressure_12h"
         case headSha = "head_sha"
         case headSubject = "head_subject"
+        case caseRun = "case_run"
         case headAgeMin = "head_age_min"
     }
     // NOTE: Equatable/Hashable are synthesized over ALL fields on purpose. A hand-written `==`

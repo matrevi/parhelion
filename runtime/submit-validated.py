@@ -21,6 +21,7 @@ if str(JUDGE_DIR) not in sys.path:
 from ict_cli import ICTClient  # noqa: E402
 sys.path.insert(0, str(RUNTIME_DIR.parent))
 from scheduler.probes import OPENING_PROBES, compile_evidence, submitted_attempts
+from scheduler.case_bench import formal_evidence, has_reference
 from scheduler.parhelion_paths import atomic_write_json
 
 
@@ -111,7 +112,8 @@ def main() -> None:
     probe = submitted_attempts(workspace, args.title, outcomes) < OPENING_PROBES
     candidates = [
         r for r in records if (args.sha is None or r["sha"] == args.sha)
-        and (r["exit_code"] == 0 or (probe and compile_evidence(
+        and ((r["exit_code"] == 0 and (not has_reference(repo,r["sha"]) or
+                formal_evidence(workspace/"results"/args.title/r["sha"], repo, r))) or (probe and compile_evidence(
             r, workspace / "results" / args.title / r["sha"] / "validation.log"
         )[0]))
     ]

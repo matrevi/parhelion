@@ -281,3 +281,36 @@ Running `opsb bench evolve` promoted **`+72`** corroborated logged buckets stric
 - **Unit & Regression Suite**: `python3 -m unittest discover -s scheduler/tests -v` — **`93/93` passed** (including `14` new unit & live-corpus causal tests in `scheduler/tests/test_bench_evolution.py`).
 - **Latency**: Full 10-operator `calibrate` = `~3.2s`; cached offline `status` = `~0.8s` (well inside `ipc_bridge.py`'s `3.5s` UI budget).
 - **Telemetry Readiness**: `tools/npu-test.py` (Phase A `.o` scan + Phase B/C `COLD_START_STATS`) AST-verified; once new `opsb test` runs populate `KERNEL_BINARY_STATS`, `alpha_cold` automatically activates whenever $\ge 4$ same-regime pairs carry binary size data.
+## Reference cases and local experiments
+
+For a competition that supplies a `reference.CASES` catalog, a case identifies one reproducible input and oracle. A bucket is a named set of case IDs. A case can belong to multiple buckets and runs once per selection. Legacy ICT workspaces retain their public anchors, hidden proxy buckets, profiler protocol and fitted weights. For example, the previous CTCLossV2 specification has five public anchors and thirteen hidden proxies. The reference adapter reads the current problem's own case count and perf labels.
+
+```sh
+opsb bench cases FFT3DBatchComplex --sha HEAD
+opsb test FFT3DBatchComplex --sha HEAD
+opsb test FFT3DBatchComplex --case 07 --experiment axes --timing off
+opsb test FFT3DBatchComplex --profile trial.json --bucket axes --timing all --repeats 3 --experiment candidate
+opsb bench compare FFT3DBatchComplex BEFORE_RUN_ID AFTER_RUN_ID
+opsb bench evolve FFT3DBatchComplex --dry-run --json
+```
+
+A profile lives in the workspace's platform-managed `bench-specs/<title>/case-profile.json`. An explicit `--profile` is an experiment. Derived cases inherit the base case's defaults. Specify just the parameters that change. Use `--official-only` to disable all local variants and `--timing off|perf|all` to change instrumentation. The default collects three independent device event samples for performance cases. Each repetition starts a fresh process. Multi-invocation cases report the sum for that repetition.
+
+```json
+{
+  "version": 1,
+  "variants": [{"id": "local/axes-seed-31", "base": "07", "seed": 31}],
+  "buckets": {"axes": ["07", "local/axes-seed-31"]},
+  "timing": "perf",
+  "repeats": 3,
+  "case_timeout": 300
+}
+```
+
+The CLI archives the requested commit and builds it in a private temporary directory on the NPU host. Reference inputs and expected outputs are generated outside the device lock. Each reported output uses the template's comparator tolerances. The report records unchecked cases, infrastructure errors and kernel verdicts separately. The experiment compares case fingerprints and statuses across runs. Paired speedups require matching runner, environment, case fingerprint and a passing measured result on both sides.
+
+Every launch gets `results/<title>/<sha>/bench-runs/<run_id>/`. Its `plan.json` freezes selection, settings, profile, oracle and runner digests. `events.jsonl` provides timestamped build, case and completion events, `validation.log` preserves device and compiler output, and `report.json` contains the full denominator, mismatches and individual device times. A plan without a report indicates an unfinished launch. The inspector shows the latest completed run for HEAD. Experiments, including an explicitly selected full set, do not publish gate evidence.
+
+The final gate checks the current case profile and immutable formal report after the opening probes. Escape verification joins a failing case on the bad SHA to its passing counterpart on a fully validated good SHA. Calibration joins judge receipts with all available local runs of the same commit. `bench evolve` emits a versioned trial profile and observation history under `bench-specs/<title>/experiments/`. A team can test that profile before adopting its variants into the formal profile. Aggregate WA/RE without a local reproduction remains an observation with no attributed case.
+
+To try another execution method on this catalog, pass `--runner path/to/runner.py`. The platform archives the supplied Python runner alongside the experiment. It starts in the temporary commit checkout, reads `../config.json` (`selected`, device, lock, timing, repeats and timeout), and takes the supplied shared device lock during device execution. Emit lines beginning with `OPSB_CASE ` followed by a JSON object. Emit `environment` with reproducible machine facts, `built` after successful compilation, then one `case` event per selected ID with a status from PASS, WA, RE, TLE, ERROR, SKIP or NOT_RUN. Optional `device_us` contains positive microsecond samples. Other stdout/stderr remains in the raw log. A custom runner always produces experimental evidence.

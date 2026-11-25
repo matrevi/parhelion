@@ -4,10 +4,11 @@ from __future__ import annotations
 import fcntl
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, read_json, read_jsonl, utc_now
+from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read_json, read_jsonl, utc_now
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
 from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
@@ -615,6 +616,13 @@ def check_commit_safety_gate(workspace: Path, title: str, sha: str) -> bool:
     r_data = read_json(res_json, {})
     if r_data.get("exit_code") != 0:
         return False
+    if str(SUPERVISOR_ROOT) not in sys.path:
+        sys.path.insert(0,str(SUPERVISOR_ROOT))
+    from scheduler.case_bench import formal_evidence, has_reference
+    problems = resolve_workspace_meta(workspace)["problems"]
+    repo = workspace / next((p["path"] for p in problems if p["title"]==title),f"bench/{title}")
+    if r_data.get("scheme")=="reference" or has_reference(repo,sha):
+        return bool(formal_evidence(res_json.parent,repo,r_data))
     txt = val_log.read_text(encoding="utf-8", errors="replace")
     if "EXTENDED_FAILED" in txt:
         return False

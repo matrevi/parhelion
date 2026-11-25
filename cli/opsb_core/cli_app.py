@@ -177,6 +177,14 @@ def build_parser() -> argparse.ArgumentParser:
     s_ts.add_argument("--fast", action="store_true", help="Q0 fast-lane (~10s die lock)")
     s_ts.add_argument("--build-only", action="store_true", help="Phase A lock-free 32-core CPU build (0s die lock)")
     s_ts.add_argument("--pmu", action="store_true", help="Enable L1 PipeUtilization AI-Core PMU counters (slower profiler)")
+    s_ts.add_argument("--case", action="append", dest="case_ids", help="Reference or local case ID (repeatable)")
+    s_ts.add_argument("--bucket", help="Select a named case group")
+    s_ts.add_argument("--profile", help="Use a JSON experiment profile")
+    s_ts.add_argument("--experiment", help="Label an isolated run")
+    s_ts.add_argument("--runner", help="Use an experimental Python runner implementing the case event protocol")
+    s_ts.add_argument("--official-only", action="store_true", help="Omit local variants for an ablation")
+    s_ts.add_argument("--timing", choices=["off","perf","all"])
+    s_ts.add_argument("--repeats", type=int, help="Independent device timing samples")
     s_ts.add_argument("--dry-run", action="store_true")
     s_ts.add_argument("--sync-only", action="store_true")
     s_ts.add_argument("--workspace", "-w")
@@ -184,6 +192,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     s_bn = sub.add_parser("bench", help="Stratified benchmark suite & closed-loop score-gap calibration")
     bn_sub = s_bn.add_subparsers(dest="bench_cmd")
+    for name, help_text in (("cases", "Inspect the case catalog and stored evidence"),
+                            ("compare", "Compare two immutable case-bench run IDs")):
+        inspector = bn_sub.add_parser(name, help=help_text)
+        inspector.add_argument("problem")
+        inspector.add_argument("--workspace", "-w")
+        inspector.add_argument("--json", action="store_true")
+        if name == "compare":
+            inspector.add_argument("before")
+            inspector.add_argument("after")
+        else:
+            inspector.add_argument("--sha", default="HEAD")
+            inspector.add_argument("--profile")
+        inspector.set_defaults(func=run_bench)
     s_bn.add_argument("--workspace", "-w")
     s_bn.add_argument("--json", action="store_true")
     s_bn.set_defaults(func=run_bench, bench_cmd="status", problem=None)

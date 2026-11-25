@@ -188,8 +188,9 @@ def _parse_iso(ts: str | None) -> datetime.datetime | None:
 
 def resolve_sha(workspace: pathlib.Path, title: str, sha_prefix: str | None) -> str:
     """Normalize a short or symbolic SHA to its canonical 40-char commit hash."""
+    repo = workspace / next((r["path"] for r in load_problem_manifest(workspace) if r["title"]==title),
+                            f"bench/{title}")
     if not sha_prefix:
-        repo = workspace / "bench" / title
         if (repo / ".git").exists():
             res = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "HEAD"],
@@ -231,10 +232,9 @@ def resolve_sha(workspace: pathlib.Path, title: str, sha_prefix: str | None) -> 
                     return rsha
 
     # 3. Fallback to git rev-parse in problem repo
-    repo = workspace / "bench" / title
     if (repo / ".git").exists():
         res = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", cand],
+            ["git", "-C", str(repo), "rev-parse", "--verify","--end-of-options",sha_prefix.strip()+"^{commit}"],
             capture_output=True,
             text=True,
         )

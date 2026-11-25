@@ -983,6 +983,7 @@ class NpuTaskScheduler:
         pmu: bool = False,
         dry_run: bool = False,
         stream_stdout: bool = True,
+        case_options: dict | None = None,
     ) -> dict[str, Any]:
         """3-Phase Disaggregated + Cooperative MLFQ/WSPT NPU test entry point (`opsb test`).
 
@@ -1003,6 +1004,16 @@ class NpuTaskScheduler:
 
         pmeta = self.estimator.problems_meta[title]
         repo = self.workspace / pmeta.get("path", f"bench/{title}")
+        from . import case_bench
+        reference_suite = case_bench.has_reference(repo,sha or 'HEAD')
+        if reference_suite and pmu:
+            raise ValueError("This template supports device event timing; use --timing all for a timing experiment")
+        if reference_suite and not (fast or build_only):
+            res = case_bench.run(self.workspace,title,repo,sha,self.npu_host,
+                                 dry_run=dry_run,stream=stream_stdout,**(case_options or {}))
+            return res if dry_run else {"title":title,"result":res}
+        if case_options:
+            raise ValueError("Reference case experiments require a reference suite without --fast, --build-only or --pmu")
         canonical_sha = resolve_sha(self.workspace, title, sha)
         wspt_base, _, wspt_prio, mlfq = self.compute_wspt(title, fast=fast, wait_sec=0)
         est_sec = 25.0 if build_only else self.est_service_sec(title, fast=fast)

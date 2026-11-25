@@ -1,0 +1,145 @@
+import json
+import subprocess
+
+import pytest
+
+from scheduler import case_bench as bench
+from scheduler.case_feedback import evolve, regression_evidence
+
+
+@pytest.fixture
+def suite(tmp_path, monkeypatch):
+    monkeypatch.setenv("PARHELION_HOME", str(tmp_path / "home"))
+    repo = tmp_path / "Op"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", repo], check=True)
+    (repo / "reference.py").write_text(
+        "CASES = [{'id':'01','seed':1,'params':{'n':2}},"
+        "{'id':'02','seed':2,'params':{'n':4}}]\nPERF_CASES={'02'}"
+    )
+    for name in ("main.asc", "sample.py"):
+        (repo / name).write_text("fixture")
+    subprocess.run(["git", "-C", repo, "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            repo,
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    return tmp_path, repo, bench.committed(repo, "HEAD")
+
+
+def test_ablation_selection(suite):
+    ws, repo, sha = suite
+    profile = {
+        "version": 1,
+        "variants": [{"id": "local/v", "base": "01", "seed": 9}],
+        "buckets": {"mixed": ["01", "local/v"], "pair": ["01", "02"]},
+    }
+    path = ws / "trial.json"
+    path.write_text(json.dumps(profile))
+    plan = bench.run(
+        ws,
+        "Op",
+        repo,
+        sha,
+        "npu",
+        profile_path=path,
+        bucket="mixed",
+        official_only=True,
+        dry_run=True,
+    )
+    assert plan["selected"] == ["01"] and not plan["formal"]
+    assert len(plan["catalog"]) == 3
+    assert set(plan["catalog"][0]["buckets"]) == {"official", "pair", "mixed"}
+    assert not bench.run(ws, "Op", repo, sha, "npu", timing="perf", dry_run=True)[
+        "formal"
+    ]
+    assert bench.run(ws, "Op", repo, sha, "npu", dry_run=True)["formal"]
+    with pytest.raises(ValueError, match="same input"):
+        bench.catalog(
+            repo, sha, {"variants": [{"id": "local/v", "base": "01", "seed": 1}]}
+        )
+
+
+def completed(suite):
+    ws, repo, sha = suite
+    plan = bench.run(ws, "Op", repo, sha, "npu", dry_run=True)
+    rows = [{**c, "status": "PASS", "device_us": [10, 12]} for c in plan["catalog"]]
+    return {
+        **plan,
+        "built": True,
+        "verified": True,
+        "exit_code": 0,
+        "cases": rows,
+        "summary": bench.summarize(rows),
+        "environment": {"host": "npu", "sdk": "9.1.0"},
+    }
+
+
+def test_formal_evidence_requires_all_cases(suite):
+    ws, repo, sha = suite
+    doc = completed(suite)
+    folder = ws / "results" / "Op" / sha
+    report = folder / "bench-runs" / doc["run_id"] / "report.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(doc))
+    assert bench.formal_evidence(folder, repo, doc)
+    assert not bench.formal_evidence(folder, repo, {"verified": True, "sha": sha})
+    for override in (
+        {"formal": False},
+        {"cases": doc["cases"][:1]},
+        {"sha": "different"},
+    ):
+        report.write_text(json.dumps({**doc, **override}))
+        assert not bench.formal_evidence(folder, repo, doc)
+
+
+def test_comparison_respects_inputs_and_environment(suite):
+    left = completed(suite)
+    right = {
+        **left,
+        "cases": [
+            {**left["cases"][0], "device_us": [5, 6]},
+            {**left["cases"][1], "status": "NOT_RUN"},
+        ],
+    }
+    result = bench.compare_runs(left, right)
+    assert result["paired_timings"] == 1 and result["cases"][0]["speedup"] == 2
+    assert result["buckets"]["official"]["paired"] == 1
+    assert bench.compare_runs(left, {**right, "engine": "other"})["paired_timings"] == 0
+
+
+def test_evolution_and_escape_use_observations(suite):
+    ws, repo, sha = suite
+    good = completed(suite)
+    folder = ws / "results" / "Op" / sha
+    bad = {
+        **good,
+        "cases": [{**good["cases"][0], "status": "WA"}, good["cases"][1]],
+        "formal": False,
+    }
+    path = folder / "bench-runs" / bad["run_id"] / "report.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(bad))
+    row = {
+        "title": "Op",
+        "sha": sha,
+        "status": "Wrong Answer",
+        "submission_id": "judge1",
+    }
+    trial = evolve(ws, "Op", repo, [row, row], True)
+    assert trial["receipts"] == 1 and trial["matching_cases"] == ["01"]
+    assert evolve(ws, "Op", repo, [row], True)["version"] == trial["version"]
+    assert bench.load_profile(ws, "Op") == {}
+    assert regression_evidence(folder, good)["case_ids"] == ["01"]
+    assert not regression_evidence(folder, {**good, "engine": "other"})
