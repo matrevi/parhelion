@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPSB_STREAM_PROBE_V4
+# OPSB_STREAM_PROBE_V5
 """Persistent, strictly read-only DCMI ctypes + /proc NPU telemetry stream probe.
 
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.
@@ -1338,7 +1338,8 @@ class StreamProbeSession:
                 sess_matches = bool(
                     die_session
                     and int(die_session.get("die", 0)) == die_idx
-                    and (int(die_session.get("pid") or 0) in tree or int(die_session.get("pid") or 0) == h_pid)
+                    and any(int(die_session.get(k) or 0) in tree or int(die_session.get(k) or 0) == h_pid
+                         for k in ("pid", "holder_pid"))
                 )
                 substage_hint = str(die_session.get("substage") or "") if sess_matches else None
                 sess_mode = str(die_session.get("mode") or "").upper() if sess_matches else ""

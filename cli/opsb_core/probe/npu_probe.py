@@ -716,7 +716,8 @@ def build_snapshot() -> dict[str, Any]:
             sess_matches = bool(
                 die_session
                 and int(die_session.get("die", 0)) == die_idx
-                and (int(die_session.get("pid") or 0) in tree or int(die_session.get("pid") or 0) == h_pid)
+                and any(int(die_session.get(k) or 0) in tree or int(die_session.get(k) or 0) == h_pid
+                         for k in ("pid", "holder_pid"))
             )
             substage_hint = str(die_session.get("substage") or "") if sess_matches else None
             sess_mode = str(die_session.get("mode") or "").upper() if sess_matches else ""
