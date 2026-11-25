@@ -123,6 +123,7 @@ REMOTE_3PHASE = r'''
 import datetime, fcntl, glob, hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, tempfile, threading, time
 
 cfg = json.load(sys.stdin)
+exec(cfg.pop('lanes_source'))
 title = cfg['title']
 sha = cfg['sha']
 fast = bool(cfg.get('fast', False))
@@ -645,7 +646,12 @@ try:
             for index in range(devices):
                 handle = (root.parent / ('bench-device%d.lock' % index)).open('a')
                 try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if devices == 1:
+                        if not wait_as_queue_head(handle, ticket_dir, am_top_ticket, deadline):
+                            handle.close()
+                            continue
+                    else:
+                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     slot = (index, handle)
                     break
                 except BlockingIOError:
@@ -1495,6 +1501,7 @@ def run_3phase_validation(
     fields = dict(line.split("=", 1) for line in credential.splitlines() if "=" in line)
     cfg = dict(
         title=problem["title"],
+        lanes_source=(Path(__file__).parent / "npu_runtime/lanes.py").read_text(),
         url=url,
         sha=sha,
         username=fields["username"],
@@ -1542,7 +1549,6 @@ def run_3phase_validation(
             npu_host=npu_host,
             remote_root=_remote_root_for(workspace, manifest_doc),
             lock="/srv/work-device0.lock",
-            lanes_source=(Path(__file__).parent / "npu_runtime/lanes.py").read_text(),
             accel_env=os.environ.get("OPSB_TOOLCHAIN_ENV", "/opt/toolchain/latest/set_env.sh"),
             device_id=str(os.environ.get("OPSB_DEVICE_ID", "0")),
             arch=os.environ.get("NPU_ARCH", "arch-v1"),

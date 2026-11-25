@@ -101,7 +101,7 @@ struct BtopTelemetryDeckView: View {
 
             if let lk = die0 {
                 let held = lk.state == "HELD"
-                let duration = lk.elapsedSec.map { Formatters.duration($0) } ?? store.tr("时长未知", "Duration unknown")
+                let duration = lk.elapsedSec.map { (lk.stage == "UNREGISTERED" ? "≥" : "") + Formatters.duration($0) } ?? store.tr("持锁起点未记录", "Start unrecorded")
                 let c = held ? BtopPalette.amber : BtopPalette.emerald
                 HStack(spacing: 5) {
                     Image(systemName: held ? "lock.fill" : "lock.open.fill")

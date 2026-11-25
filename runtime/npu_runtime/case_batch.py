@@ -27,7 +27,6 @@ class SampleProcess:
             )
         finally:
             child.close()
-        self.channel.settimeout(self.cfg["timeout"])
         self.reply = self.channel.makefile("rb")
 
     def close(self, kill=False):
@@ -49,10 +48,14 @@ class SampleProcess:
         self.log.close()
         self.proc = None
 
-    def execute(self, path, timed):
+    def execute(self, path, timed, deadline):
         if self.proc is None:
             self.start()
         try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            self.channel.settimeout(remaining)
             self.proc.stdin.write(f"{int(timed)} {path}\n".encode())
             self.proc.stdin.flush()
             fields = self.reply.readline(128).split()
@@ -61,7 +64,7 @@ class SampleProcess:
             detail = os.pread(self.log.fileno(), 1500, max(0, os.fstat(self.log.fileno()).st_size - 1500))
             result = {"status": "RE", "detail": detail.decode(errors="replace")}
         except TimeoutError:
-            result = {"status": "TLE", "detail": "kernel execution timed out"}
+            result = {"status": "TLE", "detail": f"Device execution exceeded the {self.cfg['timeout']}s case budget"}
         except (OSError, ValueError) as exc:
             result = {"status": "RE", "detail": str(exc)}
         self.close(kill=True)
@@ -102,35 +105,45 @@ def prepare(repo, cfg, root, update):
     return plans
 
 
+def execute_case(sample, cfg, plan, update):
+    deadline = time.monotonic() + cfg["timeout"]
+    progress = dict(plan["progress"], phase="execute", started_epoch=time.time(), timeout_sec=cfg["timeout"])
+    for index, part in enumerate(plan["parts"], 1):
+        samples = []
+        for repeat, path in enumerate(part["runs"], 1):
+            update(dict(progress, part=index, parts=len(plan["parts"]), repeat=repeat, repeats=len(part["runs"])))
+            result = sample.execute(path, plan["timed"], deadline)
+            if result["status"] != "PASS":
+                plan["error"] = result
+                return
+            samples.append(result["us"])
+            if not cfg.get("reuse_session", True):
+                sample.close()
+        plan["samples"].append(samples)
+
+
 def execute_batch(repo, cfg, plans):
-    ready = [plan for plan in plans if "error" not in plan]
-    if not ready:
-        return {"wait_sec": 0, "hold_sec": 0, "acquisitions": 0}
+    from collections import deque
+    ready = deque(plan for plan in plans if "error" not in plan)
     sample = SampleProcess(repo / "build-casebench/sample", cfg)
-    queued = time.monotonic()
-    with device_lane(dict(cfg, case_progress=dict(ready[0]["progress"], phase="waiting"))) as update:
-        started = time.monotonic()
-        try:
-            for plan in ready:
-                for part_number, part in enumerate(plan["parts"], 1):
-                    samples = []
-                    for repeat, path in enumerate(part["runs"], 1):
-                        update(dict(plan["progress"], phase="execute", repeat=repeat, repeats=len(part["runs"]),
-                                    part=part_number, parts=len(plan["parts"])))
-                        result = sample.execute(path, plan["timed"])
-                        if result["status"] != "PASS":
-                            plan["error"] = result
-                            break
-                        samples.append(result["us"])
-                        if not cfg.get("reuse_session", True):
-                            sample.close()
-                    if "error" in plan:
+    wait = hold = 0.0
+    acquisitions = 0
+    while ready:
+        queued = time.monotonic()
+        with device_lane(dict(cfg, case_progress=dict(ready[0]["progress"], phase="waiting"))) as update:
+            started = time.monotonic()
+            wait += started - queued
+            acquisitions += 1
+            try:
+                while ready:
+                    plan = ready.popleft()
+                    execute_case(sample, cfg, plan, update)
+                    if plan.get("error", {}).get("status") == "TLE":
                         break
-                    plan["samples"].append(samples)
-        finally:
-            sample.close()
-    return {"wait_sec": round(started - queued, 3), "hold_sec": round(time.monotonic() - started, 3),
-            "acquisitions": 1}
+            finally:
+                sample.close()
+                hold += time.monotonic() - started
+    return {"wait_sec": round(wait, 3), "hold_sec": round(hold, 3), "acquisitions": acquisitions}
 
 
 def verify(plan, cfg, compare):

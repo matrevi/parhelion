@@ -90,6 +90,9 @@ def test_ablation_selection(suite):
         dry_run=True,
     )
     assert plan["selected"] == ["01"] and not plan["formal"]
+    assert plan["settings"]["timeout"] == 15
+    path.write_text(json.dumps({**profile, "case_timeout": 300}))
+    assert bench.run(ws, "Op", repo, sha, "npu", profile_path=path, dry_run=True)["settings"]["timeout"] == 60
     assert plan["settings"]["reuse_session"] is False
     assert len(plan["catalog"]) == 3
     assert set(plan["catalog"][0]["buckets"]) == {"official", "pair", "mixed"}

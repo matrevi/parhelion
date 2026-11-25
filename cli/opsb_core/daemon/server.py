@@ -38,6 +38,7 @@ from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
 from ..services.submit_runner import spawn_jump_submit
 from ..ipc_bridge import invoke_bridge
+from ..worker_access import worker_token
 
 DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
@@ -272,9 +273,10 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                     return
                 raise
 
-        def _check_auth(self) -> bool:
+        def _check_auth(self, scoped_token=None) -> bool:
             provided = self.headers.get("X-Opsb-Token") or ""
-            if not provided or not hmac.compare_digest(provided, runtime.token):
+            if not provided or not (hmac.compare_digest(provided, runtime.token)
+                                    or scoped_token and hmac.compare_digest(provided, scoped_token)):
                 self._send_json(401, {"ok": False, "error": "unauthorized"})
                 return False
             return True
@@ -416,9 +418,11 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
             self._send_json(404, {"ok": False, "error": f"not found: {path}"})
 
         def do_POST(self) -> None:
-            if not self._check_auth():
-                return
             path, q = self._parse_query()
+            worker_id = path.removeprefix("/v1/mcp/worker/") if path.startswith("/v1/mcp/worker/") else None
+            worker_ws = runtime.resolve_ws(q.get("workspace")) if worker_id else None
+            if not self._check_auth(worker_token(runtime.token, worker_ws, worker_id) if worker_ws else None):
+                return
             length = int(self.headers.get("Content-Length") or "0")
             raw_body = self.rfile.read(min(length, 1024 * 1024)) if length > 0 else b""
             body_obj: dict[str, Any] = {}
@@ -430,7 +434,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                 except Exception:
                     body_obj = {}
 
-            ws = runtime.resolve_ws(body_obj.get("workspace") or q.get("workspace"))
+            ws = worker_ws or runtime.resolve_ws(body_obj.get("workspace") or q.get("workspace"))
 
             if path in ("/v1/mcp", "/mcp", "/v1/mcp/orchestrator") or path.startswith("/v1/mcp/worker/"):
                 from ..mcp.server import handle_mcp_http_request

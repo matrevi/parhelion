@@ -194,7 +194,7 @@ struct NpuServerQueueView: View {
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    if task.elapsedSec != nil && task.caseProgress == nil {
+                    if task.elapsedSec != nil && task.caseProgress == nil && task.stage != "UNREGISTERED" {
                         Text("· \(Formatters.shortTimestamp(epoch: card.startedEpoch))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
@@ -212,7 +212,7 @@ struct NpuServerQueueView: View {
                         progressLabel(p)
                     }
                     Spacer(minLength: 0)
-                    Text(task.elapsedSec.map { Formatters.duration($0) } ?? (active ? lang.tr("时长未知", "Duration unknown") : ""))
+                    Text(task.elapsedSec.map { (task.stage == "UNREGISTERED" ? "≥" : "") + Formatters.duration($0) } ?? (active ? lang.tr("持锁起点未记录", "Start unrecorded") : ""))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(active ? Color.accentColor : .secondary)
                 }
@@ -270,7 +270,17 @@ struct NpuServerQueueView: View {
         var fields = ["\(stage) \(p.index)/\(p.total)"]
         if let i = p.part, let n = p.parts, n > 1 { fields.append(lang.tr("段 \(i)/\(n)", "Part \(i)/\(n)")) }
         if let i = p.repetition, let n = p.repeats, n > 1 { fields.append(lang.tr("轮 \(i)/\(n)", "Run \(i)/\(n)")) }
-        return Text(fields.joined(separator: " · "))
+        let label = fields.joined(separator: " · ")
+        return Group {
+            if p.phase == "execute", let start = p.startedEpoch, let budget = p.timeoutSec {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let elapsed = max(0, Int(context.date.timeIntervalSince1970 - start))
+                    Text("\(label) · \(elapsed)/\(budget)s")
+                }
+            } else {
+                Text(label)
+            }
+        }
             .font(.system(size: 10.5, weight: .medium))
             .monospacedDigit()
             .foregroundStyle(.secondary)

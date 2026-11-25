@@ -223,7 +223,8 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
     if not execute:
         return plan
 
-    proc = subprocess.run(opsb_cmd, cwd=str(workspace), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300.0)
+    # The device runner owns execution deadlines. Queueing may legitimately take longer.
+    proc = subprocess.run(opsb_cmd, cwd=str(workspace), stdin=subprocess.DEVNULL, capture_output=True, text=True)
     plan.update({"exit_code": proc.returncode, "stdout": proc.stdout[-4000:], "stderr": proc.stderr[-2000:], "ok": proc.returncode == 0})
     return plan
 

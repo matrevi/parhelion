@@ -102,7 +102,7 @@ def enrich_npu_payload(
 
     for t in data.get("tasks", []):
         p_meta = p_lookup.get(t.get("problem") or "", {})
-        sha = t.get("sha") or p_meta.get("head_sha") or ""
+        sha = t.get("sha") or (p_meta.get("head_sha") if t.get("stage") != "UNREGISTERED" else None) or ""
         t["sha"] = sha or None
         t["short_sha"] = sha[:7] if sha else "—"
         t["difficulty"] = p_meta.get("difficulty")
@@ -110,7 +110,7 @@ def enrich_npu_payload(
         t["wspt_tag"] = p_meta.get("wspt_tag", "")
 
     for lk in data.get("die_locks", []):
-        sha = lk.get("sha") or p_lookup.get(lk.get("problem") or "", {}).get("head_sha") or ""
+        sha = lk.get("sha") or (p_lookup.get(lk.get("problem") or "", {}).get("head_sha") if lk.get("stage") != "UNREGISTERED" else None) or ""
         lk["sha"] = sha or None
         lk["short_sha"] = sha[:7] if sha else None
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPSB_STREAM_PROBE_V3
+# OPSB_STREAM_PROBE_V4
 """Persistent, strictly read-only DCMI ctypes + /proc NPU telemetry stream probe.
 
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.
@@ -27,9 +27,9 @@ import time
 from typing import Any
 
 if __package__:
-    from .npu_probe import host_case_tasks
+    from .npu_probe import estimate_waits, host_case_tasks, unregistered_holder
 else:
-    from npu_probe import host_case_tasks
+    from npu_probe import estimate_waits, host_case_tasks, unregistered_holder
 
 KNOWN_PROBLEMS = [
     "ConcatD",
@@ -1258,6 +1258,9 @@ class StreamProbeSession:
                     stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
                 start = float(die_session.get("started_epoch") or 0) if sess_matches else 0
                 elapsed = int(max(0, now_epoch - start)) if start > 0 else None
+                if not sess_matches and not is_backfill:
+                    label, elapsed = unregistered_holder(h_pid, tree, procs)
+                    stage, detail, prob, sha = "UNREGISTERED", "Device lock without a platform session", label or prob, None
                 lock_entry: dict[str, Any] = {
                     "die": die_idx,
                     "lock_path": f"/srv/work-device{die_idx}.lock",
@@ -1566,8 +1569,7 @@ class StreamProbeSession:
         avg_hold_sec = round(sum(holds) / len(holds), 2) if holds else None
         slots_per_hr = round(3600.0 / avg_hold_sec, 1) if avg_hold_sec else None
 
-        for idx_w, wt in enumerate(waiting_tasks_list):
-            wt["estimated_wait_sec"] = round((idx_w + 1) * avg_hold_sec) if avg_hold_sec else None
+        estimate_waits(waiting_tasks_list, die_locks_info, avg_hold_sec)
 
         sample_ms = round((time.monotonic() - t0) * 1000, 2)
         return {

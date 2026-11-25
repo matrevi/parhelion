@@ -12,9 +12,47 @@ import json
 import os
 import pathlib
 import re
+import stat
 import subprocess
 import time
 from typing import Any
+
+
+def estimate_waits(waiters, locks, mean):
+    held = [lock for lock in locks if lock.get("state") == "HELD"]
+    unknown = any(lock.get("stage") == "UNREGISTERED" or
+                  (lock.get("elapsed_sec") or 0) > (mean or 0) for lock in held)
+    for index, ticket in enumerate(waiters):
+        ticket["estimated_wait_sec"] = None if unknown or not mean else round((index + 1) * mean)
+
+
+def unregistered_holder(pid, tree, procs):
+    """Identify a direct lock command without treating its arguments as build processes."""
+    label = None
+    for child in tree:
+        try:
+            cwd = pathlib.Path(os.readlink(f"/proc/{child}/cwd"))
+            for root in (cwd, cwd.parent):
+                spec = root / "PROBLEM.md"
+                if not spec.exists() or not stat.S_ISREG(spec.lstat().st_mode):
+                    continue
+                with spec.open("rb") as src:
+                    header = src.readline(256).decode("utf-8", errors="replace")
+                match = re.match(r"^# ([A-Za-z][A-Za-z0-9_]{0,95})\s+·\s+Problem Specification", header)
+                if match:
+                    label = match[1]
+                    break
+        except OSError:
+            pass
+        if label:
+            break
+    # A flock wrapper can wait a long time before it spawns its payload.
+    # Only its direct child's lifetime bounds the time actually holding the die.
+    elapsed = None
+    holder = procs.get(pid, {}).get("cmd", "").split()
+    if holder and os.path.basename(holder[0]) == "flock":
+        elapsed = max((procs[n]["elapsed_sec"] for n in tree if procs[n].get("ppid") == pid), default=None)
+    return label, elapsed
 
 def host_case_tasks(home, tasks, now_epoch):
     """A run remains visible while its coordinator prepares or checks CPU data."""
@@ -619,6 +657,9 @@ def build_snapshot() -> dict[str, Any]:
                 stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
             start = float(die_session.get("started_epoch") or 0) if sess_matches else 0
             elapsed = int(max(0, now_epoch - start)) if start > 0 else None
+            if not sess_matches and not is_backfill:
+                label, elapsed = unregistered_holder(h_pid, tree, procs)
+                stage, detail, prob, sha = "UNREGISTERED", "Device lock without a platform session", label or prob, None
             lock_entry: dict[str, Any] = {
                 "die": die_idx,
                 "lock_path": f"/srv/work-device{die_idx}.lock",
@@ -915,8 +956,7 @@ def build_snapshot() -> dict[str, Any]:
     avg_hold_sec = round(sum(holds) / len(holds), 2) if holds else None
     slots_per_hr = round(3600.0 / avg_hold_sec, 1) if avg_hold_sec else None
 
-    for idx_w, wt in enumerate(waiting_tasks_list):
-        wt["estimated_wait_sec"] = round((idx_w + 1) * avg_hold_sec) if avg_hold_sec else None
+    estimate_waits(waiting_tasks_list, die_locks_info, avg_hold_sec)
 
     probe_ms = round((time.monotonic() - t0) * 1000, 1)
 

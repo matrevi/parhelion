@@ -9,6 +9,7 @@ from typing import IO, Any
 from .. import __version__ as OPSB_VERSION
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
+from ..worker_access import forward_worker_request
 from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool_schemas, normalize_role
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -163,7 +164,10 @@ def serve_stdio(
             continue
 
         try:
-            resp = handle_mcp_payload(decoded, workspace=ws, role=norm_role, agent_id=agent_id)
+            if norm_role == "worker" and agent_id:
+                resp = forward_worker_request(ws, agent_id, decoded)
+            else:
+                resp = handle_mcp_payload(decoded, workspace=ws, role=norm_role, agent_id=agent_id)
         except Exception as exc:
             err_stream.write(f"[parhelion-mcp] internal error: {exc}\n")
             err_stream.flush()

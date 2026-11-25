@@ -303,7 +303,7 @@ A profile lives in the workspace's platform-managed `bench-specs/<title>/case-pr
   "buckets": {"axes": ["07", "local/axes-seed-31"]},
   "timing": "perf",
   "repeats": 3,
-  "case_timeout": 300
+  "case_timeout": 15
 }
 ```
 

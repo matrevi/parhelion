@@ -88,6 +88,36 @@ def _priority(ticket):
     return ticket["tier"], ticket["prio"], -ticket["created"]
 
 
+def wait_as_queue_head(handle, directory, is_head, deadline=None):
+    """Only the elected waiter joins the kernel queue, including behind direct flock users."""
+    import signal
+    with (directory / ".device-admission").open("a") as admission:
+        try:
+            fcntl.flock(admission, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        if not is_head():
+            return False
+        if deadline is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            return True
+
+        def expired(*_):
+            raise TimeoutError("Timed out waiting for an NPU die")
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Timed out waiting for an NPU die")
+        previous = signal.signal(signal.SIGALRM, expired)
+        try:
+            signal.setitimer(signal.ITIMER_REAL, remaining)
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        return True
+
+
 @contextmanager
 def device_lane(cfg):
     directory = Path("/tmp/opsb-npu-tickets")
@@ -112,13 +142,11 @@ def device_lane(cfg):
                 priority = cfg.get("wspt_base", 1.0) + wait / max(60, cfg.get("aging_tau", 600))
                 mine = dict(owner, fast=fast, tier=tier, prio=priority, created=created)
                 _lane_write(ticket, mine)
-                if all(_priority(t) <= _priority(mine) for t in _live_records(directory)
-                       if all(k in t for k in ("tier", "prio", "created"))):
-                    try:
-                        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        pass
+                def is_head():
+                    return all(_priority(t) <= _priority(mine) for t in _live_records(directory)
+                               if all(k in t for k in ("tier", "prio", "created")))
+                if wait_as_queue_head(handle, directory, is_head):
+                    break
                 time.sleep(0.2)
             acquired = time.monotonic()
             ticket.unlink(missing_ok=True)

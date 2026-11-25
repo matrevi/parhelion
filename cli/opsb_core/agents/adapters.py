@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config as _cfg
+from ..worker_access import prepare_worker_command
 from ..drivers.antigravity_acp import AcpSessionClient, build_acp_mcp_servers
 from ..drivers.base import resolve_parhelion_home, resolve_workspace_state_dir
 from ..drivers.claude_driver import ClaudeStreamJsonClient, coerce_claude_uuid
@@ -100,7 +101,7 @@ class BaseWorkerAdapter:
             child_env = {k: v for k, v in child_env.items() if k != "GIT_CONFIG_COUNT"
                          and not k.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))}
         proc = subprocess.Popen(
-            cmd,
+            prepare_worker_command(cmd, child_env, self.workspace, self.agent_id),
             cwd=str(self.worktree),
             env=child_env,
             stdin=subprocess.PIPE,

@@ -307,11 +307,11 @@ def run(
     )
     timing = timing if timing is not None else profile.get("timing", "perf")
     repeat_count = repeats if repeats is not None else profile.get("repeats", 3)
-    timeout = profile.get("case_timeout", 300)
+    timeout = profile.get("case_timeout", 15)
     if (
         timing not in ("off", "perf", "all")
         or not 1 <= repeat_count <= 100
-        or not 1 <= timeout <= 7200
+        or type(timeout) is not int or not 1 <= timeout <= 7200
     ):
         raise ValueError("Invalid timing, repeats or case_timeout")
     reuse_session = profile.get("reuse_session", True)
@@ -328,7 +328,7 @@ def run(
         "strict_fp32": profile.get("strict_fp32", False),
         "timing": timing,
         "repeats": repeat_count,
-        "timeout": timeout,
+        "timeout": min(timeout, 60),
         "arch": os.getenv("NPU_ARCH", "arch-v1"),
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": "/srv/work-device0.lock",

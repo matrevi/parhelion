@@ -288,10 +288,14 @@ struct NpuCaseProgress: Codable, Hashable {
     let repeats: Int?
     let part: Int?
     let parts: Int?
+    var startedEpoch: Double?
+    var timeoutSec: Int?
 
     enum CodingKeys: String, CodingKey {
         case index, total, phase, repeats, part, parts
         case repetition = "repeat"
+        case startedEpoch = "started_epoch"
+        case timeoutSec = "timeout_sec"
     }
 }
 
