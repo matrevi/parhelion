@@ -3,7 +3,7 @@
 ===/Users/winbeau/Developer/personal/parhelion/===
 .gitattributes[FC4T]: F:强制跨平台文本文件以LF换行符检出，避免autocrlf改写触发AOCI全量漂移误报 | R:- | A:- | S:仅文本自动规范为LF，二进制文件保持原样
 .gitignore[FC4T]: F:声明SwiftPM构建产物、Python缓存、调度状态、敏感密钥与本地AOCI接入文件的Git忽略规则 | R:- | A:- | S:包含*session*.json与.mcp.json等本机凭证隔离规则
-AGENTS.md[SC6S]: F:规定平台九项目标、同题协作、刷分方法及仓库认知维护 | R:code:aoci.txt,code:aoci.meta.txt | A:- | S:每题算法和数据流优化者与校准者直连；日常bench反馈留在题组，明确升级事件交给主控
+AGENTS.md[SC6S]: F:规定平台九项目标、设备调度分工、刷分方法与仓库认知维护 | R:code:aoci.txt,code:aoci.meta.txt | A:- | S:worker经MCP提交设备工作，外部诊断归主控；健康批次连续执行，超时后释放设备再测余例。
 Package.swift[FV7T]: F:声明Parhelion原生macOS 14+可执行SwiftPM包与源码根目录 | R:code:Sources/Parhelion/App/ParhelionApp.swift | A:Parhelion | S:零第三方SwiftPM依赖，直接编译Sources/Parhelion
 README.md[SG5T]: F:说明Parhelion仓库架构、运行时目录布局、多Harness协作总线、比赛题目爬取、单题官方模板与私有仓库引导及打包安装流程 | R:code:Package.swift,code:scripts/bundle_app.sh,code:scripts/build_dmg.sh,code:cli/opsb_core/daemon/server.py | A:- | S:文档本身不承载版本号，唯一版本权威在cli/opsb_core/__init__.py
 
@@ -14,7 +14,7 @@ ParhelionApp.swift[EG9T]: F:SwiftUI应用入口与AppDelegate，负责单实例�
 ===/Users/winbeau/Developer/personal/parhelion/Sources/Parhelion/Core/===
 DaemonClient.swift[IN9M]: F:线程安全localhost HTTP/SSE客户端，连接按需拉起opsb daemon、通用鉴权请求与离主线程解码 | R:code:Sources/Parhelion/Core/ProcessClient.swift,code:Sources/Parhelion/Domain/ContestModels.swift,code:Sources/Parhelion/Domain/NpuModels.swift | A:DaemonClient,DaemonClientError,SnapshotFetchResult | S:fetchSnapshot携带If-None-Match配合304；openHotStream用bufferingNewest(1)防陈旧帧回放；401清缓存重连
 Formatters.swift[CL6T]: F:提供上海时区ISO时间解析、短时间戳与时长格式化，以及URL/Finder/终端命令与Harness对话上下文deep-link跳转 | R:code:Sources/Parhelion/Features/AgentMesh/AgentMeshView.swift,code:Sources/Parhelion/Features/Contest/DriverSessionsPopoverView.swift | A:Formatters,SystemNavigator | S:非codex://threads/<id>直链时先写剪贴板hint再open，deepseek提示⌘K粘贴；终端resume脚本落tmp目录并chmod 0700且自带rm -f "$0"自删
-Localization.swift[CL7S]: F:翻译遥测阶段、评测状态及队伍与候选调度建议 | R:- | A:AppLanguage | S:区分本队待上榜、待同步榜单、已通过但新候选待复验；CMake数字是并发上限
+Localization.swift[CL7S]: F:翻译设备阶段、未登记占用、判题状态与调度建议 | R:- | A:AppLanguage | S:持锁但没有平台会话时使用独立状态，编译并发数字表示上限。
 OpsRepository.swift[IB9M]: F:封装桌面到CLI的工作区、提交队列、验证、驱动选择及认证操作 | R:code:Sources/Parhelion/Core/ProcessClient.swift,code:Sources/Parhelion/Core/DaemonClient.swift | A:OpsRepository | S:立即提交解析worker确认及非零响应，账号密钥走stdin；模型设置按driver写入
 ProcessClient.swift[IR9M]: F:异步子进程执行器，自动定位opsb与Python环境并并发排空输出流防死锁 | R:- | A:ProcessClient,ProcessClientError | S:并发读取stdout/stderr防64KB管道死锁；stdin默认/dev/null，优先选用workspace/.venv或~/.parhelion/venv
 StateSupport.swift[CU7T]: F:提供@UIState属性包装器与0.5s墙钟节拍器驱动冷却与耗时倒计时 | R:- | A:StateBox,UIState,WallClockTicker | S:UIState用StateObject包裹StateBox规避CommandLineTools兼容问题；WallClockTicker以本机epoch驱动
@@ -37,7 +37,7 @@ CalibrationModels.swift[DA6T]: F:定义分层校准项、基准覆盖网格与�
 ContestModels.swift[DB9M]: F:解码比赛快照并呈现最近判题、分数来源与队伍榜分 | R:code:cli/opsb_core/services/contest_service.py,code:Sources/Parhelion/Domain/CalibrationModels.swift | A:SupervisorSnapshot,ContestSummary,ProblemItem,ProblemHistoryItem | S:有复算分时说明其TBest取自核对时刻；仅有已证实上限时使用≤
 DriverModels.swift[DE7M]: F:解码Harness诊断、会话启动结果及DSH工作区信息 | R:code:Sources/Parhelion/Core/Formatters.swift | A:DriverDiagnosticModel,DriverSessionModel,DriverLaunchResponse | S:worker_model与DSH附加信息为可选，兼容旧daemon响应
 FastFeedbackModels.swift[DO7S]: F:定义ELF守卫、Cold3冷启动毛刺与PMU对标Torch诊断卡片Codable模型 | R:- | A:FastAlert,ElfGuardResult,Cold3Result,PmuTorchCard,FastFeedbackSummary | S:-
-NpuModels.swift[DH8M]: F:解码设备、编译、候票与持锁遥测及逐次进度 | R:code:Sources/Parhelion/Domain/QueueModels.swift | A:NpuTelemetry,HotStreamFrame,NpuTaskItem,DieLockInfo | S:run_id与case进度可缺省，未知持锁时长须与零区分
+NpuModels.swift[DH8M]: F:解码设备、编译与候票快照及单例执行进度 | R:code:Sources/Parhelion/Domain/QueueModels.swift | A:NpuTelemetry,HotStreamFrame,NpuTaskItem,NpuCaseProgress,DieLockInfo | S:旧帧可以缺少run_id、单例起点和预算，未知时长与零区分。
 QueueModels.swift[DW9M]: F:解码账号槽位、流水线、门禁与提交队列的评分证据 | R:code:cli/opsb_core/services/queue_service.py | A:PipelineAccountSlot,ActiveSubmissionItem,LivePipelineState,BackfillPassthrough,SchedulerState,SubmissionQueueItem | S:评分来源和上限为可选字段以兼容旧快照；本地上传与远端判题分别跟踪
 SettingsModels.swift[DI7S]: F:定义SDK Judge多账号、GitCode认证、Skills状态、SSH主机、协作与工作区模型 | R:- | A:AuthStatus,JudgeAccountSlot,SkillsStatus,SSHHostListResponse,CollabInviteResponse,WorkspaceListResponse | S:-
 TriadKBModels.swift[DA7M]: F:定义含Bug档案的五元知识库支柱枚举、条目与legacy_id、证据、查询及进化回滚Codable模型 | R:code:Sources/Parhelion/Core/Localization.swift | A:TriadKBPillar,TriadPortabilityFilter,TriadKBEntry,TriadKBQueryResponse,KBEvolutionEvent | S:TriadKBQueryResponse兼容results或entries双字段；TriadKBEntry支持legacy_id与decodeIfPresent宽容缺省字段
@@ -70,10 +70,10 @@ ProblemTableView.swift[AU7M]: F:在自适应列中展示最近判题和队伍榜
 
 ===/Users/winbeau/Developer/personal/parhelion/Sources/Parhelion/Features/NpuMonitor/===
 ActiveSubmissionCardViews.swift[AU7M]: F:渲染活跃提交卡片队列、多账号槽位倒计时与兜底单卡视图 | R:code:Sources/Parhelion/Features/Contest/ContestStore.swift,code:Sources/Parhelion/Features/Contest/ContestStore+Reconcile.swift,code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift | A:ResolvedActiveCard,ActiveSubmissionsDeckView,ActiveSubmissionCardView,InflightJudgeCardView,QueueArrowSeparator,QueueScoreCell | S:按热活跃→乐观launching→settling→冷inflight去重合并，以SubmissionKey作为唯一视图身份防动画乱跳
-BtopTelemetryDeckView.swift[AU7M]: F:展示NPU、CPU、内存的实时采样及设备占用统计 | R:code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift,code:Sources/Parhelion/DesignSystem/Telemetry/TimeSeriesChartView.swift | A:BtopTelemetryDeckView | S:理论容量与实测平均持锁分开命名，缺少获得锁时间时明确标为未知
+BtopTelemetryDeckView.swift[AU7M]: F:展示NPU、CPU、内存的实时采样与设备占用统计 | R:code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift,code:Sources/Parhelion/DesignSystem/Telemetry/TimeSeriesChartView.swift | A:BtopTelemetryDeckView | S:未登记持锁者的子进程计时仅是持锁下界，缺少起点显示未记录。
 NpuLaneModel.swift[DW9M]: F:由设备持锁、后台编译和候票采样归并逻辑作业卡片 | R:code:Sources/Parhelion/Domain/NpuModels.swift | A:NpuLane,NpuLaneCard,NpuLaneModel | S:用run_id关联同一批次连续阶段，已释放持锁卡及时撤下，兼容旧PID记录
 NpuMonitorView.swift[AU6T]: F:NPU监控页根视图，纵向组合btop示波面板、调度门禁栏与左右分栏NPU/提交队列 | R:code:Sources/Parhelion/Features/NpuMonitor/BtopTelemetryDeckView.swift,code:Sources/Parhelion/Features/NpuMonitor/NpuServerQueueView.swift,code:Sources/Parhelion/Features/NpuMonitor/SubmissionQueueView.swift | A:NpuMonitorView | S:-
-NpuServerQueueView.swift[AU8M]: F:展示三车道任务、设备执行与CPU校验的逐例及重复进度 | R:code:Sources/Parhelion/Features/NpuMonitor/NpuLaneModel.swift,code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift | A:NpuServerQueueView | S:同一次运行以稳定标识跨车道移动；进度与PID同排，空间优先展示进度
+NpuServerQueueView.swift[AU8M]: F:呈现三车道及逐例、分段、重复轮次与执行用时预算 | R:code:Sources/Parhelion/Features/NpuMonitor/NpuLaneModel.swift,code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift | A:NpuServerQueueView | S:执行期才启动逐例计时；未知归属不展示推算的起始时间。
 SchedulerBarView.swift[AU8M]: F:显示提交通道状态胶囊、多账号190s冷却与额度、自动提交开关及门禁参数弹窗 | R:code:Sources/Parhelion/Features/Contest/ContestStore.swift,code:Sources/Parhelion/Features/Contest/HotTelemetryStore.swift,code:Sources/Parhelion/Core/StateSupport.swift | A:SchedulerBarView | S:用syncingGateValues标记阻止打开弹窗赋值noiseVal时触发onChange误发updateScheduler
 SubmissionQueueCardViews.swift[AU8M]: F:展示候选门禁和历史提交的判题、分数同步及最终结果 | R:code:Sources/Parhelion/Features/Contest/ContestStore.swift,code:Sources/Parhelion/Domain/QueueModels.swift | A:CandidateSubmissionCardView,CompletedSubmissionCardView | S:判题和快速查分窗口内显示进度；历史复算另标来源，不能从无分Pass推定提分
 SubmissionQueueSections.swift[AU7M]: F:拆分提交队列热订阅头部标签计数及待提交/暂缓/历史三栏内容区视图 | R:code:Sources/Parhelion/Features/NpuMonitor/ActiveSubmissionCardViews.swift,code:Sources/Parhelion/Features/NpuMonitor/SubmissionQueueCardViews.swift,code:Sources/Parhelion/Features/Contest/ContestStore+Reconcile.swift | A:KeyedQueueItem,SubmissionQueueHeaderTabs,WaitingQueueContentView,HeldQueueContentView,HistoryQueueContentView | S:用activeDeckKeys实时过滤等待/暂缓卡片避免与ActiveDeck重复；等待与暂缓用VStack支持滑移动画
@@ -97,6 +97,7 @@ __init__.py[CG3T]: F:向调用方提供Parhelion CLI发行版本 | R:code:script
 cli_app.py[EG9L]: F:解析opsb命令并路由比赛、验证实验与账号提交操作 | R:code:cli/opsb_core/commands/queue_cmd.py,code:cli/opsb_core/commands/bench_cmd.py,code:cli/opsb_core/commands/admin_cmd.py | A:build_parser,main | S:内部上传子命令与手动入口均识别force，异常复核可传review理由
 config.py[CC9M]: F:管理~/.parhelion路径解析、工作区自动发现、旧配置无损迁移、TTL缓存与原子JSON/JSONL I/O | R:- | A:ConfigRepository,PARHELION_HOME,workspace_data_dir,append_jsonl_locked,read_ttl_cache,resolve_python_exe | S:discover_default_workspace拒绝硬编码路径；append_jsonl_locked用flock互斥；save使用PID+TID临时文件原子替换
 ipc_bridge.py[IW9M]: F:将调度桥的估分、配额、逃逸复验与提交意图合并到桌面快照 | R:code:scheduler/cli_bridge.py,code:cli/opsb_core/services/contest_service.py | A:invoke_bridge,merge_bridge_enrichment | S:缓存纳入队长及榜单指纹；释放逃逸锁时恢复基础调度建议
+worker_access.py[RI8T]: F:为托管worker签发工作区绑定的回环MCP凭据并隔离SSH | R:code:cli/opsb_core/config.py,code:cli/opsb_core/drivers/base.py | A:prepare_worker_command,worker_token,forward_worker_request | S:主令牌只在调度端签名，worker使用专用令牌；macOS子进程策略限制SSH执行、端口与认证文件。
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/commands/===
 __init__.py[CG2T]: F:标记opsb_core.commands子包命名空间 | R:- | A:- | S:-
@@ -113,7 +114,7 @@ tools_cmd.py[EO7M]: F:实现opsb bench elf、cold3、pmu与scaffold四个快速�
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/daemon/===
 __init__.py[CG3T]: F:导出opsb daemon生命周期与状态查询接口 | R:code:cli/opsb_core/daemon/server.py | A:start_daemon,stop_daemon,get_daemon_status,run_daemon_server | S:-
 npu_stream.py[IO8M]: F:维护SSH探针流、远端探针版本和任务切换时的热态合并 | R:code:cli/opsb_core/probe/npu_stream_probe.py | A:NpuStreamManager,PROBE_VERSION_MARKER | S:探针标记不符触发重部署；资源归属优先采用实时帧
-server.py[EN9L]: F:托管鉴权HTTP与SSE、worker回执分发及资源调度轮询 | R:code:cli/opsb_core/daemon/state_cache.py,code:cli/opsb_core/daemon/npu_stream.py,code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/services/submit_runner.py | A:OpsbDaemonRuntime,run_daemon_server,start_daemon,stop_daemon,get_daemon_status | S:停用自动提交仍投递判题，只有持久提交意图可被提升入队
+server.py[EN9L]: F:托管回环HTTP与SSE、资源轮询和按工作区及身份限定的worker MCP路由 | R:code:cli/opsb_core/worker_access.py,code:cli/opsb_core/daemon/state_cache.py,code:cli/opsb_core/daemon/npu_stream.py,code:cli/opsb_core/agents/manager.py | A:OpsbDaemonRuntime,run_daemon_server,start_daemon,stop_daemon,get_daemon_status | S:工作区绑定查询路径，worker令牌只验证对应POST路由；禁用自动提交仍投递回执。
 state_cache.py[CD9L]: F:缓存赛事冷快照、实时流水线、账号冷却与配额 | R:code:cli/opsb_core/services/queue_service.py,code:cli/opsb_core/services/submit_runner.py,code:cli/opsb_core/services/judge_quota.py | A:WorkspaceStateCache | S:队长选择文件进入冷指纹；失效代数阻止旧快照覆盖较新状态
 agent_routes.py[EN7S]: F:提供协作控制面、同题投递、等待及按受众读取消息的路由 | R:code:cli/opsb_core/daemon/server.py,code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/agents/sprint.py | A:handle_agent_get,handle_agent_post | S:主控读取过滤题组内部消息；管理界面可查看完整时间线
 
@@ -154,16 +155,16 @@ bugs.py[DA8M]: F:按赛事回放判题回执构建失败与显著降分卡，关
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/mcp/===
 __init__.py[EN3T]: F:MCP子包入口导出协议版本,工具定义与stdio/HTTP服务端处理函数 | R:code:cli/opsb_core/mcp/server.py,code:cli/opsb_core/mcp/tools.py | A:MCP_PROTOCOL_VERSION,SERVER_INFO,call_tool,serve_stdio,handle_mcp_http_request | S:-
-handlers_bench.py[EB7M]: F:提供按SHA验证、实验配置对照、诊断及提交门控接口 | R:code:cli/opsb_core/services/queue_service.py,code:cli/opsb_core/ipc_bridge.py,code:cli/opsb_core/fast_feedback/__init__.py | A:tool_parhelion_status,tool_parhelion_test_plan,tool_parhelion_submit_gate | S:实验配置允许比赛工作区或本题的平台bench目录；候选与证据解析到比赛仓库提交
+handlers_bench.py[EB7M]: F:解析候选提交、执行平台验证实验并提供诊断及提交门控 | R:code:cli/opsb_core/services/queue_service.py,code:cli/opsb_core/ipc_bridge.py,code:cli/opsb_core/fast_feedback/__init__.py | A:tool_parhelion_status,tool_parhelion_test_plan,tool_parhelion_submit_gate | S:排队时间不计入设备超时，MCP持续收集进程回执；实验配置限比赛工作区或本题bench目录。
 handlers_kb.py[ED7M]: F:实现parhelion_kb_query/record/feedback MCP工具支持hardware支柱与独立索引回退 | R:code:cli/opsb_core/services/triad_kb_service.py,code:cli/opsb_core/config.py | A:tool_parhelion_kb_query,tool_parhelion_kb_record,tool_parhelion_kb_feedback | S:hardware生成HW-*前缀并默认native-accel;仅当服务不可用时回退本地4支柱索引
 schemas.py[FC6M]: F:定义角色可见的验证、知识、提交与协作MCP接口 | R:code:cli/opsb_core/mcp/tools.py | A:TOOL_SCHEMAS | S:parhelion_squad专供工作器，省略收件人和正文可查询队友；测试可指定实验配置文件
-server.py[EN8S]: F:纯标准库角色分级JSON-RPC 2.0 MCP服务端(parhelion-mcp)支持stdio流与HTTP /v1/mcp、/v1/mcp/orchestrator、/v1/mcp/worker/<agent_id> | R:code:cli/opsb_core/mcp/tools.py,code:cli/opsb_core/daemon/server.py,code:cli/opsb_core/__init__.py | A:MCP_PROTOCOL_VERSION,SERVER_INFO,handle_jsonrpc_message,handle_mcp_payload,serve_stdio,handle_mcp_http_request | S:SERVER_INFO.version经OPSB_VERSION单一来源派生，不硬编码；tools/list与tools/call双重按role过滤，worker越权返回-32601；无id通知返回None
+server.py[EN8S]: F:处理stdio和HTTP的MCP协议，为有身份的worker转发到守护进程 | R:code:cli/opsb_core/mcp/tools.py,code:cli/opsb_core/worker_access.py,code:cli/opsb_core/daemon/server.py | A:handle_jsonrpc_message,handle_mcp_payload,serve_stdio,handle_mcp_http_request | S:tools/list与调用均检查角色；有身份的worker转发失败返回错误，通知无响应。
 tools.py[EN7S]: F:按会话角色绑定和执行平台MCP处理器 | R:code:cli/opsb_core/mcp/schemas.py,code:cli/opsb_core/mcp/handlers_bench.py,code:cli/opsb_core/mcp/handlers_agents.py | A:list_tool_schemas,call_tool,normalize_role | S:服务端绑定工作器身份，工作器无法用force绕过候选门控；同题工具与主控操作面独立
 handlers_agents.py[EW8M]: F:适配主控与工作器消息工具并在stdio和daemon间转发 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/daemon/server.py | A:bind_daemon_agent_manager,tool_parhelion_harness_pool,tool_parhelion_agent_spawn,tool_parhelion_agent_send,tool_parhelion_agent_wait,tool_parhelion_agent_report | S:同题工具要求服务端绑定调用身份；主控消息默认滤除题组内部记录
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/probe/===
-npu_probe.py[IH8L]: F:采样实际锁所有者、编译活动、硬件与逐例进度 | R:code:cli/opsb_core/probe/npu_stream_probe.py,code:runtime/npu_runtime/lanes.py | A:read_locks,build_snapshot | S:以物理锁区分等锁和持锁，用会话计时而不以进程年龄推断
-npu_stream_probe.py[IH9L]: F:逐帧关联设备锁、编译记录、WSPT票据和验证批次进度 | R:code:cli/opsb_core/daemon/npu_stream.py,code:runtime/npu_runtime/lanes.py | A:DcmiProbe,StreamProbeSession,read_locks_procfs | S:以设备号和inode匹配本帧所有者，按实际锁账本给出耗时和容量
+npu_probe.py[IH8L]: F:采集锁、编译与逐例活动，识别未登记持锁者并估计候票时间 | R:code:cli/opsb_core/probe/npu_stream_probe.py,code:runtime/npu_runtime/lanes.py | A:read_locks,build_snapshot,estimate_waits,unregistered_holder | S:会话必须匹配实际所有者；外部flock子进程的寿命是下界，持锁超出均值时撤回等待估算。
+npu_stream_probe.py[IH9L]: F:逐帧关联真实设备所有者、编译记录、候票和验证进度 | R:code:cli/opsb_core/probe/npu_probe.py,code:cli/opsb_core/daemon/npu_stream.py,code:runtime/npu_runtime/lanes.py | A:DcmiProbe,StreamProbeSession,read_locks_procfs | S:按设备号和inode关联物理锁，单次与流式探针共用未登记占用和等待估算规则。
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/services/===
 __init__.py[CG2T]: F:opsb领域服务子包标记 | R:- | A:- | S:-
@@ -178,7 +179,7 @@ git_fast.py[CR5T]: F:零子进程直读.git/logs/HEAD获取SHA/提交年龄/标�
 inflight_io.py[PR8S]: F:为多账号inflight*.json提交追踪器提供原子读写与防误删存活PID回收 | R:- | A:read_inflight,write_inflight_atomic,write_inflight_unless_owned,reap_inflight_if_stale,live_inflight | S:半写/空文件返回None而非{};仅当PID明确死亡且started_at未变时才unlink,防止撕裂误杀活worker
 judge_score_fetch.py[IR7L]: F:按提交ID读取榜分、更新快照，并以公开计分用例复算缺失总分 | R:code:cli/opsb_core/services/sync_reconciler.py | A:match_ranking_row_by_sid,fetch_ranking_sid_and_team_with_retry,resolve_score_and_times,reconstruct_timing_score,update_score_snapshot | S:仅best普通耗时题在全量ID与计时齐全、同榜参考行复算吻合时给出复算分，保留原始时间和TBest
 judge_sync.py[DW9L]: F:融合本地inflight文件,队列锁,远端receipt与账号配额的三时钟10阶段提交管线同步器 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/inflight_io.py,code:cli/opsb_core/services/submit_runner.py | A:compute_synchronized_pipeline,INFLIGHT_FILE,TERMINAL_JUDGE_STATUSES,TERMINAL_OUTCOME_STATUSES | S:按local_worker->active_remote->finishing_sync->locked_worker四级确定phase;多账号任一空闲就绪即置local_busy=False
-npu_service.py[IH8M]: F:复用ControlMaster SSH轮询NPU遥测,关联Mac端等待进程并支持探针部署,工单加急与任务取消 | R:code:cli/opsb_core/probe/npu_probe.py,code:cli/opsb_core/probe/npu_stream_probe.py | A:read_mac_npu_waiters,enrich_npu_payload,poll_npu_telemetry,deploy_probe,boost_npu_ticket,cancel_npu_task | S:按ControlPath=/tmp/opsb-ssh-%C复用连接;boost通过chmod 0444写/tmp/opsb-npu-tickets/<pid>.json实现
+npu_service.py[IH8M]: F:部署远端探针，关联本机等待者并提供票据管理 | R:code:cli/opsb_core/probe/npu_probe.py,code:cli/opsb_core/probe/npu_stream_probe.py | A:read_mac_npu_waiters,enrich_npu_payload,poll_npu_telemetry,deploy_probe,boost_npu_ticket,cancel_npu_task | S:未登记持锁者不回填仓库HEAD，避免伪造候选版本。
 orphan_receipts.py[DR7M]: F:扫描72小时内缺少终态outcome的submission-receipt并跨账号查询回填标准结果行 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/judge_score_fetch.py,code:cli/opsb_core/services/auth_service.py | A:resolve_sessions_for_account,is_latest_submission_for_title,find_orphan_receipts,collect_recent_unreconciled_receipt_pairs,fetch_submission_via_sessions,build_reconciled_outcome_row | S:collect_recent_unreconciled_receipt_pairs为queue_service拦截35分钟内已提交但未入outcome的重复项
 queue_service.py[DB9L]: F:互斥入队并将候选、在途任务、判题历史与恢复建议投影到快照 | R:code:cli/opsb_core/services/contest_service.py,code:cli/opsb_core/services/judge_sync.py | A:enqueue_once,compute_workspace_snapshot,check_commit_safety_gate | S:进行中、已通过待同步、复算及仅知上限分开表示；重复上传用回执ID区分
 quota_helpers.py[DW6S]: F:计算动态收官预留配额,在途队列项构建与活跃可用提交账号数 | R:code:cli/opsb_core/services/auth_service.py,code:cli/opsb_core/services/judge_sync.py | A:compute_effective_closing_reserve,build_inflight_queue_items,active_eligible_account_count | S:closing_reserve公式需与scheduler/gate.py一致并上限封顶max(12,min_reserve);异常时账号数安全退回1
@@ -219,7 +220,7 @@ project_files.py[PS7S]: F:安全解压Judge工程zip并校验收集可编辑核�
 session_store.py[PS7T]: F:跨平台原子读写Judge登录会话Cookie文件(POSIX 0600与Windows DPAPI) | R:code:runtime/judge/judge_cli.py | A:DEFAULT_SESSION_FILE,save_session,load_session | S:拒绝符号链接且POSIX要求uid与0600权限精确匹配;Windows使用DPAPI绝不退回明文
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/===
-npu-test.py[RW9L]: F:按仓库布局运行旧赛分阶段验证、模板构建或完整参考用例 | R:code:scheduler/case_bench.py,code:runtime/npu_runtime/lanes.py | A:run_3phase_validation,main | S:模板配置只占一个CPU槽，构建按实际翻译单元申请预算；编译与样例生成在设备锁外
+npu-test.py[RW9L]: F:执行旧赛分阶段验证、模板构建或完整参考用例并接入共享准入 | R:code:scheduler/case_bench.py,code:runtime/npu_runtime/lanes.py | A:run_3phase_validation,main | S:单Die队首进入内核等待且保留截止期限，多Die仍扫描空闲设备；编译与准备在锁外。
 submit-validated.py[EW8S]: F:按服务器验证和源文件匹配上传比赛代码，复用已判提交并记录回执 | R:code:runtime/judge/ict_cli.py,code:scheduler/probes.py,code:scheduler/case_bench.py | A:main,source_matches | S:开局探针可使用编译凭据，之后reference题需要完整报告；429返回75
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/npu_runtime/===
@@ -228,8 +229,8 @@ arena_cache.py[KP9L]: F:在缓存arena中分离CPU金标、设备回放及逐项
 fast_profiler.py[RO7S]: F:低锁profiler启动器在硬件采样落盘出现Start analyzing data后立即入队Phase-C导出并提前释放NPU锁 | R:code:runtime/npu-test.py | A:ANALYSIS_MARKERS,main | S:设置OPSB_PHASE_C_QUEUE时可提前3.5-8s释放device0.lock;仅--pmu/OPSB_PMU=1启用PipeUtilization
 sitecustomize.py[RI6T]: F:Python启动钩子按OPSB_ARENA_ACCEL/PHASE环境变量自动注入arena_accel拦截 | R:code:runtime/npu_runtime/arena_accel.py | A:- | S:静默容错以防非runtime进程因缺依赖崩溃
 reference_cases.py[RW8L]: F:将官方模板转为描述符驱动的验证程序，生成输入、金标和比较容差 | R:code:runtime/npu_runtime/case_batch.py,code:runtime/npu_runtime/lanes.py | A:generate,prepare_case,compare_output,main | S:显式缺省张量以空Group传递并省略金标；严格fp32另比较前6Mi元素
-lanes.py[RW8T]: F:按CMake编译图申请CPU预算并管理整批设备的WSPT票据 | R:code:runtime/npu_runtime/case_batch.py,code:runtime/npu-test.py | A:compilation_units,compile_lane,device_lane,case_series | S:互斥扣除活跃编译额度，设备取得锁后发布run及进度并记录一次实际持锁
-case_batch.py[RW8L]: F:批量准备参考输入与金标，以单次设备锁运行后逐次比对输出 | R:code:runtime/npu_runtime/lanes.py,code:runtime/npu_runtime/reference_cases.py | A:run_series | S:准备和验证均在设备锁外，每轮先对齐完整文件集合，即使该例所有输出都可缺省
+lanes.py[RW8S]: F:分配编译预算，注册批次并协调WSPT队首进入物理设备锁 | R:code:runtime/npu_runtime/case_batch.py,code:runtime/npu-test.py | A:compilation_units,compile_lane,device_lane,case_series,wait_as_queue_head | S:单一准入锁内复核胜出票后在设备锁上阻塞，实际取得锁才发布运行心跳与持锁账本。
+case_batch.py[RW8S]: F:预制输入，按单例设备预算执行各分段和重复，再在CPU核验输出 | R:code:runtime/npu_runtime/lanes.py,code:runtime/npu_runtime/reference_cases.py | A:run_series,execute_batch,execute_case | S:每例共享一个单调时钟截止时间；健康用例持续复用设备，TLE释放本次预约并为剩余例重新排队。
 
 ===/Users/winbeau/Developer/personal/parhelion/scheduler/===
 __init__.py[CW6T]: F:纯标准库调度器包入口统一导出Estimator,Gate,Calibration,NPU/Backfill调度与延迟加载SchedulerEngine | R:code:scheduler/gate.py,code:scheduler/calibration.py,code:scheduler/npu_scheduler.py,code:scheduler/backfill.py | A:BackfillScheduler,BenchmarkCalibrator,ScoreEstimator,SubmissionGate,NpuTaskScheduler,SchedulerEngine | S:__getattr__按需延迟导入cli_bridge避免循环依赖
@@ -245,12 +246,12 @@ pairwise_anchor.py[KA8M]: F:双锚点(latest vs best) Pairwise-v2候选分数估
 parhelion_paths.py[CP8M]: F:共享~/.parhelion多工作区路径解析、规范化题目清单加载与RFC-8259去NaN/Inf原子写 | R:code:cli/opsb_core/config.py | A:sanitize_json_value,atomic_write_json,read_json_safe,load_problem_manifest | S:清单clean(opsb.workspace.json)优先、legacy(bench/problems.json)回退并归一化path/repo_slug/difficulty;强制allow_nan=False
 feedback_log.py[DW5S]: F:在工作区追加调度与提交反馈事件并按种类读取近期记录 | R:code:cli/opsb_core/services/submit_runner.py | A:feedback_log_path,log_feedback,tail_feedback | S:递归截短过长字段，写失败返回False以免中断提交
 probes.py[CW6S]: F:为调度和最终上传共享逐题开场次数及编译证据判定 | R:code:scheduler/gate.py,code:runtime/submit-validated.py | A:OPENING_PROBES,submitted_attempts,compile_evidence | S:去重合并结果行与回执中的评测ID；没有评测ID的本地尝试不消耗次数
-case_bench.py[AW8L]: F:冻结用例目录及运行设置并生成可比对的验证报告 | R:code:runtime/npu_runtime/reference_cases.py,code:runtime/npu_runtime/case_batch.py | A:catalog,run,compare_runs,formal_evidence | S:相同设置仅合并重叠运行；实验可切换会话复用，正式通过需对齐目录与精度配置
+case_bench.py[AW8L]: F:冻结用例、oracle和执行预算，生成可配对的验证证据 | R:code:runtime/npu_runtime/reference_cases.py,code:runtime/npu_runtime/case_batch.py | A:catalog,run,compare_runs,formal_evidence | S:默认15秒，旧配置最多按60秒执行；实际预算写入计划和去重键，相同设置仅合并重叠运行。
 case_feedback.py[KA7M]: F:结合历史官方回执、同环境报告与源码差异推导实验及复核凭据 | R:code:scheduler/case_bench.py,code:scheduler/calibration.py,code:runtime/judge/ict_cli.py | A:evolve,regression_evidence,match_escape_submission | S:同一WA回执至多关联一个复试SHA，复核记录与已证回归隔离
 
 ===/Users/winbeau/Developer/personal/parhelion/scripts/===
 build_dmg.sh[OV5T]: F:封装签名应用为发行DMG并在产物目录生成SHA-256校验文件 | R:code:scripts/bundle_app.sh | A:- | S:缺包或版本不匹配时重建；SHA文件使用相对文件名
-bundle_app.sh[OV7S]: F:构建并签名带CLI与NPU运行时的macOS发行应用 | R:code:Package.swift,code:scripts/generate_icon.swift,code:cli/opsb_core/__init__.py | A:- | S:3.6.1构建25，应用在仓库外暂存签名，独立于比赛数据
+bundle_app.sh[OV7S]: F:构建并签名带CLI与NPU运行时的macOS发行应用 | R:code:Package.swift,code:scripts/generate_icon.swift,code:cli/opsb_core/__init__.py | A:- | S:3.6.2构建26，仓库外暂存签名，分别同步发行版本及通用运行资产。
 generate_icon.swift[OV5S]: F:基于AppKit/CoreGraphics与SDK logo位图渲染全尺寸macOS AppIcon.iconset | R:code:scripts/bundle_app.sh | A:- | S:小于64px自动退化为红色A字标保证小尺寸清晰度
 
 ===/Users/winbeau/Developer/personal/parhelion/skills/kernelc-deep-reference/===
@@ -300,8 +301,8 @@ AgentMeshSpawnSheet.swift[AU6S]: F:派发自治外部Worker的表单弹窗，采
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/agents/===
 __init__.py[CW4T]: F:导出多Harness AgentBusStore与AgentMeshManager核心类 | R:code:cli/opsb_core/agents/bus_store.py,code:cli/opsb_core/agents/manager.py | A:AgentBusStore,AgentMeshManager | S:-
-adapters.py[IE8L]: F:适配多Harness多轮对话、模型确认、用量事件和阶段压缩 | R:code:cli/opsb_core/drivers/antigravity_acp.py,code:cli/opsb_core/drivers/codex_appserver.py | A:AcpWorkerAdapter,CodexWorkerAdapter,create_worker_adapter | S:Codex采用当轮上下文用量并原生压缩；ACP将阶段结果与摘要交接到同模型新会话
+adapters.py[IE8L]: F:在统一worker启动边界适配多Harness会话、模型、用量与阶段压缩 | R:code:cli/opsb_core/worker_access.py,code:cli/opsb_core/drivers/antigravity_acp.py,code:cli/opsb_core/drivers/codex_appserver.py | A:AcpWorkerAdapter,CodexWorkerAdapter,create_worker_adapter | S:各驱动共用隔离的进程启动；Codex原生压缩，ACP交接摘要。
 bus_store.py[PW8L]: F:按收件人和消息方向持久化跨Harness消息、游标及工作器状态 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/drivers/base.py | A:agent_bus_db_path,AgentBusStore | S:题组回复不计入主控未读；工人收件箱接收来自主控及同题队友的投递，事件键唯一
 manager.py[AW9L]: F:管理工作器、题内定向消息、判题证据分发与阶段压缩 | R:code:cli/opsb_core/agents/adapters.py,code:cli/opsb_core/agents/bus_store.py,code:cli/opsb_core/drivers/registry.py | A:AgentMeshManager | S:按同题活跃身份定向投递，校准回执落库去重后批量唤醒；题内报告留在题组，求助和故障进入主控通道
 judge_feedback.py[KA7T]: F:按终态回执分析得分变化，并关联本题提交时已有的正式与实验逐例报告 | R:code:scheduler/estimator.py,code:cli/opsb_core/services/judge_score_fetch.py | A:judge_feedback,calibration_evidence | S:严格匹配完整SHA、题名、运行ID与提交时间上界；通过但未给分可通知且不参与分数窗口
-sprint.py[AW8S]: F:按赛题启动或复用算法、数据通路和校准三个独立工作树 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/services/contest_service.py,code:cli/opsb_core/config.py | A:start_sprint | S:同场启动串行化；校准席位使用bench-author角色，预览保留只读语义
+sprint.py[AW8S]: F:启动或复用每题算法、数据通路及校准席位，分派平台验证入口 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/services/contest_service.py,code:cli/opsb_core/config.py | A:start_sprint | S:同场启动串行化，预览不创建worker，校准席位使用bench-author角色。

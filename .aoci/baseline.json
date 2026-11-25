@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-25T13:50:39Z",
+  "updated_at": "2026-11-25T16:06:03Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -17,9 +17,9 @@
     },
     "AGENTS.md": {
       "role": "index",
-      "sha256": "c248d5d4ce0a200b36b99b86428ef392758fb225660d75d9969ff5a93e970877",
-      "size": 18572,
-      "normalized_sha256": "c248d5d4ce0a200b36b99b86428ef392758fb225660d75d9969ff5a93e970877"
+      "sha256": "513a2bde461205085d7b183805aac954debd1d91176738921461769c91fc691c",
+      "size": 18812,
+      "normalized_sha256": "513a2bde461205085d7b183805aac954debd1d91176738921461769c91fc691c"
     },
     "Package.swift": {
       "role": "index",
@@ -71,9 +71,9 @@
     },
     "Sources/Parhelion/Core/Localization.swift": {
       "role": "index",
-      "sha256": "0844ef79a5794f7318efc86f1a5653a7056fced5da7cac43ab685c441c2c8319",
-      "size": 7179,
-      "normalized_sha256": "0844ef79a5794f7318efc86f1a5653a7056fced5da7cac43ab685c441c2c8319"
+      "sha256": "85ea7b6e87b52f008cf643fb380e4cbd2005db8f7b95cf3b60b598eaa50e1775",
+      "size": 7410,
+      "normalized_sha256": "85ea7b6e87b52f008cf643fb380e4cbd2005db8f7b95cf3b60b598eaa50e1775"
     },
     "Sources/Parhelion/Core/OpsRepository.swift": {
       "role": "index",
@@ -173,9 +173,9 @@
     },
     "Sources/Parhelion/Domain/NpuModels.swift": {
       "role": "index",
-      "sha256": "d2126698dce4ee85e2cc0d19bb50646f4d128db4253c0066725a9965400047bc",
-      "size": 9484,
-      "normalized_sha256": "d2126698dce4ee85e2cc0d19bb50646f4d128db4253c0066725a9965400047bc"
+      "sha256": "5e79f09fc731900f98c5696f0dc571319e1e3710c1afc499ffe96c06098a20ec",
+      "size": 9623,
+      "normalized_sha256": "5e79f09fc731900f98c5696f0dc571319e1e3710c1afc499ffe96c06098a20ec"
     },
     "Sources/Parhelion/Domain/QueueModels.swift": {
       "role": "index",
@@ -359,9 +359,9 @@
     },
     "Sources/Parhelion/Features/NpuMonitor/BtopTelemetryDeckView.swift": {
       "role": "index",
-      "sha256": "054d6e4d293c721eb6d4fc3e08a362ba3aed610863f3dd844d0f8f23bdbf8f94",
-      "size": 16553,
-      "normalized_sha256": "054d6e4d293c721eb6d4fc3e08a362ba3aed610863f3dd844d0f8f23bdbf8f94"
+      "sha256": "d5778714076dbce0d07ee409b44f0ed6e8cbc1ba8c3f0b11fbc3aba5a51b87e7",
+      "size": 16606,
+      "normalized_sha256": "d5778714076dbce0d07ee409b44f0ed6e8cbc1ba8c3f0b11fbc3aba5a51b87e7"
     },
     "Sources/Parhelion/Features/NpuMonitor/NpuLaneModel.swift": {
       "role": "index",
@@ -377,9 +377,9 @@
     },
     "Sources/Parhelion/Features/NpuMonitor/NpuServerQueueView.swift": {
       "role": "index",
-      "sha256": "e6d70366148abb23f1dc115fd8f03eed85cc8b6ccdd0347ee10fe8a12169c174",
-      "size": 13751,
-      "normalized_sha256": "e6d70366148abb23f1dc115fd8f03eed85cc8b6ccdd0347ee10fe8a12169c174"
+      "sha256": "64ff7a2a68c95d15ef2ddc02f1787b5ebdb214d1362cb808e16a2d15f530eb6d",
+      "size": 14268,
+      "normalized_sha256": "64ff7a2a68c95d15ef2ddc02f1787b5ebdb214d1362cb808e16a2d15f530eb6d"
     },
     "Sources/Parhelion/Features/NpuMonitor/SchedulerBarView.swift": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "263fcf45464aa9b3b4ce2b5d1d98e291279b552e3749eaecd8a407e832d2310c",
-      "size": 83318,
-      "normalized_sha256": "263fcf45464aa9b3b4ce2b5d1d98e291279b552e3749eaecd8a407e832d2310c"
+      "sha256": "45992bc779fb67752067f29c958c36a47cdc3350742f41234108599c60b04d48",
+      "size": 83799,
+      "normalized_sha256": "45992bc779fb67752067f29c958c36a47cdc3350742f41234108599c60b04d48"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "b3f10836a54a5e4ac4ddebea67f19c493e5aa12dbaf25109d055f5a5e48ad12b",
+      "sha256": "7a94b6dc87ee4ff6b417bdc1bf5e92a448235ee3636911814b55dcac8de9dcf7",
       "size": 109,
-      "normalized_sha256": "b3f10836a54a5e4ac4ddebea67f19c493e5aa12dbaf25109d055f5a5e48ad12b"
+      "normalized_sha256": "7a94b6dc87ee4ff6b417bdc1bf5e92a448235ee3636911814b55dcac8de9dcf7"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -479,9 +479,9 @@
     },
     "cli/opsb_core/agents/adapters.py": {
       "role": "index",
-      "sha256": "8d5e817f9174e82e7811c22a83c543686d66c3c6089917b4578159c9ed82e4c1",
-      "size": 20559,
-      "normalized_sha256": "8d5e817f9174e82e7811c22a83c543686d66c3c6089917b4578159c9ed82e4c1"
+      "sha256": "e05a6c17b0035bd6072077b4eb09dbde91a94bdd3aebf4e466547827eb5a27d9",
+      "size": 20676,
+      "normalized_sha256": "e05a6c17b0035bd6072077b4eb09dbde91a94bdd3aebf4e466547827eb5a27d9"
     },
     "cli/opsb_core/agents/bus_store.py": {
       "role": "index",
@@ -503,9 +503,9 @@
     },
     "cli/opsb_core/agents/sprint.py": {
       "role": "index",
-      "sha256": "2a9641ccb0d6af3b963625fa1e4332bf384040fc3140b63ec2317119478e23dc",
-      "size": 4491,
-      "normalized_sha256": "2a9641ccb0d6af3b963625fa1e4332bf384040fc3140b63ec2317119478e23dc"
+      "sha256": "8ac02b8e27525b79f7a943c256b5daab7e980080a0cb79eea47dbe8356b693af",
+      "size": 4569,
+      "normalized_sha256": "8ac02b8e27525b79f7a943c256b5daab7e980080a0cb79eea47dbe8356b693af"
     },
     "cli/opsb_core/cli_app.py": {
       "role": "index",
@@ -593,15 +593,15 @@
     },
     "cli/opsb_core/daemon/npu_stream.py": {
       "role": "index",
-      "sha256": "f3a8e733ee24589c7b7207fbd3f9fccc3792f379ff1f81331746cb07ddd408ba",
+      "sha256": "b8ab7602acdfca877744c601964a0845f964a0aff393f8201cf1bf3ba185a298",
       "size": 15266,
-      "normalized_sha256": "f3a8e733ee24589c7b7207fbd3f9fccc3792f379ff1f81331746cb07ddd408ba"
+      "normalized_sha256": "b8ab7602acdfca877744c601964a0845f964a0aff393f8201cf1bf3ba185a298"
     },
     "cli/opsb_core/daemon/server.py": {
       "role": "index",
-      "sha256": "a8454d36e8de4f600ed2f4c647bde06b2e4f0d7f73fc37aaf13b137f7a5ac587",
-      "size": 27827,
-      "normalized_sha256": "a8454d36e8de4f600ed2f4c647bde06b2e4f0d7f73fc37aaf13b137f7a5ac587"
+      "sha256": "371faec2f551b507d72e2e485cc54baa209b458e795685dd0d27f89f94968fae",
+      "size": 28269,
+      "normalized_sha256": "371faec2f551b507d72e2e485cc54baa209b458e795685dd0d27f89f94968fae"
     },
     "cli/opsb_core/daemon/state_cache.py": {
       "role": "index",
@@ -803,9 +803,9 @@
     },
     "cli/opsb_core/mcp/handlers_bench.py": {
       "role": "index",
-      "sha256": "8259acd7be5d5805434b2930e151516dcceb86601d1bab9449adb2c70bb4c8e5",
-      "size": 13872,
-      "normalized_sha256": "8259acd7be5d5805434b2930e151516dcceb86601d1bab9449adb2c70bb4c8e5"
+      "sha256": "acfb2d02241ee6f90a24512a4b72a0a7fbe5bb755048dd83f8175a5b9fea9d2e",
+      "size": 13946,
+      "normalized_sha256": "acfb2d02241ee6f90a24512a4b72a0a7fbe5bb755048dd83f8175a5b9fea9d2e"
     },
     "cli/opsb_core/mcp/handlers_kb.py": {
       "role": "index",
@@ -821,9 +821,9 @@
     },
     "cli/opsb_core/mcp/server.py": {
       "role": "index",
-      "sha256": "233c711bdb51d3b068f2a4dc14bc6046cd6eb729ae64d2a7314c90e81997e518",
-      "size": 7554,
-      "normalized_sha256": "233c711bdb51d3b068f2a4dc14bc6046cd6eb729ae64d2a7314c90e81997e518"
+      "sha256": "8bc1561f9c36a9640f71f8cd6cf2ac683ebb7dd6f739789a63102cb559095227",
+      "size": 7747,
+      "normalized_sha256": "8bc1561f9c36a9640f71f8cd6cf2ac683ebb7dd6f739789a63102cb559095227"
     },
     "cli/opsb_core/mcp/tools.py": {
       "role": "index",
@@ -833,15 +833,15 @@
     },
     "cli/opsb_core/probe/npu_probe.py": {
       "role": "index",
-      "sha256": "3b8096920f4f63dceab79eff72a6d63bec6c594db0b494f8b9ae9df1fe37593a",
-      "size": 38386,
-      "normalized_sha256": "3b8096920f4f63dceab79eff72a6d63bec6c594db0b494f8b9ae9df1fe37593a"
+      "sha256": "85d3ba9f858484fe3e7c271192aec88d0e2ccd264b8e63f4171bd98b669b5992",
+      "size": 40228,
+      "normalized_sha256": "85d3ba9f858484fe3e7c271192aec88d0e2ccd264b8e63f4171bd98b669b5992"
     },
     "cli/opsb_core/probe/npu_stream_probe.py": {
       "role": "index",
-      "sha256": "dcef6c2d0bb044499b5aae8e9b19c8c0461bb39c2a6c3c8b11683550ffff4156",
-      "size": 68266,
-      "normalized_sha256": "dcef6c2d0bb044499b5aae8e9b19c8c0461bb39c2a6c3c8b11683550ffff4156"
+      "sha256": "dd441358ac2ca31a98388f7afbe71cd2a05bd2a3550789125536e70b937412ad",
+      "size": 68517,
+      "normalized_sha256": "dd441358ac2ca31a98388f7afbe71cd2a05bd2a3550789125536e70b937412ad"
     },
     "cli/opsb_core/services/__init__.py": {
       "role": "index",
@@ -935,9 +935,9 @@
     },
     "cli/opsb_core/services/npu_service.py": {
       "role": "index",
-      "sha256": "a410ab282fb0ae37a974a9d7272896682ccebc90e53d954053513684c7132b2f",
-      "size": 11245,
-      "normalized_sha256": "a410ab282fb0ae37a974a9d7272896682ccebc90e53d954053513684c7132b2f"
+      "sha256": "c36ad72a65ad80ebffe0bee07d7d467a439cf986eb71b38f67f155eef3c23bf9",
+      "size": 11342,
+      "normalized_sha256": "c36ad72a65ad80ebffe0bee07d7d467a439cf986eb71b38f67f155eef3c23bf9"
     },
     "cli/opsb_core/services/orphan_receipts.py": {
       "role": "index",
@@ -1016,6 +1016,12 @@
       "sha256": "87df207476037e46bcd4e9b5eeea342023a384ba4782fdd42de51cf3f92a9c3e",
       "size": 857,
       "normalized_sha256": "87df207476037e46bcd4e9b5eeea342023a384ba4782fdd42de51cf3f92a9c3e"
+    },
+    "cli/opsb_core/worker_access.py": {
+      "role": "index",
+      "sha256": "cd6042b4c4a4d72a4ca57cbefbc117dd2ed489cc58257dea1589796921663a58",
+      "size": 2354,
+      "normalized_sha256": "cd6042b4c4a4d72a4ca57cbefbc117dd2ed489cc58257dea1589796921663a58"
     },
     "cli/tests/test_agent_mesh_http.py": {
       "role": "observe",
@@ -1175,9 +1181,9 @@
     },
     "docs/BENCH_EVOLUTION_DESIGN.md": {
       "role": "index",
-      "sha256": "8f709d689a0cfebc005ea0d1cee1bf9efe243e12992880603673f5884ff3752b",
-      "size": 30570,
-      "normalized_sha256": "8f709d689a0cfebc005ea0d1cee1bf9efe243e12992880603673f5884ff3752b"
+      "sha256": "fbfdf00ec9a86dfad79714a0e2f96bc5d763d11b8ea0114d04d629491b5de34e",
+      "size": 30569,
+      "normalized_sha256": "fbfdf00ec9a86dfad79714a0e2f96bc5d763d11b8ea0114d04d629491b5de34e"
     },
     "docs/HANDOFF-ASTRA.md": {
       "role": "index",
@@ -1271,9 +1277,9 @@
     },
     "runtime/npu-test.py": {
       "role": "index",
-      "sha256": "1290f186009a1b005aa9c5c3ffe512ce585590a79273f55bdb172fff27c242ee",
-      "size": 73460,
-      "normalized_sha256": "1290f186009a1b005aa9c5c3ffe512ce585590a79273f55bdb172fff27c242ee"
+      "sha256": "295e72a7bd6c2ba76d86d27685ac025542d05182948c297efe25fc4ebdb26eda",
+      "size": 73729,
+      "normalized_sha256": "295e72a7bd6c2ba76d86d27685ac025542d05182948c297efe25fc4ebdb26eda"
     },
     "runtime/npu_runtime/arena_accel.py": {
       "role": "index",
@@ -1289,9 +1295,9 @@
     },
     "runtime/npu_runtime/case_batch.py": {
       "role": "index",
-      "sha256": "952026cde4d12bff6464de86fbb8d0b3d50b9b93136528c8a2e714471577325c",
-      "size": 7377,
-      "normalized_sha256": "952026cde4d12bff6464de86fbb8d0b3d50b9b93136528c8a2e714471577325c"
+      "sha256": "629113823ba05a4c53c9b56446f2c822b6dc9f29a0831ad40efcf1826a9e568b",
+      "size": 7791,
+      "normalized_sha256": "629113823ba05a4c53c9b56446f2c822b6dc9f29a0831ad40efcf1826a9e568b"
     },
     "runtime/npu_runtime/fast_profiler.py": {
       "role": "index",
@@ -1301,9 +1307,9 @@
     },
     "runtime/npu_runtime/lanes.py": {
       "role": "index",
-      "sha256": "e4a3141583f7bfbdef62363ad34ea4fd1e6b839c0bd9bed774713292d5d49c71",
-      "size": 5348,
-      "normalized_sha256": "e4a3141583f7bfbdef62363ad34ea4fd1e6b839c0bd9bed774713292d5d49c71"
+      "sha256": "5a5b883bee20857031f0b99afdd8528b3b0f33cd995b90e87524355b9ce84783",
+      "size": 6375,
+      "normalized_sha256": "5a5b883bee20857031f0b99afdd8528b3b0f33cd995b90e87524355b9ce84783"
     },
     "runtime/npu_runtime/reference_cases.py": {
       "role": "index",
@@ -1355,9 +1361,9 @@
     },
     "scheduler/case_bench.py": {
       "role": "index",
-      "sha256": "71575c1dd481830934b2f26bb0d2fbb4b10067ace9a4a5aad7c1a615662b67d8",
-      "size": 26913,
-      "normalized_sha256": "71575c1dd481830934b2f26bb0d2fbb4b10067ace9a4a5aad7c1a615662b67d8"
+      "sha256": "92dfaa094e1f4779b7472b4f946e0eb7b94c25c918b7b3ee2a6691cf5a1d0725",
+      "size": 26949,
+      "normalized_sha256": "92dfaa094e1f4779b7472b4f946e0eb7b94c25c918b7b3ee2a6691cf5a1d0725"
     },
     "scheduler/case_feedback.py": {
       "role": "index",
@@ -1427,9 +1433,9 @@
     },
     "scheduler/tests/test_case_bench.py": {
       "role": "observe",
-      "sha256": "3c88fbffbd65a5c8336fe26d9c0de6e6d78922d72b2fdc82e74b3f96981614ab",
-      "size": 6883,
-      "normalized_sha256": "3c88fbffbd65a5c8336fe26d9c0de6e6d78922d72b2fdc82e74b3f96981614ab"
+      "sha256": "8180a545105b7472c1c1e9dac008225f1c90d14ab12cedc6448da4114e35c9dd",
+      "size": 7105,
+      "normalized_sha256": "8180a545105b7472c1c1e9dac008225f1c90d14ab12cedc6448da4114e35c9dd"
     },
     "scheduler/tests/test_feedback_log.py": {
       "role": "observe",
@@ -1492,9 +1498,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "ed1e069b28e1154e0381201628574147c835560cc85bb3b711991a71bdf035c7",
+      "sha256": "e084bca9efb19fedda88a318bbc1398a76be40be0ee1c3f12a5b5098959b6658",
       "size": 5102,
-      "normalized_sha256": "ed1e069b28e1154e0381201628574147c835560cc85bb3b711991a71bdf035c7"
+      "normalized_sha256": "e084bca9efb19fedda88a318bbc1398a76be40be0ee1c3f12a5b5098959b6658"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
