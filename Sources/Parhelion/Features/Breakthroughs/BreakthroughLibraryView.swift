@@ -139,9 +139,9 @@ struct BreakthroughLibraryView: View {
 
             Spacer()
 
-            if store.isLoadingTriadKB {
-                ProgressView().controlSize(.small)
-            }
+            ProgressView().controlSize(.small)
+                .opacity(store.isLoadingTriadKB ? 1 : 0)
+                .accessibilityHidden(!store.isLoadingTriadKB)
 
             Button {
                 Task {
@@ -157,16 +157,17 @@ struct BreakthroughLibraryView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
 
-            if selectedPillar == .breakthrough {
-                Button {
-                    Task { await store.syncBreakthroughs() }
-                } label: {
-                    Label(lang.tr("自动归档新突破", "Sync New"), systemImage: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 11.5))
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+            Button {
+                Task { await store.syncBreakthroughs() }
+            } label: {
+                Label(lang.tr("自动归档新突破", "Sync New"), systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11.5))
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .disabled(selectedPillar != .breakthrough)
+            .opacity(selectedPillar == .breakthrough ? 1 : 0)
+            .accessibilityHidden(selectedPillar != .breakthrough)
 
             if !store.breakthroughDir.isEmpty {
                 Button {
@@ -250,33 +251,37 @@ struct BreakthroughLibraryView: View {
 
     @ViewBuilder
     private var pillarContent: some View {
-        switch selectedPillar {
-        case .breakthrough:
+        if selectedPillar == .evolution {
+            TriadEvolutionLogView()
+        } else {
             HSplitView {
-                BreakthroughListPane(
-                    entries: filteredBreakthroughs,
-                    triadById: triadById,
-                    selectedId: $selectedBreakthroughId,
-                    activeId: activeBreakthrough?.id
-                )
-                .frame(minWidth: 320, idealWidth: 370, maxWidth: 440)
-                breakthroughDetailPane
-                    .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .snippets, .hardware, .community, .bugs:
-            HSplitView {
-                TriadKBListPane(
-                    entries: filteredTriadEntries,
-                    selectedEntryId: $selectedKBId,
-                    emptyHint: lang.tr("当前筛选条件下无知识条目", "No KB entries match current filters")
-                )
+                Group {
+                    if selectedPillar == .breakthrough {
+                        BreakthroughListPane(
+                            entries: filteredBreakthroughs,
+                            triadById: triadById,
+                            selectedId: $selectedBreakthroughId,
+                            activeId: activeBreakthrough?.id
+                        )
+                    } else {
+                        TriadKBListPane(
+                            entries: filteredTriadEntries,
+                            selectedEntryId: $selectedKBId,
+                            emptyHint: lang.tr("当前筛选条件下无知识条目", "No KB entries match current filters")
+                        )
+                    }
+                }
                 .frame(minWidth: 320, idealWidth: 370, maxWidth: 440)
 
-                triadDetailPane
-                    .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                Group {
+                    if selectedPillar == .breakthrough {
+                        breakthroughDetailPane
+                    } else {
+                        triadDetailPane
+                    }
+                }
+                .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .evolution:
-            TriadEvolutionLogView()
         }
     }
 
