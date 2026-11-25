@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-25T02:17:30Z",
+  "updated_at": "2026-11-25T02:40:44Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -299,9 +299,9 @@
     },
     "Sources/Parhelion/Features/Contest/ContestStore+V3.swift": {
       "role": "index",
-      "sha256": "2f4981ca1abbde03b46f34758abd2ecf40f341a6bb0d57fd7ebb83b4a56664d1",
-      "size": 11114,
-      "normalized_sha256": "2f4981ca1abbde03b46f34758abd2ecf40f341a6bb0d57fd7ebb83b4a56664d1"
+      "sha256": "ca022fbca1e9c22c7b869f1704a9df4e2f4c3d8c1e5233f12fbea24dedabb272",
+      "size": 11091,
+      "normalized_sha256": "ca022fbca1e9c22c7b869f1704a9df4e2f4c3d8c1e5233f12fbea24dedabb272"
     },
     "Sources/Parhelion/Features/Contest/ContestStore.swift": {
       "role": "index",
@@ -347,9 +347,9 @@
     },
     "Sources/Parhelion/Features/Contest/ProblemTableView.swift": {
       "role": "index",
-      "sha256": "edd5ba54f65d211a2c3ffa38fac3bb6acade259888e81400fa2cd9ae5bc1ec13",
-      "size": 8305,
-      "normalized_sha256": "edd5ba54f65d211a2c3ffa38fac3bb6acade259888e81400fa2cd9ae5bc1ec13"
+      "sha256": "0f635f4ccff65f691ddb9e0a1928dfba55a579b97a30f56835e6bc5eb4665b2c",
+      "size": 8248,
+      "normalized_sha256": "0f635f4ccff65f691ddb9e0a1928dfba55a579b97a30f56835e6bc5eb4665b2c"
     },
     "Sources/Parhelion/Features/NpuMonitor/ActiveSubmissionCardViews.swift": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "563cdc577501543d92f6c27eb0f56e61cf80cb51d455de04f972caf5ea3c315a",
-      "size": 86871,
-      "normalized_sha256": "563cdc577501543d92f6c27eb0f56e61cf80cb51d455de04f972caf5ea3c315a"
+      "sha256": "c2cc2a975a90b6122d14b88307e085ae032c1b86dd7d66adf1c0af0a9a2cac2a",
+      "size": 86704,
+      "normalized_sha256": "c2cc2a975a90b6122d14b88307e085ae032c1b86dd7d66adf1c0af0a9a2cac2a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -623,9 +623,9 @@
     },
     "cli/opsb_core/drivers/brief.py": {
       "role": "index",
-      "sha256": "0e622d2848a22e64b9700bbbb8c1b5b02882dcd273a8c6a77c1fa4e1377244a1",
-      "size": 23329,
-      "normalized_sha256": "0e622d2848a22e64b9700bbbb8c1b5b02882dcd273a8c6a77c1fa4e1377244a1"
+      "sha256": "eb48f3afc3918eb02bfdafbfbd7dd13a8d438277fc4f224423e5071a3dab0e9f",
+      "size": 23206,
+      "normalized_sha256": "eb48f3afc3918eb02bfdafbfbd7dd13a8d438277fc4f224423e5071a3dab0e9f"
     },
     "cli/opsb_core/drivers/claude_driver.py": {
       "role": "index",
@@ -1061,9 +1061,9 @@
     },
     "cli/tests/test_dsh_and_subagent_launch.py": {
       "role": "observe",
-      "sha256": "f2db23dd52a7b4711b78b8b53e5fc38d787c162cee6d7250ed911778cf6d49aa",
-      "size": 25906,
-      "normalized_sha256": "f2db23dd52a7b4711b78b8b53e5fc38d787c162cee6d7250ed911778cf6d49aa"
+      "sha256": "6a6b6bc08879b99f27005b35b639b09ef39d85f1efdd6011045dbc5d1ded113a",
+      "size": 27778,
+      "normalized_sha256": "6a6b6bc08879b99f27005b35b639b09ef39d85f1efdd6011045dbc5d1ded113a"
     },
     "cli/tests/test_fast_feedback.py": {
       "role": "observe",
