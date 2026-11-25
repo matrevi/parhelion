@@ -43,10 +43,15 @@
 
 1. `emit_context(used, size, callback)` 在回调 `("context", percent)` 之后，再回调一次 `("context_tokens", str(int(used)))`。
 2. `_WorkerRunner._on_tool_event` 处理 `context_tokens`：记录 `self._context_tokens`。不需要写入数据库，`context_percent` 的写法不变。
-3. 阈值：`load_parhelion_config().get("agents", {}).get("compact_tokens", 120000)`，限制在 [40000, 400000]。
+3. 阈值按模型窗口自适应：
+   - 默认 `clamp(0.3 × 窗口, 120000, 400000)`。窗口取 adapter 最近一次上报的 `size`（ACP 的 `usage_update.size`，Codex 的 `modelContextWindow`）；没有上报时按 200000 计算。
+   - 结果：100 万窗口的模型为 30 万 token；20 万窗口的模型为 12 万 token（相当于窗口的 60%）。
+   - 配置 `agents.compact_tokens` 可以覆盖默认值，限制在 [80000, 600000]。
+   - 理由：算子优化要同时装下 2000 行级的内核源码、测试摘要和若干轮实验结论，12 万 token 对 100 万窗口的模型来说太早。按日志，worker 的上下文峰值约 22 万 token，所以 30 万的阈值主要是防止无限增长，正常迭代不会频繁触发。token 浪费的主因是并发过多、重试和轮询，已经由 §3、§4 和工作包 A 解决。
+   - 为此，`emit_context` 还要回调一次 `("context_window", str(int(size)))`，runner 记录到 `self._context_window`。
 4. 每个 turn 结束、并且已经写入 result 消息后，满足以下任一条件就压缩：
    - `self._context_tokens ≥ 阈值`；
-   - `context_percent ≥ 60`。
+   - `context_percent ≥ 70`。
 
    不再要求必须先有 `_stage_result`。
 5. 压缩的检查点文本按顺序拼接：`_stage_result`（没有就取 reply 的最后 1500 字符），加上 `state_card.build(ws, problem, agent_id)`，加上一句 `"Continue from the state card. Do not re-read files you already summarized."`。总长度不超过 4000 字符。
@@ -122,7 +127,7 @@ rules: device work only via parhelion_test; submit via parhelion_submit_gate; no
 1. `start_sprint(mode="solo")` 为 14 道题各开 1 个席位；`dual` 开 2 个；`full` 开 3 个。
 2. 一个 worker 抛出 `"Insufficient Balance"` 后：同驱动的其他 worker 全部停止；只产生 1 条 strategic 消息；之后的 `send_message` 不会唤醒这些 worker。
 3. 管理员显式 `spawn_agent` 会清除暂停记录。
-4. `context_tokens` 达到 12 万后，turn 结束时 adapter 的 `compact` 被调用，检查点里包含 `STATE` 行。
+4. 窗口 100 万时，`context_tokens` 到 29 万不压缩、到 30 万压缩；窗口 20 万时，到 12 万压缩；配置覆盖值生效且被限制在 [80000, 600000]。压缩时检查点里包含 `STATE` 行。
 5. squad 按 `dataflow` 投递成功；按 `all` 投递给两个队友；按不存在的名字投递时，报错里包含队友列表。
 6. 状态卡不超过 2000 字节，账本为空时也能生成。
 7. `deliver_test_results`：observed 为 false 且 worker 空闲时唤醒；observed 为 true 时只写消息；同一个 request_id 不重复投递。
