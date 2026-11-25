@@ -194,7 +194,7 @@ struct NpuServerQueueView: View {
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    if task.elapsedSec != nil {
+                    if task.elapsedSec != nil && task.caseProgress == nil {
                         Text("· \(Formatters.shortTimestamp(epoch: card.startedEpoch))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
@@ -208,24 +208,18 @@ struct NpuServerQueueView: View {
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
                             .foregroundStyle(.orange)
                     }
-                    Spacer()
+                    if let p = task.caseProgress, p.total > 0, p.index > 0, p.index <= p.total {
+                        progressLabel(p)
+                    }
+                    Spacer(minLength: 0)
                     Text(task.elapsedSec.map { Formatters.duration($0) } ?? (active ? lang.tr("时长未知", "Duration unknown") : ""))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(active ? Color.accentColor : .secondary)
                 }
 
-                HStack(spacing: 6) {
-                    if let p = task.caseProgress, (1...max(1, p.total)).contains(p.index), p.total > 0 {
-                        let stage = p.phase == "prepare" ? lang.tr("准备", "Preparing")
-                            : p.phase == "verify" ? lang.tr("校验", "Checking") : lang.tr("用例", "Case")
-                        Text("\(stage) \(p.index)/\(p.total)")
-                        if let part = p.part, let parts = p.parts, parts > 1 {
-                            Text(lang.tr("分段 \(part)/\(parts)", "Part \(part)/\(parts)"))
-                        }
-                        if let r = p.repetition, let n = p.repeats, n > 1 {
-                            Text(lang.tr("重复 \(r)/\(n)", "Repeat \(r)/\(n)"))
-                        }
-                    } else {
+                if task.caseProgress == nil || (!active && task.pid > 0 && !card.lingering) {
+                  HStack(spacing: 6) {
+                    if task.caseProgress == nil {
                         Text(lang.npuDetail(task.detail))
                         .font(.system(size: 10.5))
                         .foregroundStyle(task.boosted == true ? .orange : .secondary)
@@ -264,9 +258,24 @@ struct NpuServerQueueView: View {
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
                     }
+                  }
                 }
             }
         }
+    }
+
+    private func progressLabel(_ p: NpuCaseProgress) -> some View {
+        let stage = p.phase == "prepare" ? lang.tr("准备", "Prepare")
+            : p.phase == "verify" ? lang.tr("校验", "Check") : lang.tr("用例", "Case")
+        var fields = ["\(stage) \(p.index)/\(p.total)"]
+        if let i = p.part, let n = p.parts, n > 1 { fields.append(lang.tr("段 \(i)/\(n)", "Part \(i)/\(n)")) }
+        if let i = p.repetition, let n = p.repeats, n > 1 { fields.append(lang.tr("轮 \(i)/\(n)", "Run \(i)/\(n)")) }
+        return Text(fields.joined(separator: " · "))
+            .font(.system(size: 10.5, weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .help(fields.joined(separator: " · "))
     }
 
     private func emptyState(_ text: String) -> some View {

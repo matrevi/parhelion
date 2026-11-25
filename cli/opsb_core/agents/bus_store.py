@@ -115,6 +115,7 @@ class AgentBusStore:
                     ("collab_mode", "TEXT NOT NULL DEFAULT 'solo'"),
                     ("axis", "TEXT NOT NULL DEFAULT ''"),
                     ("no_gain_streak", "INTEGER NOT NULL DEFAULT 0"),
+                    ("context_percent", "INTEGER"),
                 ):
                     if col not in a_cols:
                         conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
@@ -179,7 +180,7 @@ class AgentBusStore:
         allowed = {
             "role_label", "problem", "collab_mode", "axis", "worktree", "branch", "native_session_id", "status",
             "pid", "pgid", "turn_count", "no_gain_streak", "unread_for_orch", "last_tool", "last_summary",
-            "last_commit_sha", "error", "last_active_epoch", "last_msg_epoch", "last_msg_dir",
+            "last_commit_sha", "error", "last_active_epoch", "last_msg_epoch", "last_msg_dir", "context_percent",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         updates["updated_at"] = _cfg.utc_now().isoformat()
@@ -411,11 +412,13 @@ class AgentBusStore:
             finally:
                 conn.close()
 
-    def cleanup_stopped(self) -> int:
+    def cleanup_stopped(self, agent_id: str | None = None) -> int:
         with self._lock:
             conn = self._connect()
             try:
-                rows = conn.execute("SELECT agent_id FROM agents WHERE status IN ('stopped', 'error')").fetchall()
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute("SELECT agent_id FROM agents WHERE status IN ('stopped', 'error') "
+                                    "AND (? IS NULL OR agent_id = ?)", (agent_id, agent_id)).fetchall()
                 ids = [str(r["agent_id"]) for r in rows]
                 for aid in ids:
                     conn.execute("DELETE FROM messages WHERE agent_id = ?", (aid,))

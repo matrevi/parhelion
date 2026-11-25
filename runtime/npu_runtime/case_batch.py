@@ -138,13 +138,14 @@ def verify(plan, cfg, compare):
     checks = {}
     for index, part in enumerate(plan["parts"]):
         base = Path(part["path"])
+        expected = {name + ".bin" for name in part["tolerances"]}
+        for repeat, path in enumerate(part["runs"], 1):
+            if {f.name for f in (path / "output").iterdir()} != expected:
+                return {"status": "WA", "detail": "missing or unexpected output files", "repeat": repeat}
         for name, tolerance in part["tolerances"].items():
             want = np.load(base / (name + ".npy"), mmap_mode="r", allow_pickle=False)
             for repeat, path in enumerate(part["runs"], 1):
                 output = path / "output"
-                expected = {n + ".bin" for n in part["tolerances"]}
-                if {f.name for f in output.iterdir()} != expected:
-                    return {"status": "WA", "detail": "missing or unexpected output files", "repeat": repeat}
                 binary = output / (name + ".bin")
                 check = (compare(np.fromfile(binary, dtype=want.dtype), want, tolerance, cfg.get("strict_fp32", False))
                          if binary.stat().st_size == want.nbytes else {"pass": False, "reason": "byte size"})

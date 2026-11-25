@@ -84,6 +84,8 @@ def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: An
             parts = [urllib.parse.unquote(p) for p in path[len("/v1/agents/"):].split("/") if p]
             if len(parts) == 2:
                 aid, action = parts
+                if action == "delete":
+                    return 200, runtime.agent_mesh.cleanup_stopped(ws, aid)
                 if action == "send":
                     res = runtime.agent_mesh.send_message(
                         ws, aid, str(body_obj.get("message") or ""),

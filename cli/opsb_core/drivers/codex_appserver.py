@@ -17,6 +17,32 @@ def _toml_quote(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)
 
 
+def _toml_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_toml_quote(k)} = {_toml_value(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(v) for v in value) + "]"
+    if isinstance(value, (str, bool, int, float)):
+        return json.dumps(value, ensure_ascii=False, allow_nan=False)
+    raise ValueError("Unsupported value in Codex model provider configuration")
+
+
+def _provider_settings(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    with path.open("rb") as handle:
+        config = tomllib.load(handle)
+    profile = config.get("profiles", {}).get(config.get("profile"), {})
+    provider = profile.get("model_provider", config.get("model_provider"))
+    settings = {k: config[k] for k in ("openai_base_url",) if k in config}
+    if provider:
+        settings["model_provider"] = provider
+        providers = config.get("model_providers", {})
+        if provider in providers:
+            settings["model_providers"] = {provider: providers[provider]}
+    return settings
+
+
 def _strip_toml_sections(text: str, section_headers: set[str]) -> str:
     """Remove exact `[header]` sections (preserving all other TOML lines & comments)."""
     out: list[str] = []
@@ -40,6 +66,7 @@ def render_codex_config_toml(
     role: str | None = None,
     agent_id: str | None = None,
     tool_timeout_sec: int = 120,
+    host_config: Path | None = None,
 ) -> str:
     if mcp_url:
         lines = [
@@ -60,6 +87,13 @@ def render_codex_config_toml(
             "[mcp_servers.parhelion.env]",
             *(f"{k} = {_toml_quote(v)}" for k, v in env.items()),
         ]
+    if host_config is not None:
+        lines = [*(f"{k} = {_toml_value(v)}" for k, v in _provider_settings(host_config).items()), *lines]
+    if role == "worker":
+        from ..mcp.schemas import TOOL_SCHEMAS
+        for schema in TOOL_SCHEMAS:
+            if "worker" in schema.get("roles", ("orchestrator", "worker")):
+                lines += [f"[mcp_servers.parhelion.tools.{schema['name']}]", 'approval_mode = "approve"']
     return "\n".join(lines) + "\n"
 
 
@@ -273,16 +307,31 @@ class CodexAppServerClient:
             if sandbox not in policy_types:
                 raise ValueError(f"Unsupported Codex sandbox mode: {sandbox!r}")
             params["sandboxPolicy"] = {"type": policy_types[sandbox]}
+        event_start = len(self.events)
         resp = self.request("turn/start", params)
         if "error" in resp:
             raise RuntimeError(f"Codex turn/start failed: {resp['error']}")
         res = dict(resp.get("result") or {})
         turn_obj = res.get("turn") if isinstance(res.get("turn"), dict) else {}
         self.last_turn_id = str(turn_obj.get("id") or res.get("turnId") or "")
+        self._wait_turn(thread_id, self.last_turn_id, event_start)
+        if self.last_assistant_text and "text" not in res:
+            res["text"] = self.last_assistant_text.strip()
+        return res
+
+    def compact(self, thread_id: str) -> None:
+        event_start = len(self.events)
+        resp = self.request("thread/compact/start", {"threadId": thread_id})
+        if "error" in resp:
+            raise RuntimeError(f"Codex compaction request failed: {resp['error']}")
+        self._wait_turn(thread_id, "", event_start)
+
+    def _turn_events(self, event_start: int):
+        yield from self.events[event_start:]
         while True:
             raw = self._stdout.readline()
             if raw == "":
-                break
+                raise RuntimeError("Codex app-server closed before turn completion")
             s = raw.strip()
             if not s:
                 continue
@@ -297,11 +346,29 @@ class CodexAppServerClient:
                 self._handle_server_request(msg)
                 continue
             self._record_event(msg)
+            yield msg
+
+    def _wait_turn(self, thread_id: str, turn_id: str, event_start: int) -> None:
+        for msg in self._turn_events(event_start):
             if msg.get("method") in ("turn/completed", "turn/failed", "turn/cancelled"):
-                break
-        if self.last_assistant_text and "text" not in res:
-            res["text"] = self.last_assistant_text.strip()
-        return res
+                event = msg.get("params") or {}
+                if event.get("threadId") and event["threadId"] != thread_id:
+                    continue
+                completed = event.get("turn") or {}
+                if completed.get("id") and turn_id and completed["id"] != turn_id:
+                    continue
+                status = completed.get("status") or msg["method"].split("/")[-1]
+                if status != "completed":
+                    error = completed.get("error") or event.get("error") or {}
+                    detail = error.get("codexErrorInfo") if isinstance(error, dict) else None
+                    if isinstance(detail, dict):
+                        reason, data = next(iter(detail.items()), ("", {}))
+                        code = data.get("httpStatusCode") if isinstance(data, dict) else None
+                        if code == 401:
+                            raise RuntimeError("Codex API HTTP 401 Unauthorized: model provider rejected the credentials")
+                        detail = f"{reason} (HTTP {code})" if code else reason
+                    raise RuntimeError(f"Codex turn {status}" + (f": {detail}" if detail else ""))
+                return
 
 
 def preseed_codex_thread(bin_path: str, real_wt: Path, name: str, c_home: Path) -> str:

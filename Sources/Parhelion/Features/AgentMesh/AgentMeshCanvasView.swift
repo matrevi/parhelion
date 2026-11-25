@@ -12,6 +12,13 @@ enum AgentMeshSelection: Equatable {
     case worker(String)
 }
 
+struct MeshConnectionAnchors: PreferenceKey {
+    static let defaultValue: [String: Anchor<CGPoint>] = [:]
+    static func reduce(value: inout [String: Anchor<CGPoint>], nextValue: () -> [String: Anchor<CGPoint>]) {
+        value.merge(nextValue()) { _, next in next }
+    }
+}
+
 struct AgentMeshCanvasView: View {
     let mesh: AgentMeshHotState
     let lang: AppLanguage
@@ -24,6 +31,7 @@ struct AgentMeshCanvasView: View {
     let onJumpWorker: (AgentWorkerHot) -> Void
 
     @Environment(\.appearsActive) private var appearsActive
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @UIState private var hoveredWorkerId: String? = nil
 
     private var readyExternalDrivers: [AgentReadyDriverHot] {
@@ -35,11 +43,6 @@ struct AgentMeshCanvasView: View {
         let working = mesh.workers.contains { $0.isLive } || mesh.nativeSubagents.contains { $0.status == "running" }
         let pulsing = mesh.pulses.contains { (now - $0.epoch) < 6.0 }
         return appearsActive && (working || pulsing || hoveredWorkerId != nil)
-    }
-
-    private var laneCount: Int {
-        if mesh.workers.isEmpty { return max(1, min(4, readyExternalDrivers.count)) }
-        return grouping == .byProblem ? max(1, mesh.squads.count) : max(1, activeHarnessGroups.count)
     }
 
     private var activeHarnessGroups: [(driver: AgentReadyDriverHot, workers: [AgentWorkerHot])] {
@@ -65,7 +68,7 @@ struct AgentMeshCanvasView: View {
                     .padding(.vertical, 14)
 
                 // Center Bus-Trunk Vector Spine (1 clean curved trunk per Squad / Harness lane!)
-                busTrunkBridge
+                Color.clear
                     .frame(width: 66)
 
                 // Right Scrollable Squad / Harness Swimlane Field
@@ -111,6 +114,15 @@ struct AgentMeshCanvasView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+        .overlayPreferenceValue(MeshConnectionAnchors.self) { anchors in
+            GeometryReader { geometry in
+                if let source = anchors["bus"] {
+                    busTrunkBridge(source: geometry[source], targets: anchors.filter { $0.key != "bus" }
+                        .mapValues { geometry[$0] })
+                }
+            }
+            .allowsHitTesting(false)
         }
         .clipped()
     }
@@ -158,6 +170,7 @@ struct AgentMeshCanvasView: View {
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(.regularMaterial))
             .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).strokeBorder(orchStyle.accent.opacity(0.32), lineWidth: 0.9))
+            .anchorPreference(key: MeshConnectionAnchors.self, value: .trailing) { ["bus": $0] }
 
             // 4 Strategic Escalation Signal Strip (only non-zero triggers glow!)
             strategicTriggerGrid
@@ -251,18 +264,15 @@ struct AgentMeshCanvasView: View {
         .buttonStyle(.plain)
     }
 
-    private var busTrunkBridge: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !hasLiveAnimation)) { ctx in
+    private func busTrunkBridge(source src: CGPoint, targets: [String: CGPoint]) -> some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !hasLiveAnimation)) { ctx in
             let now = ctx.date.timeIntervalSince1970
             Canvas { gctx, size in
                 let orchStyle = AgentDriverStyle.forDriver(mesh.orchestrator.driver)
-                let src = CGPoint(x: 0, y: 112)
-                let count = min(8, laneCount)
-                for i in 0..<count {
-                    let dstY = min(size.height - 24, 54 + CGFloat(i) * 108)
-                    let dst = CGPoint(x: size.width, y: dstY)
-                    let c1 = CGPoint(x: size.width * 0.45, y: src.y)
-                    let c2 = CGPoint(x: size.width * 0.55, y: dst.y)
+                for (key, dst) in targets where dst.y >= 0 && dst.y <= size.height {
+                    let gap = dst.x - src.x
+                    let c1 = CGPoint(x: src.x + gap * 0.45, y: src.y)
+                    let c2 = CGPoint(x: src.x + gap * 0.55, y: dst.y)
                     var path = Path()
                     path.move(to: src)
                     path.addCurve(to: dst, control1: c1, control2: c2)
@@ -275,17 +285,12 @@ struct AgentMeshCanvasView: View {
                         style: StrokeStyle(lineWidth: isQuiet ? 1.1 : 1.6, dash: isQuiet ? [3, 4] : [])
                     )
 
-                    if !isQuiet {
+                    if !isQuiet && !reduceMotion {
                         for pulse in mesh.pulses.prefix(6) {
                             let age = now - pulse.epoch
                             guard age >= 0, age < 5.5 else { continue }
-                            let targetIdx: Int = {
-                                if grouping == .byProblem {
-                                    return mesh.squads.firstIndex(where: { $0.problem == pulse.problem }) ?? 0
-                                }
-                                return activeHarnessGroups.firstIndex(where: { $0.driver.kind == pulse.driver }) ?? 0
-                            }()
-                            guard targetIdx == i else { continue }
+                            let destination = grouping == .byProblem ? "problem:" + pulse.problem : "driver:" + pulse.driver
+                            guard destination == key else { continue }
                             let rawT = CGFloat((age / 1.4).truncatingRemainder(dividingBy: 1.0))
                             let t = pulse.direction == "outbound" ? rawT : (1.0 - rawT)
                             let pColor: Color = {

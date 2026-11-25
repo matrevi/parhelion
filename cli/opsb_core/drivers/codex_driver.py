@@ -139,7 +139,9 @@ class CodexDriver(BaseDriver):
         isolated_home.mkdir(parents=True, exist_ok=True)
         isolated_toml = isolated_home / "config.toml"
         tmp = isolated_toml.with_suffix(".tmp")
-        tmp.write_text(render_codex_config_toml(real_ws, mcp_url=mcp_url), encoding="utf-8")
+        tmp.touch(mode=0o600, exist_ok=True)
+        tmp.write_text(render_codex_config_toml(real_ws, mcp_url=mcp_url,
+                                               host_config=target_codex_home / "config.toml"), encoding="utf-8")
         os.replace(tmp, isolated_toml)
 
         global_auth, isolated_auth = target_codex_home / "auth.json", isolated_home / "auth.json"

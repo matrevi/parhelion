@@ -240,7 +240,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_agent_report",
-        "description": "Worker-only: report autonomous progress, breakthrough (for cross-problem generalization), 6-shot stagnation, escape_zero, question, or final result.",
+        "description": "Report progress or a question. At a completed stage use kind=result with the SHA, evidence and next idea; this is a checkpoint for context compaction.",
         "roles": ("worker",),
         "inputSchema": {
             "type": "object",

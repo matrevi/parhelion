@@ -32,9 +32,10 @@ static std::vector<int64_t> integers() {
     size_t n=field<size_t>(); std::vector<int64_t> a(n);
     for (auto &v:a) v=field<int64_t>(); return a;
 }
-static Tensor tensor(const char* file) {
+static std::vector<Tensor> tensors(const char* file) {
+    if (!field<int>()) return {};
     auto shape=integers(); auto dtype=field<int32_t>(); auto bytes=field<size_t>();
-    return Tensor{shape,dtype,bytes,file};
+    return {Tensor{shape,dtype,bytes,file}};
 }
 """
 
@@ -93,7 +94,7 @@ def generate(source, sample_source):
                 inp == "true",
             )
         )
-        return f'Group group_{idx}({{tensor("{name}.bin")}}, {dyn}, {inp});'
+        return f'Group group_{idx}(tensors("{name}.bin"), {dyn}, {inp});'
 
     dynamic = GROUP.sub(group, main)
     if (
@@ -290,9 +291,14 @@ def prepare_case(root, item, groups, attrs):
                     shape, dtype=next(k for k, v in types.items() if v == dt)
                 )
             else:
-                tensor = np.asarray((inputs if inp else outputs)[name])
+                value = (inputs if inp else outputs)[name]
+                if value is None:
+                    fields.append(0)
+                    continue
+                tensor = np.asarray(value)
             fields.extend(
                 [
+                    1,
                     tensor.ndim,
                     *tensor.shape,
                     types[str(tensor.dtype)],
@@ -312,8 +318,9 @@ def prepare_case(root, item, groups, attrs):
                 fields.append(int(v) if typ == "bool" else v)
         (work / "case.desc").write_text(" ".join(map(str, fields)))
         for name, want in outputs.items():
-            np.save(work / (name + ".npy"), want, allow_pickle=False)
-        manifest.append(dict(path=str(work), tolerances=tolerances))
+            if want is not None:
+                np.save(work / (name + ".npy"), want, allow_pickle=False)
+        manifest.append(dict(path=str(work), tolerances={n: tolerances[n] for n in outputs if outputs[n] is not None}))
     (root / "parts.json").write_text(json.dumps(manifest))
 
 

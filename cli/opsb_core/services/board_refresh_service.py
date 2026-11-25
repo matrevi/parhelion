@@ -22,6 +22,7 @@ import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from typing import Any, Callable
 
 from ..config import SUPERVISOR_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
@@ -198,12 +199,19 @@ def inspect_board_freshness(
     refresh_age_hrs = round((now_ep - fetched_dt.timestamp()) / 3600.0, 2) if fetched_dt else None
     submit_age_hrs = round((now_ep - last_sub_ep) / 3600.0, 2) if last_sub_ep > 0 else None
     attempt_age_sec = (now_ep - attempt_dt.timestamp()) if attempt_dt else float("inf")
+    terminal_epoch = max((stamp.timestamp()
+        for row in read_jsonl(workspace / "results" / "submit-queue-outcome.jsonl")
+        if row.get("submission_id") and row.get("status") in TERMINAL_JUDGE_STATUSES
+        if (stamp := parse_iso(row.get("finished_at") or row.get("reconciled_at")))), default=0.0)
 
     stale = False
     reason = "fresh"
     if fetched_dt is None:
         stale = True
         reason = "never_refreshed"
+    elif terminal_epoch > fetched_dt.timestamp():
+        stale = True
+        reason = "judge_result"
     elif score_drift is not None and abs(float(score_drift)) >= float(drift_threshold):
         stale = True
         reason = f"score_drift={abs(float(score_drift)):.2f}pts"
@@ -219,7 +227,8 @@ def inspect_board_freshness(
         stale = True
         reason = f"submit_gap={submit_age_hrs:.1f}h>={max_age_hours:.0f}h"
 
-    throttled = stale and (attempt_age_sec < ATTEMPT_THROTTLE_SEC)
+    new_receipt = terminal_epoch > (attempt_dt.timestamp() if attempt_dt else 0.0)
+    throttled = stale and not new_receipt and (attempt_age_sec < ATTEMPT_THROTTLE_SEC)
     return {
         "stale": stale,
         "should_refresh": stale and not throttled and (not scope or bool(scope["team_name"])),
@@ -279,7 +288,7 @@ def refresh_board_and_recalibrate(
             prev_boards = prev_payload.get("problems", {}) if isinstance(prev_payload, dict) else {}
 
             # Mark attempt timestamp immediately so failures don't hot-loop
-            now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            now_iso = datetime.now(timezone.utc).isoformat()
             if isinstance(prev_payload, dict):
                 prev_payload["attempt_at"] = now_iso
                 try:

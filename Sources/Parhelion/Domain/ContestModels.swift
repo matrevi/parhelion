@@ -124,7 +124,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let boardScore: Double?
     func latestScoreText(_ lang: AppLanguage) -> String {
         if let latestScore { return String(format: "%.2f", latestScore) }
-        return latestStatus == "Pass" ? lang.tr("待回分", "Pending") : "—"
+        return latestStatus == "Pass" ? lang.tr("未给分", "Unreported") : "—"
     }
     func boardScoreText(_ lang: AppLanguage) -> String {
         if boardListed == false { return lang.tr("未上榜", "Unranked") }

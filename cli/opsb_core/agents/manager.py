@@ -100,6 +100,8 @@ class _WorkerRunner:
         self._on_notify = on_notify
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._stop_flag = threading.Event()
+        self._context_percent: int | None = None
+        self._stage_result = ""
         self._thread = threading.Thread(target=self._loop, name=f"agent-{agent_id}", daemon=True)
         self._thread.start()
 
@@ -116,6 +118,13 @@ class _WorkerRunner:
         self._queue.put(None)
 
     def _on_tool_event(self, kind: str, label: str) -> None:
+        if kind == "context":
+            percent = int(label)
+            if self._context_percent != percent:
+                self._context_percent = percent
+                self.store.update_agent(self.agent_id, context_percent=percent)
+                self._on_notify()
+            return
         if kind == "model":
             self.store.append_message(self.agent_id, "worker_to_orch", "model", label)
             self._on_notify()
@@ -138,6 +147,7 @@ class _WorkerRunner:
             rec = self.store.get_agent(self.agent_id) or {}
             turn_n = int(rec.get("turn_count") or 0) + 1
             self.store.update_agent(self.agent_id, status="working", turn_count=turn_n, error="")
+            self._stage_result = ""
             self._on_notify()
             try:
                 reply = self.adapter.send_turn(prompt, on_event=self._on_tool_event)
@@ -156,6 +166,19 @@ class _WorkerRunner:
                     self.store.append_message(
                         self.agent_id, "worker_to_orch", "result", reply, commit_sha=sha7
                     )
+                    if self._stage_result and (self._context_percent or 0) >= 60:
+                        self.store.update_agent(self.agent_id, status="compacting")
+                        self._on_notify()
+                        self._context_percent = None
+                        try:
+                            outcome = self.adapter.compact(self._stage_result)
+                            if outcome:
+                                self.store.append_message(self.agent_id, "worker_to_orch", "compact", outcome)
+                        finally:
+                            if not self._stop_flag.is_set():
+                                self.store.update_agent(self.agent_id, status="idle",
+                                    native_session_id=self.adapter.native_session_id,
+                                    context_percent=self._context_percent)
             except Exception as exc:
                 if not self._stop_flag.is_set():
                     err_s = str(exc)[:600]
@@ -495,15 +518,9 @@ class AgentMeshManager:
             wt = ws
 
         branch, sha7 = _git_branch_and_sha(wt)
-        axis_line = f" | axis={clean_axis}" if clean_axis else ""
         worker_prompt = (
-            f"[Parhelion Autonomous Worker | id={agent_id} | role={safe_role} | squad={prob_title or ws.name} ({c_mode}{axis_line})]\n"
-            f"Workspace: {ws}\nWorktree: {wt}\n"
-            f"Autonomy Protocol: You operate autonomously under primary orchestrator ({active}).\n"
-            f"1. Read the problem guide. Commit on your assigned branch and push it with git push origin HEAD. Queue validation via parhelion_test_plan (execute=true, explicit SHA). Diagnose, fix and retest independently.\n"
-            f"2. Enqueue the exact SHA via parhelion_submit_gate (enqueue=true); the platform schedules uploads and returns official feedback to your inbox. Continue the next experiment while it judges.\n"
-            f"3. Share results via `parhelion_agent_report`. Ask the orchestrator for a decision only when you sdkot resolve it.\n\n"
-            f"Task:\n{task.strip()}"
+            f"{prob_title or ws.name} · {safe_role}\n{task.strip()}\n\n"
+            "Use Parhelion for tests, candidate submissions and reports. Choose your approach."
         )
         if safe_role == "bench-author" and prob_title:
             worker_prompt = compose_bench_author_brief(ws, prob_title) + "\n\n" + task.strip()
@@ -667,6 +684,11 @@ class AgentMeshManager:
             raise KeyError(f"Unknown worker agent_id: {agent_id}")
         valid_kinds = ("progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error")
         norm_kind = kind if kind in valid_kinds else "progress"
+        if norm_kind in ("result", "breakthrough", "stagnation", "escape_zero"):
+            with self._lock:
+                runner = self._runners.get(agent_id)
+            if runner is not None:
+                runner._stage_result = summary.strip()[:4000]
         streak = int(rec.get("no_gain_streak") or 0)
         # Judged receipt analysis owns these automatic alerts. Workers can always
         # raise an explicit question when a decision is needed.
@@ -745,8 +767,8 @@ class AgentMeshManager:
         self._notify()
         return {"ok": True, "agent": updated, "worktree_removed": removed_wt}
 
-    def cleanup_stopped(self, workspace: Path) -> dict[str, Any]:
-        removed = self._store(workspace).cleanup_stopped()
+    def cleanup_stopped(self, workspace: Path, agent_id: str | None = None) -> dict[str, Any]:
+        removed = self._store(workspace).cleanup_stopped(agent_id)
         self._notify()
         return {"ok": True, "removed": removed}
 
@@ -837,6 +859,7 @@ class AgentMeshManager:
                 "unread_count": int(w.get("unread_for_orch") or 0),
                 "last_tool": w.get("last_tool") or "",
                 "last_summary": w.get("last_summary") or "",
+                "context_percent": w.get("context_percent"),
                 "last_commit_sha": w.get("last_commit_sha") or "",
                 "error": w.get("error") or "",
                 "elapsed_sec": max(0, int(now - float(w.get("last_active_epoch") or now))),

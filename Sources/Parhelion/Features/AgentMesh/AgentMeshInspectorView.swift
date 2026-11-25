@@ -176,6 +176,10 @@ struct AgentMeshInspectorView: View {
                         Text("streak \(w.noGainStreak)/6")
                             .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(w.isStagnated ? .orange : .secondary)
+                        if let percent = w.contextPercent {
+                            Text(lang.tr("上下文 \(percent)%", "Context \(percent)%"))
+                                .font(.caption2.monospacedDigit())
+                        }
                     }
                 }
                 Spacer()
@@ -203,6 +207,12 @@ struct AgentMeshInspectorView: View {
                 }
             }
 
+            if w.status == "error" && !w.error.isEmpty {
+                Text(w.error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
+            }
             if !diffStat.isEmpty {
                 Text(diffStat)
                     .font(.system(size: 9.5, design: .monospaced))

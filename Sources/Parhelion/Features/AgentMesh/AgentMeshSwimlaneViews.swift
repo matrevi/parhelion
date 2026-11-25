@@ -57,6 +57,7 @@ struct AgentProblemSquadLaneView: View {
                 .controlSize(.mini)
                 .help(lang.tr("向 \(squad.problem) 增派异构 Worker", "Add worker to \(squad.problem) squad"))
             }
+            .anchorPreference(key: MeshConnectionAnchors.self, value: .leading) { ["problem:" + squad.problem: $0] }
 
             if isPipeline {
                 HStack(spacing: 6) {
@@ -133,6 +134,8 @@ struct AgentHarnessSwimlaneView: View {
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
             }
+
+            .anchorPreference(key: MeshConnectionAnchors.self, value: .leading) { ["driver:" + driver.kind: $0] }
 
             if workers.isEmpty {
                 Text(lang.tr("待命 · 点击 + 派发任务", "Ready · click + to dispatch"))

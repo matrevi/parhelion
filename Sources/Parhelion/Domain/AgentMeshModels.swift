@@ -205,6 +205,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
     let unreadCount: Int
     let lastTool: String
     let lastSummary: String
+    let contextPercent: Int?
     let lastCommitSha: String
     let error: String
     let elapsedSec: Int
@@ -231,6 +232,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         case unreadCount = "unread_count"
         case lastTool = "last_tool"
         case lastSummary = "last_summary"
+        case contextPercent = "context_percent"
         case lastCommitSha = "last_commit_sha"
         case elapsedSec = "elapsed_sec"
         case lastMsgEpoch = "last_msg_epoch"
@@ -259,6 +261,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         unreadCount = try c.decodeIfPresent(Int.self, forKey: .unreadCount) ?? 0
         lastTool = try c.decodeIfPresent(String.self, forKey: .lastTool) ?? ""
         lastSummary = try c.decodeIfPresent(String.self, forKey: .lastSummary) ?? ""
+        contextPercent = try c.decodeIfPresent(Int.self, forKey: .contextPercent)
         lastCommitSha = try c.decodeIfPresent(String.self, forKey: .lastCommitSha) ?? ""
         error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         elapsedSec = try c.decodeIfPresent(Int.self, forKey: .elapsedSec) ?? 0

@@ -21,6 +21,11 @@ from ..drivers.registry import get_driver, worker_model
 EventCallback = Callable[[str, str], None]
 
 
+def emit_context(used: Any, size: Any, callback: EventCallback) -> None:
+    if isinstance(used, int) and used >= 0 and isinstance(size, int) and size > 0:
+        callback("context", str(min(100, used * 100 // size)))
+
+
 def terminate_process_group(proc: subprocess.Popen[Any] | None, pgid: int | None, grace_sec: float = 2.0) -> None:
     """Terminate an entire child process group (`-pgid`) to prevent orphan compiler/test processes."""
     if proc is None and not pgid:
@@ -133,6 +138,9 @@ class BaseWorkerAdapter:
     def interrupt(self) -> None:
         pass
 
+    def compact(self, checkpoint: str) -> str:
+        return ""
+
     def stop(self) -> None:
         self._closed = True
         with self._lock:
@@ -186,6 +194,8 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         if not callable(on_event):
             return
         u_type = str(update.get("sessionUpdate") or update.get("type") or "")
+        if u_type == "usage_update":
+            emit_context(update.get("used"), update.get("size"), on_event)
         if u_type in ("tool_call", "tool_call_update"):
             tool = str(update.get("title") or update.get("name") or update.get("toolName") or u_type)
             on_event("tool", tool[:48])
@@ -198,6 +208,26 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
             raise
         res = client.send_prompt(self.native_session_id, prompt)
         return str(res.get("text") or res.get("stopReason") or "Turn completed.")
+
+    def compact(self, checkpoint: str) -> str:
+        # ACP has no universal compact RPC. Seed a new same-model session before switching.
+        client = self._client
+        if client is None:
+            return ""
+        handoff = client.send_prompt(self.native_session_id,
+            "Write a short handoff: goal, constraints, verified SHAs and evidence, open hypotheses, next experiment.")
+        summary = (handoff.get("text") or "").strip()
+        if not summary:
+            raise RuntimeError("ACP returned an empty handoff")
+        servers = build_acp_mcp_servers(self.workspace, mcp_url=_daemon_worker_mcp_url(self.agent_id),
+                                        role="worker", agent_id=self.agent_id)
+        sid, _ = client.open_session(cwd=self.worktree, mcp_servers=servers, model=self.model)
+        if not sid or sid == self.native_session_id:
+            raise RuntimeError("ACP did not allocate a new context")
+        client.send_prompt(sid, "Preserve this checkpoint and await the next task.\n" + summary +
+                           "\nLast reported result:\n" + checkpoint)
+        self.native_session_id = sid
+        return "ACP session continued from a stage handoff."
 
     def interrupt(self) -> None:
         if self._client and self.native_session_id:
@@ -226,13 +256,16 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
 
     def _prepare_worker_codex_home(self) -> Path:
         c_home = self.runtime_dir / "codex_home"
-        c_home.mkdir(parents=True, exist_ok=True)
+        c_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        host_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
         toml_path = c_home / "config.toml"
+        toml_path.touch(mode=0o600, exist_ok=True)
+        toml_path.chmod(0o600)
         toml_path.write_text(
-            render_codex_config_toml(self.workspace, role="worker", agent_id=self.agent_id, tool_timeout_sec=120),
+            render_codex_config_toml(self.workspace, role="worker", agent_id=self.agent_id,
+                                     host_config=host_home / "config.toml"),
             encoding="utf-8",
         )
-        host_home = Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex")).expanduser()
         host_auth = host_home / "auth.json"
         worker_auth = c_home / "auth.json"
         if host_auth.is_file() and not worker_auth.exists() and not worker_auth.is_symlink():
@@ -281,6 +314,9 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
         if not callable(on_event):
             return
         method = str(msg.get("method") or "")
+        if method == "thread/tokenUsage/updated":
+            usage = (msg.get("params") or {}).get("tokenUsage") or {}
+            emit_context((usage.get("last") or {}).get("totalTokens"), usage.get("modelContextWindow"), on_event)
         if method in ("item/started", "item/completed"):
             item = (msg.get("params") or {}).get("item") if isinstance(msg.get("params"), dict) else {}
             if isinstance(item, dict):
@@ -298,6 +334,12 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
             self.native_session_id, prompt, approval_policy="never", sandbox="workspace-write"
         )
         return str(res.get("text") or "Codex turn completed.")
+
+    def compact(self, checkpoint: str) -> str:
+        if self._client is None:
+            return ""
+        self._client.compact(self.native_session_id)
+        return "Codex compacted the thread after the stage result."
 
     def interrupt(self) -> None:
         if self._client and self.native_session_id:

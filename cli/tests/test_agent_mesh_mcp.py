@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -50,6 +51,73 @@ class _FakeAdapter(BaseWorkerAdapter):
 
 
 class AgentMeshAndMcpTests(unittest.TestCase):
+    def test_codex_worker_provider_and_private_mcp_config(self):
+        from opsb_core.drivers.codex_appserver import render_codex_config_toml
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            config = root / "config.toml"
+            config.write_text('model_provider="local"\n[model_providers.local]\n'
+                              'base_url="http://localhost:1234/v1"\nrequires_openai_auth=true\n'
+                              '[mcp_servers.unrelated]\ncommand="unused"\n')
+            parsed = tomllib.loads(render_codex_config_toml(root, role="worker", host_config=config))
+            self.assertEqual(parsed["model_providers"][parsed["model_provider"]]["base_url"], "http://localhost:1234/v1")
+            self.assertEqual(set(parsed["mcp_servers"]), {"parhelion"})
+            self.assertIn("parhelion_agent_report", parsed["mcp_servers"]["parhelion"]["tools"])
+            worker_tools = parsed["mcp_servers"]["parhelion"]["tools"]
+            self.assertEqual(worker_tools["parhelion_submit_gate"]["approval_mode"], "approve")
+            self.assertNotIn("parhelion_agent_spawn", worker_tools)
+
+    def test_compaction_completed_before_ack(self):
+        events = [
+            {"method": "turn/completed", "params": {"threadId": "mine", "turn": {"status": "completed"}}},
+            {"id": 1, "result": {}},
+        ]
+        client = CodexAppServerClient(io.StringIO(), io.StringIO("".join(json.dumps(e) + "\n" for e in events)))
+        client.compact("mine")
+
+    def test_codex_failed_completion_surfaces_http_error(self):
+        events = [
+            {"id": 1, "result": {"turn": {"id": "t"}}},
+            {"method": "turn/completed", "params": {"turn": {"id": "t", "status": "failed",
+             "error": {"message": "private credential in upstream response",
+                       "codexErrorInfo": {"httpConnectionFailed": {"httpStatusCode": 401}}}}}},
+        ]
+        client = CodexAppServerClient(io.StringIO(), io.StringIO("".join(json.dumps(e) + "\n" for e in events)))
+        with self.assertRaisesRegex(RuntimeError, "HTTP 401 Unauthorized") as error:
+            client.start_turn("thread", "test")
+        self.assertNotIn("private credential", str(error.exception))
+
+    def test_stage_compaction_uses_current_window_and_requires_result(self):
+        from opsb_core.agents.adapters import CodexWorkerAdapter
+        from opsb_core.agents.manager import _WorkerRunner
+        for percent, report, expected in [(59, True, False), (60, False, False), (60, True, True)]:
+            store = mock.Mock()
+            store.get_agent.return_value = {}
+            adapter = mock.Mock()
+            adapter.worktree = Path(__file__).parent
+            completed = threading.Event()
+            runner = _WorkerRunner("worker", store, adapter, lambda: None)
+            def turn(prompt, on_event):
+                CodexWorkerAdapter._forward_event({"method": "thread/tokenUsage/updated", "params": {
+                    "tokenUsage": {"last": {"totalTokens": percent}, "total": {"totalTokens": 9999},
+                                   "modelContextWindow": 100}}}, on_event)
+                if report:
+                    runner._stage_result = "Verified SHA and next experiment"
+                return "done"
+            adapter.send_turn.side_effect = turn
+            adapter.compact.return_value = "compacted"
+            def notify():
+                if store.append_message.called and (not expected or adapter.compact.called):
+                    completed.set()
+            runner._on_notify = notify
+            try:
+                runner.enqueue("work")
+                self.assertTrue(completed.wait(3))
+                self.assertEqual(adapter.compact.called, expected)
+            finally:
+                runner.stop()
+                runner._thread.join(2)
+
     def test_wait_finds_target_after_unrelated_message_backlog(self):
         from opsb_core.agents.bus_store import AgentBusStore
         with tempfile.TemporaryDirectory() as tmp:

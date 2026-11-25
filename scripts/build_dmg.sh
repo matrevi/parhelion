@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist"
+mkdir -p "$DIST_DIR"
 # Keep in sync with bundle_app.sh: the bundle is assembled outside the repo so
 # Spotlight/mdworker sdkot re-register it next to the installed app.
 BUILD_DIR="${PARHELION_BUILD_DIR:-${TMPDIR:-/tmp}/parhelion-build}"
