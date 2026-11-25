@@ -423,6 +423,11 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
             worker_ws = runtime.resolve_ws(q.get("workspace")) if worker_id else None
             if not self._check_auth(worker_token(runtime.token, worker_ws, worker_id) if worker_ws else None):
                 return
+            if worker_id:
+                worker = runtime.agent_mesh._store(worker_ws).get_agent(worker_id)
+                if not worker or worker["status"] in ("stopped", "error"):
+                    self._send_json(403, {"ok": False, "error": "Worker seat is inactive"})
+                    return
             length = int(self.headers.get("Content-Length") or "0")
             raw_body = self.rfile.read(min(length, 1024 * 1024)) if length > 0 else b""
             body_obj: dict[str, Any] = {}
@@ -501,6 +506,7 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
     handler_cls = _make_handler(runtime, stop_event)
     server, actual_port = _bind_server(preferred_port, handler_cls)
     runtime.port = actual_port
+    runtime.agent_mesh.recover_workers(workspace)
 
     # Warm cold cache before accepting traffic so the first snapshot & hot frame are ready immediately.
     runtime.state_cache.warm(workspace)

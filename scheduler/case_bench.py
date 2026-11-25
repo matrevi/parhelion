@@ -18,7 +18,7 @@ import sys
 import tempfile
 import uuid
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .parhelion_paths import (
@@ -218,42 +218,97 @@ def summarize(rows):
 
 
 @contextmanager
-def active_bench(folder, key, run_id):
-    """Join an identical run only while its owner is still executing."""
+def active_bench(folder, key, run_id, *, remeasure=False, limit_experiments=False):
+    """Share identical evidence and admit one worker experiment per problem at a time."""
     runs = folder / "bench-runs"
     runs.mkdir(parents=True, exist_ok=True)
-    with (runs / (".active-" + key)).open("a+") as admission:
-        fcntl.flock(admission, fcntl.LOCK_EX)
-        admission.seek(0)
-        prior = admission.read().strip()
-        waiter = None
-        if re.fullmatch(r"[a-f0-9]{32}", prior):
-            candidate = (runs / prior / ".owner").open("a")
-            try:
-                fcntl.flock(candidate, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            except BlockingIOError:
-                waiter = candidate
-            else:
-                candidate.close()
-        if waiter is None:
-            dest = runs / run_id
-            dest.mkdir()
-            owner = (dest / ".owner").open("a")
-            fcntl.flock(owner, fcntl.LOCK_EX)
+    with ExitStack() as lifetime:
+        with (runs / (".active-" + key)).open("a+") as admission:
+            fcntl.flock(admission, fcntl.LOCK_EX)
             admission.seek(0)
-            admission.truncate()
-            admission.write(run_id)
-            admission.flush()
-    if waiter is None:
-        with owner:
+            prior = admission.read().strip()
+            waiter = None
+            if re.fullmatch(r"[a-f0-9]{32}", prior) and (runs / prior).is_dir():
+                candidate = (runs / prior / ".owner").open("a")
+                try:
+                    fcntl.flock(candidate, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    waiter = candidate
+                else:
+                    candidate.close()
+                    report = read_doc(runs / prior / "report.json")
+                    if not remeasure and reusable_report(report, prior, folder):
+                        yield {**report, "reused": True}
+                        return
+            if waiter is None:
+                if limit_experiments:
+                    seat = lifetime.enter_context((folder.parent / ".worker-experiment.lock").open("a+"))
+                    try:
+                        fcntl.flock(seat, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        seat.seek(0)
+                        yield {"deferred": True, "exit_code": 75, "active_run": seat.read().strip(),
+                               "reason": "An experiment is already admitted for this problem. Use its result before scheduling another."}
+                        return
+                    seat.seek(0)
+                    seat.truncate()
+                    seat.write(f"{folder.name}/{run_id}")
+                    seat.flush()
+                dest = runs / run_id
+                dest.mkdir()
+                owner = lifetime.enter_context((dest / ".owner").open("a"))
+                fcntl.flock(owner, fcntl.LOCK_EX)
+                admission.seek(0)
+                admission.truncate()
+                admission.write(run_id)
+                admission.flush()
+        if waiter is None:
             yield None
-    else:
-        with waiter:
-            fcntl.flock(waiter, fcntl.LOCK_SH)
-            report = read_doc(runs / prior / "report.json")
-            if not report:
-                raise RuntimeError(f"Shared bench {prior} ended without a report. Retry validation.")
-            yield report
+        else:
+            with waiter:
+                fcntl.flock(waiter, fcntl.LOCK_SH)
+                report = read_doc(runs / prior / "report.json")
+                if not report:
+                    raise RuntimeError(f"Shared bench {prior} ended without a report. Retry validation.")
+                yield {**report, "joined": True}
+
+
+def reusable_report(report, run_id, folder):
+    if (report.get("run_id") != run_id or report.get("exit_code") != 0 or
+            not report.get("summary", {}).get("verified") or not report.get("built")):
+        return False
+    if report.get("formal") and read_doc(folder / "result.json").get("run_id") != run_id:
+        return False
+    try:
+        finished = datetime.datetime.fromisoformat(report["finished_at"])
+        age = (datetime.datetime.now(datetime.timezone.utc) - finished).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return False
+    return 0 <= age <= 1800
+
+
+def adaptive_cases(folder, cases):
+    """Retest a known failure first; otherwise probe one anchor and one performance case."""
+    by_id = {case["id"]: case for case in cases}
+    # Profiles can change the input behind a local ID. Only reuse failure identity
+    # when the catalog also matches, and let a later pass supersede that failure.
+    seen = set()
+    reports = sorted((folder / "bench-runs").glob("*/report.json"),
+                     key=lambda p: p.stat().st_mtime_ns, reverse=True)
+    for path in reports:
+        report = read_doc(path)
+        keys = {c["id"]: c.get("key") for c in report.get("catalog", [])}
+        for result in report.get("cases", []):
+            cid = result.get("id")
+            if cid not in by_id or cid in seen or keys.get(cid) != by_id[cid]["key"]:
+                continue
+            if result.get("status") in ("TLE", "WA", "RE"):
+                return [by_id[cid]], "retest_failure"
+            if result.get("status") == "PASS":
+                seen.add(cid)
+    anchor = next((c for c in cases if c["source"] == "official" and not c["perf"]), cases[0])
+    perf = next((c for c in cases if c["perf"] and c["id"] != anchor["id"]), None)
+    return [anchor] + ([perf] if perf else []), "anchor_and_performance"
 
 
 def run(
@@ -273,6 +328,9 @@ def run(
     wspt_base=1.0,
     aging_tau=600.0,
     runner=None,
+    remeasure=False,
+    worker_request=False,
+    suite=None,
     dry_run=False,
     stream=True,
 ):
@@ -292,7 +350,13 @@ def run(
     ]
     if not selected:
         raise ValueError("Empty case selection")
-    formal = all(
+    folder = ws / "results" / title / sha
+    adaptive = (suite == "adaptive" or (suite is None and (worker_request or
+                any(v is not None for v in (experiment, timing, repeats, profile_path))))) and not (ids or bucket or official_only)
+    selection = "explicit" if ids or bucket or official_only else "all"
+    if adaptive:
+        selected, selection = adaptive_cases(folder, selected)
+    formal = not adaptive and all(
         v is None
         for v in (
             ids,
@@ -306,7 +370,7 @@ def run(
         )
     )
     timing = timing if timing is not None else profile.get("timing", "perf")
-    repeat_count = repeats if repeats is not None else profile.get("repeats", 3)
+    repeat_count = repeats if repeats is not None else (1 if adaptive else profile.get("repeats", 3))
     timeout = profile.get("case_timeout", 15)
     if (
         timing not in ("off", "perf", "all")
@@ -328,7 +392,7 @@ def run(
         "strict_fp32": profile.get("strict_fp32", False),
         "timing": timing,
         "repeats": repeat_count,
-        "timeout": min(timeout, 60),
+        "timeout": min(timeout, 8 if adaptive else 60),
         "arch": os.getenv("NPU_ARCH", "arch-v1"),
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": "/srv/work-device0.lock",
@@ -337,7 +401,6 @@ def run(
     modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch")}
     run_id = uuid.uuid4().hex
     cfg["run_id"] = run_id
-    folder = ws / "results" / title / sha
     dest = folder / "bench-runs" / run_id
     report = {
         "version": 1,
@@ -352,16 +415,18 @@ def run(
         "profile": profile,
         "catalog": cases,
         "selected": [c["id"] for c in selected],
+        "selection": selection,
         "started_at": now(),
         "host": host,
         "settings": {k: v for k, v in cfg.items() if k != "selected"},
     }
     if dry_run:
         return {**report, "dry_run": True, "exit_code": 0}
-    key = digest([host, engine, profile, formal, experiment, oracle,
+    key = digest([host, engine, profile, formal, oracle,
                   {k: v for k, v in cfg.items() if k not in ("run_id", "wspt_base", "aging_tau")},
                   os.getenv("OPSB_TOOLCHAIN_ENV"), modules])
-    with active_bench(folder, key, run_id) as shared:
+    with active_bench(folder, key, run_id, remeasure=remeasure,
+                      limit_experiments=worker_request and not formal) as shared:
         if shared is not None:
             return shared
         return _execute_run(repo, cfg, report, engine, modules, runner, dest, stream)

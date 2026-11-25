@@ -19,6 +19,7 @@ from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
 from .judge_feedback import calibration_evidence, judge_feedback
+from .ownership import claim_runner, owned_groups, reap_groups
 
 AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
 MAX_WAIT_SEC = 45.0
@@ -93,7 +94,8 @@ def claude_workers_allowed(cfg: dict[str, Any] | None = None) -> bool:
 class _WorkerRunner:
     """Per-agent turn pump keeping persistent RPC adapters warm across follow-up messages."""
 
-    def __init__(self, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter, on_notify: Callable[[], None]) -> None:
+    def __init__(self, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter,
+                 on_notify: Callable[[], None], *, resume: bool = False) -> None:
         self.agent_id = agent_id
         self.store = store
         self.adapter = adapter
@@ -103,6 +105,17 @@ class _WorkerRunner:
         self._stop_flag = threading.Event()
         self._context_percent: int | None = None
         self._stage_result = ""
+        self.lease = claim_runner(store.db_path.parent, agent_id)
+        if resume:
+            try:
+                current = store.get_agent(agent_id)
+                if not current or current["status"] == "stopped":
+                    raise RuntimeError("Worker seat is inactive")
+                reap_groups(agent_id, owned_groups({agent_id}).get(agent_id, set()))
+            except BaseException:
+                self.lease.close()
+                raise
+        self.adapter.on_spawn = lambda pid, pgid: store.update_agent(agent_id, pid=pid, pgid=pgid)
         self._thread = threading.Thread(target=self._loop, name=f"agent-{agent_id}", daemon=True)
         self._thread.start()
 
@@ -117,6 +130,9 @@ class _WorkerRunner:
         self._stop_flag.set()
         self.adapter.stop()
         self._queue.put(None)
+        self._thread.join(timeout=10)
+        if self._thread.is_alive():
+            raise RuntimeError(f"Worker {self.agent_id} is still stopping")
 
     def _on_tool_event(self, kind: str, label: str) -> None:
         if kind == "context":
@@ -145,6 +161,16 @@ class _WorkerRunner:
         return "squad_note" if self.squad_turn else "worker_to_orch"
 
     def _loop(self) -> None:
+        try:
+            self._run_turns()
+        finally:
+            try:
+                self.adapter.stop()
+                self.store.update_agent(self.agent_id, pid=None, pgid=None)
+            finally:
+                self.lease.close()
+
+    def _run_turns(self) -> None:
         while not self._stop_flag.is_set():
             item = self._queue.get()
             if item is None or self._stop_flag.is_set():
@@ -191,6 +217,8 @@ class _WorkerRunner:
                     err_s = str(exc)[:600]
                     self.store.update_agent(self.agent_id, status="error", error=err_s, last_tool="")
                     self.store.append_message(self.agent_id, "worker_to_orch", "error", err_s)
+                self._stop_flag.set()
+                return
             finally:
                 self.squad_turn = False
                 self._on_notify()
@@ -297,9 +325,30 @@ class AgentMeshManager:
             st = self._stores.get(key)
             if st is None:
                 st = AgentBusStore(Path(key))
-                st.sweep_stale_running(set(self._runners.keys()))
                 self._stores[key] = st
             return st
+
+    def recover_workers(self, workspace: Path) -> None:
+        """Only daemon startup reconciles detached workers. A reader has no ownership."""
+        store = self._store(workspace)
+        records = store.list_agents(limit=-1)
+        groups = owned_groups({r["agent_id"] for r in records})
+        for rec in records:
+            aid = rec["agent_id"]
+            if rec["status"] in ("stopped", "error") and not (rec["pid"] or aid in groups):
+                continue
+            try:
+                lease = claim_runner(store.db_path.parent, aid)
+            except RuntimeError:
+                continue
+            with lease:
+                reap_groups(aid, groups.get(aid, set()))
+                current = store.get_agent(aid)
+                if current and current["status"] not in ("stopped", "error"):
+                    error = "Previous worker runtime ended; send a follow-up to resume this seat."
+                    store.update_agent(aid, status="error", error=error, pid=None, pgid=None, last_tool="")
+                elif current:
+                    store.update_agent(aid, pid=None, pgid=None)
 
     def _cached_doctor(self) -> dict[str, Any]:
         now = time.monotonic()
@@ -564,12 +613,18 @@ class AgentMeshManager:
             "status": "spawning",
             "last_commit_sha": sha7,
         })
+        if rec["agent_id"] != agent_id:
+            return {"ok": rec["status"] != "error", "agent": rec, "reused": True}
         msg = store.append_message(agent_id, "orch_to_worker", "task", task.strip(), problem=prob_title or ws.name)
         log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
-        adapter = self._adapter_factory(ws, wt, drv_kind, agent_id, log_path)
-        runner = _WorkerRunner(agent_id, store, adapter, self._notify)
-        with self._lock:
-            self._runners[agent_id] = runner
+        try:
+            with self._lock:
+                adapter = self._adapter_factory(ws, wt, drv_kind, agent_id, log_path)
+                runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+                self._runners[agent_id] = runner
+        except Exception as exc:
+            store.update_agent(agent_id, status="error", error=str(exc)[:600])
+            raise
         runner.enqueue(worker_prompt)
         self._notify()
         return {"ok": True, "agent": rec, "message": msg}
@@ -584,20 +639,27 @@ class AgentMeshManager:
             raise RuntimeError(f"Agent '{agent_id}' is stopped; spawn a new worker instead.")
         kind = "interrupt" if delivery == "interrupt" else "followup"
         msg = store.append_message(agent_id, "orch_to_worker", kind, message.strip())
-        self._enqueue_to_worker(ws, rec, message.strip(), interrupt=delivery == "interrupt")
+        self._enqueue_to_worker(ws, rec, message.strip(), interrupt=delivery == "interrupt", explicit=True)
         self._notify()
         return {"ok": True, "agent_id": agent_id, "delivery": kind, "message": msg}
 
-    def _enqueue_to_worker(self, ws, rec, message, *, interrupt=False, squad=False):
+    def _enqueue_to_worker(self, ws, rec, message, *, interrupt=False, squad=False, explicit=False):
         store = self._store(ws)
         agent_id = rec["agent_id"]
         with self._lock:
+            old = self._runners.get(agent_id)
+        if explicit and rec["status"] == "error" and old:
+            old.stop()
+        with self._lock:
+            rec = store.get_agent(agent_id)
+            if not rec or rec["status"] == "stopped" or (rec["status"] == "error" and not explicit):
+                return
             runner = self._runners.get(agent_id)
-            if runner is None:
+            if runner is None or not runner._thread.is_alive():
                 log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
                 adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
                 adapter.native_session_id = str(rec.get("native_session_id") or "")
-                runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+                runner = _WorkerRunner(agent_id, store, adapter, self._notify, resume=True)
                 self._runners[agent_id] = runner
         if interrupt:
             runner.interrupt()
@@ -803,9 +865,14 @@ class AgentMeshManager:
         if rec is None:
             raise KeyError(f"Unknown agent_id: {agent_id}")
         with self._lock:
-            runner = self._runners.pop(agent_id, None)
+            runner = self._runners.get(agent_id)
         if runner is not None:
             runner.stop()
+        lease = claim_runner(store.db_path.parent, agent_id)
+        with lease:
+            if not runner or rec.get("pid"):
+                reap_groups(agent_id, owned_groups({agent_id}).get(agent_id, set()))
+            updated = store.update_agent(agent_id, status="stopped", pid=None, pgid=None, last_tool="")
         removed_wt = False
         if cleanup_worktree and rec.get("worktree_mode") == "isolated" and rec.get("worktree"):
             wt_p = Path(rec["worktree"])
@@ -816,7 +883,6 @@ class AgentMeshManager:
                     removed_wt = not wt_p.exists()
                 except Exception:
                     pass
-        updated = store.update_agent(agent_id, status="stopped", pid=None, pgid=None, last_tool="")
         store.append_message(agent_id, "system", "lifecycle", f"Agent {agent_id} stopped.")
         self._notify()
         return {"ok": True, "agent": updated, "worktree_removed": removed_wt}
@@ -833,6 +899,9 @@ class AgentMeshManager:
         for r in runners:
             try:
                 r.stop()
+                rec = r.store.get_agent(r.agent_id)
+                if rec and rec["status"] not in ("error", "stopped"):
+                    r.store.update_agent(r.agent_id, status="stopped", pid=None, pgid=None)
             except Exception:
                 pass
 
@@ -841,7 +910,11 @@ class AgentMeshManager:
         doc = self._cached_doctor()
         active = str(doc.get("active_driver") or get_active_driver_kind()).lower()
         store = self._store(ws)
-        workers = store.list_agents(include_stopped=True, limit=60)
+        from .sprint import sprint_seats
+        all_workers = store.list_agents(limit=-1)
+        seats = sprint_seats(all_workers)
+        workers = [w for w in all_workers if w["status"] != "stopped" or
+                   seats.get((w["problem"], Path(w["worktree"]).name), w)["agent_id"] == w["agent_id"]]
         now = time.time()
         diag_by_kind = {str(d.get("kind") or "").lower(): d for d in (doc.get("diagnostics") or [])}
         orch_diag = diag_by_kind.get(active, {})

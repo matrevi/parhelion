@@ -138,7 +138,10 @@ def execute_batch(repo, cfg, plans):
                 while ready:
                     plan = ready.popleft()
                     execute_case(sample, cfg, plan, update)
-                    if plan.get("error", {}).get("status") == "TLE":
+                    if plan.get("error"):
+                        for pending in ready:
+                            pending["error"] = {"status": "NOT_RUN", "detail": "Earlier device execution failed"}
+                        ready.clear()
                         break
             finally:
                 sample.close()

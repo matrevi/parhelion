@@ -1569,6 +1569,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tst.add_argument("--bucket")
     p_tst.add_argument("--profile")
     p_tst.add_argument("--experiment")
+    p_tst.add_argument("--remeasure", action="store_true", default=None)
+    p_tst.add_argument("--suite", choices=["adaptive", "all"])
     p_tst.add_argument("--runner")
     p_tst.add_argument("--official-only",action="store_true",default=None)
     p_tst.add_argument("--timing", choices=["off","perf","all"])
@@ -1681,7 +1683,7 @@ def main(argv: list[str] | None = None) -> int:
                 pmu=getattr(args, "pmu", False),
                 case_options={k:v for k,v in dict(ids=args.case_ids,bucket=args.bucket,
                     profile_path=args.profile,experiment=args.experiment,timing=args.timing,
-                    repeats=args.repeats,runner=args.runner,official_only=args.official_only).items() if v is not None},
+                    repeats=args.repeats,runner=args.runner,remeasure=args.remeasure,suite=args.suite,official_only=args.official_only).items() if v is not None},
                 dry_run=args.dry_run,
                 stream_stdout=not args.dry_run,
             )
@@ -1689,7 +1691,7 @@ def main(argv: list[str] | None = None) -> int:
                 res = payload.get("result") or {}
                 # Event-driven B0 tick: the die was just released and no operator ticket
                 # can exist yet -> strictly bounded, silent, never raises.
-                if not args.build_only and not any((args.case_ids,args.profile,args.experiment,args.bucket,args.timing,args.repeats,args.official_only,args.runner)):
+                if not args.build_only and res.get("formal", True) and not (res.get("reused") or res.get("joined") or res.get("deferred")) and not any((args.case_ids,args.profile,args.experiment,args.bucket,args.timing,args.repeats,args.official_only,args.runner)):
                     engine.backfill_auto()
                 print(json.dumps(sanitize_json_value(res), ensure_ascii=False, allow_nan=False))
                 return int(res.get("exit_code", 0))

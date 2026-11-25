@@ -162,6 +162,20 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
             inbox = call_tool("parhelion_agent_inbox", {}, ws, role="worker", agent_id=owner)
             results = [m for m in inbox["messages"] if m["kind"] == "judge_result"]
             assert len(results) == int(owner == owners[0])
+        from opsb_core.agents.sprint import start_sprint
+        observer = AgentMeshManager(adapter_factory=TestAdapter)
+        monkeypatch.setattr(observer, "_cached_doctor", mgr._cached_doctor)
+        store = observer._store(ws)
+        assert len(store.list_agents(include_stopped=False, limit=-1)) == 6
+        store.update_agent(author, branch="calibration-followup")
+        assert all(s["state"] == "existing" for s in start_sprint(observer, ws, driver=driver, preview=True)["assignments"])
+        with pytest.raises(RuntimeError, match="owned by another"):
+            observer._enqueue_to_worker(ws, store.get_agent(author), "follow-up")
+        store.update_agent(author, status="error", error="insufficient balance")
+        plan = start_sprint(observer, ws, driver=driver)
+        held = [s for s in plan["assignments"] if s["state"] == "blocked"]
+        assert len(held) == 1 and held[0]["agent_id"] == author and held[0]["reason"] == "insufficient balance"
+        assert len(store.list_agents(limit=-1)) == 6
     finally:
         mgr.stop_all()
         bind_daemon_agent_manager(None)

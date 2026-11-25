@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -204,6 +206,13 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
         opsb_cmd.extend(["--sha", sha])
     if lane["flag"]:
         opsb_cmd.append(str(lane["flag"]))
+    if args.get("remeasure"):
+        opsb_cmd.append("--remeasure")
+    if mode == "full":
+        suite = args.get("suite", "adaptive")
+        if suite not in ("adaptive", "all"):
+            raise ValueError("suite must be adaptive or all")
+        opsb_cmd.extend(["--suite", suite])
     case_ids = args.get("cases", [])
     if not isinstance(case_ids, list) or not all(isinstance(k, str) and k for k in case_ids):
         raise ValueError("cases must contain nonempty case IDs")
@@ -224,8 +233,23 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
         return plan
 
     # The device runner owns execution deadlines. Queueing may legitimately take longer.
-    proc = subprocess.run(opsb_cmd, cwd=str(workspace), stdin=subprocess.DEVNULL, capture_output=True, text=True)
+    env = dict(os.environ)
+    if args.get("_worker_request"):
+        env["PARHELION_MCP_ROLE"] = "worker"
+    proc = subprocess.run(opsb_cmd, cwd=str(workspace), stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env)
     plan.update({"exit_code": proc.returncode, "stdout": proc.stdout[-4000:], "stderr": proc.stderr[-2000:], "ok": proc.returncode == 0})
+    lines = proc.stdout.rstrip().splitlines()
+    if lines:
+        try:
+            report = json.loads(lines[-1])
+        except ValueError:
+            report = None
+        if isinstance(report, dict) and ("run_id" in report or report.get("deferred")):
+            plan.pop("stdout")
+            plan.update({k: report[k] for k in ("run_id", "reused", "joined", "deferred", "active_run",
+                         "reason", "selection", "selected", "formal", "summary", "timing_score_eligible", "finished_at") if k in report})
+            if report.get("run_id"):
+                plan["report"] = str(workspace / "results" / title / sha / "bench-runs" / report["run_id"] / "report.json")
     return plan
 
 

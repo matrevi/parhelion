@@ -18,6 +18,7 @@ from ..drivers.claude_driver import ClaudeStreamJsonClient, coerce_claude_uuid
 from ..drivers.codex_appserver import CodexAppServerClient, render_codex_config_toml
 from ..drivers.macos_gui import write_mcp_json_file
 from ..drivers.registry import get_driver, worker_model
+from .ownership import owned_groups, reap_groups
 
 EventCallback = Callable[[str, str], None]
 
@@ -91,10 +92,17 @@ class BaseWorkerAdapter:
         self.native_session_id: str = ""
         self._lock = threading.Lock()
         self._closed = False
+        self.on_spawn: Callable[[int, int], None] | None = None
 
     def _spawn_proc(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Worker has been stopped")
+            return self._launch(cmd, env)
+
+    def _launch(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        child_env = {**os.environ, **env}
+        child_env = {**os.environ, **env, "PARHELION_AGENT_ID": self.agent_id}
         if self.driver_kind == "deepseek":
             # DSH filters indexed Git keys from its shell tool but retains COUNT.
             # Use the worker account's normal Git configuration and credential store.
@@ -117,6 +125,8 @@ class BaseWorkerAdapter:
             self.pgid = os.getpgid(proc.pid)
         except OSError:
             self.pgid = proc.pid
+        if self.on_spawn:
+            self.on_spawn(self.pid, self.pgid)
         threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
         return proc
 
@@ -143,11 +153,15 @@ class BaseWorkerAdapter:
         return ""
 
     def stop(self) -> None:
-        self._closed = True
         with self._lock:
+            self._closed = True
             proc, pgid = self.proc, self.pgid
             self.proc = None
-        terminate_process_group(proc, pgid)
+            self.pid = self.pgid = None
+        if proc is not None and proc.poll() is None:
+            terminate_process_group(proc, pgid)
+        if pgid:
+            reap_groups(self.agent_id, {pgid} & owned_groups({self.agent_id}).get(self.agent_id, set()))
 
 
 class AcpWorkerAdapter(BaseWorkerAdapter):

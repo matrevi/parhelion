@@ -28,7 +28,7 @@ from .inflight_io import (
     reap_inflight_if_stale,
     write_inflight_atomic,
 )
-from .judge_score_fetch import DEFAULT_RANKING_RETRY_DELAYS, TERMINAL_JUDGE_STATUSES
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
@@ -877,8 +877,9 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
     sub_id = receipt["submission_id"]
     submitted_at = str(receipt.get("submitted_at") or utc_now().isoformat())
     try:
+        evidence = {}
         status, score, pub_times, pub_tbest = _wait_and_fetch_score(
-            workspace, title, sub_id, session_file=session_file, submitted_at=submitted_at
+            workspace, title, sub_id, session_file=session_file, submitted_at=submitted_at, evidence=evidence
         )
         out_rec = {
             **record,
@@ -886,6 +887,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             "status": status,
             "submission_id": sub_id,
             "score": score,
+            **evidence,
             "account_id": aid,
             "account_label": acc_label,
             "submitted_at": submitted_at,
@@ -913,7 +915,8 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             already_terminal = bool(
                 existing_match is not None
                 and str(existing_match.get("status") or "") in TERMINAL_JUDGE_STATUSES
-                and (out_rec.get("score") is None or existing_match.get("score") is not None)
+                and (existing_match.get("score") is not None or
+                     (out_rec.get("score") is None and (not out_rec.get("timing_score") or existing_match.get("timing_score"))))
             )
             if not already_terminal:
                 with outcome_path.open("a", encoding="utf-8") as of:
@@ -1096,8 +1099,9 @@ def _wait_and_fetch_score(
     title: str,
     submission_id: str,
     session_file: str = "",
-    ranking_retry_delays: tuple[float, ...] = DEFAULT_RANKING_RETRY_DELAYS,
+    ranking_retry_delays: tuple[float, ...] = (),
     submitted_at: str = "",
+    evidence: dict | None = None,
 ) -> tuple[str, float | None, list[float], list[float]]:
     py_exe = resolve_python_exe(workspace)
     env = dict(os.environ)
@@ -1125,6 +1129,7 @@ def _wait_and_fetch_score(
         "    fetch_ranking_sid_and_team_with_retry,\n"
         "    resolve_problem_id,\n"
         "    resolve_score_and_times,\n"
+        "    reconstruct_timing_score,\n"
         "    update_score_snapshot,\n"
         ")\n"
         "client = ICTClient(session_file=os.environ.get('JUDGE_SESSION_FILE') or None)\n"
@@ -1151,20 +1156,18 @@ def _wait_and_fetch_score(
         "    raise RuntimeError(f'poll timeout after {POLL_TIMEOUT_SEC}s (last status={status})')\n"
         "rank_row = None\n"
         "team_best_row = None\n"
+        "ranking = {}\n"
+        "replay = None\n"
         f"team_uids = set({team_user_ids!r})\n"
         f"team_name = {team_name!r}\n"
         "try:\n"
         f"    pid = resolve_problem_id(root, {title!r})\n"
         "    if pid:\n"
         "        def _fetch_page(page):\n"
-        "            for attempt in range(4):\n"
-        "                try:\n"
-        "                    resp = client.session.get(client.BASE_URL + f'/api/problems/{pid}/ranking', params={'page': page, 'size': 100}, timeout=20)\n"
-        "                    return resp.json() if resp.status_code == 200 else {}\n"
-        "                except Exception:\n"
-        "                    if attempt == 3: return {}\n"
-        "                    time.sleep(2 * (attempt + 1))\n"
-        "            return {}\n"
+        "            resp = client.session.get(client.BASE_URL + f'/api/problems/{pid}/ranking', params={'page': page, 'size': 100}, timeout=5)\n"
+        "            payload = resp.json() if resp.status_code == 200 else {}\n"
+        "            if page == 1: ranking.update(payload)\n"
+        "            return payload\n"
         "        rank_row, team_best_row = fetch_ranking_sid_and_team_with_retry(\n"
         f"            _fetch_page, {submission_id!r}, team_uids, team_name=team_name, status=status, retry_delays={tuple(ranking_retry_delays)!r}\n"
         "        )\n"
@@ -1172,6 +1175,12 @@ def _wait_and_fetch_score(
         "    rank_row = None\n"
         "    team_best_row = None\n"
         "score, pub_times, pub_tbest = resolve_score_and_times(sub_detail, rank_row, status)\n"
+        f"if status == 'Pass' and score is None and ranking and sub_detail.get('_id') == {submission_id!r} and sub_detail.get('problem_id') == pid:\n"
+        "    try:\n"
+        "        rule = client.session.get(client.BASE_URL + f'/api/problems/{pid}', timeout=5).json()\n"
+        "        replay = reconstruct_timing_score(sub_detail, rule, ranking)\n"
+        "    except Exception:\n"
+        "        pass\n"
         "try:\n"
         "    snap_row = team_best_row if team_best_row is not None else rank_row\n"
         "    if snap_row is not None:\n"
@@ -1199,12 +1208,14 @@ def _wait_and_fetch_score(
         "        )\n"
         "except Exception:\n"
         "    pass\n"
-        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"
+        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'timing_score': replay, 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"
     )
     proc = subprocess.run([py_exe, "-c", poll_code], stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True, timeout=POLL_TIMEOUT_SEC + 60)
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout).strip())
     parsed = json.loads(proc.stdout.strip().splitlines()[-1])
+    if evidence is not None and parsed.get("timing_score"):
+        evidence["timing_score"] = parsed["timing_score"]
     return (
         parsed["status"],
         parsed.get("score"),

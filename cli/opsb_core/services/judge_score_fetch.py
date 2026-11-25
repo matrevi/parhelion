@@ -179,7 +179,8 @@ def reconstruct_timing_score(detail: dict, rule: dict, ranking: dict) -> dict | 
 
     best = {}
     for case in tests:
-        if (not isinstance(case, dict) or case.get("type") != "default" or not positive(case.get("tbest"))
+        if (not isinstance(case, dict) or case.get("type") != "default" or "tbest" not in case
+                or (case["tbest"] is not None and not positive(case["tbest"]))
                 or any(case.get(flag) for flag in ("hidden", "ranking_excluded", "unavailable"))):
             return None
         key = case.get("_id")
@@ -207,14 +208,19 @@ def reconstruct_timing_score(detail: dict, rule: dict, ranking: dict) -> dict | 
             return None
         times = {}
         for row in rows:
-            if not isinstance(row, dict) or row.get("testcase_status") != "Pass" or not positive(row.get("time")):
+            if not isinstance(row, dict) or row.get("testcase_status") != "Pass" or "time" not in row:
                 return None
             key = row.get("testcase_id")
-            if key not in best or key in times or row["time"] < best[key]:
+            if key not in best or key in times:
+                return None
+            if best[key] is None:
+                if row["time"] is not None or row.get("score") != 0:
+                    return None
+            elif not positive(row["time"]) or row["time"] < best[key]:
                 return None
             times[key] = row["time"]
-        points = [100 / (1 + math.log(times[k] / base) / math.log(1.5)) for k, base in best.items()]
-        return round(math.fsum(points) / len(points), 2)
+        points = [100 / (1 + math.log(times[k] / base) / math.log(1.5)) for k, base in best.items() if base is not None]
+        return round(math.fsum(points) / len(best), 2) if points else None
 
     score = replay(detail.get("result"))
     if score is None:

@@ -1017,9 +1017,12 @@ class NpuTaskScheduler:
         if reference_suite and not (fast or build_only):
             priority, _, _, _ = self.compute_wspt(title, fast=False, wait_sec=0)
             res = case_bench.run(self.workspace,title,repo,sha,self.npu_host,
+                                 worker_request=os.getenv("PARHELION_MCP_ROLE") == "worker",
                                  wspt_base=priority, aging_tau=self.config.aging_tau_sec,
                                  dry_run=dry_run,stream=stream_stdout,**(case_options or {}))
             return res if dry_run else {"title":title,"result":res}
+        if not reference_suite and case_options and case_options.keys() == {"suite"}:
+            case_options = None
         if case_options:
             raise ValueError("Reference case experiments require a reference suite without --fast, --build-only or --pmu")
         canonical_sha = resolve_sha(self.workspace, title, sha)

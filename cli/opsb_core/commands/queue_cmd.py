@@ -368,6 +368,10 @@ def run_test(args: argparse.Namespace) -> int:
             b_cmd += ["--sha", args.sha]
         for cid in getattr(args, "case_ids", None) or []:
             b_cmd += ["--case", cid]
+        if getattr(args, "remeasure", False):
+            b_cmd.append("--remeasure")
+        if getattr(args, "suite", None):
+            b_cmd.extend(["--suite", args.suite])
         if getattr(args,"official_only",False):
             b_cmd.append("--official-only")
         for option in ("bucket","profile","experiment","timing","repeats","runner"):

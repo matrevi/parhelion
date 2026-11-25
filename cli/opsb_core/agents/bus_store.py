@@ -168,7 +168,15 @@ class AgentBusStore:
         with self._lock:
             conn = self._connect()
             try:
-                conn.execute(f"INSERT OR REPLACE INTO agents ({cols}) VALUES ({placeholders})", tuple(row.values()))
+                conn.execute("BEGIN IMMEDIATE")
+                if row["worktree_mode"] == "isolated" and Path(row["worktree"]).parent.name == ".worktrees":
+                    owner = conn.execute(
+                        "SELECT * FROM agents WHERE worktree = ? AND status <> 'stopped' "
+                        "ORDER BY (status = 'error'), created_at DESC LIMIT 1", (row["worktree"],)
+                    ).fetchone()
+                    if owner:
+                        return dict(owner)
+                conn.execute(f"INSERT INTO agents ({cols}) VALUES ({placeholders})", tuple(row.values()))
                 conn.commit()
             finally:
                 conn.close()
@@ -408,31 +416,13 @@ class AgentBusStore:
             finally:
                 conn.close()
 
-    def sweep_stale_running(self, live_agent_ids: set[str]) -> int:
-        now_iso = _cfg.utc_now().isoformat()
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT agent_id FROM agents WHERE status IN ('spawning', 'working', 'waiting_input', 'idle')"
-                ).fetchall()
-                stale = [str(r["agent_id"]) for r in rows if str(r["agent_id"]) not in live_agent_ids]
-                for aid in stale:
-                    conn.execute(
-                        "UPDATE agents SET status = 'stopped', pid = NULL, pgid = NULL, updated_at = ? WHERE agent_id = ?",
-                        (now_iso, aid),
-                    )
-                conn.commit()
-                return len(stale)
-            finally:
-                conn.close()
-
     def cleanup_stopped(self, agent_id: str | None = None) -> int:
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute("BEGIN IMMEDIATE")
                 rows = conn.execute("SELECT agent_id FROM agents WHERE status IN ('stopped', 'error') "
+                                    "AND pid IS NULL AND pgid IS NULL "
                                     "AND (? IS NULL OR agent_id = ?)", (agent_id, agent_id)).fetchall()
                 ids = [str(r["agent_id"]) for r in rows]
                 for aid in ids:

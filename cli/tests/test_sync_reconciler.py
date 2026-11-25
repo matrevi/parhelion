@@ -42,6 +42,12 @@ def test_replay_uses_all_case_ids_and_checks_the_scoring_rule():
     ranked = {"score": 75, "status": "Pass", "result": list(reversed(times))}
     ranking = {"total_testcase_count": 2, "testcases": cases, "rows": [ranked]}
     assert reconstruct_timing_score(detail, rule, ranking)["score"] == 75
+    zero = {"testcase_id": "c", "testcase_status": "Pass", "time": None, "score": 0}
+    full = {**rule, "testcases": [*rule["testcases"], "c"]}
+    counted = {**ranking, "testcases": [*cases, {"_id": "c", "type": "default", "tbest": None}],
+               "total_testcase_count": 3, "rows": [{**ranked, "score": 50, "result": [*times, zero]}]}
+    assert reconstruct_timing_score({**detail, "result": [*times, zero]}, full, counted)["score"] == 50
+    assert reconstruct_timing_score({**detail, "result": [*times, {**zero, "time": 2}]}, full, counted) is None
     for changes in ({"result": times[:1]}, {"result": [times[0]] * 2}, {"public_only": True},
                     {"judge_revision": 1}, {"result": [times[0], {**times[1], "time": float("nan")}]},
                     {"status": "Judging"}):

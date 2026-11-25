@@ -182,6 +182,8 @@ def build_parser() -> argparse.ArgumentParser:
     s_ts.add_argument("--bucket", help="Select a named case group")
     s_ts.add_argument("--profile", help="Use a JSON experiment profile")
     s_ts.add_argument("--experiment", help="Label an isolated run")
+    s_ts.add_argument("--remeasure", action="store_true", help="Repeat a completed reference measurement")
+    s_ts.add_argument("--suite", choices=["adaptive", "all"], help="Select a targeted probe or the complete reference suite")
     s_ts.add_argument("--runner", help="Use an experimental Python runner implementing the case event protocol")
     s_ts.add_argument("--official-only", action="store_true", help="Omit local variants for an ablation")
     s_ts.add_argument("--timing", choices=["off","perf","all"])

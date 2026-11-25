@@ -63,8 +63,25 @@ def test_join_only_overlapping_runs(tmp_path, monkeypatch):
             future = pool.submit(join)
             assert blocked.wait(5)
             bench.atomic_write_json(tmp_path / "bench-runs" / owner / "report.json", {"run_id": owner, "exit_code": 2})
-        assert future.result(timeout=5) == {"run_id": owner, "exit_code": 2}
+        assert future.result(timeout=5) == {"run_id": owner, "exit_code": 2, "joined": True}
     with bench.active_bench(tmp_path, "settings", repeat) as fresh:
+        assert fresh is None
+
+
+def test_cached_evidence_and_worker_admission(tmp_path):
+    folder = tmp_path / "Op" / "sha1"
+    other = folder.with_name("sha2")
+    owner, next_run = "a" * 32, "b" * 32
+    with bench.active_bench(folder, "settings", owner, limit_experiments=True):
+        with bench.active_bench(other, "different", next_run, limit_experiments=True) as busy:
+            assert busy["deferred"] and busy["active_run"] == f"sha1/{owner}"
+        assert not (other / "bench-runs" / next_run).exists()
+        bench.atomic_write_json(folder / "bench-runs" / owner / "report.json", {
+            "run_id": owner, "built": True, "finished_at": bench.now(), "exit_code": 0,
+            "summary": {"verified": True}})
+    with bench.active_bench(folder, "settings", next_run) as cached:
+        assert cached["reused"] and cached["run_id"] == owner
+    with bench.active_bench(folder, "settings", next_run, remeasure=True) as fresh:
         assert fresh is None
 
 
@@ -92,7 +109,9 @@ def test_ablation_selection(suite):
     assert plan["selected"] == ["01"] and not plan["formal"]
     assert plan["settings"]["timeout"] == 15
     path.write_text(json.dumps({**profile, "case_timeout": 300}))
-    assert bench.run(ws, "Op", repo, sha, "npu", profile_path=path, dry_run=True)["settings"]["timeout"] == 60
+    probe = bench.run(ws, "Op", repo, sha, "npu", profile_path=path, dry_run=True)
+    assert not probe["formal"] and len(probe["selected"]) <= 2 and probe["settings"]["timeout"] == 8
+    assert bench.run(ws, "Op", repo, sha, "npu", suite="all", profile_path=path, dry_run=True)["settings"]["timeout"] == 60
     assert plan["settings"]["reuse_session"] is False
     assert len(plan["catalog"]) == 3
     assert set(plan["catalog"][0]["buckets"]) == {"official", "pair", "mixed"}

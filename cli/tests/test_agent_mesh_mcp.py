@@ -51,6 +51,41 @@ class _FakeAdapter(BaseWorkerAdapter):
 
 
 class AgentMeshAndMcpTests(unittest.TestCase):
+    def test_error_reaps_native_group_and_drops_queued_turns(self):
+        from opsb_core.agents.bus_store import AgentBusStore
+        from opsb_core.agents.manager import _WorkerRunner
+        from opsb_core.agents.ownership import owned_groups
+        ready, fail = threading.Event(), threading.Event()
+        class FailingAdapter(BaseWorkerAdapter):
+            def send_turn(self, prompt, on_event=None):
+                self.child = self._spawn_proc([sys.executable, "-c", "import time; time.sleep(60)"], {})
+                ready.set()
+                fail.wait(3)
+                raise RuntimeError("provider balance exhausted")
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "opsb_core.agents.bus_store.agent_bus_db_path", return_value=Path(tmp) / "test.db"
+        ), mock.patch("opsb_core.agents.adapters.prepare_worker_command", side_effect=lambda cmd, *_: cmd):
+            ws = Path(tmp)
+            aid = "test-seat-" + str(os.getpid())
+            store = AgentBusStore(ws)
+            store.create_agent({"agent_id": aid, "driver": "deepseek"})
+            adapter = FailingAdapter(ws, ws, "deepseek", aid, ws / "log")
+            runner = _WorkerRunner(aid, store, adapter, lambda: None)
+            try:
+                runner.enqueue("work")
+                self.assertTrue(ready.wait(5))
+                self.assertEqual(store.get_agent(aid)["pid"], adapter.child.pid)
+                self.assertEqual(owned_groups({aid}).get(aid), {adapter.child.pid})
+                runner.enqueue("already queued")
+                fail.set()
+                runner._thread.join(5)
+                rec = store.get_agent(aid)
+                self.assertEqual((rec["status"], rec["pid"], rec["turn_count"]), ("error", None, 1))
+                self.assertIsNotNone(adapter.child.poll())
+            finally:
+                fail.set()
+                runner.stop()
+
     def test_codex_worker_provider_and_private_mcp_config(self):
         from opsb_core.drivers.codex_appserver import render_codex_config_toml
         with tempfile.TemporaryDirectory() as td:
@@ -90,8 +125,11 @@ class AgentMeshAndMcpTests(unittest.TestCase):
     def test_stage_compaction_uses_current_window_and_requires_result(self):
         from opsb_core.agents.adapters import CodexWorkerAdapter
         from opsb_core.agents.manager import _WorkerRunner
+        state = tempfile.TemporaryDirectory()
+        self.addCleanup(state.cleanup)
         for percent, report, expected in [(59, True, False), (60, False, False), (60, True, True)]:
             store = mock.Mock()
+            store.db_path = Path(state.name) / "bus.db"
             store.get_agent.return_value = {}
             adapter = mock.Mock()
             adapter.worktree = Path(__file__).parent

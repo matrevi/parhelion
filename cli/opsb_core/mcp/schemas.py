@@ -128,6 +128,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "profile": {"type": "string", "description": "Path to a shared experimental case profile in this contest workspace."},
                 "timing": {"type": "string", "enum": ["off", "perf", "all"]},
                 "repeats": {"type": "integer", "minimum": 1},
+                "remeasure": {"type": "boolean", "description": "Request a fresh measurement for a reference suite even when matching successful evidence is recent."},
+                "suite": {"type": "string", "enum": ["adaptive", "all"], "description": "Default adaptive reference probe. Supply cases or bucket to target an experiment. Use all for formal candidate validation."},
             },
             "required": ["problem"],
         },

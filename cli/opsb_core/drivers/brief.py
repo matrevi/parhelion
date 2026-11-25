@@ -247,7 +247,8 @@ def compose_bench_author_brief(workspace: Path, problem: str) -> str:
         return (f"# Case coverage for {title}\nInspect `opsb bench cases {title}`. Reuse the platform's "
                 "reference suite. Define seed or parameter variants in an experimental profile for the "
                 "specific coverage gap. Run the baseline and candidate on identical inputs with "
-                "parhelion_test_plan with the same shared profile. Send run IDs, findings and the profile path "
+                "parhelion_test_plan using the same case IDs or bucket. Reuse matching evidence. "
+                "Reserve suite=all for a submission candidate. Send run IDs, findings and the profile path "
                 "directly to the optimizer with parhelion_squad. Escalate unresolved decisions only.")
     spec = _cfg.workspace_bench_specs_dir(ws) / title / "cases_perf.json"
     lines = [

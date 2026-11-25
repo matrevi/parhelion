@@ -102,6 +102,8 @@ def call_tool(
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
     call_args.pop("_caller_agent_id", None)
+    if name == "parhelion_test_plan":
+        call_args["_worker_request"] = norm_role == "worker"
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")
     if agent_id:

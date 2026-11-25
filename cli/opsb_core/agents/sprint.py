@@ -12,8 +12,17 @@ from ..services.contest_service import resolve_workspace_meta
 DIRECTIONS = {
     "algorithm": "Explore algorithmic and numerical changes. Compare against the passing baseline.",
     "dataflow": "Explore tiling, memory traffic and kernel launch costs on measured buckets.",
-    "calibration": "Use official receipts to improve this problem's local bench and cases. Compare baseline and candidate using the same experimental profile. Share reproduced gaps, run IDs and coverage changes with your squad.",
+    "calibration": "Calibrate on a new candidate or official receipt. Reuse comparable baseline evidence and measure only the cases needed to test your hypothesis. Share the run IDs and findings, then wait for new evidence.",
 }
+
+
+def sprint_seats(workers):
+    seats = {}
+    for worker in sorted(workers, key=lambda w: (w["status"] != "stopped", w["created_at"]), reverse=True):
+        path = Path(worker["worktree"])
+        if path.parent.name == ".worktrees" and path.name in {"sprint-" + axis for axis in DIRECTIONS}:
+            seats.setdefault((worker["problem"], path.name), worker)
+    return seats
 
 
 def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = False,
@@ -36,8 +45,7 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
         selected = bool(active_workspace and Path(active_workspace).expanduser().resolve() == ws)
         if enable_auto_submit and not selected:
             raise ValueError("Select this contest in Parhelion before enabling automatic submission")
-        workers = [] if preview else manager._store(ws).list_agents(include_stopped=False, limit=-1)
-        occupied = {(w["problem"], w["branch"]): w for w in workers}
+        occupied = sprint_seats(manager._store(ws).list_agents(limit=-1))
         for problem in problems:
             title = problem["title"]
             repo = (ws / (problem.get("path") or title)).resolve()
@@ -46,7 +54,10 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                 slot = dict(problem=title, axis=axis, branch=track)
                 assignments.append(slot)
                 existing = occupied.get((title, track))
-                if existing:
+                if existing and existing["status"] in ("stopped", "error"):
+                    slot.update(state="blocked", agent_id=existing["agent_id"],
+                                reason=existing.get("error") or "Worker explicitly stopped")
+                elif existing:
                     slot.update(state="existing", agent_id=existing["agent_id"])
                 elif not ready:
                     slot.update(state="blocked", reason="Harness CLI, authentication or worker permission unavailable")
@@ -62,7 +73,8 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                             collab_mode="orthogonal", _sprint=True)
                         agent = result["agent"]
                         occupied[(title, track)] = agent
-                        slot.update(state="started", agent_id=agent["agent_id"])
+                        slot.update(state="blocked" if agent["status"] == "error" else
+                                    "existing" if result.get("reused") else "started", agent_id=agent["agent_id"])
                     except (OSError, ValueError, RuntimeError, SubprocessError) as exc:
                         slot.update(state="blocked", reason=str(exc))
         if enable_auto_submit and not preview and any(s["state"] in ("existing", "started") for s in assignments):
