@@ -16,12 +16,15 @@ struct EscapeAndBackfillBannerView: View {
                         .font(.system(size: 16))
                         .foregroundStyle(.red)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(lang.tr("逃逸硬锁已触发 (ESCAPE LOCK)", "ESCAPE LOCK ACTIVE"))
+                        Text(problem.latestStatus == "Pass"
+                             ? lang.tr("最近一发已通过，新候选待复验", "Latest submission passed · new candidate needs verification")
+                             : lang.tr("新候选已被逃逸锁拦截", "Escape lock on new candidates"))
                             .font(.system(size: 11.5, weight: .bold))
                             .foregroundStyle(.red)
+                        let bad = cal?.escapeSha.flatMap { $0.isEmpty ? nil : String($0.prefix(7)) }
                         Text(lang.tr(
-                            "上一发通过本地检查但线上 WA/TLE/RE，请向 cases_correctness.json 补充复现例并执行 verify-escape 解锁。",
-                            "Online WA/TLE/RE escaped local checks. Add a D5 reproducer & run `opsb bench verify-escape`."
+                            "待复验的失败提交 \(bad ?? "（SHA 待补全）")。补充复现用例后运行 opsb bench verify-escape。",
+                            "Failed submission \(bad ?? "(SHA unavailable)") needs a reproducer. Run opsb bench verify-escape after adding the case."
                         ))
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)

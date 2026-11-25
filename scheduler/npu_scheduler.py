@@ -626,7 +626,7 @@ class NpuTaskScheduler:
 
         # Effective headroom: boost CRITICAL_RESTORE (board == 0), dampen OPEN circuit breaker
         headroom = ledger.recoverable_headroom
-        if ledger.current_score <= 0.0:
+        if ledger.confirmed_board_zero:
             headroom = max(headroom, ledger.historical_best_mean + 25.0, 60.0)
         cb_factor = 0.25 if cb.state == "OPEN" else 1.0
 
@@ -914,12 +914,18 @@ class NpuTaskScheduler:
             wspt_q1, _, _, _ = self.compute_wspt(title, fast=False, wait_sec=0)
             weighted_hr = round(ledger.difficulty * ledger.recoverable_headroom, 2)
 
-            if ledger.current_score <= 0.0:
+            if ledger.confirmed_board_zero and ledger.historical_best_sha:
                 rec_lane = "Q1 (CRITICAL_RESTORE)"
                 rec_act = (
                     f"Submit verified SHA {(ledger.historical_best_sha or '')[:7]} immediately "
                     f"to recover +{ledger.historical_best_mean:.1f} pts from 0"
                 )
+            elif ledger.board_status == "unranked":
+                rec_lane = "Q1 (TEAM UNRANKED)"
+                rec_act = "Validate a candidate for this team's first ranking on this problem"
+            elif ledger.board_status == "board-unknown":
+                rec_lane = "Q1 (BOARD UNKNOWN)"
+                rec_act = "Refresh the current team's leaderboard before evaluating a score recovery"
             elif cb.state == "OPEN":
                 rec_lane = "HOLD (SWITCH_BASELINE)"
                 rec_act = "Circuit OPEN (6 non-improving shots in 12h); redesign algorithm locally before NPU slot"

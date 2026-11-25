@@ -13,7 +13,7 @@ struct ProblemInspectorView: View {
                 headerRow
                 EscapeAndBackfillBannerView(problem: problem)
 
-                if problem.bestScore - problem.currentScore >= 2.5
+                if problem.boardScore != nil && problem.bestScore - problem.currentScore >= 2.5
                     && !problem.bestSha.isEmpty
                     && problem.bestSha.prefix(7) != (problem.activeSha ?? "").prefix(7) {
                     restoreCallout
@@ -50,7 +50,7 @@ struct ProblemInspectorView: View {
                     Text(lang.tr("最近一发", "Last judged"))
                     Text(problem.latestSha.map { String($0.prefix(7)) } ?? "—")
                     Text(problem.latestStatus.map { lang.evalStatus($0) } ?? "—")
-                    Text(problem.latestScore.map { String(format: "%.2f", $0) } ?? "—")
+                    Text(problem.latestScoreText(lang))
                     Text(lang.tr("在榜分", "Board score"))
                     Text(problem.boardScoreText(lang))
                 }

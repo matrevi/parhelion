@@ -119,8 +119,13 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let latestStatus: String?
     let latestScore: Double?
     let latestSha: String?
+    let latestAt: String?
     let boardListed: Bool?
     let boardScore: Double?
+    func latestScoreText(_ lang: AppLanguage) -> String {
+        if let latestScore { return String(format: "%.2f", latestScore) }
+        return latestStatus == "Pass" ? lang.tr("待回分", "Pending") : "—"
+    }
     func boardScoreText(_ lang: AppLanguage) -> String {
         if boardListed == false { return lang.tr("未上榜", "Unranked") }
         return boardScore.map { String(format: "%.2f", $0) } ?? "—"
@@ -166,6 +171,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case totalTeams = "total_teams"
         case currentScore = "current_score"
         case latestStatus = "latest_status", latestScore = "latest_score", latestSha = "latest_sha"
+        case latestAt = "latest_at"
         case boardListed = "board_listed", boardScore = "board_score"
         case weightedScore = "weighted_score"
         case bestScore = "best_score"

@@ -17,11 +17,13 @@ from .config import (
     write_ttl_cache,
 )
 from .services.sync_reconciler import recent_unreconciled_receipt_pairs
+from .services.contest_service import escape_advice
 
 
 def _queue_fingerprint(workspace: Path) -> str:
     parts = [str(workspace)]
-    for rel in ("results/submit-queue.jsonl", "results/submit-queue-outcome.jsonl", "results/score-snapshot.json"):
+    for rel in ("results/submit-queue.jsonl", "results/submit-queue-outcome.jsonl", "results/score-snapshot.json",
+                "results/scoring-evidence/live-board-tbest.json", "results/scoring-evidence/ranking-captain.json"):
         p = workspace / rel
         parts.append(str(p.stat().st_mtime_ns) if p.is_file() else "0")
     st_file = workspace_state_dir(workspace) / "scheduler_state.json"
@@ -104,7 +106,9 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     cur_cal.update({k: v for k, v in b_cal.items() if v is not None})
                     p_item["calibration"] = cur_cal
                     if cur_cal.get("escape_lock"):
-                        p_item["wspt_tag"] = "ESCAPE LOCK"
+                        p_item["wspt_tag"] = escape_advice(p_item.get("latest_status"))
+                    elif "board_advice" in p_item:
+                        p_item["wspt_tag"] = p_item["board_advice"]
             c_mae = (p_item.get("calibration") or {}).get("mae_pts")
             if c_mae is not None:
                 maes.append(float(c_mae))

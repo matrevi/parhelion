@@ -41,6 +41,39 @@ def test_late_result_does_not_overwrite_rebound_workspace(tmp_path, monkeypatch)
     assert not ranking._cache_path(tmp_path).exists()
 
 
+def test_team_scoped_board_drives_dashboard_and_restore_gate(tmp_path):
+    from opsb_core.services.contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
+    from scheduler.estimator import ScoreEstimator
+
+    scope = {"target": ["public", "chem", "", "captain", "user"], "team_id": "new", "team_name": "New"}
+    problems = [{"title": t, "path": t, "slug": t, "repo_slug": t, "problem_id": t}
+                for t in ("Absent", "Zero", "Other", "NoScore", "Ranked")]
+    (tmp_path / "opsb.workspace.json").write_text(json.dumps({"contest_id": "chem", "problems": problems}))
+    ev = tmp_path / "results/scoring-evidence"
+    ev.mkdir(parents=True)
+    (ev / "ranking-captain.json").write_text(json.dumps({"contest": ["public", "chem"], "account_id": "captain", "user_id": "user"}))
+    (ev / "team-ranking.json").write_text(json.dumps({**scope, "contest_id": "a"*24}))
+    (tmp_path / "results/score-snapshot.json").write_text(json.dumps({p["title"]: {"score": 70, "status": "Pass"} for p in problems}))
+    (tmp_path / "results/submit-queue-outcome.jsonl").write_text("".join(json.dumps({
+        "title": p["title"], "sha": "1"*40, "status": "Pass", "score": 25,
+        "submission_id": p["title"], "submitted_at": "2026-11-25T08:00:00Z"})+"\n" for p in problems))
+    rows = {"Absent": {"listed": False}, "Zero": {"listed": True, "our_score": 0},
+            "Other": {"listed": True, "our_score": 50, "problem_id": "other"},
+            "NoScore": {"listed": True, "our_score": None},
+            "Ranked": {"listed": True, "our_score": 24, "board_submission_id": "Ranked"}}
+    (ev / "live-board-tbest.json").write_text(json.dumps({"scope": scope, "problems": rows}))
+    models, _ = build_problem_models(tmp_path, resolve_workspace_meta(tmp_path), index_submission_history(tmp_path), 1, 5)
+    model = {p["title"]: p for p in models}
+    estimator = ScoreEstimator(tmp_path)
+    for t in rows:
+        ledger = estimator.get_problem_ledger(t)
+        assert ledger.confirmed_board_zero == model[t]["critical_restore"] == (t == "Zero")
+        assert ledger.current_score == model[t]["current_score"]
+    assert model["Absent"]["wspt_tag"] == "TEAM UNRANKED"
+    assert model["Other"]["wspt_tag"] == model["NoScore"]["wspt_tag"] == "BOARD UNKNOWN"
+    assert model["Ranked"]["board_score"] == 24 and model["Ranked"]["latest_score"] == 25
+
+
 def test_captain_switch_and_registration_changes(tmp_path, monkeypatch):
     cid = "a" * 24
     (tmp_path / "opsb.workspace.json").write_text(json.dumps({"contest_id": cid, "team_name": "old"}))

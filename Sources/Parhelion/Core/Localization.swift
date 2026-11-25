@@ -122,6 +122,9 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
         guard self == .zh else { return cleaned }
         if cleaned == "ESCAPE LOCK" { return "逃逸锁定" }
         if cleaned == "CRITICAL RESTORE" { return "清零待恢复" }
+        if cleaned == "VERIFY NEW CANDIDATE" { return "新候选待复验" }
+        if cleaned == "TEAM UNRANKED" { return "本队待上榜" }
+        if cleaned == "BOARD UNKNOWN" { return "待同步榜单" }
         if cleaned == "FIRST PASS" { return "待首通" }
         if cleaned.hasPrefix("RESTORE ") { return cleaned.replacingOccurrences(of: "RESTORE ", with: "可恢复 ") }
         if cleaned == "HIGH ROI" { return "高收益" }

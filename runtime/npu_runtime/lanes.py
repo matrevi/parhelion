@@ -40,14 +40,35 @@ def case_series(cfg):
         path.unlink(missing_ok=True)
 
 
+def compilation_units(build_dir):
+    """Read the configured build graph, including ASC rules from CMake packages."""
+    build_dir = Path(build_dir)
+    try:
+        commands = json.loads((build_dir / "compile_commands.json").read_text())
+        if commands:
+            return len(commands)
+    except (OSError, ValueError):
+        pass
+    # Some versions of CMake's ASC language module only emit Makefile object rules.
+    objects = set()
+    for makefile in build_dir.glob("**/CMakeFiles/*.dir/build.make"):
+        for line in makefile.read_text().splitlines():
+            target, sep, _ = line.partition(":")
+            if sep and target.endswith(".o") and not target.startswith(("\t", "#")):
+                objects.add(target)
+    return len(objects) or None
+
+
 @contextmanager
-def compile_lane(cfg):
+def compile_lane(cfg, units=None):
     directory = Path.home() / ".opsb/cpu_builds"
     directory.mkdir(parents=True, exist_ok=True)
     record = directory / f"{os.getpid()}.json"
     cores = os.cpu_count() or 1
     budget = max(1, cores - max(2, cores // 10))
     requested = max(1, int(cfg.get("jobs") or 16))
+    if units is not None:
+        requested = min(requested, max(1, units))
     while True:
         with (directory / ".allocation.lock").open("a") as allocation:
             fcntl.flock(allocation, fcntl.LOCK_EX)

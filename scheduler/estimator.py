@@ -132,6 +132,10 @@ class ProblemLedger:
     true_restore_gain: float
     restore_gap: float
 
+    @property
+    def confirmed_board_zero(self) -> bool:
+        return self.current_score == 0 and self.board_status not in ("board-unknown", "unranked", "no-submission", "")
+
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
@@ -830,13 +834,8 @@ class ScoreEstimator:
         ]
 
     def _load_snapshot(self) -> dict[str, dict[str, Any]]:
-        path = self.workspace / "results" / "score-snapshot.json"
-        if not path.is_file():
-            return {}
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
+        from cli.opsb_core.services.board_refresh_service import current_board
+        return current_board(self.workspace, self.problems_meta)[0]
 
     def _filtered_outcomes(self, title: str, as_of: datetime.datetime | None = None) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
@@ -919,7 +918,9 @@ class ScoreEstimator:
             except Exception:
                 pass
 
-        # 3. Fallback to latest Pass record in outcomes
+        if snap_id or "listed" in snap_row:
+            return None, None, snap_ts
+        # 3. Fallback to latest Pass record in outcomes for legacy snapshots
         pass_rows = [
             r for r in live_rows
             if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0
@@ -1009,8 +1010,10 @@ class ScoreEstimator:
             board_status = replayed_status
         else:
             snap_row = self.snapshot.get(title) or {}
-            board_status = str(snap_row.get("status") or ("Pass" if replayed_score > 0 else "no-submission"))
+            board_status = str(snap_row.get("status") or "board-unknown")
             raw_sc = snap_row.get("score")
+            if raw_sc is None and board_status != "unranked":
+                board_status = "board-unknown"
             current_score = float(raw_sc) if isinstance(raw_sc, (int, float)) and board_status == "Pass" else 0.0
 
         # Match active board submission and compute observed decay factor gamma_p

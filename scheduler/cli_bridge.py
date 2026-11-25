@@ -364,12 +364,11 @@ class SchedulerEngine:
         candidates: list[dict[str, Any]] = []
         for title in sorted(self.estimator.problems_meta):
             ledger = self.estimator.get_problem_ledger(title)
-            # Case A: Board is 0 / no-submission and a verified historical best SHA exists!
-            if ledger.current_score <= 0.0 and ledger.historical_best_sha:
+            if ledger.confirmed_board_zero and ledger.historical_best_sha:
                 verdict = self.gate.evaluate(
                     title=title,
                     sha=ledger.historical_best_sha,
-                    note="auto-detected CRITICAL_RESTORE for zeroed/missing board row",
+                    note="auto-detected CRITICAL_RESTORE for confirmed zero board score",
                     force=True,
                 )
                 candidates.append(verdict.to_dict())
@@ -689,8 +688,9 @@ class SchedulerEngine:
 
         for p_row in priorities:
             p_row.calibration = cal_summaries.get(p_row.title)
-            if p_row.calibration and p_row.calibration.get("escape_lock") and p_row.current_score <= 0.0:
+            if p_row.calibration and p_row.calibration.get("escape_lock"):
                 p_row.recommended_lane = "ESCAPE_LOCK (VERIFY_ESCAPE)"
+                p_row.recommended_action = "Verify the escaped submission before advancing a new candidate"
 
         maes = [float(v["mae_pts"]) for v in cal_summaries.values() if isinstance(v.get("mae_pts"), (int, float))]
         mean_mae = round(sum(maes) / len(maes), 2) if maes else None

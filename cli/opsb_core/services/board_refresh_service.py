@@ -154,6 +154,30 @@ def board_scope(workspace: Path) -> dict:
     return {"target": list(target), "team_id": ranking.get("team_id"), "team_name": ranking.get("team_name")}
 
 
+def current_board(workspace: Path, problems: dict) -> tuple[dict, dict, dict]:
+    """One captain-scoped snapshot for the scheduler and the contest inspector."""
+    scope = board_scope(workspace)
+    payload = read_json(live_board_path(workspace), {}) or {}
+    snapshot = {} if scope else read_json(workspace / "results/score-snapshot.json", {}) or {}
+    live = payload.get("problems", {}) if payload.get("scope", {}) == scope else {}
+    matched = {}
+    for title, meta in problems.items():
+        row = live.get(title) or {}
+        if row.get("problem_id") and row["problem_id"] != meta.get("problem_id"):
+            continue
+        if not isinstance(row.get("listed"), bool):
+            continue
+        matched[title] = row
+        score = row.get("our_score")
+        status = "unranked" if not row["listed"] else (
+            "board-unknown" if score is None else row.get("our_status") or ("Pass" if score > 0 else "ranked")
+        )
+        snapshot[title] = {"listed": row["listed"], "score": score, "status": status,
+                           "rank": row.get("our_rank"), "submission_id": row.get("board_submission_id"),
+                           "public_times_us": row.get("our_public_times_us") or []}
+    return snapshot, matched, scope
+
+
 def inspect_board_freshness(
     workspace: Path,
     max_age_hours: float = DEFAULT_STALE_HOURS,

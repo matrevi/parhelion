@@ -55,7 +55,7 @@ struct ProblemTableView: View {
             switch filter {
             case .all: return true
             case .highWeight: return p.difficulty >= 3
-            case .restoreGap: return p.bestScore - p.currentScore >= 2.5 || p.currentScore == 0
+            case .restoreGap: return p.boardScore != nil && p.bestScore - p.currentScore >= 2.5
             }
         }
         if sortByROI {
@@ -162,16 +162,16 @@ struct ProblemTableView: View {
                     .lineLimit(1)
                     .help(p.title)
                 HStack(spacing: 5) {
-                    if !p.headSha.isEmpty {
-                        Text(String(p.headSha.prefix(7)))
+                    if let sha = p.latestSha, !sha.isEmpty {
+                        Text(String(sha.prefix(7)))
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    if let age = p.headAgeMin {
-                        let unit = age < 60 ? "\(age)m" : "\(age / 60)h"
-                        Text(lang.tr("· \(unit)前", "· \(unit) ago"))
+                    if let at = p.latestAt {
+                        Text("· " + Formatters.shortTimestamp(at))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
             }
@@ -180,7 +180,7 @@ struct ProblemTableView: View {
             SemanticPill(text: p.latestStatus.map { lang.evalStatus($0) } ?? "—", compact: true)
                 .frame(width: columns.verdict, alignment: .center)
 
-            Text(p.latestScore.map { String(format: "%.2f", $0) } ?? "—")
+            Text(p.latestScoreText(lang))
                 .font(.system(size: 13.5, weight: .bold, design: .monospaced))
                 .foregroundStyle(p.latestScore == 0 ? .red : .primary)
                 .frame(width: 66, alignment: .trailing)
@@ -191,7 +191,7 @@ struct ProblemTableView: View {
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "%.2f", p.bestScore))
                     .font(.system(size: 12.5, weight: .medium, design: .monospaced))
-                if gap >= 2.5 {
+                if p.boardScore != nil && gap >= 2.5 {
                     Text(String(format: "-%.1f", gap))
                         .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.orange)

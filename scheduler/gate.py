@@ -966,7 +966,7 @@ class SubmissionGate:
         quota = self.get_quota_status(as_of=as_of)
 
         is_critical_restore = (
-            (estimate.current_score <= 0.0 or estimate.board_status != "Pass")
+            ledger.confirmed_board_zero
             and bool(ledger.historical_best_sha)
             and canonical_sha.lower().startswith(ledger.historical_best_sha.lower()[:7])
         )

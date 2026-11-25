@@ -234,7 +234,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
 
     for p_obj in problems_out:
         t = p_obj["title"]
-        if p_obj["current_score"] == 0.0 and p_obj["best_score"] > 0.0 and p_obj["best_sha"]:
+        if p_obj.get("critical_restore") and p_obj["best_sha"]:
             b_sha = p_obj["best_sha"]
             if (
                 (t, b_sha.lower()) not in queued_pairs
@@ -467,7 +467,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             ):
                 continue
             is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
-            is_rest = is_known_pass and (cur_sc == 0.0 or "restore" in note.lower())
+            is_rest = is_known_pass and (prob_map.get(t, {}).get("critical_restore") or
+                                         (cur_sc > 0 and "restore" in note.lower()))
             esc_hit = escape_lock_info.get(t)
             esc_blocked = bool(esc_hit and not is_known_pass)
             gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked, forced=forced, sha=sha)

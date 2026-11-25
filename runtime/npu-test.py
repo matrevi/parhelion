@@ -1357,9 +1357,10 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth, (root / (title + '
     if build_dir.exists():
         shutil.rmtree(build_dir)
     t_a = time.monotonic()
-    with compile_lane(cfg) as jobs:
+    with compile_lane(cfg, units=1):
         print('[TEMPLATE] cmake configure', flush=True)
-        bash(f'cmake -S . -B build-npu -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
+        bash(f'cmake -S . -B build-npu -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
+    with compile_lane(cfg, units=compilation_units(build_dir)) as jobs:
         print(f'[TEMPLATE] cmake build (-j{jobs})', flush=True)
         bash(f'cmake --build build-npu --parallel {jobs}', cwd=repo)
     print('[TEMPLATE] generating sample data', flush=True)

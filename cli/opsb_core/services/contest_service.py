@@ -16,6 +16,10 @@ from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, is_sync_error_outcome
 
 
+def escape_advice(latest_status):
+    return "VERIFY NEW CANDIDATE" if latest_status == "Pass" else "ESCAPE LOCK"
+
+
 def case_run_summary(folder: Path, repo: Path) -> dict:
     summary = dict(read_json(folder / "latest-bench.json", {}) or {})
     spec = read_json(repo / "bench/cases_perf.json", {}) or {}
@@ -291,14 +295,9 @@ def build_problem_models(
     cb_limit: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     results_dir = workspace / "results"
-    snapshot = read_json(results_dir / "score-snapshot.json", {})
     boards = load_slim_boards(results_dir / "scoring-evidence" / "board-summary.json")
-    from .board_refresh_service import board_scope
-    scope = board_scope(workspace)
-    board_payload = read_json(results_dir / "scoring-evidence/live-board-tbest.json", {})
-    live_boards = board_payload.get("problems", {}) if board_payload.get("scope", {}) == scope else {}
-    if scope:
-        snapshot = {}
+    from .board_refresh_service import current_board
+    snapshot, live_boards, scope = current_board(workspace, {p["title"]: p for p in meta["problems"]})
     reconciled = read_json(results_dir/"scoring-evidence/board-reconciled.json",{}).get("board",[])
     judge_counts = {p["title"]:next((a["cases_total"] for a in sorted(p.get("attempts",[]),
                     key=lambda a:str(a.get("judge_at") or ""),reverse=True) if a.get("cases_total")),None)
@@ -321,18 +320,11 @@ def build_problem_models(
 
         snap_row = snapshot.get(title, {})
         cur_score = float(snap_row.get("score") or 0.0)
-        status = snap_row.get("status") or "no-submission"
+        status = snap_row.get("status") or "board-unknown"
         rank = snap_row.get("rank")
         ours_pub = [float(x) for x in (snap_row.get("public_times_us") or [])]
         live = live_boards.get(title) or {}
-        if live.get("problem_id") and live["problem_id"] != p.get("problem_id"):
-            live = {}
         listed = live.get("listed")
-        if listed is not None:
-            cur_score = float(live.get("our_score") or 0)
-            rank = live.get("our_rank")
-            status = (live.get("our_status") or "Pass") if listed else "unranked"
-            ours_pub = live.get("our_public_times_us") or []
 
         if status == "Pass" and cur_score > 0:
             passing_count += 1
@@ -342,9 +334,15 @@ def build_problem_models(
         # Non-stationary tbest(t) decay & Contemporary Equiv Best (Ŝ_best)
         now_dt = utc_now()
         latest_sub = hist_idx["latest_sub_by_prob"].get(title, {})
-        active_sha = latest_sub.get("sha") or ""
-        active_judged = float(latest_sub["score"]) if latest_sub.get("score") is not None else 0.0
-        active_dt = parse_iso(latest_sub.get("at"))
+        board_id = snap_row.get("submission_id")
+        if board_id:
+            active_sub = next((h for h in hist_idx["history_by_prob"].get(title, [])
+                               if str(h.get("submission_id")) == str(board_id)), {})
+        else:
+            active_sub = latest_sub if listed is None and snap_row else {}
+        active_sha = active_sub.get("sha") or ""
+        active_judged = float(active_sub.get("score") or 0)
+        active_dt = parse_iso(active_sub.get("at"))
         active_age_days = max(0.0, (now_dt - active_dt).total_seconds() / 86400.0) if active_dt else 0.0
 
         gamma_p = (cur_score / active_judged) if (cur_score > 0 and active_judged > 0) else 1.0
@@ -442,7 +440,11 @@ def build_problem_models(
         exp_step = restore_gap if (cur_score == 0 and best_score > 0) else max(restore_gap, min(12.0, leader_gap * 0.25))
         wspt = round(diff * exp_step, 2)
 
-        if cur_score == 0 and best_score > 0:
+        if listed is False:
+            tag = "TEAM UNRANKED"
+        elif snap_row.get("score") is None:
+            tag = "BOARD UNKNOWN"
+        elif cur_score == 0 and best_score > 0 and status not in ("unranked", "no-submission", "board-unknown"):
             tag = "CRITICAL RESTORE"
         elif cur_score == 0:
             tag = "FIRST PASS"
@@ -494,6 +496,7 @@ def build_problem_models(
                 "latest_status": latest_sub.get("status"),
                 "latest_score": latest_sub.get("score"),
                 "latest_sha": latest_sub.get("sha"),
+                "latest_at": latest_sub.get("at"),
                 "board_listed": listed,
                 "board_score": live.get("our_score") if listed is not None else snap_row.get("score"),
                 "weighted_score": round(diff * cur_score, 2),
@@ -516,7 +519,9 @@ def build_problem_models(
                 "judge_case_count": case_count,
                 "public_ratios": [round(x, 4) for x in pub_ratios],
                 "wspt_priority": wspt,
-                "wspt_tag": tag,
+                "critical_restore": tag == "CRITICAL RESTORE",
+                "board_advice": tag,
+                "wspt_tag": escape_advice(latest_sub.get("status")) if calibration.get("escape_lock") else tag,
                 "circuit_open": cb_open,
                 "pressure_12h": cb_trips,
                 "head_sha": head_sha,
