@@ -116,6 +116,10 @@ class _WorkerRunner:
         self._queue.put(None)
 
     def _on_tool_event(self, kind: str, label: str) -> None:
+        if kind == "model":
+            self.store.append_message(self.agent_id, "worker_to_orch", "model", label)
+            self._on_notify()
+            return
         if kind == "tool":
             updates: dict[str, Any] = {"last_tool": label}
             if self.adapter.native_session_id:

@@ -548,6 +548,27 @@ def test_acp_and_codex_and_stream_clients(tmp_path: Path) -> None:
     assert json.loads(PiRpcClient.encode_prompt("hi"))["type"] == "prompt"
 
 
+def test_explicit_worker_model_requires_matching_protocol_receipt(tmp_path):
+    old, new = "v4-flash", "deepseek-flash"
+    setting = {"id": "model", "currentValue": old, "options": [{"options": [
+        {"name": "DeepSeek-V41-Flash", "value": new}, {"name": "DeepSeek-V4-Flash", "value": old}
+    ]}]}
+    wire = io.StringIO()
+    responses = [dict(sessionId="s", configOptions=[setting]), dict(configOptions=[setting])]
+    client = AcpSessionClient(wire, io.StringIO("".join(
+        json.dumps({"id": i, "result": reply}) + "\n" for i, reply in enumerate(responses, 1))))
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        client.open_session(tmp_path, [], model="DeepSeek V4.1 Flash")
+    sent = [json.loads(line) for line in wire.getvalue().splitlines()]
+    assert [row["method"] for row in sent] == ["session/new", "session/set_config_option"]
+    assert sent[1]["params"]["value"] == new
+
+    response = {"id": 1, "result": {"thread": {"id": "t"}, "model": "other"}}
+    codex = CodexAppServerClient(io.StringIO(), io.StringIO(json.dumps(response) + "\n"))
+    with pytest.raises(RuntimeError, match="did not confirm"):
+        codex.open_thread(tmp_path, model="gpt-6.2-astra")
+
+
 def test_dry_run_launch_worktree_brief_and_session_persistence(isolated_env: Path, tmp_path: Path) -> None:
     ws, op_dir = _make_git_workspace(tmp_path)
 

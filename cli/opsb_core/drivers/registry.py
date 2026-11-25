@@ -38,6 +38,23 @@ DRIVER_CLASSES: dict[str, type[BaseDriver]] = {
 
 VALID_DRIVERS: tuple[str, ...] = tuple(DRIVER_CLASSES.keys())
 DEFAULT_ACTIVE_DRIVER = "antigravity"
+WORKER_MODELS = {"deepseek": "DeepSeek V4.1 Flash", "codex": "gpt-6.2-astra", "antigravity": "Neon High"}
+
+
+def worker_model(kind: str) -> str | None:
+    if kind not in WORKER_MODELS:
+        return None
+    return (load_parhelion_config().get("worker_models") or {}).get(kind) or WORKER_MODELS[kind]
+
+
+def select_worker_model(kind: str, model: str) -> dict[str, Any]:
+    model = model.strip()
+    if kind not in WORKER_MODELS or not model or len(model) > 200 or not model.isprintable():
+        raise ValueError("Invalid worker driver or model")
+    cfg = load_parhelion_config()
+    cfg["worker_models"] = {**(cfg.get("worker_models") or {}), kind: model}
+    save_parhelion_config(cfg)
+    return {"ok": True, "driver": kind, "worker_model": model}
 
 
 def get_active_driver_kind(cfg: dict[str, Any] | None = None) -> str:
@@ -81,6 +98,7 @@ def doctor_drivers(kind: str | None = None) -> dict[str, Any]:
         diag: DriverDiagnostic = get_driver(k).discover()
         row = diag.to_dict()
         row["active"] = (k == active)
+        row["worker_model"] = worker_model(k)
         diagnostics.append(row)
     return {"active_driver": active, "diagnostics": diagnostics}
 

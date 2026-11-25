@@ -269,7 +269,7 @@ struct DieLockInfo: Codable, Identifiable {
     let sha: String?
     let shortSha: String?
     let stage: String?
-    let elapsedSec: Int
+    let elapsedSec: Int?
 
     enum CodingKeys: String, CodingKey {
         case die, state, problem, sha, stage
@@ -280,8 +280,24 @@ struct DieLockInfo: Codable, Identifiable {
     }
 }
 
+struct NpuCaseProgress: Codable, Hashable {
+    let index: Int
+    let total: Int
+    let phase: String?
+    let repetition: Int?
+    let repeats: Int?
+    let part: Int?
+    let parts: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case index, total, phase, repeats, part, parts
+        case repetition = "repeat"
+    }
+}
+
 struct NpuTaskItem: Codable, Identifiable {
     let runId: String?
+    let caseProgress: NpuCaseProgress?
     var id: String { "\(pid)-\(state)-\(problem ?? "")" }
     let pid: Int
     let die: Int?
@@ -295,7 +311,7 @@ struct NpuTaskItem: Codable, Identifiable {
     let difficulty: Int?
     let wsptPriority: Double?
     let wsptTag: String?
-    let elapsedSec: Int
+    let elapsedSec: Int?
     let estimatedWaitSec: Int?
     let boosted: Bool?
     let detail: String
@@ -310,6 +326,7 @@ struct NpuTaskItem: Codable, Identifiable {
     enum CodingKeys: String, CodingKey {
         case pid, die, state, stage, lane, problem, sha, difficulty, boosted, detail, subprocesses
         case runId = "run_id"
+        case caseProgress = "case_progress"
         case isBackfill = "is_backfill"
         case shortSha = "short_sha"
         case wsptPriority = "wspt_priority"

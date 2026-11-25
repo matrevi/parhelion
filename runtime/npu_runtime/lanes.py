@@ -29,6 +29,18 @@ def _identity(cfg):
 
 
 @contextmanager
+def case_series(cfg):
+    directory = Path.home() / ".opsb/case_runs"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{cfg['run_id']}.json"
+    record = dict(_identity(cfg), cwd=os.getcwd(), started_epoch=time.time())
+    try:
+        yield lambda progress: _lane_write(path, dict(record, case_progress=progress))
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@contextmanager
 def compile_lane(cfg):
     directory = Path.home() / ".opsb/cpu_builds"
     directory.mkdir(parents=True, exist_ok=True)
@@ -60,6 +72,7 @@ def device_lane(cfg):
     directory = Path("/tmp/opsb-npu-tickets")
     directory.mkdir(parents=True, exist_ok=True)
     owner = _identity(cfg)
+    owner["case_progress"] = cfg.get("case_progress")
     ticket = directory / f"{owner['pid']}.json"
     session = Path.home() / ".opsb/die_session.json"
     session.parent.mkdir(parents=True, exist_ok=True)
@@ -86,12 +99,21 @@ def device_lane(cfg):
                     except BlockingIOError:
                         pass
                 time.sleep(0.2)
+            acquired = time.monotonic()
             ticket.unlink(missing_ok=True)
-            _lane_write(session, dict(owner, die=0, mode="Q0" if fast else "Q1",
-                                      substage="npu_exec", started_epoch=time.time()))
+            record = dict(owner, die=0, mode="Q0" if fast else "Q1", substage="npu_exec",
+                          started_epoch=time.time())
+            _lane_write(session, record)
             try:
-                yield
+                def progress(value):
+                    record["case_progress"] = value
+                    _lane_write(session, record)
+                yield progress
             finally:
                 session.unlink(missing_ok=True)
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                record.update(ended_epoch=time.time(), hold_sec=round(time.monotonic() - acquired, 4))
+                with (session.parent / "die_ledger.jsonl").open("a") as ledger:
+                    ledger.write(json.dumps(record) + "\n")
         finally:
             ticket.unlink(missing_ok=True)

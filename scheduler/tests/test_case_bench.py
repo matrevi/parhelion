@@ -1,5 +1,7 @@
 import json
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -36,6 +38,34 @@ def suite(tmp_path, monkeypatch):
         check=True,
     )
     return tmp_path, repo, bench.committed(repo, "HEAD")
+
+
+def test_join_only_overlapping_runs(tmp_path, monkeypatch):
+    blocked = threading.Event()
+    flock = bench.fcntl.flock
+
+    def observe(fd, flags):
+        try:
+            return flock(fd, flags)
+        except BlockingIOError:
+            blocked.set()
+            raise
+
+    monkeypatch.setattr(bench.fcntl, "flock", observe)
+    owner, duplicate, repeat = (c * 32 for c in "abc")
+    def join():
+        with bench.active_bench(tmp_path, "settings", duplicate) as result:
+            return result
+
+    with ThreadPoolExecutor() as pool:
+        with bench.active_bench(tmp_path, "settings", owner) as first:
+            assert first is None
+            future = pool.submit(join)
+            assert blocked.wait(5)
+            bench.atomic_write_json(tmp_path / "bench-runs" / owner / "report.json", {"run_id": owner, "exit_code": 2})
+        assert future.result(timeout=5) == {"run_id": owner, "exit_code": 2}
+    with bench.active_bench(tmp_path, "settings", repeat) as fresh:
+        assert fresh is None
 
 
 def test_ablation_selection(suite):

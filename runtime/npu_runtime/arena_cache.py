@@ -250,6 +250,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     run_errors: list[dict[str, Any]] = []
     try:
         for idx in range(count):
+            print(f"OPSB_REPLAY_CASE {idx + 1}/{count}", flush=True)
             rec = pickle.loads((cache_dir / f"case_{idx:04d}_in.pkl").read_bytes())
             try:
                 outs = replayer.run_one(rec["name"], rec["inputs"], rec["attrs"], rec["out_specs"])
@@ -261,6 +262,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
                     break
     finally:
         replayer.close()
+        print("OPSB_REPLAY_DONE", flush=True)
 
     elapsed = round(time.monotonic() - t0, 3)
     (out_dir / "replay_meta.json").write_text(

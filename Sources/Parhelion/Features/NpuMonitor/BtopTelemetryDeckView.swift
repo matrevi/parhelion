@@ -54,7 +54,7 @@ struct BtopTelemetryDeckView: View {
         let dev = curNpu.primaryNpu
         let die0 = curNpu.dieLocks.first
         let slots = curNpu.slotsPerHr ?? 0
-        let avgHold = Int(curNpu.avgDieHoldSec ?? 0)
+        let avgHold = curNpu.avgDieHoldSec ?? 0
         let wastePct = curNpu.dieDuty10m?.lockWastePct ?? 0
 
         return HStack(spacing: 8) {
@@ -89,8 +89,8 @@ struct BtopTelemetryDeckView: View {
 
             if curNpu.online && slots > 0 {
                 Text(store.tr(
-                    String(format: "吞吐 %.1f 轮/h · 均持锁 %ds · 锁浪费 %.0f%%", slots, avgHold, wastePct),
-                    String(format: "%.1f slots/h · Hold %ds · Waste %.0f%%", slots, avgHold, wastePct)
+                    String(format: "理论 %.0f 次/h · 均持锁 %.2fs · 锁浪费 %.0f%%", slots, avgHold, wastePct),
+                    String(format: "Capacity %.0f/h · Mean hold %.2fs · Waste %.0f%%", slots, avgHold, wastePct)
                 ))
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(BtopPalette.sky)
@@ -101,12 +101,13 @@ struct BtopTelemetryDeckView: View {
 
             if let lk = die0 {
                 let held = lk.state == "HELD"
+                let duration = lk.elapsedSec.map { Formatters.duration($0) } ?? store.tr("时长未知", "Duration unknown")
                 let c = held ? BtopPalette.amber : BtopPalette.emerald
                 HStack(spacing: 5) {
                     Image(systemName: held ? "lock.fill" : "lock.open.fill")
                         .font(.system(size: 10, weight: .bold))
                     Text(held
-                         ? store.tr("DIE0 占用 · \(lk.problem ?? "任务") · \(Formatters.duration(lk.elapsedSec))", "DIE0 HELD · \(lk.problem ?? "Task") · \(Formatters.duration(lk.elapsedSec))")
+                         ? store.tr("DIE0 占用 · \(lk.problem ?? "任务") · \(duration)", "DIE0 HELD · \(lk.problem ?? "Task") · \(duration)")
                          : store.tr("DIE0 空闲 · 就绪", "DIE0 FREE · READY"))
                         .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                 }

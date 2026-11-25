@@ -666,10 +666,12 @@ die_t0 = time.monotonic()
 die_started_epoch = round(time.time(), 3)
 die_started_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 die_sess_file = opsb_home / 'die_session.json'
+case_progress = None
 
 def write_die_session(substage):
     try:
-        die_sess_file.write_text(json.dumps({
+        temp = die_sess_file.with_suffix('.tmp-' + str(my_pid))
+        temp.write_text(json.dumps({
             'die': die_idx,
             'pid': my_pid,
             'title': title,
@@ -679,7 +681,9 @@ def write_die_session(substage):
             'substage': substage,
             'started_epoch': die_started_epoch,
             'started_ts': die_started_iso,
+            'case_progress': case_progress,
         }))
+        temp.replace(die_sess_file)
     except Exception:
         pass
 
@@ -945,6 +949,16 @@ try:
         log_f.flush()
         print(line, end='', flush=True)
         low = line.lower()
+        counter = re.fullmatch(r'OPSB_REPLAY_CASE (\d+)/(\d+)', line.strip())
+        if counter:
+            idx, total = map(int, counter.groups())
+            if 0 < idx <= total:
+                case_progress = dict(index=idx, total=total, phase='execute')
+                cur_substage = 'npu_exec'
+                write_die_session(cur_substage)
+        elif line.strip() == 'OPSB_REPLAY_DONE':
+            case_progress = None
+            write_die_session(cur_substage)
         if ('profiler' in low or 'kperf' in low or 'kernel_json' in low or 'ms_prof' in low or 'prof_summary' in low):
             if cur_substage != 'profiler':
                 cur_substage = 'profiler'

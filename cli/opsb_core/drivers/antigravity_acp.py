@@ -153,12 +153,45 @@ class AcpSessionClient:
             raise RuntimeError(f"ACP initialize failed: {resp['error']}")
         return resp.get("result") or {}
 
+    def _bind_model(self, sid: str, session: dict[str, Any], model: str) -> None:
+        def names(value: str) -> str:
+            return "".join(c for c in value.casefold() if c.isalnum())
+
+        def options(items):
+            for item in items:
+                if "options" in item:
+                    yield from options(item["options"])
+                else:
+                    yield item
+
+        setting = next((o for o in session.get("configOptions", []) if o.get("id") == "model"
+                        or o.get("category") == "model"), None)
+        if setting:
+            matches = [item["value"] for item in options(setting.get("options", []))
+                       if model == item.get("value") or names(model) == names(item.get("name", ""))]
+            if len(matches) == 1:
+                config_id = setting["id"]
+                resp = self.request("session/set_config_option",
+                                    {"sessionId": sid, "configId": config_id, "value": matches[0]})
+                confirmed = (resp.get("result") or {}).get("configOptions") or []
+                if any(o.get("id") == config_id and o.get("currentValue") == matches[0] for o in confirmed):
+                    return
+        else:
+            models = (session.get("models") or {}).get("availableModels") or []
+            ids = [m["modelId"] for m in models if model == m.get("modelId") or names(model) == names(m.get("name", ""))]
+            if len(ids) == 1:
+                resp = self.request("session/set_model", {"sessionId": sid, "modelId": ids[0]})
+                if "result" in resp and "error" not in resp:
+                    return
+        raise RuntimeError(f"ACP did not confirm worker model {model!r}")
+
     def open_session(
         self,
         cwd: Path,
         mcp_servers: list[dict[str, Any]],
         system_append: str = "",
         resume_id: str | None = None,
+        model: str | None = None,
     ) -> tuple[str, bool]:
         """Open ACP session via `session/load` (checking `replayedPrompts > 0`) or `session/new`."""
         meta_block = {"antigravity": {"systemPrompt": {"append": system_append}}} if system_append else {}
@@ -169,7 +202,10 @@ class AcpSessionClient:
             resp = self.request("session/load", load_params)
             res = resp.get("result") if isinstance(resp.get("result"), dict) else None
             if "error" not in resp and res is not None and int(res.get("replayedPrompts") or 0) > 0:
-                return str(res.get("sessionId") or resume_id), True
+                sid = str(res.get("sessionId") or resume_id)
+                if model:
+                    self._bind_model(sid, res, model)
+                return sid, True
 
         new_params: dict[str, Any] = {"cwd": str(cwd), "mcpServers": mcp_servers}
         if meta_block:
@@ -177,7 +213,11 @@ class AcpSessionClient:
         resp = self.request("session/new", new_params)
         if "error" in resp:
             raise RuntimeError(f"ACP session/new failed: {resp['error']}")
-        return str((resp.get("result") or {}).get("sessionId") or ""), False
+        session = resp.get("result") or {}
+        sid = str(session.get("sessionId") or "")
+        if model:
+            self._bind_model(sid, session, model)
+        return sid, False
 
     def drain_quiet_window(self) -> None:
         """Wait bounded quiet window if async tool calls are still marked open."""

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct DriverSettingsTab: View {
     @EnvironmentObject var store: ContestStore
+    @State private var modelEdits: [String: String] = [:]
 
     private var lang: AppLanguage { store.lang }
 
@@ -133,6 +134,23 @@ struct DriverSettingsTab: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
+
+                    if let selected = diag.workerModel {
+                        let model = Binding<String>(
+                            get: { modelEdits[diag.kind] ?? selected },
+                            set: { modelEdits[diag.kind] = $0 }
+                        )
+                        HStack {
+                            Text(lang.tr("Worker 模型", "Worker model")).font(.caption)
+                            TextField("Model", text: model).textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 220)
+                            Button {
+                                Task { await store.setWorkerModel(model.wrappedValue, driver: diag.kind) }
+                            } label: { Image(systemName: "checkmark") }
+                            .help(lang.tr("保存模型", "Save model"))
+                            .disabled(model.wrappedValue == selected || model.wrappedValue.isEmpty)
+                        }
+                    }
 
                     if !diag.binaryPath.isEmpty {
                         Text(diag.binaryPath)

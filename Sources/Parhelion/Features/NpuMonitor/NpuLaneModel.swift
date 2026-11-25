@@ -89,7 +89,7 @@ final class NpuLaneModel: ObservableObject {
                 slotRank[id] = nextRank
             }
 
-            let estimatedStart = nowEpoch - Double(max(0, task.elapsedSec))
+            let estimatedStart = nowEpoch - Double(max(0, task.elapsedSec ?? 0))
             let anchoredStart: Double
             if let prev = startedEpochById[id], abs(prev - estimatedStart) <= 3.5 {
                 anchoredStart = prev
@@ -164,7 +164,7 @@ final class NpuLaneModel: ObservableObject {
                 id: id,
                 task: task,
                 lane: lane,
-                startedEpoch: nowEpoch - Double(max(0, task.elapsedSec)),
+                startedEpoch: nowEpoch - Double(max(0, task.elapsedSec ?? 0)),
                 lingering: false
             ))
         }

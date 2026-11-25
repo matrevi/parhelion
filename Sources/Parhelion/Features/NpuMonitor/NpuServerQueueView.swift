@@ -13,7 +13,7 @@ struct NpuServerQueueView: View {
     /// Lightweight Equatable signature so `laneModel` ingests on every meaningful hot NPU change.
     private var taskFingerprint: [String] {
         liveNpu.tasks.map {
-            "\($0.pid)|\($0.state)|\($0.stage)|\($0.lane ?? "")|\($0.problem ?? "")|\($0.shortSha ?? "")|\($0.die ?? -1)|\($0.elapsedSec)|\($0.boosted == true)|\($0.detail)"
+            "\($0.runId ?? "")|\($0.pid)|\($0.state)|\($0.stage)|\($0.lane ?? "")|\($0.problem ?? "")|\($0.shortSha ?? "")|\($0.die ?? -1)|\($0.elapsedSec ?? -1)|\($0.boosted == true)|\($0.detail)|\($0.caseProgress?.hashValue ?? 0)"
         }
     }
 
@@ -72,7 +72,7 @@ struct NpuServerQueueView: View {
                         )
 
                         laneSection(
-                            title: lang.tr("② 32核无锁并行编译区 (0s 占卡)", "② 32-CORE CPU BUILD (0s Lock)"),
+                            title: lang.tr("② CPU 编译与校验（不占卡）", "② CPU BUILD & VALIDATION"),
                             badge: "\(liveBuildCount)",
                             tint: .teal,
                             items: cpuBuildCards,
@@ -167,7 +167,7 @@ struct NpuServerQueueView: View {
                             .background(Capsule(style: .continuous).fill(Color.orange.opacity(0.16)))
                             .overlay(Capsule(style: .continuous).strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.6))
                     }
-                    Text(task.problem ?? lang.tr("排队验证任务", "Queued Worker"))
+                    Text(task.problem ?? (active ? lang.tr("设备锁持有者", "Device lock holder") : lang.tr("排队验证任务", "Queued Worker")))
                         .font(.system(size: 13, weight: .bold))
                         .lineLimit(1)
                     if let d = task.difficulty {
@@ -194,9 +194,11 @@ struct NpuServerQueueView: View {
                             .font(.system(size: 10.5, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
-                    Text("· \(Formatters.shortTimestamp(epoch: card.startedEpoch))")
+                    if task.elapsedSec != nil {
+                        Text("· \(Formatters.shortTimestamp(epoch: card.startedEpoch))")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.tertiary)
+                    }
                     if let die = task.die {
                         Text(lang.tr("\(die)号卡 (Die \(die))", "Die \(die)"))
                             .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
@@ -207,16 +209,28 @@ struct NpuServerQueueView: View {
                             .foregroundStyle(.orange)
                     }
                     Spacer()
-                    Text(Formatters.duration(task.elapsedSec))
+                    Text(task.elapsedSec.map { Formatters.duration($0) } ?? (active ? lang.tr("时长未知", "Duration unknown") : ""))
                         .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(active ? Color.accentColor : .secondary)
                 }
 
                 HStack(spacing: 6) {
-                    Text(lang.npuDetail(task.detail))
+                    if let p = task.caseProgress, (1...max(1, p.total)).contains(p.index), p.total > 0 {
+                        let stage = p.phase == "prepare" ? lang.tr("准备", "Preparing")
+                            : p.phase == "verify" ? lang.tr("校验", "Checking") : lang.tr("用例", "Case")
+                        Text("\(stage) \(p.index)/\(p.total)")
+                        if let part = p.part, let parts = p.parts, parts > 1 {
+                            Text(lang.tr("分段 \(part)/\(parts)", "Part \(part)/\(parts)"))
+                        }
+                        if let r = p.repetition, let n = p.repeats, n > 1 {
+                            Text(lang.tr("重复 \(r)/\(n)", "Repeat \(r)/\(n)"))
+                        }
+                    } else {
+                        Text(lang.npuDetail(task.detail))
                         .font(.system(size: 10.5))
                         .foregroundStyle(task.boosted == true ? .orange : .secondary)
                         .lineLimit(1)
+                    }
 
                     Spacer()
 

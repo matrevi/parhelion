@@ -113,6 +113,15 @@ extension ContestStore {
         }
     }
 
+    func setWorkerModel(_ model: String, driver: String) async {
+        do {
+            _ = try await repository.setWorkerModel(model, driver: driver)
+            await reloadDriverDoctor()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func selectHarnessDriver(_ kind: String) async {
         do {
             let res = try await repository.selectDriver(kind)

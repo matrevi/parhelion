@@ -18,6 +18,7 @@ import sys
 import tempfile
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 
 from .parhelion_paths import (
@@ -200,6 +201,7 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
     engine = root/'reference_cases.py'
     engine.write_text(cfg.pop('engine'))
     (root/'lanes.py').write_text(cfg.pop('lanes'))
+    (root/'case_batch.py').write_text(cfg.pop('case_batch'))
     (root/'config.json').write_text(json.dumps(cfg))
     sys.exit(subprocess.call([sys.executable,'-u',str(engine)],cwd=repo))
 """
@@ -213,6 +215,45 @@ def summarize(rows):
         "counts": dict(counts),
         "verified": bool(rows) and counts["PASS"] == len(rows),
     }
+
+
+@contextmanager
+def active_bench(folder, key, run_id):
+    """Join an identical run only while its owner is still executing."""
+    runs = folder / "bench-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    with (runs / (".active-" + key)).open("a+") as admission:
+        fcntl.flock(admission, fcntl.LOCK_EX)
+        admission.seek(0)
+        prior = admission.read().strip()
+        waiter = None
+        if re.fullmatch(r"[a-f0-9]{32}", prior):
+            candidate = (runs / prior / ".owner").open("a")
+            try:
+                fcntl.flock(candidate, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                waiter = candidate
+            else:
+                candidate.close()
+        if waiter is None:
+            dest = runs / run_id
+            dest.mkdir()
+            owner = (dest / ".owner").open("a")
+            fcntl.flock(owner, fcntl.LOCK_EX)
+            admission.seek(0)
+            admission.truncate()
+            admission.write(run_id)
+            admission.flush()
+    if waiter is None:
+        with owner:
+            yield None
+    else:
+        with waiter:
+            fcntl.flock(waiter, fcntl.LOCK_SH)
+            report = read_doc(runs / prior / "report.json")
+            if not report:
+                raise RuntimeError(f"Shared bench {prior} ended without a report. Retry validation.")
+            yield report
 
 
 def run(
@@ -273,7 +314,11 @@ def run(
         or not 1 <= timeout <= 7200
     ):
         raise ValueError("Invalid timing, repeats or case_timeout")
+    reuse_session = profile.get("reuse_session", True)
+    if not isinstance(reuse_session, bool):
+        raise ValueError("reuse_session must be true or false")
     cfg = {
+        "reuse_session": reuse_session,
         "title": title,
         "sha": sha,
         "jobs": os.getenv("OPSB_BUILD_JOBS"),
@@ -289,6 +334,7 @@ def run(
         "lock": "/srv/work-device0.lock",
     }
     engine = (Path(runner) if runner else RUNNER).read_text()
+    modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch")}
     run_id = uuid.uuid4().hex
     cfg["run_id"] = run_id
     folder = ws / "results" / title / sha
@@ -302,7 +348,7 @@ def run(
         "experiment": experiment,
         "formal": formal,
         "oracle": oracle,
-        "engine": digest(engine),
+        "engine": digest([engine, modules]),
         "profile": profile,
         "catalog": cases,
         "selected": [c["id"] for c in selected],
@@ -312,7 +358,19 @@ def run(
     }
     if dry_run:
         return {**report, "dry_run": True, "exit_code": 0}
-    dest.mkdir(parents=True)
+    key = digest([host, engine, profile, formal, experiment, oracle,
+                  {k: v for k, v in cfg.items() if k not in ("run_id", "wspt_base", "aging_tau")},
+                  os.getenv("OPSB_TOOLCHAIN_ENV"), modules])
+    with active_bench(folder, key, run_id) as shared:
+        if shared is not None:
+            return shared
+        return _execute_run(repo, cfg, report, engine, modules, runner, dest, stream)
+
+
+def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
+    folder = dest.parent.parent
+    run_id, sha, host = report["run_id"], report["sha"], report["host"]
+    cases, formal, experiment = report["catalog"], report["formal"], report["experiment"]
     if runner:
         (dest / "runner.py").write_text(engine)
     rows = {r["id"]: {**r, "status": "NOT_RUN"} for r in cases}
@@ -345,8 +403,7 @@ def run(
                 + shlex.quote(BOOTSTRAP)
             )
             with tempfile.TemporaryFile() as payload:
-                lanes = RUNNER.with_name("lanes.py").read_text()
-                payload.write((json.dumps({**cfg, "engine": engine, "lanes": lanes}) + "\n").encode())
+                payload.write((json.dumps({**cfg, "engine": engine, **modules}) + "\n").encode())
                 payload.flush()
                 subprocess.run(
                     ["git", "-C", repo, "archive", "--format=tar.gz", sha],
@@ -409,6 +466,8 @@ def run(
                             )
                         elif kind == "environment":
                             report["environment"] = msg
+                        elif kind == "device_batch":
+                            report["device_batch"] = msg
                         elif kind == "built":
                             built = True
                     rc = proc.wait()

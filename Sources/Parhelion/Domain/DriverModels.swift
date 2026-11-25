@@ -28,6 +28,7 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
     let guiVersion: String
     let urlScheme: String
     let active: Bool
+    let workerModel: String?
 
     var guiAppName: String? {
         guard guiInstalled, !guiAppPath.isEmpty else { return nil }
@@ -44,6 +45,7 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case kind, installed, version, detail, active
+        case workerModel = "worker_model"
         case displayName = "display_name"
         case binaryPath = "binary_path"
         case authOk = "auth_ok"
@@ -58,6 +60,7 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         kind = try c.decode(String.self, forKey: .kind)
+        workerModel = try c.decodeIfPresent(String.self, forKey: .workerModel)
         displayName = try c.decodeIfPresent(String.self, forKey: .displayName) ?? kind
         installed = try c.decodeIfPresent(Bool.self, forKey: .installed) ?? false
         binaryPath = try c.decodeIfPresent(String.self, forKey: .binaryPath) ?? ""

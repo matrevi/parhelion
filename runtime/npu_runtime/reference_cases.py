@@ -11,11 +11,8 @@ import inspect
 import json
 import os
 import re
-import signal
 import subprocess
 import sys
-import tempfile
-import time
 from pathlib import Path
 
 GROUP = re.compile(
@@ -25,7 +22,9 @@ ATTR = re.compile(
     r"(std::array<int64_t,\s*\d+>|const char\*|bool|float|double|u?int(?:32|64)_t) (attr_(\d+))(_data)?\s*(?:=|\{).*?;"
 )
 CPP = """
+#include <unistd.h>
 static std::ifstream desc;
+static float sample_us = 0;
 template<class T> static T field() {
     T x{}; if (!(desc >> x)) throw std::runtime_error("bad case descriptor"); return x;
 }
@@ -36,6 +35,33 @@ static std::vector<int64_t> integers() {
 static Tensor tensor(const char* file) {
     auto shape=integers(); auto dtype=field<int32_t>(); auto bytes=field<size_t>();
     return Tensor{shape,dtype,bytes,file};
+}
+"""
+
+BATCH_MAIN = r"""
+int main(int argc, char** argv) {
+    const char* channel = std::getenv("OPSB_BATCH_FD");
+    if (!channel) {
+        desc.open("case.desc");
+        return desc.is_open() ? case_main(argc, argv, nullptr) : smoke_main(argc, argv);
+    }
+    int fd = std::stoi(channel);
+    Session session(std::stoi(argv[1]));
+    session.start();
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.size() < 3 || ::chdir(line.substr(2).c_str()) != 0) return 2;
+        if (line[0] == '1') ::setenv("OPSB_CASE_TIMING", "1", 1);
+        else ::unsetenv("OPSB_CASE_TIMING");
+        desc.clear();
+        desc.open("case.desc");
+        sample_us = 0;
+        int rc = desc ? case_main(argc, argv, &session) : 2;
+        desc.close();
+        ::dprintf(fd, "%d %.9g\n", rc, sample_us);
+        if (rc) return rc;
+    }
+    return 0;
 }
 """
 
@@ -90,6 +116,11 @@ def generate(source, sample_source):
         return f"auto {name} = field<{typ}>();"
 
     dynamic = ATTR.sub(attr, dynamic)
+    init = "Session session(device);\n        session.start();"
+    if dynamic.count(init) != 1:
+        raise ValueError("unsupported ACL session initialization")
+    dynamic = dynamic.replace(init, "Session local(device);\n        if (!shared) local.start();"
+                              "\n        Session& session = shared ? *shared : local;")
     if len(attrs) != len(attr_types):
         raise ValueError("sample and kernel attribute counts disagree")
     dynamic = re.sub(
@@ -110,7 +141,8 @@ def generate(source, sample_source):
         if (timed) { check(aclrtRecordEvent(end, session.stream));
                      check(aclrtSynchronizeStream(session.stream)); float ms{};
                      check(aclrtEventElapsedTime(&ms, begin, end));
-                     std::cout << "DEVICE_US " << ms * 1000.0f << std::endl;
+                     sample_us = ms * 1000.0f;
+                     std::cout << "DEVICE_US " << sample_us << std::endl;
                      check(aclrtDestroyEvent(begin)); check(aclrtDestroyEvent(end)); }
 """
         + dynamic[end:]
@@ -120,10 +152,9 @@ def generate(source, sample_source):
         + "int smoke_main(int argc, char** argv)"
         + main
         + CPP
-        + "int case_main(int argc, char** argv)"
+        + "int case_main(int argc, char** argv, Session* shared)"
         + dynamic
-        + '\nint main(int argc,char** argv){desc.open("case.desc");'
-        "return desc.is_open()?case_main(argc,argv):smoke_main(argc,argv);}\n"
+        + BATCH_MAIN
     )
     return code, groups, list(zip(attrs, attr_types))
 
@@ -201,7 +232,7 @@ def parts(golden, names, case, defaults):
     return result
 
 
-def run_case(repo, executable, cfg, item, groups, attrs):
+def prepare_case(root, item, groups, attrs):
     import numpy as np
     import reference
     import sample
@@ -219,8 +250,7 @@ def run_case(repo, executable, cfg, item, groups, attrs):
         raise ValueError("unmapped input or output")
     if set(values) - {name for name, _ in attrs}:
         raise ValueError("unmapped reference attributes")
-    checks, measurements = {}, []
-    lock_wait = 0.0
+    manifest = []
     types = {
         "float32": 0,
         "float16": 1,
@@ -244,108 +274,47 @@ def run_case(repo, executable, cfg, item, groups, attrs):
     for part_index, (overrides, outputs) in enumerate(
         parts(golden, names, spec, defaults)
     ):
-        with tempfile.TemporaryDirectory(dir=repo) as temp:
-            work = Path(temp)
-            (work / "input").mkdir()
-            (work / "output").mkdir()
-            fields = []
-            for name, shape, dt, inp in groups:
-                if (
-                    inp
-                    and name not in inputs
-                    and name in defaults
-                    and defaults[name] is None
-                ):
-                    tensor = np.zeros(
-                        shape, dtype=next(k for k, v in types.items() if v == dt)
-                    )
-                else:
-                    tensor = np.asarray((inputs if inp else outputs)[name])
-                fields.extend(
-                    [
-                        tensor.ndim,
-                        *tensor.shape,
-                        types[str(tensor.dtype)],
-                        tensor.nbytes,
-                    ]
+        work = root / str(part_index)
+        work.mkdir(parents=True)
+        (work / "input").mkdir()
+        (work / "output").mkdir()
+        fields = []
+        for name, shape, dt, inp in groups:
+            if (
+                inp
+                and name not in inputs
+                and name in defaults
+                and defaults[name] is None
+            ):
+                tensor = np.zeros(
+                    shape, dtype=next(k for k, v in types.items() if v == dt)
                 )
-                if inp:
-                    tensor.tofile(work / "input" / f"{name}.bin")
-            attr_values = {**defaults, **values, **overrides}
-            for name, typ in attrs:
-                v = attr_values[name]
-                if typ.startswith("std::array"):
-                    fields.extend([len(v), *v])
-                elif typ == "const char*" and (not v or any(c.isspace() for c in v)):
-                    raise ValueError("unsupported whitespace or empty string attribute")
-                else:
-                    fields.append(int(v) if typ == "bool" else v)
-            (work / "case.desc").write_text(" ".join(map(str, fields)))
-            timed = cfg["timing"] == "all" or (cfg["timing"] == "perf" and item["perf"])
-            samples = []
-            for i in range(cfg["repeats"] if timed else 1):
-                for f in (work / "output").iterdir():
-                    f.unlink()
-                env = os.environ.copy()
-                env.pop("OPSB_CASE_TIMING", None)
-                if timed:
-                    env["OPSB_CASE_TIMING"] = "1"
-                from lanes import device_lane
-                waiting = time.monotonic()
-                with device_lane(cfg):
-                    lock_wait += time.monotonic() - waiting
-                    try:
-                        p = subprocess.run(
-                            [executable, cfg["device"]],
-                            check=False,
-                            cwd=work,
-                            env=env,
-                            capture_output=True,
-                            text=True,
-                            timeout=cfg["timeout"],
-                        )
-                    except subprocess.TimeoutExpired:
-                        return {"status": "TLE", "detail": "kernel execution timed out"}
-                if p.returncode:
-                    return {
-                        "status": "RE",
-                        "detail": (p.stderr or p.stdout)[-1500:],
-                        "exit_code": p.returncode,
-                    }
-                if {f.name for f in (work / "output").iterdir()} != {
-                    n + ".bin" for n in names
-                }:
-                    return {
-                        "status": "WA",
-                        "detail": "missing or unexpected output files",
-                    }
-                for name, want in outputs.items():
-                    path = work / "output" / f"{name}.bin"
-                    check = (
-                        compare_output(
-                            np.fromfile(path, dtype=want.dtype), want, tolerances[name], cfg.get("strict_fp32", False)
-                        )
-                        if path.stat().st_size == want.nbytes
-                        else {"pass": False, "reason": "byte size"}
-                    )
-                    checks[f"{part_index}/{name}"] = check
-                    if not check["pass"]:
-                        return {"status": "WA", "outputs": checks}
-                if timed:
-                    match = re.search(
-                        r"^DEVICE_US ([\d.eE+-]+)$", p.stdout, re.MULTILINE
-                    )
-                    if match and float(match[1]) > 0:
-                        samples.append(float(match[1]))
-            measurements.append(samples)
-    # Multipart cases report the summed device time per repeat.
-    times = [sum(x) for x in zip(*measurements)] if all(measurements) else []
-    return {
-        "status": "PASS",
-        "outputs": checks,
-        "device_us": times,
-        "lock_wait_sec": round(lock_wait, 3),
-    }
+            else:
+                tensor = np.asarray((inputs if inp else outputs)[name])
+            fields.extend(
+                [
+                    tensor.ndim,
+                    *tensor.shape,
+                    types[str(tensor.dtype)],
+                    tensor.nbytes,
+                ]
+            )
+            if inp:
+                tensor.tofile(work / "input" / f"{name}.bin")
+        attr_values = {**defaults, **values, **overrides}
+        for name, typ in attrs:
+            v = attr_values[name]
+            if typ.startswith("std::array"):
+                fields.extend([len(v), *v])
+            elif typ == "const char*" and (not v or any(c.isspace() for c in v)):
+                raise ValueError("unsupported whitespace or empty string attribute")
+            else:
+                fields.append(int(v) if typ == "bool" else v)
+        (work / "case.desc").write_text(" ".join(map(str, fields)))
+        for name, want in outputs.items():
+            np.save(work / (name + ".npy"), want, allow_pickle=False)
+        manifest.append(dict(path=str(work), tolerances=tolerances))
+    (root / "parts.json").write_text(json.dumps(manifest))
 
 
 def emit(event, **values):
@@ -361,12 +330,9 @@ def main():
     sys.path.insert(0, str(repo))
     if len(sys.argv) > 1:
         schema = json.loads((repo.parent / "schema.json").read_text())
-        item = cfg["selected"][int(sys.argv[1])]
-        try:
-            row = run_case(repo, repo / "build-casebench/sample", cfg, item, *schema)
-        except Exception as exc:  # noqa: BLE001 -- isolate arbitrary reference implementations
-            row = {"status": "ERROR", "detail": f"{type(exc).__name__}: {exc}"}
-        emit("case", id=item["id"], **row)
+        index = int(sys.argv[1])
+        item = cfg["selected"][index]
+        prepare_case(Path(sys.argv[2]), item, *schema)
         return
     import platform
 
@@ -421,39 +387,8 @@ def main():
             ["cmake", "--build", "build-casebench", "--parallel", str(jobs)], check=True, timeout=900,
         )
     emit("built")
-    for i, item in enumerate(cfg["selected"]):
-        emit("start", id=item["id"])
-        with subprocess.Popen(
-            [sys.executable, __file__, str(i)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        ) as worker:
-            try:
-                stdout, stderr = worker.communicate(
-                    timeout=max(600, cfg["timeout"] * (cfg["repeats"] + 2) * 4)
-                )
-            except subprocess.TimeoutExpired:
-                os.killpg(worker.pid, signal.SIGKILL)
-                worker.communicate()
-                emit(
-                    "case",
-                    id=item["id"],
-                    status="ERROR",
-                    detail="case worker deadline exceeded",
-                )
-                continue
-            print(stdout, end="", flush=True)
-            if stderr:
-                print(stderr[-2000:], file=sys.stderr, flush=True)
-            if worker.returncode:
-                emit(
-                    "case",
-                    id=item["id"],
-                    status="ERROR",
-                    detail=f"oracle worker exit {worker.returncode}",
-                )
+    from case_batch import run_series
+    run_series(repo, cfg, compare_output, emit)
 
 
 if __name__ == "__main__":

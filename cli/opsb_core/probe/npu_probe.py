@@ -16,6 +16,30 @@ import subprocess
 import time
 from typing import Any
 
+def host_case_tasks(home, tasks, now_epoch):
+    """A run remains visible while its coordinator prepares or checks CPU data."""
+    visible = {t.get("run_id") for t in tasks}
+    for path in (home / "case_runs").glob("*.json"):
+        try:
+            row = json.loads(path.read_text())
+            if row["run_id"] in visible:
+                continue
+            pid = int(row["pid"])
+            if pid <= 0:
+                continue
+            os.kill(pid, 0)
+            # The run directory is part of the coordinator's cwd, so a recycled
+            # PID sdkot resurrect an abandoned progress record.
+            if os.readlink(f"/proc/{pid}/cwd") != row["cwd"]:
+                continue
+            tasks.append(dict(pid=pid, run_id=row["run_id"], die=None, state="CPU_BUILD",
+                              stage="CASE-HOST", lane="Q1", problem=row["title"], sha=row["sha"],
+                              case_progress=row["case_progress"], elapsed_sec=None,
+                              detail="Preparing inputs or checking outputs", subprocesses=0))
+        except (KeyError, ValueError, OSError):
+            continue
+
+
 KNOWN_PROBLEMS = [
     "ConcatD",
     "ConfusionTransposeD",
@@ -593,17 +617,8 @@ def build_snapshot() -> dict[str, Any]:
                 stage, detail = "BACKFILL", "Baseline perf-bucket backfill (B0)"
             else:
                 stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
-            # Measure ONLY actual Die 0 hold duration (from die_session.started_epoch), NEVER Phase A + queue wait!
-            if sess_matches and float(die_session.get("started_epoch") or 0) > 0:
-                elapsed = int(max(0, round(now_epoch - float(die_session["started_epoch"]))))
-            else:
-                # Fallback to child bash/python elapsed rather than Phase-A root wrapper
-                child_el = [
-                    procs[cpid]["elapsed_sec"]
-                    for cpid in tree
-                    if cpid != h_pid and cpid in procs and not _is_driver_wrapper(procs[cpid].get("cmd", ""))
-                ]
-                elapsed = max(child_el) if child_el else procs[h_pid]["elapsed_sec"]
+            start = float(die_session.get("started_epoch") or 0) if sess_matches else 0
+            elapsed = int(max(0, now_epoch - start)) if start > 0 else None
             lock_entry: dict[str, Any] = {
                 "die": die_idx,
                 "lock_path": f"/srv/work-device{die_idx}.lock",
@@ -620,6 +635,8 @@ def build_snapshot() -> dict[str, Any]:
             tasks.append(
                 {
                     "pid": h_pid,
+                    "run_id": die_session.get("run_id") if sess_matches else None,
+                    "case_progress": die_session.get("case_progress") if sess_matches else None,
                     "die": die_idx,
                     "state": "ACTIVE",
                     "stage": stage,
@@ -704,6 +721,8 @@ def build_snapshot() -> dict[str, Any]:
         wait_elapsed = int(max(0, round(now_epoch - tk_created))) if tk_created > 0 else procs[w_pid]["elapsed_sec"]
         wt_item = {
             "pid": w_pid,
+            "run_id": tk.get("run_id"),
+            "case_progress": tk.get("case_progress"),
             "die": None,
             "state": "WAITING",
             "stage": stage,
@@ -735,6 +754,7 @@ def build_snapshot() -> dict[str, Any]:
                 {
                     "pid": b_pid,
                     "jobs": bd.get("jobs"),
+                    "run_id": bd.get("run_id"),
                     "title": b_title,
                     "sha": b_sha,
                     "short_sha": b_sha[:7] or "—",
@@ -778,6 +798,7 @@ def build_snapshot() -> dict[str, Any]:
         tasks.append(
             {
                 "pid": cb["pid"],
+                "run_id": cb.get("run_id"),
                 "die": None,
                 "state": "CPU_BUILD",
                 "stage": "BACKFILL-BUILD" if cb_bf else "CPU-BUILD",
@@ -789,12 +810,13 @@ def build_snapshot() -> dict[str, Any]:
                 "detail": (
                     "Phase A baseline worktree build for perf-bucket backfill (B0)"
                     if cb_bf
-                    else f"CMake -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
+                    else f"CMake parallel limit: -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
                 ),
                 "subprocesses": len(get_descendants(cb["pid"], procs)) - 1,
             }
         )
 
+    host_case_tasks(opsb_home, tasks, now_epoch)
     primary_dev = npu["devices"][0] if npu["devices"] else {
         "npu_id": 0,
         "chip_id": 0,
@@ -859,11 +881,12 @@ def build_snapshot() -> dict[str, Any]:
         except Exception:
             ledger_rows = []
 
-    if ledger_rows:
+    holds = [float(row["hold_sec"]) for row in ledger_rows if row.get("hold_sec") is not None]
+    if ledger_rows and all("acl_host_sec" in row for row in ledger_rows):
         npu_s = sum(float(r.get("npu_exec_sec") or 0.0) for r in ledger_rows)
         acl_s = sum(float(r.get("acl_host_sec") or 0.0) for r in ledger_rows)
         waste_s = sum(float(r.get("lock_waste_sec") or 0.0) for r in ledger_rows)
-        tot_hold = sum(float(r.get("hold_sec") or (npu_s + acl_s + waste_s)) for r in ledger_rows)
+        tot_hold = sum(holds) if len(holds) == len(ledger_rows) else npu_s + acl_s + waste_s
         denom = max(window_sec, tot_hold, 1.0)
         free_s = max(0.0, denom - (npu_s + acl_s + waste_s))
         die_duty_10m = {
@@ -872,8 +895,6 @@ def build_snapshot() -> dict[str, Any]:
             "lock_waste_pct": round(100.0 * waste_s / denom, 2),
             "free_pct": round(100.0 * free_s / denom, 2),
         }
-        avg_hold_sec = round(tot_hold / len(ledger_rows), 1)
-        slots_per_hr = round(min(240.0, 3600.0 / max(8.0, avg_hold_sec)), 1)
     else:
         win_pts = [p for p in history if (now_ts - float(p.get("ts", 0))) <= window_sec] or [sample_pt]
         n_pts = max(1, len(win_pts))
@@ -891,12 +912,11 @@ def build_snapshot() -> dict[str, Any]:
             "lock_waste_pct": waste_p,
             "free_pct": free_p,
         }
-        cur_hold = float(die_locks_info[0].get("elapsed_sec") or 0) if (die_locks_info and die_locks_info[0]["state"] == "HELD") else 20.0
-        avg_hold_sec = round(max(18.0, cur_hold), 1)
-        slots_per_hr = round(3600.0 / max(12.0, avg_hold_sec), 1)
+    avg_hold_sec = round(sum(holds) / len(holds), 2) if holds else None
+    slots_per_hr = round(3600.0 / avg_hold_sec, 1) if avg_hold_sec else None
 
     for idx_w, wt in enumerate(waiting_tasks_list):
-        wt["estimated_wait_sec"] = int(round((idx_w + 1) * min(avg_hold_sec, 180.0)))
+        wt["estimated_wait_sec"] = round((idx_w + 1) * avg_hold_sec) if avg_hold_sec else None
 
     probe_ms = round((time.monotonic() - t0) * 1000, 1)
 

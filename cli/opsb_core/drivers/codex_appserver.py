@@ -201,11 +201,14 @@ class CodexAppServerClient:
         resume_id: str | None = None,
         *,
         persist_extended_history: bool = False,
+        model: str | None = None,
         approval_policy: str | None = None,
         sandbox: str | None = None,
     ) -> str:
         if resume_id:
             r_params: dict[str, Any] = {"threadId": resume_id, "cwd": str(cwd)}
+            if model:
+                r_params["model"] = model
             if approval_policy:
                 r_params["approvalPolicy"] = approval_policy
             if sandbox:
@@ -213,9 +216,13 @@ class CodexAppServerClient:
             resp = self.request("thread/resume", r_params)
             res = resp.get("result") if isinstance(resp.get("result"), dict) else None
             if "error" not in resp and res is not None:
+                if model and res.get("model") != model:
+                    raise RuntimeError(f"Codex did not confirm worker model {model!r}")
                 thread = res.get("thread") if isinstance(res.get("thread"), dict) else {}
                 return str(thread.get("id") or res.get("threadId") or resume_id)
         params: dict[str, Any] = {"cwd": str(cwd)}
+        if model:
+            params["model"] = model
         if persist_extended_history:
             params["persistExtendedHistory"] = True
         if approval_policy:
@@ -226,6 +233,8 @@ class CodexAppServerClient:
         if "error" in resp:
             raise RuntimeError(f"Codex thread/start failed: {resp['error']}")
         res = resp.get("result") or {}
+        if model and res.get("model") != model:
+            raise RuntimeError(f"Codex did not confirm worker model {model!r}")
         thread = res.get("thread") if isinstance(res.get("thread"), dict) else {}
         return str(thread.get("id") or res.get("threadId") or "")
 

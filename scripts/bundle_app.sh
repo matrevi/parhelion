@@ -80,7 +80,7 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleShortVersionString</key>
     <string>3.4.0</string>
     <key>CFBundleVersion</key>
-    <string>21</string>
+    <string>22</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>LSUIElement</key>

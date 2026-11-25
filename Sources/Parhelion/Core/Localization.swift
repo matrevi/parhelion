@@ -39,6 +39,7 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
         case "BACKFILL-WAIT": return "样例桶候票"
         case "WAITING-DIE": return "排队等卡"
         case "CPU-BUILD": return "无锁编译"
+        case "CASE-HOST": return "CPU 处理"
         case "PRECISION": return "精度验证"
         case "PROFILER": return "性能采集"
         case "BUILD": return "锁内编译"
@@ -50,6 +51,9 @@ enum AppLanguage: String, CaseIterable, Identifiable, Codable {
 
     func npuDetail(_ raw: String) -> String {
         guard self == .zh else { return raw }
+        if raw.hasPrefix("CMake parallel limit: ") {
+            return raw.replacingOccurrences(of: "CMake parallel limit: ", with: "CMake 并发上限 ")
+        }
         if raw.contains("Baseline perf-bucket backfill") {
             return "B0 自动基线配对 · 样例桶性能补测"
         }

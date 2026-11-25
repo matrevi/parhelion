@@ -307,6 +307,10 @@ struct OpsRepository: Sendable {
         try await decodeCLI(["driver", "select", kind, "--json"], timeout: 8.0, allowNonZeroExit: true)
     }
 
+    func setWorkerModel(_ model: String, driver: String) async throws -> DriverSelectResponse {
+        try await decodeCLI(["driver", "model", driver, model, "--json"], timeout: 8.0)
+    }
+
     func syncDriverWorkspace(workspace: String, driver: String? = nil) async throws -> DriverSyncResponse {
         var args = ["driver", "sync", "--workspace", workspace, "--json"]
         if let driver, !driver.isEmpty { args += ["--driver", driver] }

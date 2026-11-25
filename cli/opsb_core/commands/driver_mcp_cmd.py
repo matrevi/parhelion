@@ -17,6 +17,8 @@ from ..drivers.registry import (
     list_all_sessions,
     list_drivers,
     select_active_driver,
+    select_worker_model,
+    WORKER_MODELS,
 )
 from ..mcp.server import serve_stdio
 from ..mcp.tools import call_tool, list_tool_schemas
@@ -71,6 +73,11 @@ def run_driver(args: argparse.Namespace) -> int:
                     f"  {mark} {diag['kind']:<12} [{inst:<7}/{auth:<6}]  "
                     f"proto={diag['protocol']:<15} ver={ver}{gui_s}  ({diag['detail']})"
                 )
+            return 0
+
+        if sub == "model":
+            res = select_worker_model(args.kind, args.model)
+            print(json.dumps(res, ensure_ascii=False) if as_json else res["worker_model"])
             return 0
 
         if sub == "select":
@@ -221,6 +228,12 @@ def register_driver_and_mcp_subcommands(sub: argparse._SubParsersAction) -> None
     d_sel.add_argument("kind", choices=VALID_DRIVERS)
     d_sel.add_argument("--json", action="store_true")
     d_sel.set_defaults(func=run_driver)
+
+    d_model = drv_sub.add_parser("model", help="Set the explicit model for new managed workers")
+    d_model.add_argument("kind", choices=WORKER_MODELS)
+    d_model.add_argument("model")
+    d_model.add_argument("--json", action="store_true")
+    d_model.set_defaults(func=run_driver)
 
     d_sy = drv_sub.add_parser("sync", help="Project .agents/skills and isolated MCP config into workspace")
     d_sy.add_argument("--driver", choices=VALID_DRIVERS, default=None)

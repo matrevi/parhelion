@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPSB_STREAM_PROBE_V2
+# OPSB_STREAM_PROBE_V3
 """Persistent, strictly read-only DCMI ctypes + /proc NPU telemetry stream probe.
 
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.
@@ -25,6 +25,11 @@ import sys
 import threading
 import time
 from typing import Any
+
+if __package__:
+    from .npu_probe import host_case_tasks
+else:
+    from npu_probe import host_case_tasks
 
 KNOWN_PROBLEMS = [
     "ConcatD",
@@ -1251,15 +1256,8 @@ class StreamProbeSession:
                     stage, detail = "BACKFILL", "Baseline perf-bucket backfill (B0)"
                 else:
                     stage, detail = classify_stage(tree, procs, holds_die=True, substage_hint=substage_hint)
-                if sess_matches and float(die_session.get("started_epoch") or 0) > 0:
-                    elapsed = int(max(0, round(now_epoch - float(die_session["started_epoch"]))))
-                else:
-                    child_el = [
-                        procs[cpid]["elapsed_sec"]
-                        for cpid in tree
-                        if cpid != h_pid and cpid in procs and not _is_driver_wrapper(procs[cpid].get("cmd", ""))
-                    ]
-                    elapsed = max(child_el) if child_el else procs[h_pid]["elapsed_sec"]
+                start = float(die_session.get("started_epoch") or 0) if sess_matches else 0
+                elapsed = int(max(0, now_epoch - start)) if start > 0 else None
                 lock_entry: dict[str, Any] = {
                     "die": die_idx,
                     "lock_path": f"/srv/work-device{die_idx}.lock",
@@ -1277,6 +1275,7 @@ class StreamProbeSession:
                     {
                         "pid": h_pid,
                         "run_id": die_session.get("run_id") if sess_matches else None,
+                        "case_progress": die_session.get("case_progress") if sess_matches else None,
                         "die": die_idx,
                         "state": "ACTIVE",
                         "stage": stage,
@@ -1358,6 +1357,7 @@ class StreamProbeSession:
             wt_item = {
                 "pid": w_pid,
                 "run_id": tk.get("run_id"),
+                "case_progress": tk.get("case_progress"),
                 "die": None,
                 "state": "WAITING",
                 "stage": stage,
@@ -1457,7 +1457,7 @@ class StreamProbeSession:
                     "detail": (
                         "Phase A baseline worktree build for perf-bucket backfill (B0)"
                         if cb_bf
-                        else f"CMake -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
+                        else f"CMake parallel limit: -j{cb['jobs']}" if cb.get("jobs") else "Phase A lock-free CPU build"
                     ),
                     "subprocesses": len(get_descendants(cb["pid"], procs)) - 1,
                 }
@@ -1481,6 +1481,7 @@ class StreamProbeSession:
         build_pids = {t["pid"] for t in tasks if t["state"] == "CPU_BUILD"}
         parallel_cpu_builds = [cb for cb in parallel_cpu_builds if cb["pid"] in build_pids]
         waiting_tasks_list = [t for t in tasks if t.get("state") == "WAITING"]
+        host_case_tasks(self.opsb_home, tasks, now_epoch)
 
         primary_dev = (
             npu["devices"][0]
@@ -1526,11 +1527,12 @@ class StreamProbeSession:
 
         window_sec = 600.0
         ledger_rows = self._read_ledger_rows_cached(now_ts, window_sec=window_sec)
-        if ledger_rows:
+        holds = [float(row["hold_sec"]) for row in ledger_rows if row.get("hold_sec") is not None]
+        if ledger_rows and all("acl_host_sec" in row for row in ledger_rows):
             npu_s = sum(float(r.get("npu_exec_sec") or 0.0) for r in ledger_rows)
             acl_s = sum(float(r.get("acl_host_sec") or 0.0) for r in ledger_rows)
             waste_s = sum(float(r.get("lock_waste_sec") or 0.0) for r in ledger_rows)
-            tot_hold = sum(float(r.get("hold_sec") or (npu_s + acl_s + waste_s)) for r in ledger_rows)
+            tot_hold = sum(holds) if len(holds) == len(ledger_rows) else npu_s + acl_s + waste_s
             denom = max(window_sec, tot_hold, 1.0)
             free_s = max(0.0, denom - (npu_s + acl_s + waste_s))
             die_duty_10m = {
@@ -1539,8 +1541,6 @@ class StreamProbeSession:
                 "lock_waste_pct": round(100.0 * waste_s / denom, 2),
                 "free_pct": round(100.0 * free_s / denom, 2),
             }
-            avg_hold_sec = round(tot_hold / len(ledger_rows), 1)
-            slots_per_hr = round(min(240.0, 3600.0 / max(8.0, avg_hold_sec)), 1)
         else:
             win_pts = [p for p in self._history if (now_ts - float(p.get("ts", 0))) <= window_sec] or [sample_pt]
             n_pts = max(1, len(win_pts))
@@ -1563,16 +1563,11 @@ class StreamProbeSession:
                 "lock_waste_pct": waste_p,
                 "free_pct": free_p,
             }
-            cur_hold = (
-                float(die_locks_info[0].get("elapsed_sec") or 0)
-                if (die_locks_info and die_locks_info[0]["state"] == "HELD")
-                else 20.0
-            )
-            avg_hold_sec = round(max(18.0, cur_hold), 1)
-            slots_per_hr = round(3600.0 / max(12.0, avg_hold_sec), 1)
+        avg_hold_sec = round(sum(holds) / len(holds), 2) if holds else None
+        slots_per_hr = round(3600.0 / avg_hold_sec, 1) if avg_hold_sec else None
 
         for idx_w, wt in enumerate(waiting_tasks_list):
-            wt["estimated_wait_sec"] = int(round((idx_w + 1) * min(avg_hold_sec, 180.0)))
+            wt["estimated_wait_sec"] = round((idx_w + 1) * avg_hold_sec) if avg_hold_sec else None
 
         sample_ms = round((time.monotonic() - t0) * 1000, 2)
         return {

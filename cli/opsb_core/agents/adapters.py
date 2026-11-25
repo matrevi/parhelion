@@ -16,7 +16,7 @@ from ..drivers.base import resolve_parhelion_home, resolve_workspace_state_dir
 from ..drivers.claude_driver import ClaudeStreamJsonClient, coerce_claude_uuid
 from ..drivers.codex_appserver import CodexAppServerClient, render_codex_config_toml
 from ..drivers.macos_gui import write_mcp_json_file
-from ..drivers.registry import get_driver
+from ..drivers.registry import get_driver, worker_model
 
 EventCallback = Callable[[str, str], None]
 
@@ -75,6 +75,7 @@ class BaseWorkerAdapter:
         self.workspace = workspace.expanduser().resolve()
         self.worktree = worktree.expanduser().resolve()
         self.driver_kind = driver_kind
+        self.model = worker_model(driver_kind)
         self.agent_id = agent_id
         self.log_path = log_path
         self.runtime_dir = worker_runtime_dir(self.workspace, self.agent_id)
@@ -172,8 +173,11 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         mcp_servers = build_acp_mcp_servers(
             self.workspace, mcp_url=_daemon_worker_mcp_url(self.agent_id), role="worker", agent_id=self.agent_id
         )
-        sid, _ = client.open_session(cwd=self.worktree, mcp_servers=mcp_servers, resume_id=self.native_session_id or None)
+        sid, _ = client.open_session(cwd=self.worktree, mcp_servers=mcp_servers,
+                                     resume_id=self.native_session_id or None, model=self.model)
         self.native_session_id = sid or self.native_session_id or self.agent_id
+        if on_event and self.model:
+            on_event("model", self.model)
         self._client = client
         return client
 
@@ -187,7 +191,11 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
             on_event("tool", tool[:48])
 
     def send_turn(self, prompt: str, on_event: EventCallback | None = None) -> str:
-        client = self._ensure_started(on_event)
+        try:
+            client = self._ensure_started(on_event)
+        except Exception:
+            self.stop()
+            raise
         res = client.send_prompt(self.native_session_id, prompt)
         return str(res.get("text") or res.get("stopReason") or "Turn completed.")
 
@@ -260,9 +268,11 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
         client.initialize()
         tid = client.open_thread(
             self.worktree, resume_id=self.native_session_id or None,
-            approval_policy="never", sandbox="workspace-write",
+            approval_policy="never", sandbox="workspace-write", model=self.model,
         )
         self.native_session_id = tid or self.native_session_id or self.agent_id
+        if on_event and self.model:
+            on_event("model", self.model)
         self._client = client
         return client
 
@@ -279,7 +289,11 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
                     on_event("tool", t[:48])
 
     def send_turn(self, prompt: str, on_event: EventCallback | None = None) -> str:
-        client = self._ensure_started(on_event)
+        try:
+            client = self._ensure_started(on_event)
+        except Exception:
+            self.stop()
+            raise
         res = client.start_turn(
             self.native_session_id, prompt, approval_policy="never", sandbox="workspace-write"
         )
