@@ -242,6 +242,10 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
                      sha=sha or entry.get("sha", ""), submission_id=sid,
                      note=out.get("note") or entry.get("note", ""),
                      estimated_score=out.get("estimated_score"))
+        if out.get("best_score_bound"):
+            entry["best_score_bound"] = out["best_score_bound"]
+        if out.get("timing_score"):
+            entry["timing_score"] = out["timing_score"]
 
     raw_best_by_prob: dict[str, tuple[float, str, str]] = {}
     latest_sub_by_prob: dict[str, dict[str, Any]] = {}
@@ -304,12 +308,24 @@ def latest_score_evidence(submission, live_board):
     sid = submission.get("submission_id")
     board_sid = live_board.get("board_submission_id")
     if live_board.get("listed") is True and sid and board_sid:
-        if sid != board_sid:
-            return None, "other_submission_ranked"
-        score = extract_numeric_score({"score": live_board.get("our_score")})
-        if score is not None:
-            return score, "matching_board"
+        if sid == board_sid:
+            score = extract_numeric_score({"score": live_board.get("our_score")})
+            if score is not None:
+                return score, "matching_board"
+    replay = extract_numeric_score(submission.get("timing_score"))
+    if replay is not None:
+        return replay, "official_timings"
+    if live_board.get("listed") is True and sid and board_sid and sid != board_sid:
+        return None, "other_submission_ranked"
     return None, "unpublished"
+
+
+def displayed_score_bound(submission, board_sid):
+    bound = submission.get("best_score_bound") or {}
+    if (submission.get("status") == "Pass" and submission.get("score") is None and board_sid
+            and bound.get("board_submission_id") == board_sid):
+        return extract_numeric_score(bound)
+    return None
 
 
 def build_problem_models(
@@ -491,6 +507,9 @@ def build_problem_models(
         cb_trips = hist_idx["pressure_12h"].get(title, 0)
         cb_open = cb_trips >= cb_limit or hist_idx["consec_fail_12h"].get(title, 0) >= 2
         rev_history = [dict(h) for h in reversed(hist_idx["history_by_prob"].get(title, []))]
+        for h in rev_history:
+            h["display_score"], h["score_source"] = latest_score_evidence(h, live)
+            h["score_upper_bound"] = displayed_score_bound(h, live.get("board_submission_id"))
         prob_est_map = {s7: v for (pt, s7), v in est_lookup.items() if pt == title}
         calibration = build_problem_calibration(
             workspace=workspace,
@@ -522,6 +541,7 @@ def build_problem_models(
                 "latest_status": latest_sub.get("status"),
                 "latest_score": latest_score,
                 "latest_score_source": latest_score_source,
+                "latest_score_upper_bound": displayed_score_bound(latest_sub, live.get("board_submission_id")),
                 "board_submission_id": live.get("board_submission_id"),
                 "latest_sha": latest_sub.get("sha"),
                 "latest_at": latest_sub.get("at"),

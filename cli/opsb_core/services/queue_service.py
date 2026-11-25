@@ -10,11 +10,11 @@ from typing import Any
 
 from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read_json, read_jsonl, utc_now
 from .breakthrough_service import index_experience_by_commit
-from .contest_service import build_problem_models, index_submission_history, resolve_workspace_meta
-from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
+from .contest_service import build_problem_models, displayed_score_bound, index_submission_history, latest_score_evidence, resolve_workspace_meta
+from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATUSES
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
-from .sync_reconciler import recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
+from .sync_reconciler import fast_score_backfill, recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
 
 
 def enqueue_once(workspace: Path, record: dict[str, Any]) -> bool:
@@ -359,7 +359,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             st = "sync_error"
         if st == "rejected" and "不合规内容" in raw_detail:
             st = "blocked_compliance"
-        actual = float(out["score"]) if out.get("score") is not None else None
+        actual, score_source = latest_score_evidence(out, {"listed": p_obj.get("board_listed"),
+            "board_submission_id": p_obj.get("board_submission_id"), "our_score": p_obj.get("board_score")})
+        upper_bound = displayed_score_bound(out, p_obj.get("board_submission_id"))
         delta = round(actual - prior_sc, 2) if (actual is not None and prior_sc > 0) else (round(actual, 2) if actual is not None else None)
         bt_delta: float | None = None
         base_p_sha = last_pass_sha.get(t)
@@ -367,7 +369,14 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         low_note = effective_note.strip().lower()
         is_restore_note = any(low_note.startswith(pfx) for pfx in ("restore", "rollback", "retry restore", "closing restore"))
         if st == "Pass":
-            badge = "PASS ↑" if (delta is None or delta >= 0) else "PASS ↓"
+            if actual is None:
+                badge = "PASS"
+                if upper_bound is None and fast_score_backfill(out, now):
+                    badge = "SYNCING SCORE"
+            elif delta == 0:
+                badge = "PASS ="
+            else:
+                badge = "PASS ↑" if delta > 0 else "PASS ↓"
             if actual is not None:
                 peak_p = peak_pass_score.get(t, 0.0)
                 is_repeat = (t, sha[:7]) in seen_pass_shas
@@ -383,8 +392,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             badge = "SKIPPED"
         elif st == "sync_error":
             badge = "SYNC ERROR"
-        elif st in ("Running", "Queued", "Pending"):
+        elif st in NON_TERMINAL_JUDGE_STATUSES:
             badge = "JUDGING"
+            actual = delta = None
         else:
             badge = "REJECTED"
             if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error", "Compile Error"):
@@ -408,6 +418,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 "prior_score": round(prior_sc, 2),
                 "estimated_score": est,
                 "actual_score": round(actual, 2) if actual is not None else None,
+                "score_source": score_source,
+                "score_upper_bound": upper_bound,
                 "delta_score": delta,
                 "breakthrough_delta": bt_delta,
                 "is_breakthrough": bool(bt_delta is not None and bt_delta >= bt_threshold),

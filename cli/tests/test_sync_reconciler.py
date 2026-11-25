@@ -19,6 +19,8 @@ for p in (str(CLI_DIR), str(REPO_ROOT)):
 from opsb_core.commands.queue_cmd import run_submit  # noqa: E402
 from opsb_core.mcp.handlers_bench import tool_parhelion_submit_gate  # noqa: E402
 from opsb_core.services.contest_service import index_submission_history  # noqa: E402
+from opsb_core.services.contest_service import displayed_score_bound, latest_score_evidence
+from opsb_core.services.judge_score_fetch import reconstruct_timing_score
 from opsb_core.services.queue_service import compute_workspace_snapshot  # noqa: E402
 from opsb_core.services.submit_runner import _wait_and_fetch_score, spawn_jump_submit  # noqa: E402
 from opsb_core.services.sync_reconciler import (  # noqa: E402
@@ -28,6 +30,47 @@ from opsb_core.services.sync_reconciler import (  # noqa: E402
     reconcile_sync_errors,
 )
 from scheduler.estimator import ScoreEstimator  # noqa: E402
+
+
+def test_replay_uses_all_case_ids_and_checks_the_scoring_rule():
+    rule = {"_id": "p", "score_mode": 1, "judge_revision": 0, "use_baseline": False,
+            "ranking_submission_mode": "best", "testcases": [{"testcase_id": {"_id": "a"}}, {"testcase_id": "b"}]}
+    times = [{"testcase_id": "b", "time": 3, "testcase_status": "Pass"},
+             {"testcase_id": "a", "time": 1, "testcase_status": "Pass"}]
+    detail = {"problem_id": "p", "valid": True, "status": "Pass", "result": times, "judge_revision": 0}
+    cases = [{"_id": "a", "type": "default", "tbest": 1}, {"_id": "b", "type": "default", "tbest": 2}]
+    ranked = {"score": 75, "status": "Pass", "result": list(reversed(times))}
+    ranking = {"total_testcase_count": 2, "testcases": cases, "rows": [ranked]}
+    assert reconstruct_timing_score(detail, rule, ranking)["score"] == 75
+    for changes in ({"result": times[:1]}, {"result": [times[0]] * 2}, {"public_only": True},
+                    {"judge_revision": 1}, {"result": [times[0], {**times[1], "time": float("nan")}]},
+                    {"status": "Judging"}):
+        assert reconstruct_timing_score({**detail, **changes}, rule, ranking) is None
+    for changes in ({"score_mode": 2}, {"use_baseline": True}, {"ranking_testcase_count": 1},
+                    {"ranking_submission_mode": "latest"}, {"ranking_submission_mode": None}):
+        assert reconstruct_timing_score(detail, {**rule, **changes}, ranking) is None
+    assert reconstruct_timing_score(detail, rule, {**ranking, "rows": [{**ranked, "score": 74}]}) is None
+    assert reconstruct_timing_score(detail, rule, {**ranking, "testcases": cases[:1]}) is None
+    assert reconstruct_timing_score(detail, rule, {**ranking, "testcases": [cases[0], {**cases[1], "hidden": True}]}) is None
+
+    roster = [str(i) for i in range(50)]
+    public = [{"_id": k, "type": "default", "tbest": 1} for k in roster[:5]]
+    partial = [{"testcase_id": k, "time": 1, "testcase_status": "Pass"} for k in roster[:5]]
+    for count in (5, 50):
+        payload = {"testcases": public, "total_testcase_count": count,
+                   "rows": [{"status": "Pass", "score": 100, "result": partial}]}
+        assert reconstruct_timing_score({**detail, "result": partial}, {**rule, "testcases": roster}, payload) is None
+
+
+def test_replay_follows_submission_identity_and_preserves_official_zero():
+    submission = {"status": "Pass", "submission_id": "new", "timing_score": {"score": 36.93},
+                  "best_score_bound": {"score": 37.71, "board_submission_id": "old"}}
+    board = {"listed": True, "our_score": 37.71, "board_submission_id": "old"}
+    assert latest_score_evidence(submission, board) == (36.93, "official_timings")
+    assert latest_score_evidence({**submission, "score": 0}, board) == (0, "submission")
+    assert latest_score_evidence(submission, {**board, "board_submission_id": "new"}) == (37.71, "matching_board")
+    assert displayed_score_bound(submission, "old") == 37.71
+    assert displayed_score_bound(submission, "other") is None
 
 
 def _make_ws(tmp_path: Path) -> tuple[Path, str]:

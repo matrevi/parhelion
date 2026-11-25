@@ -269,6 +269,8 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
     let priorScore: Double?
     let estimatedScore: Double?
     let actualScore: Double?
+    let scoreUpperBound: Double?
+    let scoreSource: String?
     let deltaScore: Double?
     let breakthroughDelta: Double?
     let isBreakthrough: Bool?
@@ -290,6 +292,8 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
         case priorScore = "prior_score"
         case estimatedScore = "estimated_score"
         case actualScore = "actual_score"
+        case scoreUpperBound = "score_upper_bound"
+        case scoreSource = "score_source"
         case deltaScore = "delta_score"
         case breakthroughDelta = "breakthrough_delta"
         case isBreakthrough = "is_breakthrough"

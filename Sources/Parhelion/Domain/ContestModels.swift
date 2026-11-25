@@ -119,6 +119,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let latestStatus: String?
     let latestScore: Double?
     let latestScoreSource: String?
+    let latestScoreUpperBound: Double?
     let latestSha: String?
     let latestAt: String?
     let boardListed: Bool?
@@ -126,15 +127,23 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let boardSubmissionId: String?
     func latestScoreText(_ lang: AppLanguage) -> String {
         if let latestScore { return String(format: "%.2f", latestScore) }
-        return latestStatus == "Pass" ? lang.tr("仅报通过", "Pass only") : "—"
+        if let bound = latestScoreUpperBound { return String(format: "≤%.2f", bound) }
+        return "—"
     }
     func scoreExplanation(_ lang: AppLanguage) -> String? {
         switch latestScoreSource {
+        case "official_timings":
+            return lang.tr("按官方逐例耗时和核对时的 TBest 复算。", "Calculated from official case times and TBest at reconciliation.")
         case "other_submission_ranked":
             let sha = activeSha.flatMap { $0.isEmpty ? nil : String($0.prefix(7)) }
             let ref = sha ?? boardSubmissionId ?? "—"
-            return lang.tr("本次回执仅报告通过。当前榜单记录为 \(ref)，在榜分 \(boardScoreText(lang))。",
-                           "The judge reported a pass. The board lists \(ref) at \(boardScoreText(lang)).")
+            if let bound = latestScoreUpperBound {
+                let upper = String(format: "%.2f", bound)
+                return lang.tr("本题保留最佳提交。核对时 \(ref) 在榜，本次得分上限为 \(upper)。",
+                               "This problem ranks the best submission. The board listed \(ref) when checked, giving this attempt an upper bound of \(upper).")
+            }
+            return lang.tr("官方未公布本次分数。当前榜单记录为 \(ref)，在榜分 \(boardScoreText(lang))。",
+                           "The judge did not publish this score. The board lists \(ref) at \(boardScoreText(lang)).")
         case "matching_board":
             return lang.tr("回执仅报告通过，显示该提交在当前榜单的分数。", "The judge reported a pass. The score comes from this submission’s current ranking.")
         case "unpublished":
@@ -189,6 +198,7 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case currentScore = "current_score"
         case latestStatus = "latest_status", latestScore = "latest_score", latestSha = "latest_sha"
         case latestScoreSource = "latest_score_source", boardSubmissionId = "board_submission_id"
+        case latestScoreUpperBound = "latest_score_upper_bound"
         case latestAt = "latest_at"
         case boardListed = "board_listed", boardScore = "board_score"
         case weightedScore = "weighted_score"
@@ -254,6 +264,9 @@ struct ProblemHistoryItem: Codable, Identifiable, Hashable {
     let sha: String
     let status: String
     let score: Double?
+    let displayScore: Double?
+    let scoreSource: String?
+    let scoreUpperBound: Double?
     let delta: Double?
     let publicPts: Double?
     let hiddenPts: Double?
@@ -264,6 +277,7 @@ struct ProblemHistoryItem: Codable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case at, sha, status, score, delta, note
+        case displayScore = "display_score", scoreSource = "score_source", scoreUpperBound = "score_upper_bound"
         case publicPts = "public_pts"
         case hiddenPts = "hidden_pts"
         case submissionId = "submission_id"

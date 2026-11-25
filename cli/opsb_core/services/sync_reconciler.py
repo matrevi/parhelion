@@ -26,6 +26,7 @@ from .judge_score_fetch import (
     extract_public_times,
     fetch_json_with_cookie,
     fetch_ranking_sid_and_team_with_retry,
+    reconstruct_timing_score,
     resolve_problem_id,
     resolve_score_and_times,
     update_score_snapshot,
@@ -71,7 +72,7 @@ def collapse_reconciled_outcomes(outcome_rows: list[dict[str, Any]]) -> list[dic
             continue
         st = str(row.get("status") or "").strip()
         has_verdict = 1 if (st in TERMINAL_JUDGE_STATUSES and not is_sync_error_outcome(row)) else 0
-        has_score = 1 if (row.get("score") is not None) else 0
+        has_score = 2 if row.get("score") is not None else int(bool(row.get("timing_score") or row.get("best_score_bound")))
         rank = (has_verdict, int(row.get("source") != "judge-reconcile"), has_score)
         prev = best_rank_by_sid.get(sid)
         if prev is None or rank >= prev:
@@ -173,12 +174,36 @@ def _fetch_json(base_url: str, cookie: str, path: str, timeout: float = 5.0) -> 
     return fetch_json_with_cookie(base_url, cookie, path, timeout=timeout)
 
 
+def fast_score_backfill(row: dict[str, Any], now) -> bool:
+    dt = parse_iso(row.get("submitted_at") or row.get("finished_at"))
+    return bool(needs_score_backfill(row) and dt and 0 <= (now - dt).total_seconds() < 600.0
+                and os.environ.get("OPSB_DISABLE_SYNC_RECONCILE") != "1")
+
+
 def _effective_ttl(orig: dict[str, Any], ttl_sec: float) -> float:
-    if needs_score_backfill(orig):
-        dt = parse_iso(orig.get("submitted_at") or orig.get("finished_at"))
-        if dt and (utc_now() - dt).total_seconds() < 600.0:
-            return min(ttl_sec, 15.0)
+    if orig.get("timing_score"):
+        return max(ttl_sec, 3600.0)
+    if fast_score_backfill(orig, utc_now()):
+        return min(ttl_sec, 15.0)
     return ttl_sec
+
+
+def _best_score_bound(detail, sid, pid, board, rule):
+    """A best-only ranking of the same participant bounds another eligible receipt."""
+    if not board or detail.get("_id") != sid or detail.get("problem_id") != pid:
+        return None
+    if detail.get("valid") is not True or detail.get("public_only") or detail.get("judge_missing_cases"):
+        return None
+    owner = detail.get("user_id")
+    ranked_owner = (board.get("submitter") or {}).get("_id") or board.get("user_id")
+    ranked_sid = board.get("submission_id")
+    value = extract_numeric_score(board)
+    if not owner or owner != ranked_owner or not ranked_sid or ranked_sid == sid or value is None:
+        return None
+    if (not isinstance(rule, dict) or rule.get("_id") != pid or rule.get("ranking_submission_mode") != "best"
+            or "judge_revision" not in detail or rule.get("judge_revision") != detail["judge_revision"]):
+        return None
+    return {"score": value, "board_submission_id": ranked_sid}
 
 
 def _reconcile_one_candidate(
@@ -214,13 +239,21 @@ def _reconcile_one_candidate(
 
     rank_row: dict[str, Any] | None = None
     team_best_row: dict[str, Any] | None = None
+    ranking = {}
     pid = resolve_problem_id(workspace, title)
     if status == "Pass" and pid:
         base_url, cookie, _ = used_session
         team_uids = {uid for _, _, uid in sessions if uid}
         team_name = _resolve_team_name(workspace)
+        def fetch_page(page):
+            nonlocal ranking
+            payload = _fetch_json(base_url, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100", timeout=request_timeout)
+            if page == 1 and isinstance(payload, dict):
+                ranking = payload
+            return payload
+
         rank_row, team_best_row = fetch_ranking_sid_and_team_with_retry(
-            lambda page: _fetch_json(base_url, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100", timeout=request_timeout),
+            fetch_page,
             sid,
             team_uids,
             team_name=team_name,
@@ -229,13 +262,35 @@ def _reconcile_one_candidate(
         )
 
     score, pub_times, pub_tbest = resolve_score_and_times(sub_detail, rank_row, status)
-    if needs_score_backfill(orig) and score is None:
+    bound = None
+    replay = orig.get("timing_score")
+    if status == "Pass" and score is None and sub_detail.get("_id") == sid and pid and sub_detail.get("problem_id") == pid:
+        try:
+            rule = _fetch_json(base_url, cookie, f"/api/problems/{pid}", timeout=request_timeout)
+        except (OSError, ValueError):
+            rule = None
+        if isinstance(rule, dict):
+            bound = _best_score_bound(sub_detail, sid, pid, team_best_row, rule)
+            if not replay:
+                replay = reconstruct_timing_score(sub_detail, rule, ranking)
+                if replay and bound and replay["score"] > bound["score"]:
+                    replay = None
+    if (needs_score_backfill(orig) and score is None and replay == orig.get("timing_score")
+            and (bound is None or bound == orig.get("best_score_bound"))):
         return None
 
     is_orphan = orig.get("_reconcile_kind") == "orphan_receipt"
     now_iso = utc_now().isoformat()
     submitted_at = str(orig.get("submitted_at") or orig.get("finished_at") or now_iso)
     new_row = build_reconciled_outcome_row(orig, status, score, pub_times, pub_tbest, submitted_at, now_iso)
+    if score is None and replay:
+        new_row["timing_score"] = replay
+    if bound:
+        new_row["best_score_bound"] = bound
+    elif score is not None:
+        new_row.pop("best_score_bound", None)
+    elif needs_score_backfill(orig) and not replay:
+        return None
 
     with io_lock_path.open("a") as iolf:
         fcntl.flock(iolf, fcntl.LOCK_EX)
@@ -250,7 +305,10 @@ def _reconcile_one_candidate(
                 )
             else:
                 still_pending = any(
-                    str(r.get("submission_id") or "").strip() == sid and (is_sync_error_outcome(r) or needs_score_backfill(r))
+                    str(r.get("submission_id") or "").strip() == sid
+                    and (is_sync_error_outcome(r) or needs_score_backfill(r) and
+                         (score is not None or (r.get("timing_score"), r.get("best_score_bound"))
+                          == (orig.get("timing_score"), orig.get("best_score_bound"))))
                     for r in latest_collapsed
                 )
             if not still_pending:
@@ -326,7 +384,14 @@ def reconcile_sync_errors(
         return []
     reconciled: list[dict[str, Any]] = []
     io_lock_path = results_dir / ".submit-queue-io.lock"
-    for orig in candidates[:max_items]:
+    checked = 0
+    for orig in candidates:
+        sid = orig["submission_id"]
+        if not force and read_ttl_cache(f"sync_reconcile_{sid[:12]}", ttl_sec=_effective_ttl(orig, ttl_sec), fingerprint=sid) is not None:
+            continue
+        if checked >= max_items:
+            break
+        checked += 1
         fixed = _reconcile_one_candidate(
             workspace, outcome_path, io_lock_path, orig, force=force, ttl_sec=ttl_sec, request_timeout=request_timeout
         )

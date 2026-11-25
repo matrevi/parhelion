@@ -233,6 +233,8 @@ struct CompletedSubmissionCardView: View {
     var body: some View {
         let beforeScore = item.priorScore ?? 0.0
         let passed = item.rawStatus == "Pass"
+        let progressing = item.badge == "JUDGING" || item.badge == "SYNCING SCORE"
+        let progressLabel = item.badge == "JUDGING" ? lang.tr("判分中", "Judging") : lang.tr("同步分数中", "Syncing score")
 
         SurfaceCard(padding: 11) {
             VStack(alignment: .leading, spacing: 8) {
@@ -251,7 +253,15 @@ struct CompletedSubmissionCardView: View {
                             compact: true
                         )
                     }
-                    SemanticPill(text: readableHistoryBadge())
+                    if progressing {
+                        HStack(spacing: 5) {
+                            ProgressView().controlSize(.small)
+                            Text(progressLabel).font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
+                        }
+                        .accessibilityElement(children: .combine)
+                    } else {
+                        SemanticPill(text: readableHistoryBadge())
+                    }
                 }
 
                 HStack(spacing: 8) {
@@ -259,7 +269,10 @@ struct CompletedSubmissionCardView: View {
                     QueueArrowSeparator()
                     QueueScoreCell(title: lang.tr("预计得分", "Estimated"), main: item.estimatedScore.map { String(format: "~%.2f", $0) } ?? "—", delta: nil, mainColor: .blue)
                     QueueArrowSeparator()
-                    QueueScoreCell(title: lang.tr("评测得分 (本次结果)", "Judged Score"), main: item.actualScore.map { String(format: "%.2f", $0) } ?? readableRawStatus(item.rawStatus), delta: item.deltaScore, mainColor: passed ? .primary : .red)
+                    QueueScoreCell(title: item.scoreSource == "official_timings" ? lang.tr("逐例复算", "From timings") : lang.tr("本次得分", "Judged score"),
+                                   main: progressing ? progressLabel : resultText,
+                                   delta: item.actualScore == nil ? nil : item.deltaScore,
+                                   mainColor: progressing ? .accentColor : (passed ? .primary : .red))
                 }
                 .padding(.vertical, 6)
                 .padding(.horizontal, 10)
@@ -285,7 +298,7 @@ struct CompletedSubmissionCardView: View {
                         .controlSize(.mini)
                     }
 
-                    if passed && !item.sha.isEmpty {
+                    if passed && !progressing && !item.sha.isEmpty {
                         Button {
                             Task {
                                 await store.jumpSubmitNow(
@@ -310,9 +323,18 @@ struct CompletedSubmissionCardView: View {
         }
     }
 
+    private var resultText: String {
+        if let score = item.actualScore { return String(format: "%.2f", score) }
+        if let bound = item.scoreUpperBound { return String(format: "≤%.2f", bound) }
+        return item.rawStatus == "Pass" ? "—" : readableRawStatus(item.rawStatus)
+    }
+
     private func readableHistoryBadge() -> String {
         if item.rawStatus == "Pass" {
-            return (item.deltaScore ?? 0) >= 0
+            guard item.actualScore != nil else { return lang.tr("通过", "Pass") }
+            guard let delta = item.deltaScore else { return lang.tr("已出分", "Scored") }
+            if delta == 0 { return lang.tr("持平", "Unchanged") }
+            return delta > 0
                 ? lang.tr("PASS ↑ 提分", "PASS ↑")
                 : lang.tr("PASS ↓ 波动", "PASS ↓")
         }

@@ -162,6 +162,81 @@ def extract_numeric_score(obj: Any) -> float | None:
     return val if math.isfinite(val) else None
 
 
+def reconstruct_timing_score(detail: dict, rule: dict, ranking: dict) -> dict | None:
+    """Replay Judge's ordinary log-time scoring against one ranking snapshot."""
+    tests = ranking.get("testcases")
+    if (rule.get("_id") != detail.get("problem_id") or rule.get("score_mode") != 1
+            or rule.get("ranking_submission_mode") != "best"
+            or rule.get("use_baseline") is not False or detail.get("status") != "Pass"
+            or detail.get("valid") is not True or detail.get("public_only") or detail.get("judge_missing_cases")
+            or "judge_revision" not in detail or rule.get("judge_revision") != detail["judge_revision"]
+            or not isinstance(tests, list) or not tests or len(tests) != ranking.get("total_testcase_count")
+            or rule.get("ranking_testcase_count") not in (None, len(tests))):
+        return None
+
+    def positive(value):
+        return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+    best = {}
+    for case in tests:
+        if (not isinstance(case, dict) or case.get("type") != "default" or not positive(case.get("tbest"))
+                or any(case.get(flag) for flag in ("hidden", "ranking_excluded", "unavailable"))):
+            return None
+        key = case.get("_id")
+        if not key or key in best:
+            return None
+        best[key] = case["tbest"]
+
+    # A restricted ranking can return only its public subset. Check the problem's own roster too.
+    roster = rule.get("testcases")
+    if not isinstance(roster, list) or len(roster) != len(best):
+        return None
+    roster_ids = set()
+    for ref in roster:
+        case = ref.get("testcase_id") if isinstance(ref, dict) else ref
+        if isinstance(case, dict):
+            case = case.get("_id")
+        if not isinstance(case, str):
+            return None
+        roster_ids.add(case)
+    if roster_ids != best.keys():
+        return None
+
+    def replay(rows):
+        if not isinstance(rows, list) or len(rows) != len(best):
+            return None
+        times = {}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("testcase_status") != "Pass" or not positive(row.get("time")):
+                return None
+            key = row.get("testcase_id")
+            if key not in best or key in times or row["time"] < best[key]:
+                return None
+            times[key] = row["time"]
+        points = [100 / (1 + math.log(times[k] / base) / math.log(1.5)) for k, base in best.items()]
+        return round(math.fsum(points) / len(points), 2)
+
+    score = replay(detail.get("result"))
+    if score is None:
+        return None
+    checked = 0
+    for row in ranking.get("rows") or []:
+        if not isinstance(row, dict) or row.get("status") != "Pass":
+            continue
+        recorded = extract_numeric_score(row)
+        computed = replay(row.get("result"))
+        if recorded is None or computed is None:
+            continue
+        if abs(computed - recorded) > 0.000001:
+            return None
+        checked += 1
+    if not checked:
+        return None
+    return {"score": score, "formula": "judge_log1p5_mean", "case_count": len(best),
+            "reference_rows": checked, "tbest_by_case": best,
+            "time_by_case": {row["testcase_id"]: row["time"] for row in detail["result"]}}
+
+
 def extract_public_times(sub_detail: Any, rank_row: Any = None) -> tuple[list[float], list[float]]:
     """Extract first 5 public testcase times & tbest from submission detail / ranking row."""
     sub_res = (sub_detail.get("result") or []) if isinstance(sub_detail, dict) else []

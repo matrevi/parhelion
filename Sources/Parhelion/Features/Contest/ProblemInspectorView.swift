@@ -266,8 +266,13 @@ struct ProblemInspectorView: View {
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 2) {
-                            if let sc = h.score {
+                            if let sc = h.displayScore ?? h.score {
                                 Text(String(format: "%.2f", sc)).font(.system(size: 12, weight: .bold, design: .monospaced))
+                                if h.scoreSource == "official_timings" {
+                                    Text(lang.tr("逐例复算", "From timings")).font(.caption2).foregroundStyle(.secondary)
+                                }
+                            } else if let bound = h.scoreUpperBound {
+                                Text(String(format: "≤%.2f", bound)).font(.caption.monospacedDigit())
                             }
                             if let d = h.delta {
                                 Text(String(format: "%+.2f", d))
