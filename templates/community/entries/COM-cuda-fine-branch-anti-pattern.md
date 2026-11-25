@@ -10,7 +10,7 @@ dtypes: [float32, float16, bfloat16, int32]
 
 # [ANTI-PATTERN] Per-Element Fine Branching & Scalar GM Scatter/Gather
 
-## 1. Why This Breaks Performance on soc-a
+## 1. Why This Breaks Performance on the SoC
 Porting CUDA SIMT per-thread `if/else` control flow or element-by-element GM `GetValue`/`SetValue` loops onto an Accel AI-Core executes sequentially on the **Scalar Unit** (`~88 ns/elem` stall) instead of 256B `PIPE_V` SIMD, and bloats `.text` past the 32 KB L1 I-cache limit. In addition, frequent 16-bit `SetValue` writes to GM can exhibit non-deterministic drops.
 
 ## 2. Required Fixes (Do Not Repeat)

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
+from ..device_env import device_text
 from .auth_service import list_judge_accounts
 from .judge_score_fetch import atomic_write_json, fetch_json_with_cookie
 
@@ -158,7 +159,7 @@ def _session() -> tuple[str, str]:
     ]
     path = next((Path(c).expanduser() for c in candidates if c and Path(c).expanduser().is_file()), Path.home() / ".judge" / "session.json")
     data = _json.loads(path.read_text(encoding="utf-8"))
-    base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+    base = str(data.get("base_url") or device_text("judge_base")).rstrip("/")
     jar = []
     for rec in data.get("cookies") or []:
         name = rec.get("name")

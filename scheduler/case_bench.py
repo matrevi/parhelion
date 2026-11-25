@@ -32,6 +32,19 @@ RUNNER = Path(__file__).resolve().parents[1] / "runtime/npu_runtime/reference_ca
 STATUSES = {"PASS", "WA", "RE", "TLE", "ERROR", "SKIP", "NOT_RUN"}
 
 
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 def digest(value):
     return hashlib.sha256(
         json.dumps(
@@ -393,9 +406,9 @@ def run(
         "timing": timing,
         "repeats": repeat_count,
         "timeout": min(timeout, 8 if adaptive else 60),
-        "arch": os.getenv("NPU_ARCH", "arch-v1"),
+        "arch": os.getenv("NPU_ARCH", _dev("arch")),
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
-        "lock": "/srv/work-device0.lock",
+        "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
     }
     engine = (Path(runner) if runner else RUNNER).read_text()
     modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch")}
@@ -459,7 +472,7 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         event("launch")
         try:
             env_script = os.getenv(
-                "OPSB_TOOLCHAIN_ENV", "/opt/toolchain/latest/set_env.sh"
+                "OPSB_TOOLCHAIN_ENV", _dev("toolchain_dir") + "/set_env.sh"
             )
             shell = (
                 "source "

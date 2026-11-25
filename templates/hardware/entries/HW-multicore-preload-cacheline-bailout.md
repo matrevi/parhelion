@@ -9,7 +9,7 @@ regimes: [PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED, X_EXTREME]
 dtypes: [float32, float16, bfloat16, int32]
 ---
 
-# Accel soc-a Multi-Core Concurrency & Scheduling Iron Laws
+# Accel SoC Multi-Core Concurrency & Scheduling Iron Laws
 
 ## 1. Ban `PreLoad(N)`, Dummy Core Launches, & `10c`
 - **NEVER** call `KernelC::PreLoad(N)`, dummy `SetBlockDim(4/halfCores)`, or `10`-core launches.

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
+from ..device_env import device_text
 
 PARHELION_SKILLS_SUBDIR = "kernelc-deep-reference"
 
@@ -159,7 +160,7 @@ def infer_problem_from_worktree(worktree_str: str, real_ws: Path | None) -> str:
     if real_ws is not None and worktree_str:
         try:
             rel_parts = Path(os.path.realpath(worktree_str)).relative_to(real_ws).parts
-            if len(rel_parts) >= 2 and rel_parts[0] == "bench":
+            if len(rel_parts) >= 2 and rel_parts[0] == device_text("work_prefix"):
                 return rel_parts[1]
             if rel_parts and rel_parts[0] not in (".worktrees",):
                 return rel_parts[0]

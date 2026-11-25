@@ -1,6 +1,6 @@
 #pragma once
 // SNP-ring4-async-pipe.h
-// soc-a 4-Slot Ring Buffer (MTE2 <-> PIPE_V <-> MTE3) Explicit SetFlag/WaitFlag Overlap
+// SoC 4-Slot Ring Buffer (MTE2 <-> PIPE_V <-> MTE3) Explicit SetFlag/WaitFlag Overlap
 //
 // Why: Depth-2 ping-pong often stalls when HBM latency exceeds one compute/store slice.
 // A 4-slot ring with bank-staggered UB buffers keeps MTE2 prefetch, PIPE_V compute,

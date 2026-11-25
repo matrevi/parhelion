@@ -1,6 +1,6 @@
 #pragma once
 // SNP-direct-gm-tiling-64b.h
-// soc-a Single-Cacheline 64B Direct-__gm__ Tiling + Workspace Floor Guard
+// SoC Single-Cacheline 64B Direct-__gm__ Tiling + Workspace Floor Guard
 //
 // Why:
 // 1. Replaces GET_TILING_DATA_WITH_STRUCT (which H2D-copies 184B-1704B and copies the full
@@ -18,7 +18,8 @@
 
 #include <cstdint>
 
-#if defined(__CCE_KT_TEST__) || defined(__DAV_C220__) || defined(__KERNELC__)
+// __HOST_BUILD_TEST__, __CORE_ARCH_V1__ and __KERNELC__ are toolchain-provided build macros; the target toolchain defines them.
+#if defined(__HOST_BUILD_TEST__) || defined(__CORE_ARCH_V1__) || defined(__KERNELC__)
 #include "kernel_operator.h"
 #endif
 
@@ -40,7 +41,7 @@ struct alignas(64) CompactHotTiling64B {
 
 static_assert(sizeof(CompactHotTiling64B) == 64U, "Hot tiling header must fit in 64 bytes");
 
-#if defined(__CCE_KT_TEST__) || defined(__DAV_C220__) || defined(__KERNELC__)
+#if defined(__HOST_BUILD_TEST__) || defined(__CORE_ARCH_V1__) || defined(__KERNELC__)
 // Kernel-side zero-stack-copy direct __gm__ tiling accessor.
 template <typename TilingT>
 __aicore__ inline const __gm__ TilingT* DirectGmTiling(GM_ADDR tiling) {

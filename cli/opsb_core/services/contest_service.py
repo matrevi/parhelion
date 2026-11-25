@@ -11,10 +11,24 @@ from pathlib import Path
 from typing import Any
 
 from ..config import CACHE_DIR, CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
+from ..device_env import device_text
 from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
 from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, extract_numeric_score
 from .sync_reconciler import collapse_reconciled_outcomes, is_sync_error_outcome
+
+
+#: Fallback contest title when the deployment does not name its organisation/track.
+DEFAULT_CONTEST_TITLE = "算子开发赛道"
+
+
+def default_contest_title() -> str:
+    """Legacy contest title; the org and track names are deployment facts, not source facts."""
+    org = device_text("contest_org")
+    track = device_text("contest_track")
+    if org and track:
+        return f"第十一届{org}ICT大赛｜{track}AI算子开发赛道（决赛）"
+    return DEFAULT_CONTEST_TITLE
 
 
 def escape_advice(latest_status):
@@ -53,7 +67,7 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
         g_slug = clean_manifest.get("group_slug") or "public"
         c_slug = clean_manifest.get("contest_slug") or ""
         c_url = clean_manifest.get("contest_url") or (
-            f"https://judge.invalid/{g_slug}/{c_slug}" if c_slug else "https://judge.invalid"
+            f"{device_text('judge_base')}/{g_slug}/{c_slug}" if c_slug else device_text("judge_base")
         )
         return {
             "workspace": str(workspace),
@@ -71,7 +85,8 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
 
     contest_detail = read_json(workspace / "results" / "scoring-evidence" / "contest-detail.json", {})
     problems_all = read_json(workspace / "results" / "scoring-evidence" / "problems-all.json", {})
-    legacy_problems = read_json(workspace / "bench" / "problems.json", [])
+    legacy_prefix = device_text("work_prefix")
+    legacy_problems = read_json(workspace / legacy_prefix / "problems.json", [])
 
     normalized = []
     for p in legacy_problems:
@@ -83,29 +98,29 @@ def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
             {
                 "title": title,
                 "slug": slug,
-                "repo_slug": f"bench-{slug}",
+                "repo_slug": f"{legacy_prefix}-{slug}",
                 "problem_id": p.get("problem_id", ""),
                 "numeric_id": p.get("ID"),
                 "difficulty": diff,
                 "sdk_version": p.get("sdk_version", "9.1.0"),
-                "path": p.get("path", f"bench/{title}"),
+                "path": p.get("path", f"{legacy_prefix}/{title}"),
             }
         )
 
     cid = contest_detail.get("id") or contest_detail.get("_id") or contest_detail.get("name") or ""
     g_slug = str(contest_detail.get("group_name") or "public").strip("/")
     c_slug = str(contest_detail.get("name") or cid).strip("/")
-    contest_url = f"https://judge.invalid/{g_slug}/{c_slug}"
+    contest_url = f"{device_text('judge_base')}/{g_slug}/{c_slug}"
     for item in normalized:
         item["problem_url"] = f"{contest_url}/{item['slug']}"
     return {
         "workspace": str(workspace),
         "layout": "legacy-multi-repo" if legacy_problems else "uninitialized",
         "contest_id": cid,
-        "title": contest_detail.get("title") or "第十一届operator-challengeICT大赛｜kernel-trackAI算子开发赛道（决赛）",
+        "title": contest_detail.get("title") or default_contest_title(),
         "team_name": (contest_detail.get("signup_status") or {}).get("team_name") or "",
         "git_owner": "winbeau",
-        "repo_prefix": "bench",
+        "repo_prefix": legacy_prefix,
         "npu_ssh_host": "npu",
         "contest_url": contest_url,
         "gitcode_url": "https://gitcode.com/winbeau",
@@ -529,7 +544,7 @@ def build_problem_models(
                 "slug": p["slug"],
                 "repo_slug": p["repo_slug"],
                 "problem_id": p["problem_id"],
-                "problem_url": p.get("problem_url") or f"{meta.get('contest_url', 'https://judge.invalid').rstrip('/')}/{p.get('slug', title.lower())}",
+                "problem_url": p.get("problem_url") or f"{meta.get('contest_url', device_text('judge_base')).rstrip('/')}/{p.get('slug', title.lower())}",
                 "numeric_id": p.get("numeric_id"),
                 "difficulty": diff,
                 "sdk_version": p.get("sdk_version", "9.1.0"),

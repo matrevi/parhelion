@@ -73,7 +73,7 @@ Every entry across all 3 pillars exposes normalized metadata when queried:
 
 ## 4. Seeded Initial Knowledge Assets (`templates/`)
 
-### 4.1 `templates/snippets/` (5 Battle-Tested KernelC soc-a Building Blocks)
+### 4.1 `templates/snippets/` (5 Battle-Tested KernelC SoC Building Blocks)
 1. `SNP-zero-tpipe-ub-arena.h` — Zero-`TPipe`/`TBuf` static aligned UB Arena (`LocalTensor` direct overlay, full 192KB budget, zero ctor/zero-init tax).
 2. `SNP-direct-gm-tiling-64b.h` — 64-byte single-cacheline `struct` + `SetDataSize(actualBytes)` + `const __gm__` direct dereference (`GET_TILING_DATA` replacement).
 3. `SNP-ring4-async-pipe.h` — 4-slot Ring Buffer `MTE2 ⇄ PIPE_V ⇄ MTE3` explicit `SetFlag/WaitFlag` double/quad overlap template.
@@ -87,7 +87,7 @@ At least 6 high-value cards strictly tagged with `portability`:
 - `COM-warp-shuffle-to-5hd-ub` (`remap-to-accel` — translating CUDA warp-shuffle/SMEM reductions to 256B `WholeReduce`/`BlockReduce` + 48-Bank coloring)
 - `COM-vectorized-float4-to-32b-burst` (`remap-to-accel` — CUDA `float4` coalescing mapped to Accel 32B-aligned contiguous MTE2/MTE3 bursts)
 - `COM-cuda-fine-branch-anti-pattern` (`anti-pattern` — warning against per-thread fine branching / uncoalesced scalar gather on AI Core)
-- `COM-10core-dvfs-bimodal-trap` (`anti-pattern` — soc-a 10-core first-2-run DVFS spike trap; prefer `1/20/40` divisor ladder)
+- `COM-10core-dvfs-bimodal-trap` (`anti-pattern` — SoC 10-core first-2-run DVFS spike trap; prefer `1/20/40` divisor ladder)
 
 ---
 

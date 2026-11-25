@@ -17,6 +17,77 @@ import subprocess
 import time
 from typing import Any
 
+# --------------------------------------------------------------------------- #
+# Deployment facts (SoC, toolchain, driver and remote work roots)
+# --------------------------------------------------------------------------- #
+# Neutral fallbacks; the real deployment facts live in ~/.parhelion/config.json
+# ("device").  The resolver is deliberately self-contained and stdlib-only: this
+# file is deployed to the compute host as one script, where the CLI package is
+# not importable, so it must never import `opsb_core`.
+_DEVICE_DEFAULTS: dict[str, Any] = {
+    "soc": "soc-a",
+    "soc_legacy": "soc-b",
+    "build_target": "soc-a",
+    "build_target_legacy": "soc-b",
+    "arch": "arch-v1",
+    "toolchain_env": "",
+    "toolchain_root": "",
+    "toolchain_dir": "",
+    "sdk_glob": "sdk-*",
+    "driver_root": "",
+    "driver_lib_dirs": [],
+    "driver_libs": {},
+    "dcmi_lib": "",
+    "driver_version_info": "",
+    "toolkit_info": "toolkit_install.info",
+    "toolkit_name": "toolkit",
+    "lib_runtime": "libruntime.so",
+    "visible_devices_env": "VISIBLE_DEVICES",
+    "extra_ops_env": "EXTRA_OPS_PATH",
+    "toolchain_home_env": "TOOLCHAIN_HOME",
+    "tpl_env": "TPL_SEL",
+    "tpl_prefix": "TPL_",
+    "profiler_bin": "profiler",
+    "profiler_acl_flag": "--acl",
+    "judge_base": "https://judge.invalid",
+    "judge_bot": "judge-bot",
+    "work_root": "/srv/work",
+    "work_prefix": "bench",
+    "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
+    "contest_org": "",
+    "contest_track": "",
+}
+
+
+def _device_settings() -> dict[str, Any]:
+    """Deployment facts for this host (config file < `OPSB_DEVICE_<KEY>` env override)."""
+    if os.environ.get("OPSB_DEVICE_ISOLATED") == "1":
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEVICE_DEFAULTS.items()}
+    merged: dict[str, Any] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEVICE_DEFAULTS.items()}
+    try:
+        raw = json.loads((pathlib.Path.home() / ".parhelion" / "config.json").read_text(encoding="utf-8"))
+        sect = raw.get("device") if isinstance(raw, dict) else None
+        if isinstance(sect, dict):
+            for key, value in sect.items():
+                if key in merged and value not in (None, ""):
+                    merged[key] = value
+    except Exception:
+        pass
+    for key in list(merged):
+        raw_env = os.environ.get("OPSB_DEVICE_" + key.upper())
+        if raw_env:
+            merged[key] = raw_env
+    return merged
+
+
+DEVICE = _device_settings()
+
+
+def device_text(key: str) -> str:
+    """One deployment fact as text (empty string when unset or not textual)."""
+    value = DEVICE.get(key, "")
+    return value if isinstance(value, str) else ""
+
 
 def estimate_waits(waiters, locks, mean):
     held = [lock for lock in locks if lock.get("state") == "HELD"]
@@ -214,9 +285,10 @@ def read_memory() -> dict[str, Any]:
 
 
 def read_sdk_version() -> str:
+    toolchain_dir = device_text("toolchain_dir")
     candidates = [
-        pathlib.Path("/opt/toolchain/latest/latest/aarch64-linux/toolkit_install.info"),
-        pathlib.Path("/opt/driver//opt/toolchain/latest/aarch64-linux/toolkit_install.info"),
+        pathlib.Path(f"{toolchain_dir}/latest/aarch64-linux/{device_text('toolkit_info')}"),
+        pathlib.Path(f"{device_text('driver_root')}/{device_text('toolkit_name')}/latest/aarch64-linux/{device_text('toolkit_info')}"),
     ]
     for p in candidates:
         try:
@@ -231,11 +303,12 @@ def read_sdk_version() -> str:
 
 def read_npu_smi() -> dict[str, Any]:
     env = os.environ.copy()
+    driver_root = device_text("driver_root")
     lib_paths = [
-        "/opt/driver/driver/lib64",
-        "/opt/driver/driver/lib64/common",
-        "/opt/driver/driver/lib64/driver",
-        "/opt/toolchain/latest/latest/lib64",
+        f"{driver_root}/driver/lib64",
+        f"{driver_root}/driver/lib64/common",
+        f"{driver_root}/driver/lib64/driver",
+        f"{device_text('toolchain_dir')}/latest/lib64",
     ]
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(lib_paths + ([existing] if existing else []))
@@ -277,7 +350,7 @@ def read_npu_smi() -> dict[str, Any]:
             break
 
     # Parse two-line device blocks inside npu-smi info table:
-    # Line 1: | 5     soc-a               | OK            | 88.6        36                0    / 0             |
+    # Line 1: | 5     <soc>                | OK            | 88.6        36                0    / 0             |
     # Line 2: | 0                         | 0000:0A:00.0  | 0           0    / 0          3427 / 65536         |
     i = 0
     while i < len(lines) - 1:
@@ -422,7 +495,7 @@ def read_locks() -> list[dict[str, Any]]:
             timeout=2.0,
         )
         for line in out.splitlines():
-            if "bench" not in line and "opsb" not in line:
+            if device_text("work_prefix") not in line and "opsb" not in line:
                 continue
             parts = line.strip().split(None, 4)
             if len(parts) >= 5 and parts[0].isdigit():
@@ -473,6 +546,7 @@ def _is_driver_wrapper(cmd: str) -> bool:
 def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> tuple[str | None, str | None]:
     problem: str | None = None
     sha: str | None = None
+    results_re = re.compile(rf"(?:{re.escape(device_text('work_prefix'))}|[\w.-]+)-results/[^/]+/([0-9a-f]{{7,40}})")
     for pid in pids:
         raw_cmd = procs.get(pid, {}).get("cmd", "")
         cmd = "" if _is_driver_wrapper(raw_cmd) else raw_cmd
@@ -492,7 +566,7 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
                 sha = m40.group(1)
             else:
                 # Look for results/<Problem>/<sha> or --out .../<sha>/ or explicit 7-char sha token
-                m_res = re.search(r"(?:bench|[\w.-]+)-results/[^/]+/([0-9a-f]{7,40})", cmd)
+                m_res = results_re.search(cmd)
                 if m_res:
                     sha = m_res.group(1)
         # Also inspect /proc/<pid>/cwd safely (skip driver wrapper whose cwd is home dir)
@@ -505,7 +579,7 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
                             problem = p_name
                             break
                 if problem and not sha:
-                    head_file = pathlib.Path(f"/srv/work/{problem}/.git/HEAD")
+                    head_file = pathlib.Path(f"{device_text('work_root')}/{device_text('work_prefix')}/{problem}/.git/HEAD")
                     if head_file.is_file():
                         htxt = head_file.read_text().strip()
                         if re.match(r"^[0-9a-f]{40}$", htxt):
@@ -555,6 +629,9 @@ def build_snapshot() -> dict[str, Any]:
     npu = read_npu_smi()
     procs = read_processes()
     locks = read_locks()
+    # Die-lock files are siblings of the work root, named after the work prefix.
+    work_root = device_text("work_root")
+    work_prefix = device_text("work_prefix")
 
     # Load authoritative Phase-A CPU build heartbeats & Phase-B die session upfront
     active_cpu_build_pids: set[int] = set()
@@ -662,7 +739,7 @@ def build_snapshot() -> dict[str, Any]:
                 stage, detail, prob, sha = "UNREGISTERED", "Device lock without a platform session", label or prob, None
             lock_entry: dict[str, Any] = {
                 "die": die_idx,
-                "lock_path": f"/srv/work-device{die_idx}.lock",
+                "lock_path": f"{work_root}/{work_prefix}-device{die_idx}.lock",
                 "state": "HELD",
                 "holder_pid": h_pid,
                 "problem": prob or "Unknown",
@@ -694,7 +771,7 @@ def build_snapshot() -> dict[str, Any]:
             die_locks_info.append(
                 {
                     "die": die_idx,
-                    "lock_path": f"/srv/work-device{die_idx}.lock",
+                    "lock_path": f"{work_root}/{work_prefix}-device{die_idx}.lock",
                     "state": "FREE",
                     "holder_pid": None,
                     "problem": None,
@@ -861,7 +938,7 @@ def build_snapshot() -> dict[str, Any]:
     primary_dev = npu["devices"][0] if npu["devices"] else {
         "npu_id": 0,
         "chip_id": 0,
-        "soc_name": "soc-a",
+        "soc_name": device_text("soc"),
         "health": "Unknown",
         "bus_id": "",
         "power_w": None,

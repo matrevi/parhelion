@@ -19,13 +19,21 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.backfill import spec_placeholder_reason  # noqa: E402
 from scheduler.estimator import parse_validation_perf  # noqa: E402
+
+#: Deployment vocabulary is configured, never hard-coded.  A plain checkout (no
+#: `~/.parhelion/config.json` -> `"device"`) resolves to the neutral defaults
+#: (`soc-a`, `bench`); the tests read whatever the code base itself resolves, so
+#: they also hold on a machine whose local config names the real device.
+SOC = device_text("soc")
+WORK_PREFIX = device_text("work_prefix")
 
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
     for cand in (start, *start.parents):
-        if (cand / "bench" / "problems.json").is_file():
+        if (cand / WORK_PREFIX / "problems.json").is_file():
             return cand
     return start.parent
 
@@ -34,7 +42,7 @@ REAL_WORKSPACE = _find_workspace(pathlib.Path(__file__).resolve())
 
 #: One PReluGradUpdate-shaped log: kernel aggregates only, no per-case row.
 PROF_ONLY_LOG = (
-    "RUNTIME_SOC=soc-a\n"
+    f"RUNTIME_SOC={SOC}\n"
     'PROF_SUMMARY {"file": "/tmp/prlgu_prof/PROF_000001/op_summary.csv", '
     '"kernels": {"PReluGradUpdate": {"n": 6, "median_us": 9.37, "min_us": 8.68, "p50_us": 9.4}}, '
     '"custom_median_us": 9.37, "torchref_median_us": 8.1}\n'
@@ -42,7 +50,7 @@ PROF_ONLY_LOG = (
 
 #: The same aggregates next to genuine case rows; the real cases must still be parsed.
 MIXED_LOG = (
-    "RUNTIME_SOC=soc-a\n"
+    f"RUNTIME_SOC={SOC}\n"
     'PROF_SUMMARY {"kernels": {"PReluGradUpdate": {"n": 6, "median_us": 9.37, "min_us": 8.68}}, '
     '"custom_median_us": 9.37}\n'
     "MS_PROF case=4d_16_64_32_32 median=9.37 min=8.68\n"
@@ -74,7 +82,7 @@ class AggregateKeysAreNotCasesTest(unittest.TestCase):
         )
         self.assertEqual(parsed["prof_summary"]["custom_median_us"], 9.37)
         self.assertEqual(parsed["prof_summary"]["torchref_median_us"], 8.1)
-        self.assertEqual(parsed["runtime_soc"], "soc-a")
+        self.assertEqual(parsed["runtime_soc"], SOC)
 
     def test_aggregate_stat_keys_never_become_case_ids(self) -> None:
         for log in (PROF_ONLY_LOG, MIXED_LOG):
@@ -144,12 +152,12 @@ class HardwareEvidenceShadowsHostEnqueueTest(unittest.TestCase):
     """Aggregate-only `profiler` evidence must not silently become `exec=` evidence.
 
     The ladder `profiler > exec > dev_us` exists because the host-enqueue floor
-    (`~11.1 us` on `soc-a`) is a different physical quantity.  A log that *did* run
+    (`~11.1 us` on the current SoC) is a different physical quantity.  A log that *did* run
     `profiler` but only returned kernel aggregates has no case-level profiler timing — so the
     correct answer is "profiler evidence, nothing attributable", not "fall through to exec=".
     """
 
-    LOG_HEAD = "RUNTIME_SOC=soc-a\n"
+    LOG_HEAD = f"RUNTIME_SOC={SOC}\n"
     PROF = (
         'PROF_SUMMARY {"kernels": {"Foo": {"n": 4, "median_us": 9.0, "min_us": 8.0}}, '
         '"custom_median_us": 9.0}\n'
@@ -178,7 +186,7 @@ class HardwareEvidenceShadowsHostEnqueueTest(unittest.TestCase):
         timings, soc, modality = self._timings(self.LOG_HEAD + self.PROF + self.EXEC)
         self.assertEqual(modality, "profiler")       # provenance kept ...
         self.assertEqual(timings, {})              # ... but nothing is attributable to a case
-        self.assertEqual(soc, "soc-a")
+        self.assertEqual(soc, SOC)
 
     def test_without_hardware_evidence_the_exec_fallback_still_works(self) -> None:
         parsed = parse_validation_perf(self.LOG_HEAD + self.EXEC)

@@ -33,6 +33,21 @@ except ImportError:
     HAS_CRYPTO = False
 
 
+def judge_host() -> str:
+    """Judge site host (no scheme) from env or ~/.parhelion/config.json ["device"]."""
+    raw = os.environ.get("OPSB_JUDGE_BASE") or ""
+    if not raw:
+        try:
+            doc = json.loads((Path.home() / ".parhelion" / "config.json").read_text(encoding="utf-8"))
+            raw = str(((doc.get("device") or {}).get("judge_base") or ""))
+        except Exception:
+            raw = ""
+    return raw.split("://", 1)[-1].strip("/") or "judge.invalid"
+
+
+JUDGE_HOST = judge_host()
+
+
 class JudgeError(ValueError):
     """可直接显示的操作提示，不包含凭据或服务端原始响应。"""
 
@@ -71,7 +86,7 @@ def decrypt_password(ciphertext_b64: str, private_key_path: str = "private.pem")
 class JudgeClient:
     """Judge API 客户端"""
     
-    BASE_URL = "https://judge.invalid"
+    BASE_URL = "https://" + JUDGE_HOST
     
     SESSION_MAX_AGE = 7 * 24 * 60 * 60
 
@@ -254,8 +269,8 @@ class JudgeClient:
         if not value.startswith(('http://', 'https://')):
             return self.get_problem(value)
         parsed = urlparse(value)
-        if parsed.scheme != 'https' or parsed.netloc != 'judge.invalid':
-            raise JudgeError('题目链接必须来自 https://judge.invalid')
+        if parsed.scheme != 'https' or parsed.netloc != JUDGE_HOST:
+            raise JudgeError(f'题目链接必须来自 https://{JUDGE_HOST}')
         parts = [unquote(p) for p in (parsed.fragment.split('?')[0] if parsed.fragment.startswith('/') else parsed.path).strip('/').split('/')]
         if len(parts) < 3:
             raise JudgeError('请提供包含小组、比赛和题目名称的完整题目链接')

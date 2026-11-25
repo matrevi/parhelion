@@ -45,16 +45,31 @@ from typing import Any
 from .backfill import LANE_BACKFILL, BackfillScheduler, offline_npu_sentinel
 from .parhelion_paths import sanitize_json_value
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 def _detect_default_workspace() -> pathlib.Path:
     env_ws = os.environ.get("OPSB_WORKSPACE")
     if env_ws:
         return pathlib.Path(env_ws).expanduser().resolve()
     cwd = pathlib.Path.cwd().resolve()
+    legacy_manifest = pathlib.Path(_dev("work_prefix")) / "problems.json"
     for anc in [cwd, *cwd.parents]:
-        if (anc / "opsb.workspace.json").is_file() or (anc / "bench" / "problems.json").is_file():
+        if (anc / "opsb.workspace.json").is_file() or (anc / legacy_manifest).is_file():
             return anc
     candidate = pathlib.Path(__file__).resolve().parents[2]
-    if (candidate / "bench" / "problems.json").is_file():
+    if (candidate / legacy_manifest).is_file():
         return candidate
     return cwd
 

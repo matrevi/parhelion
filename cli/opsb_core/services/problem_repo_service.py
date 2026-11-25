@@ -22,7 +22,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-DEFAULT_JUDGE_BASE = "https://judge.invalid"
+from ..device_env import device_text
+
+DEFAULT_JUDGE_BASE = device_text("judge_base")
 DEFAULT_GITCODE_HOST = "https://gitcode.com"
 _USER_AGENT = "parhelion/1.0 (problem bootstrap)"
 

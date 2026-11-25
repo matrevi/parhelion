@@ -372,7 +372,7 @@ def main():
         python=platform.python_version(),
         numpy=np.__version__,
         sdk=os.path.realpath(
-            os.environ.get("TOOLCHAIN_HOME", "/opt/driver/latest")
+            os.environ.get(os.environ.get("OPSB_HOME_ENV") or "TOOLCHAIN_HOME") or ""
         ),
         arch=cfg["arch"],
         device=cfg["device"],

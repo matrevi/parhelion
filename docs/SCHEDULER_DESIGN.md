@@ -1,6 +1,6 @@
 # Task Sequence Scheduler & 4-Stage Submission Gate — Architecture & Mathematical Design
 
-Embedded scheduling, admission-control, and statistical gating engine (`ops-supervisor/scheduler/`) powering **`OpsSupervisor.app`** and the **`opsb`** CLI across 10 concurrent Accel soc-a operator agents.
+Embedded scheduling, admission-control, and statistical gating engine (`ops-supervisor/scheduler/`) powering **`OpsSupervisor.app`** and the **`opsb`** CLI across 10 concurrent Accel SoC operator agents.
 
 ---
 
@@ -15,7 +15,7 @@ Our multi-agent operator workflow traverses three heterogeneous bottlenecks with
 [Stage A: 32-Core aarch64 Host CPU] ── cmake + compiler + walk_model.py (~25–45s, 32-way parallel)
    │  custom_opp_ubuntu_aarch64.run
    ▼
-[Stage B: Accel soc-a NPU Die Lock] ── 1–2 physical dies (85.7s – 861.5s exclusive per run)
+[Stage B: Accel SoC NPU Die Lock] ── 1–2 physical dies (85.7s – 861.5s exclusive per run)
    │  EXTENDED_PASSED + profiler Task Duration
    ▼
 [Stage C: Online Judging Platform]   ── 1 req / 190s rate limit · 50/day hard cap · mode = "latest"

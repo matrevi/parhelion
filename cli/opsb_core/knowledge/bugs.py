@@ -14,6 +14,7 @@ from ..config import (
     read_jsonl,
     workspace_state_dir,
 )
+from ..device_env import device_text
 from ..services.sync_reconciler import collapse_reconciled_outcomes
 from .store import _is_num, _with_index_lock, triad_kb_dirs
 
@@ -30,7 +31,7 @@ def sync_bugs(workspace: Path, *, noise_floor: float | None = None):
     ws = workspace.resolve()
     manifest = read_json(ws / "opsb.workspace.json", {})
     problems = manifest.get("problems") or read_json(
-        ws / "bench/problems.json", []
+        ws / device_text("work_prefix") / "problems.json", []
     )
     titles = {p["title"] for p in problems if isinstance(p, dict) and p.get("title")}
     ledger = ws / "results/submit-queue-outcome.jsonl"

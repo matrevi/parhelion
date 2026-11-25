@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
+from ..device_env import device_text
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
@@ -332,7 +333,7 @@ def _remote_problem_dir(workspace: Path, title: str) -> str:
             if contest:
                 root = f"/home/developer/work/{contest}"
     if not root:
-        root = "/srv/work"
+        root = device_text("work_root").rstrip("/") + "/" + device_text("work_prefix")
     return f"{root.rstrip('/')}/{title}"
 
 def run_test(args: argparse.Namespace) -> int:
@@ -396,15 +397,17 @@ def run_test(args: argparse.Namespace) -> int:
                 if not prob:
                     raise SystemExit(f"Unknown problem: {args.problem}")
                 sha = resolve_commit_sha(ws / prob["path"], getattr(args, "sha", None) or "HEAD") or ""
+                toolchain_dir = device_text("toolchain_dir")
+                soc = device_text("soc")
                 remote_sh = (
-                    f"set -e; source /opt/toolchain/latest/set_env.sh; "
+                    f"set -e; source {toolchain_dir}/set_env.sh; "
                     f"cd {_remote_problem_dir(ws, prob['title'])}; "
                     f"git fetch origin --prune && git checkout --detach --force {sha}; "
                     f"NCPU=$(nproc 2>/dev/null || echo 16); "
                     f"LIVE=$(ls ~/.opsb/cpu_builds/*.json 2>/dev/null | wc -l); [ \"$LIVE\" -lt 1 ] && LIVE=1; "
                     f"USABLE=$(( NCPU - (NCPU / 10 > 2 ? NCPU / 10 : 2) )); "
                     f"JOBS=$(( USABLE / LIVE )); [ \"$JOBS\" -lt 4 ] && JOBS=4; [ \"$JOBS\" -gt 16 ] && JOBS=16; "
-                    f"sed 's/COMPUTE_UNIT=.*/COMPUTE_UNIT=\"soc-a\"/' build.sh | bash -s -- -j\"$JOBS\""
+                    f"sed 's/COMPUTE_UNIT=.*/COMPUTE_UNIT=\"{soc}\"/' build.sh | bash -s -- -j\"$JOBS\""
                 )
                 return subprocess.call(["ssh", *SSH_CONTROL_OPTS, host, remote_sh])
         return subprocess.call(b_cmd, cwd=str(CLI_DIR.parent))

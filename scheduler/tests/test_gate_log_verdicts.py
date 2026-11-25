@@ -19,14 +19,19 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.gate import SubmissionGate, parse_log_verdicts  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
 
+#: Bench worktree prefix of the live workspace: configured, with the neutral default
+#: `bench` when nothing is configured.
+WORK_PREFIX = device_text("work_prefix")
+
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
     for cand in (start, *start.parents):
-        if (cand / "bench" / "problems.json").is_file():
+        if (cand / WORK_PREFIX / "problems.json").is_file():
             return cand
     return start.parent
 

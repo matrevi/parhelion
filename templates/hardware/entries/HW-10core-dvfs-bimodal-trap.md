@@ -9,10 +9,10 @@ regimes: [S_SMALL_CORE, M_MID_UB]
 dtypes: [float32, float16, bfloat16]
 ---
 
-# [ANTI-PATTERN] soc-a 10-Core (`SetBlockDim(10)`) Cold DVFS Bimodal Spike Trap
+# [ANTI-PATTERN] SoC 10-Core (`SetBlockDim(10)`) Cold DVFS Bimodal Spike Trap
 
 ## 1. Observed Hardware Failure Mechanism
-On soc-a, launching `10` AIV blocks triggers a reproducible **`~9 us` bimodal DVFS down-clocking latency spike** on the first 1–2 cold iterations (`run1 / run3 >= 1.45`). Standard warmed `profiler` medians (after 10+ warmup calls) completely mask this spike, causing unexpected regression under Judge's un-warmed **3-run evaluation protocol**.
+On the SoC, launching `10` AIV blocks triggers a reproducible **`~9 us` bimodal DVFS down-clocking latency spike** on the first 1–2 cold iterations (`run1 / run3 >= 1.45`). Standard warmed `profiler` medians (after 10+ warmup calls) completely mask this spike, causing unexpected regression under Judge's un-warmed **3-run evaluation protocol**.
 
 ## 2. Verified Silicon Evidence & Mitigation
 - **Observed**: `SyncBatchNormGatherStats V27 (73046fe)` stagnated under `10`-core mode; switching away from `10`-core (`V38 9c943d3`) dropped latency `5.26 -> 3.96 us` and lifted online score `72.26 -> 72.95`.

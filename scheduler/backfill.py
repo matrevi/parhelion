@@ -74,6 +74,20 @@ from typing import Any, Callable
 from .estimator import _parse_iso, parse_validation_perf
 from .parhelion_paths import atomic_write_json, read_json_safe, sanitize_json_value
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 # --------------------------------------------------------------------------------------
 # Lane / ticket constants — shared vocabulary with `npu_scheduler.py` and `tools/npu-test.py`
 # --------------------------------------------------------------------------------------
@@ -515,7 +529,7 @@ cache_days = float(cfg.get('cache_days') or 7.0)
 min_free_gb = float(cfg.get('min_free_gb') or 5.0)
 force_rebuild = bool(cfg.get('force_rebuild'))
 wt_root = pathlib.Path(cfg.get('worktree_root') or '/home/developer/work/.backfill')
-repo = pathlib.Path(cfg.get('repo') or ('/srv/work/' + title))
+repo = pathlib.Path(cfg.get('repo') or ('@@WORK_ROOT@@/@@WORK_PREFIX@@/' + title))
 wt = wt_root / ('%s-%s' % (title, sha[:8]))
 marker = wt / '.opsb_backfill_build.json'
 opsb_home = pathlib.Path.home() / '.opsb'
@@ -681,14 +695,14 @@ env = dict(os.environ)
 env['GIT_TERMINAL_PROMPT'] = '0'
 env['OPSB_BACKFILL'] = '1'
 env['OPSB_BACKFILL_BUCKETS'] = ','.join(buckets)
-set_env = '/opt/toolchain/latest/set_env.sh'
+set_env = '@@TOOLCHAIN_DIR@@/set_env.sh'
 soc = None
 try:
     with open(set_env) as fh:
         pass
     rc, out, _err = sh(['bash', '-c', 'source %s >/dev/null 2>&1; python3 - <<SOC\n'
                         'import ctypes\n'
-                        "acl = ctypes.CDLL('libruntime.so')\n"
+                        "acl = ctypes.CDLL('@@LIB_RUNTIME@@')\n"
                         'assert acl.aclInit(None) == 0\n'
                         'acl.aclrtGetSocName.restype = ctypes.c_char_p\n'
                         'print(acl.aclrtGetSocName().decode().lower())\n'
@@ -698,9 +712,9 @@ try:
 except Exception:
     soc = None
 res['runtime_soc'] = soc
-target = 'soc-b' if (soc or '').startswith('soc-b') else 'soc-a'
+target = '@@BUILD_TARGET_LEGACY@@' if (soc or '').startswith('@@BUILD_TARGET_LEGACY@@') else '@@BUILD_TARGET@@'
 
-# The Accel toolkit (`profiler`, `libruntime.so`, LD_LIBRARY_PATH) only exists inside the
+# The toolchain (`profiler`, runtime library, LD_LIBRARY_PATH) only exists inside the
 # sourced environment; the measuring harness is a direct child, so import that env once.
 try:
     rc, out, _err = sh(['bash', '-c',
@@ -733,7 +747,7 @@ else:
         pass
     build_cmd = (
         'set -o pipefail; source %s >/dev/null 2>&1; '
-        'sed "s/COMPUTE_UNIT=\\"soc-a\\"/COMPUTE_UNIT=\\"%s\\"/" build.sh | bash -s -- -j4'
+        'sed "s/COMPUTE_UNIT=\\"@@BUILD_TARGET@@\\"/COMPUTE_UNIT=\\"%s\\"/" build.sh | bash -s -- -j4'
         % (set_env, target)
     )
     try:
@@ -859,7 +873,7 @@ while slot is None:
     if am_top_ticket():
         for index in range(devices):
             try:
-                handle = (pathlib.Path('/home/developer/work') / ('bench-device%d.lock' % index)).open('a')
+                handle = (pathlib.Path('@@WORK_ROOT@@') / ('@@WORK_PREFIX@@-device%d.lock' % index)).open('a')
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 slot = (index, handle)
                 break
@@ -896,7 +910,7 @@ try:
 except Exception:
     pass
 
-env['VISIBLE_DEVICES'] = str(die_idx)
+env['@@VISIBLE_ENV@@'] = str(die_idx)
 TIMING_PREFIX = ('MS_PROF ', 'KPERF ', 'KPERF_JSON ', 'KERNEL_JSON ', 'KERNEL_PERF ',
                  'PERF ', 'PERF_JSON ', 'PROF_SUMMARY ', 'SPECTRUM_SUMMARY ', 'RUNTIME_SOC=')
 timing_lines = []
@@ -909,7 +923,7 @@ try:
             if uses_root and str(tool_path).startswith(str(repo)):
                 argv += ['--root', str(wt)]
             if supports_device:
-                # `VISIBLE_DEVICES` already masks us onto this die, so the
+                # `@@VISIBLE_ENV@@` already masks us onto this die, so the
                 # logical index the tool must open is always 0.
                 argv += ['--device', '0']
             log_f.write('### ' + ' '.join(argv) + '\n'); log_f.flush()
@@ -974,6 +988,26 @@ except Exception:
     pass
 emit(res)
 '''
+
+
+def _render_remote_backfill() -> str:
+    """Substitute deployment settings into the single-file ssh payload.
+
+    The remote session is shipped as one `python3 -c` source string, so it sdkot
+    import `opsb_core`: the configured work root/prefix, toolchain script, runtime
+    library, SoC names and visible-device env var are rendered here instead of being
+    baked in as literals.
+    """
+    return (
+        REMOTE_BACKFILL
+        .replace("@@WORK_ROOT@@", _dev("work_root"))
+        .replace("@@WORK_PREFIX@@", _dev("work_prefix"))
+        .replace("@@TOOLCHAIN_DIR@@", _dev("toolchain_dir"))
+        .replace("@@LIB_RUNTIME@@", _dev("lib_runtime"))
+        .replace("@@BUILD_TARGET_LEGACY@@", _dev("build_target_legacy"))
+        .replace("@@BUILD_TARGET@@", _dev("build_target"))
+        .replace("@@VISIBLE_ENV@@", _dev("visible_devices_env"))
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -1156,7 +1190,7 @@ class BackfillScheduler:
         if title in self._harness_cache:
             return self._harness_cache[title]
         text = ""
-        vdir = self.workspace / "bench" / title / "validation"
+        vdir = self.workspace / _dev("work_prefix") / title / "validation"
         if vdir.is_dir():
             chunks: list[str] = []
             for path in sorted(vdir.glob("*.py")):
@@ -1576,11 +1610,11 @@ class BackfillScheduler:
                 # host-enqueue / `dev_us` floors for hardware evidence (§6.5.1).
                 modality = "profiler"
             elif parsed.get("same_soc_exec_cases"):
-                ovh = 7.2 if soc == "soc-a" else 3.2
+                ovh = 7.2 if soc == _dev("soc") else 3.2
                 pool = {k: max(3.6, v - ovh) for k, v in parsed["same_soc_exec_cases"].items()}
                 modality = "exec_normalized"
             elif parsed.get("dev_event_cases"):
-                ovh = 5.2 if soc == "soc-a" else 1.8
+                ovh = 5.2 if soc == _dev("soc") else 1.8
                 pool = {k: max(3.6, v - ovh) for k, v in parsed["dev_event_cases"].items()}
                 modality = "dev_normalized"
             measured = {b: pool[b] for b in job["buckets"] if b in pool and pool[b] > 0}
@@ -1826,7 +1860,7 @@ class BackfillScheduler:
     # -- remote transport --------------------------------------------------------
     def _build_runner_cfg(self, job: dict[str, Any], adm: dict[str, Any]) -> dict[str, Any]:
         cfg = self.config()
-        repo_dir = self.workspace / "bench" / str(job["title"])
+        repo_dir = self.workspace / _dev("work_prefix") / str(job["title"])
         plan = build_measurement_plan(
             repo_dir,
             [str(b) for b in job["buckets"]],
@@ -1887,7 +1921,7 @@ class BackfillScheduler:
             "-o",
             "ControlPersist=120",
             self.npu_host,
-            "python3 -c " + shlex.quote(REMOTE_BACKFILL),
+            "python3 -c " + shlex.quote(_render_remote_backfill()),
         ]
         timeout = (
             float(cfg.get("wait_sec") or 0.0)

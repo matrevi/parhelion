@@ -12,6 +12,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
+from ..device_env import device_text
+
 NON_TERMINAL_JUDGE_STATUSES = {
     "Running",
     "Queued",
@@ -79,7 +81,7 @@ def fetch_json_with_cookie(base_url: str, cookie: str, path: str, timeout: float
 
 
 def resolve_problem_id(workspace: Path, title: str) -> str | None:
-    for cand in (workspace / "opsb.workspace.json", workspace / "bench" / "problems.json"):
+    for cand in (workspace / "opsb.workspace.json", workspace / device_text("work_prefix") / "problems.json"):
         data = _read_json(cand)
         probs = data.get("problems") if isinstance(data, dict) else data
         if isinstance(probs, list):

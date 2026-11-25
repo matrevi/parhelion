@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
+from ..device_env import device_text
 from ..services.breakthrough_service import load_catalog
 from ..services.calibration_service import build_problem_calibration
 from ..services.contest_service import index_submission_history, load_slim_boards, resolve_workspace_meta
@@ -26,7 +27,7 @@ def resolve_problem_repo(workspace: Path, problem: str) -> tuple[str, Path, dict
         title = str(matched["title"])
         rel = str(matched.get("path") or title)
         return title, (ws / rel).resolve(), matched
-    for cand in (ws / problem, ws / "bench" / problem):
+    for cand in (ws / problem, ws / device_text("work_prefix") / problem):
         if cand.is_dir():
             return cand.name, cand.resolve(), None
     return problem, (ws / problem).resolve(), None

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import read_json, utc_now
+from ..device_env import device_text
 from .common import _DTYPE_ALIASES, VALID_OPERATOR_FAMILIES, _atomic_write_json, _bench_specs_dir, _resolve_problem_info
 
 _HIDDEN_WEIGHTS = {"S_SMALL_CORE": 0.30, "M_MID_UB": 0.35, "L_HBM_TILED": 0.20, "X_EXTREME": 0.15}
@@ -191,7 +192,7 @@ def scaffold_bench_specs(
             _atomic_write_json(perf_path, {
                 "problem": canonical_title, "version": "2.0", "append_only": True, "operator_family": fam,
                 "protocol": {"profiler": "profiler_single_session", "warmup": 2, "repeat": 5, "sync_per_iter": True, "metric": "task_duration_median_us"},
-                "hardware_roofline": {"soc": "soc-a", "hbm_bw_gbps": 724.0, "aiv_cores": 40, "launch_floor_us": 3.35},
+                "hardware_roofline": {"soc": device_text("soc"), "hbm_bw_gbps": 724.0, "aiv_cores": 40, "launch_floor_us": 3.35},
                 "strata_priors": {"PUBLIC": 0.10, "S_SMALL_CORE": 0.27, "M_MID_UB": 0.315, "L_HBM_TILED": 0.18, "X_EXTREME": 0.135},
                 "public_anchors": cand_public, "hidden_buckets": cand_hidden, "scaffolded_at": now_iso,
             })

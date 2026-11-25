@@ -5,7 +5,7 @@
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.
 IMPORTANT:
 - Never acquires, opens for write, or calls flock/fcntl on any `.lock` file.
-- Connects directly to `/opt/driver/driver/lib64/driver/libdevmgr.so` via ctypes.
+- Connects directly to `<driver-root>/driver/lib64/driver/<dcmi-lib>` via ctypes.
 - Falls back to 3s-cached `npu-smi` automatically if DCMI fails or mismatches.
 - Keeps `/proc/stat` delta, `telemetry_ring` history, and `die_ledger.jsonl` cache in memory.
 - Emits single-line compact NDJSON frames in `--stream` mode (`< 5 ms` per frame).
@@ -30,6 +30,78 @@ if __package__:
     from .npu_probe import estimate_waits, host_case_tasks, unregistered_holder
 else:
     from npu_probe import estimate_waits, host_case_tasks, unregistered_holder
+
+# --------------------------------------------------------------------------- #
+# Deployment facts (SoC, toolchain, driver and remote work roots)
+# --------------------------------------------------------------------------- #
+# Neutral fallbacks; the real deployment facts live in ~/.parhelion/config.json
+# ("device").  The resolver is deliberately self-contained and stdlib-only: this
+# file is deployed to the compute host as one script, where the CLI package is
+# not importable, so it must never import `opsb_core`.
+_DEVICE_DEFAULTS: dict[str, Any] = {
+    "soc": "soc-a",
+    "soc_legacy": "soc-b",
+    "build_target": "soc-a",
+    "build_target_legacy": "soc-b",
+    "arch": "arch-v1",
+    "toolchain_env": "",
+    "toolchain_root": "",
+    "toolchain_dir": "",
+    "sdk_glob": "sdk-*",
+    "driver_root": "",
+    "driver_lib_dirs": [],
+    "driver_libs": {},
+    "dcmi_lib": "",
+    "driver_version_info": "",
+    "toolkit_info": "toolkit_install.info",
+    "toolkit_name": "toolkit",
+    "lib_runtime": "libruntime.so",
+    "visible_devices_env": "VISIBLE_DEVICES",
+    "extra_ops_env": "EXTRA_OPS_PATH",
+    "toolchain_home_env": "TOOLCHAIN_HOME",
+    "tpl_env": "TPL_SEL",
+    "tpl_prefix": "TPL_",
+    "profiler_bin": "profiler",
+    "profiler_acl_flag": "--acl",
+    "judge_base": "https://judge.invalid",
+    "judge_bot": "judge-bot",
+    "work_root": "/srv/work",
+    "work_prefix": "bench",
+    "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
+    "contest_org": "",
+    "contest_track": "",
+}
+
+
+def _device_settings() -> dict[str, Any]:
+    """Deployment facts for this host (config file < `OPSB_DEVICE_<KEY>` env override)."""
+    if os.environ.get("OPSB_DEVICE_ISOLATED") == "1":
+        return {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEVICE_DEFAULTS.items()}
+    merged: dict[str, Any] = {k: (dict(v) if isinstance(v, dict) else v) for k, v in _DEVICE_DEFAULTS.items()}
+    try:
+        raw = json.loads((pathlib.Path.home() / ".parhelion" / "config.json").read_text(encoding="utf-8"))
+        sect = raw.get("device") if isinstance(raw, dict) else None
+        if isinstance(sect, dict):
+            for key, value in sect.items():
+                if key in merged and value not in (None, ""):
+                    merged[key] = value
+    except Exception:
+        pass
+    for key in list(merged):
+        raw_env = os.environ.get("OPSB_DEVICE_" + key.upper())
+        if raw_env:
+            merged[key] = raw_env
+    return merged
+
+
+DEVICE = _device_settings()
+
+
+def device_text(key: str) -> str:
+    """One deployment fact as text (empty string when unset or not textual)."""
+    value = DEVICE.get(key, "")
+    return value if isinstance(value, str) else ""
+
 
 KNOWN_PROBLEMS = [
     "ConcatD",
@@ -65,15 +137,34 @@ DCMI_UTILIZATION_RATE_CTRLCPU = 4
 DCMI_UTILIZATION_RATE_HBM_BANDWIDTH = 10
 DCMI_UTILIZATION_RATE_VECTORCORE = 12
 
+#: Driver library file names, configured per deployment (empty entries are skipped, never faked).
+_DRIVER_LIBS: dict[str, str] = DEVICE.get("driver_libs") if isinstance(DEVICE.get("driver_libs"), dict) else {}
+
+
+def _driver_lib_path(subdir: str, key: str) -> str:
+    """`<driver-root>/driver/lib64/<subdir>/<lib>` for one configured library, else `""`."""
+    name = _DRIVER_LIBS.get(key) or ""
+    if not name:
+        return ""
+    return f"{device_text('driver_root')}/driver/lib64/{subdir}/{name}"
+
+
+# Loaded RTLD_GLOBAL in this order: the base HAL must come before the HAL that layers on it.
 DCMI_PRELOAD_LIBS = [
-    "/opt/driver/driver/lib64/common/libsec.so",
-    "/opt/driver/driver/lib64/common/libmpa.so",
-    "/opt/driver/driver/lib64/driver/libhal.so",
-    "/opt/driver/driver/lib64/driver/libhal.so",
-    "/opt/driver/driver/lib64/driver/libdsmi_host.so",
+    lib
+    for lib in (
+        _driver_lib_path("common", "sec"),
+        _driver_lib_path("common", "mpa"),
+        _driver_lib_path("driver", "base_hal"),
+        _driver_lib_path("driver", "hal"),
+        _driver_lib_path("driver", "dsmi"),
+    )
+    if lib
 ]
-DCMI_LIB_PATH = "/opt/driver/driver/lib64/driver/libdevmgr.so"
-DRIVER_VERSION_INFO = pathlib.Path("/opt/driver/driver/version.info")
+# The DCMI library itself: an explicit `dcmi_lib` wins, else the `dcmi` driver-lib entry.
+_DCMI_LIB_NAME = device_text("dcmi_lib") or str(_DRIVER_LIBS.get("dcmi") or "")
+DCMI_LIB_PATH = f"{device_text('driver_root')}/driver/lib64/driver/{_DCMI_LIB_NAME}" if _DCMI_LIB_NAME else ""
+DRIVER_VERSION_INFO = pathlib.Path(f"{device_text('driver_root')}/driver/version.info")
 
 
 class _DcmiChipInfo(ctypes.Structure):
@@ -273,7 +364,7 @@ class DcmiProbe:
             cn = ci.chip_name.decode("utf-8", "replace").strip("\x00 ").strip()
             if cn:
                 return cn if cn.lower().startswith("accel") else f"{ct or 'Accel'}{cn}"
-        return "soc-a"
+        return device_text("soc")
 
     @staticmethod
     def _read_bus_id(lib: Any, cid: int, did: int) -> str:
@@ -489,9 +580,10 @@ def read_memory() -> dict[str, Any]:
 
 
 def read_sdk_version() -> str:
+    toolchain_dir = device_text("toolchain_dir")
     candidates = [
-        pathlib.Path("/opt/toolchain/latest/latest/aarch64-linux/toolkit_install.info"),
-        pathlib.Path("/opt/driver//opt/toolchain/latest/aarch64-linux/toolkit_install.info"),
+        pathlib.Path(f"{toolchain_dir}/latest/aarch64-linux/{device_text('toolkit_info')}"),
+        pathlib.Path(f"{device_text('driver_root')}/{device_text('toolkit_name')}/latest/aarch64-linux/{device_text('toolkit_info')}"),
     ]
     for p in candidates:
         try:
@@ -506,11 +598,12 @@ def read_sdk_version() -> str:
 
 def read_npu_smi_fallback() -> dict[str, Any]:
     env = os.environ.copy()
+    driver_root = device_text("driver_root")
     lib_paths = [
-        "/opt/driver/driver/lib64",
-        "/opt/driver/driver/lib64/common",
-        "/opt/driver/driver/lib64/driver",
-        "/opt/toolchain/latest/latest/lib64",
+        f"{driver_root}/driver/lib64",
+        f"{driver_root}/driver/lib64/common",
+        f"{driver_root}/driver/lib64/driver",
+        f"{device_text('toolchain_dir')}/latest/lib64",
     ]
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = ":".join(lib_paths + ([existing] if existing else []))
@@ -700,11 +793,12 @@ def _known_lock_inodes() -> tuple[dict[tuple[int, int], str], dict[int, str]]:
         return _LOCK_INODE_CACHE[1], _LOCK_INODE_CACHE[2]
     by_dev_ino: dict[tuple[int, int], str] = {}
     by_ino: dict[int, str] = {}
-    work_root = pathlib.Path("/home/developer/work")
+    work_root = pathlib.Path(device_text("work_root"))
+    work_prefix = device_text("work_prefix")
     candidates = [
-        work_root / "bench-device0.lock",
-        work_root / "bench-device1.lock",
-        work_root / "bench-validation.lock",
+        work_root / f"{work_prefix}-device0.lock",
+        work_root / f"{work_prefix}-device1.lock",
+        work_root / f"{work_prefix}-validation.lock",
     ]
     for p in candidates:
         try:
@@ -805,7 +899,7 @@ def _collect_op_ancestors(root_pid: int, procs: dict[int, dict[str, Any]], max_d
         low = cmd.lower()
         if not (
             _is_driver_wrapper(cmd)
-            or any(tok in low for tok in ("bench", "npu-test", "validation", "build.sh", "backfill", "arena", "flock", "opsb"))
+            or any(tok in low for tok in (device_text("work_prefix"), "npu-test", "validation", "build.sh", "backfill", "arena", "flock", "opsb"))
         ):
             break
         ancestors.add(cur)
@@ -827,6 +921,7 @@ def _collect_tree_and_driver_peers(root_pid: int, procs: dict[int, dict[str, Any
 def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> tuple[str | None, str | None]:
     problem: str | None = None
     sha: str | None = None
+    results_re = re.compile(rf"(?:{re.escape(device_text('work_prefix'))}|[\w.-]+)-results/[^/]+/([0-9a-f]{{7,40}})")
     for pid in pids:
         raw_cmd = procs.get(pid, {}).get("cmd", "")
         cmd = "" if _is_driver_wrapper(raw_cmd) else raw_cmd
@@ -845,7 +940,7 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
             if m40:
                 sha = m40.group(1)
             else:
-                m_res = re.search(r"(?:bench|[\w.-]+)-results/[^/]+/([0-9a-f]{7,40})", cmd)
+                m_res = results_re.search(cmd)
                 if m_res:
                     sha = m_res.group(1)
         if not _is_driver_wrapper(raw_cmd) and (not problem or not sha):
@@ -857,7 +952,7 @@ def infer_problem_and_sha(pids: list[int], procs: dict[int, dict[str, Any]]) -> 
                             problem = p_name
                             break
                 if problem and not sha:
-                    head_file = pathlib.Path(f"/srv/work/{problem}/.git/HEAD")
+                    head_file = pathlib.Path(f"{device_text('work_root')}/{device_text('work_prefix')}/{problem}/.git/HEAD")
                     if head_file.is_file():
                         htxt = head_file.read_text().strip()
                         if re.match(r"^[0-9a-f]{40}$", htxt):
@@ -1119,6 +1214,9 @@ class StreamProbeSession:
     def sample_frame(self) -> dict[str, Any]:
         t0 = time.monotonic()
         now_epoch = time.time()
+        # Die-lock files are siblings of the work root, named after the work prefix.
+        work_root = device_text("work_root")
+        work_prefix = device_text("work_prefix")
 
         # 1. NPU hardware telemetry via DCMI (or 3s-cached npu-smi fallback)
         probe_backend = "dcmi"
@@ -1263,7 +1361,7 @@ class StreamProbeSession:
                     stage, detail, prob, sha = "UNREGISTERED", "Device lock without a platform session", label or prob, None
                 lock_entry: dict[str, Any] = {
                     "die": die_idx,
-                    "lock_path": f"/srv/work-device{die_idx}.lock",
+                    "lock_path": f"{work_root}/{work_prefix}-device{die_idx}.lock",
                     "state": "HELD",
                     "holder_pid": h_pid,
                     "problem": prob or "Unknown",
@@ -1295,7 +1393,7 @@ class StreamProbeSession:
                 die_locks_info.append(
                     {
                         "die": die_idx,
-                        "lock_path": f"/srv/work-device{die_idx}.lock",
+                        "lock_path": f"{work_root}/{work_prefix}-device{die_idx}.lock",
                         "state": "FREE",
                         "holder_pid": None,
                         "problem": None,
@@ -1492,7 +1590,7 @@ class StreamProbeSession:
             else {
                 "npu_id": 0,
                 "chip_id": 0,
-                "soc_name": "soc-a",
+                "soc_name": device_text("soc"),
                 "health": "Unknown",
                 "bus_id": "",
                 "power_w": None,

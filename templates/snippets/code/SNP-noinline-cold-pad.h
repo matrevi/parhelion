@@ -1,8 +1,8 @@
 #pragma once
 // SNP-noinline-cold-pad.h
-// soc-a I-Cache Diet (<8 KB Hot .text) + Deduplicated noinline DataCopyPad
+// SoC I-Cache Diet (<8 KB Hot .text) + Deduplicated noinline DataCopyPad
 //
-// Why: soc-a has a 32 KB L1 I-Cache and Judge scores 3 cold runs.
+// Why: the SoC has a 32 KB L1 I-Cache and Judge scores 3 cold runs.
 // Expanding DataCopyPad / fallback branches inline across multiple schModes bloats
 // .o size (up to 172 KB) and adds +1.5 to +2.8 us cold I-Cache miss tax (plus
 // 420s compile TLE risk). Isolating unaligned/fallback paths into static

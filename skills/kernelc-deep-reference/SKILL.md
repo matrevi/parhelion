@@ -1,13 +1,13 @@
 ---
 name: kernelc-deep-reference
-description: Optional fallback reference for KernelC soc-a hardware pitfalls (DataCopyPad alignment, PipeBarrier hazards, fp32 accumulation, profiler device timing, and 50-case tbest/time contest optimization). Normal workflow uses AGENTS.md + `opsb` CLI directly.
+description: Optional fallback reference for KernelC SoC hardware pitfalls (DataCopyPad alignment, PipeBarrier hazards, fp32 accumulation, profiler device timing, and 50-case tbest/time contest optimization). Normal workflow uses AGENTS.md + `opsb` CLI directly.
 ---
 
-# KernelC soc-a Contest Optimization · Deep Fallback Reference
+# KernelC SoC Contest Optimization · Deep Fallback Reference
 
-> **Architecture Note**: For standard problem reading, NPU testing, and gated submission, follow the workspace's **`AGENTS.md`** and run `opsb test` / `opsb submit` / `opsb history` directly. Load this skill **only** when debugging subtle Accel soc-a (`soc-a`) hardware/ISA behavior or breaking through a roofline plateau.
+> **Architecture Note**: For standard problem reading, NPU testing, and gated submission, follow the workspace's **`AGENTS.md`** and run `opsb test` / `opsb submit` / `opsb history` directly. Load this skill **only** when debugging subtle Accel SoC (`soc-a`) hardware/ISA behavior or breaking through a roofline plateau.
 
-## 1. Hardware Ground Truth (Accel soc-a · SDK 9.1.0)
+## 1. Hardware Ground Truth (Accel SoC · SDK 9.1.0)
 - **Compute Units**: Up to `20` AI Cores (`40` Vector AIV cores in `KERNEL_TYPE_AIV_ONLY`), `192 KB` Unified Buffer (UB) per AIV.
 - **32-Byte Alignment Rule**: All UB addresses and standard `DataCopy` lengths must be multiples of `32 B` (`8 × fp32` or `16 × fp16/bf16`). Always use `DataCopyExtParams` + `DataCopyPad` for unaligned GM tails, and place any sentinel/scratch buffers at least `32 B` past the padded write region so `DataCopyPad` tail padding never clobbers sentinels.
 - **Launch & Prologue Floor**: Bare device kernel dispatch is `~3.4–4.2 µs`, plus `~65–70 ns` per launched block. On small shapes (`< 64 KB`), shrink `blockDim` to `1..4` and replace tiny GM descriptor DMAs with packed prologue scalar loads.

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import parse_iso, read_json, read_jsonl, utc_now
+from ..device_env import device_text
 from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 
 
@@ -26,7 +27,7 @@ def read_cookie_session(session_file: Path) -> tuple[str, str, str] | None:
         data = json.loads(session_file.read_text(encoding="utf-8"))
     except Exception:
         return None
-    base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+    base = str(data.get("base_url") or device_text("judge_base")).rstrip("/")
     uid = str(data.get("user_id") or "")
     cookies = [
         f"{r['name']}={r['value']}"

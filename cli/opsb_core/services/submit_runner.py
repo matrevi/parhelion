@@ -21,6 +21,7 @@ class _CooldownReservationCancelled(BaseException):
     """Raised when a sleeping `waiting_cooldown` worker is cleanly replaced by another jump-submit."""
 
 from ..config import CLI_DIR, CONFIG_DIR, DEFAULT_CONFIG, LOGS_DIR, ConfigRepository, _resolve_parhelion_home, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..device_env import device_text
 from .auth_service import list_judge_accounts
 from .inflight_io import (
     inflight_pid,
@@ -1034,11 +1035,11 @@ def _submit_via_worktree(
 
         problems = load_problem_manifest(workspace)
     except Exception:
-        problems = read_json(workspace / "bench" / "problems.json", [])
+        problems = read_json(workspace / device_text("work_prefix") / "problems.json", [])
     p_meta = next((p for p in problems if p.get("title") == title), {"path": title})
     repo = workspace / str(p_meta.get("path") or title)
-    if not (repo / ".git").is_dir() and (workspace / "bench" / title).is_dir():
-        repo = workspace / "bench" / title
+    if not (repo / ".git").is_dir() and (workspace / device_text("work_prefix") / title).is_dir():
+        repo = workspace / device_text("work_prefix") / title
     safe_aid = re.sub(r"[^A-Za-z0-9_-]", "", account_id or "primary") or "primary"
     worktree = Path("/tmp") / f"opsb-submit-{title}-{safe_aid}"
     venv_py = workspace / ".venv" / "bin" / "python"

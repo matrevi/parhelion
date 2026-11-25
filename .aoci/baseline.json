@@ -1491,11 +1491,6 @@
       "size": 13189,
       "normalized_sha256": "f4b8a36d4e17039d073a8814f033ced58213b8310cdc25777e4b65cdebb3fd2d"
     },
-    "scripts/assets/logo.png": {
-      "role": "index",
-      "sha256": "ea584d6ac2e98fc6405612d4dcacfc95766e216d33e2ca339c8870fe8d3ab16b",
-      "size": 14721
-    },
     "scripts/build_dmg.sh": {
       "role": "index",
       "sha256": "f0df61cf4e04057573e8e4c429e20158a6a2cf999e072be03f49ea412c4cc685",

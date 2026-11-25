@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..config import CONFIG_DIR, DEFAULT_CONFIG, SESSIONS_DIR, ConfigRepository, _resolve_parhelion_home, parse_iso, read_json, read_jsonl, utc_now
+from ..device_env import device_text
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.auth_service import get_auth_status, list_judge_accounts
 from ..services.backfill_status_service import probe_backfill_compact
@@ -143,7 +144,7 @@ class _WorkspaceStateEntry:
         if self._problem_paths is not None:
             return self._problem_paths
         meta = resolve_workspace_meta(self.workspace)
-        self._problem_paths = [str(p.get("path") or f"bench/{p['title']}") for p in meta.get("problems", [])]
+        self._problem_paths = [str(p.get("path") or f"{device_text('work_prefix')}/{p['title']}") for p in meta.get("problems", [])]
         return self._problem_paths
 
     def compute_cold_fingerprint(self) -> str:

@@ -35,6 +35,20 @@ import statistics
 import subprocess
 from typing import Any
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 # Measured platform constants (from results/scoring-rules.md & 8-day snapshot telemetry)
 SIGMA_HIDDEN_JITTER: float = 2.70           # pts per re-run on identical source
 RESIDUAL_PRE_ACTIVE_DRIFT_HR: float = 0.015  # pts/hr residual tbest tightening over (t_active - t_cand)
@@ -193,7 +207,7 @@ def _parse_iso(ts: str | None) -> datetime.datetime | None:
 def resolve_sha(workspace: pathlib.Path, title: str, sha_prefix: str | None) -> str:
     """Normalize a short or symbolic SHA to its canonical 40-char commit hash."""
     repo = workspace / next((r["path"] for r in load_problem_manifest(workspace) if r["title"]==title),
-                            f"bench/{title}")
+                            f"{_dev('work_prefix')}/{title}")
     if not sha_prefix:
         if (repo / ".git").exists():
             res = subprocess.run(
@@ -333,9 +347,9 @@ def parse_validation_perf(log_text: str) -> dict[str, Any]:
          `<kernel>:median` key used to collide with a literal `bench-specs` bucket id and turn a
          parser artifact into a fake "paired" bucket (see `SCHEDULER_DESIGN.md` §6.5.1).
          Hardware always wins over `aclrtRecordEvent` (`dev_us`), which hits a ~12.5 us
-         host-enqueue floor on `soc-a`.
+         host-enqueue floor on the local SoC.
       2. `same_soc_exec_cases`: `exec=` timings (`> 0 us`) safe ONLY when paired against a
-         same-`RUNTIME_SOC` baseline above the `11.5 us` `soc-a` enqueue floor.
+         same-`RUNTIME_SOC` baseline above the `11.5 us` SoC enqueue floor.
       3. `exec_cases`: compute-bound `exec >= 150.0 us` fallback when comparing across SoC epochs.
       4. `dev_event_cases`: `dev_us` (`aclrtRecordEvent`), used only when `profiler_cases` is empty
          AND `runtime_soc` matches between candidate and baseline.
@@ -725,7 +739,7 @@ class ScoreEstimator:
     def _load_problems(self) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         # Clean-agents-first workspaces carry the roster in opsb.workspace.json; the legacy
-        # bench/problems.json path is only the fallback. Reading a single hard-coded
+        # `<work-prefix>/problems.json` path is only the fallback. Reading a single hard-coded
         # path made every newly scraped contest fall back to the old 10-problem roster.
         for item in load_problem_manifest(self.workspace):
             title = str(item.get("title") or "")
@@ -745,7 +759,7 @@ class ScoreEstimator:
                 pass
         if not out:
             for title, diff in PROBLEM_DIFFICULTY.items():
-                out[title] = {"title": title, "difficulty": diff, "path": f"bench/{title}"}
+                out[title] = {"title": title, "difficulty": diff, "path": f"{_dev('work_prefix')}/{title}"}
         return out
 
     def _load_public_tbest(self) -> dict[str, list[float]]:
@@ -1178,7 +1192,7 @@ class ScoreEstimator:
     ) -> tuple[str | None, dict[str, Any]]:
         """Prefer a baseline validation on the same `RUNTIME_SOC` as `cand_sha`.
 
-        Avoids cross-SoC (`soc-b` vs `soc-a`) host-enqueue floor mismatches
+        Avoids cross-SoC (legacy vs current SoC) host-enqueue floor mismatches
         (~7.0 us vs ~11.1-12.5 us) by matching:
           1. `default_base_sha` itself if validated on `cand_soc`
           2. Any passing `cand_soc` validation whose comment-stripped `op_host`/`op_kernel`
@@ -1243,7 +1257,7 @@ class ScoreEstimator:
             return default_base_sha, base_perf
 
         same_soc_runs.sort(key=lambda x: (x[0], str(x[1])))
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / _dev("work_prefix") / title
         target_fp = _code_fingerprint(repo, default_base_sha)
         if target_fp:
             for _fts, sha_d, p_info in reversed(same_soc_runs):
@@ -1319,8 +1333,8 @@ class ScoreEstimator:
             # they name no case, so there is no A/B pairing.  Do not silently substitute the
             # host-enqueue (`exec=`) or `aclrtRecordEvent` (`dev_us`) floors for them.
             pair_kind = "prof_summary_aggregate"
-        elif same_soc and cand_perf.get("runtime_soc") == "soc-a" and cand_perf.get("same_soc_exec_cases") and base_perf.get("same_soc_exec_cases"):
-            # Same-SoC exec= pairing on soc-a (> 11.5 us above 11.1 us enqueue floor)
+        elif same_soc and cand_perf.get("runtime_soc") == _dev("soc") and cand_perf.get("same_soc_exec_cases") and base_perf.get("same_soc_exec_cases"):
+            # Same-SoC exec= pairing on the configured SoC (> 11.5 us above 11.1 us enqueue floor)
             floor_thresh = 11.5
             exec_floor_us = 11.1
             for k_c in set(cand_perf["same_soc_exec_cases"]).intersection(base_perf["same_soc_exec_cases"]):
@@ -1331,7 +1345,7 @@ class ScoreEstimator:
                     pair_cand_cases[k_c] = max(exec_floor_us, tc)
             pair_kind = f"same_soc_exec({cand_perf['runtime_soc']})"
         elif same_soc and cand_perf.get("dev_event_cases") and base_perf.get("dev_event_cases"):
-            floor_thresh = 13.0 if cand_perf.get("runtime_soc") == "soc-a" else 7.8
+            floor_thresh = 13.0 if cand_perf.get("runtime_soc") == _dev("soc") else 7.8
             for k_c in set(cand_perf["dev_event_cases"]).intersection(base_perf["dev_event_cases"]):
                 tb = base_perf["dev_event_cases"][k_c]
                 tc = cand_perf["dev_event_cases"][k_c]
@@ -1392,9 +1406,9 @@ class ScoreEstimator:
             and (
                 canonical_sha == ledger.active_board_sha
                 or (
-                    _code_fingerprint(self.workspace / "bench" / title, canonical_sha) is not None
-                    and _code_fingerprint(self.workspace / "bench" / title, canonical_sha)
-                    == _code_fingerprint(self.workspace / "bench" / title, ledger.active_board_sha)
+                    _code_fingerprint(self.workspace / _dev("work_prefix") / title, canonical_sha) is not None
+                    and _code_fingerprint(self.workspace / _dev("work_prefix") / title, canonical_sha)
+                    == _code_fingerprint(self.workspace / _dev("work_prefix") / title, ledger.active_board_sha)
                 )
             )
         ):

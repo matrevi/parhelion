@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, breakthrough_dir, read_json, utc_now
+from ..device_env import device_text
 from .git_fast import read_commit_subject
 
 VALID_CATEGORIES = (
@@ -347,9 +348,9 @@ def sync_breakthroughs_from_items(
             continue
 
         p_meta = problems_by_title.get(prob, {})
-        repo_dir = workspace / p_meta.get("path", f"bench/{prob}")
+        repo_dir = workspace / p_meta.get("path", f"{device_text('work_prefix')}/{prob}")
         if not repo_dir.is_dir():
-            repo_dir = workspace / "bench" / prob
+            repo_dir = workspace / device_text("work_prefix") / prob
         subj = read_commit_subject(repo_dir, sha) if repo_dir.is_dir() else ""
         body = _read_commit_body(repo_dir, sha)
         note = str(item.get("note") or "")

@@ -26,6 +26,7 @@ from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from typing import Any, Callable
 
 from ..config import SUPERVISOR_ROOT, invalidate_ttl_cache, parse_iso, read_json, read_jsonl, resolve_python_exe, utc_now
+from ..device_env import device_text
 
 DEFAULT_STALE_HOURS = 24.0
 DEFAULT_SCORE_DRIFT_PTS = 0.5
@@ -54,7 +55,7 @@ def _session_info() -> tuple[str, str, str]:
     ]
     path = next((Path(c).expanduser() for c in candidates if c and Path(c).expanduser().is_file()), Path.home() / ".judge" / "session.json")
     data = json.loads(path.read_text(encoding="utf-8"))
-    base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+    base = str(data.get("base_url") or device_text("judge_base")).rstrip("/")
     user_id = str(data.get("user_id") or "")
     jar = []
     for rec in data.get("cookies") or []:
@@ -88,7 +89,7 @@ def _all_team_sessions() -> list[tuple[str, str, str]]:
             data = json.loads(p.read_text(encoding="utf-8"))
         except Exception:
             continue
-        base = str(data.get("base_url") or "https://judge.invalid").rstrip("/")
+        base = str(data.get("base_url") or device_text("judge_base")).rstrip("/")
         uid = str(data.get("user_id") or "")
         jar = "; ".join(
             f"{rec['name']}={rec['value']}"

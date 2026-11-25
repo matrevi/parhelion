@@ -1,6 +1,6 @@
 #pragma once
 // SNP-transdata-5hd-transpose.h
-// soc-a Hardware 16x16 SIMD Transpose / Interleave via TransDataTo5HD<uint16_t>
+// SoC Hardware 16x16 SIMD Transpose / Interleave via TransDataTo5HD<uint16_t>
 //
 // Why: Replaces scalar element loops, slow Gather, or serial row reductions (such as
 // column-wise bf16 accumulation or N-way narrow tensor interleaving) with fixed-function

@@ -6,7 +6,7 @@
 ---
 
 ## 1. Goals
-Close the 4 highest-cost feedback blind spots observed on soc-a / Judge:
+Close the 4 highest-cost feedback blind spots observed on the SoC / Judge:
 1. **`elf_guard`**: Detect bloated `.o`/`.text` (> 32 KB I-cache tax) and excessive template instantiations (420s judge compile TLE) immediately after every build.
 2. **`cold3_probe`**: Quantify true un-warmed 3-run cold-start latency (`cold_3run_mean_us`, `first_iter_us`, `cold_spread_us`) matching Judge's 3-run scoring protocol, catching 10-core DVFS bimodal spikes early.
 3. **`pmu_torch_card`**: Produce a single concise, machine-readable + human-readable diagnostic card combining `ours / torch` per-bucket ratios with PMU pipe counters (`MTE2`, `MTE3`, `PIPE_V`, `Scalar`, `BankConflict`) and Top-3 actionable bottleneck buckets.

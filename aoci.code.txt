@@ -215,7 +215,7 @@ REFACTOR_MODULAR_LAYOUT.md[SA5T]: F:记录v3模块化拆分蓝图要求fast_feed
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
 judge_cli.py[IN8L]: F:Judge官方HTTP客户端封装登录,模板拉取,多模式打包提交,轮询与排行榜查询CLI | R:code:runtime/judge/session_store.py,code:runtime/judge/project_files.py,code:runtime/judge/ict_cli.py | A:JudgeError,JudgeClient,save_captcha_svg,decrypt_password,main | S:会话仅存user_id与cookie且有效期7天;submit_payload校验userId一致并要求响应必含submissionId
 encrypt_password.py[CS3T]: F:交互式读取Judge密码并使用RSA PKCS1_v1_5公钥加密输出密文 | R:- | A:encrypt_password,main | S:-
-ict_cli.py[IN7T]: F:ICT竞赛多文件gitcode_template提交适配器覆盖JudgeClient并校验只读模板未被篡改 | R:code:runtime/judge/judge_cli.py,code:runtime/judge/project_files.py | A:collect_ict_files,ICTClient | S:提交前逐一比对只读模板与manifest problem_id,且将123.249.115.173规范化映射为judge.invalid
+ict_cli.py[IN7T]: F:ICT竞赛多文件gitcode_template提交适配器覆盖JudgeClient并校验只读模板未被篡改 | R:code:runtime/judge/judge_cli.py,code:runtime/judge/project_files.py | A:collect_ict_files,ICTClient | S:提交前逐一比对只读模板与manifest problem_id,且将123.249.115.173规范化映射为配置的评测平台域名
 project_files.py[PS7S]: F:安全解压Judge工程zip并校验收集可编辑核函数/注册表源码以防路径穿越与篡改 | R:code:runtime/judge/ict_cli.py | A:relative_path,template_files,extract_package,locate_root,collect_kernel_files,collect_registry_files | S:严禁符号链接,zip炸弹(>256MiB),单文件>4MiB与修改main.asc/judge.asc/data_utils.h
 session_store.py[PS7T]: F:跨平台原子读写Judge登录会话Cookie文件(POSIX 0600与Windows DPAPI) | R:code:runtime/judge/judge_cli.py | A:DEFAULT_SESSION_FILE,save_session,load_session | S:拒绝符号链接且POSIX要求uid与0600权限精确匹配;Windows使用DPAPI绝不退回明文
 
@@ -243,7 +243,7 @@ estimator.py[KA9L]: F:结合队伍在榜版本、判题历史、时点衰减与�
 gate.py[DW9L]: F:按正式验证、预期收益、账号资源与熔断状态决定候选资格 | R:code:scheduler/case_bench.py,code:scheduler/probes.py,code:scheduler/estimator.py | A:SubmissionGate,GateVerdict,GateConfig | S:紧急恢复要求历史最佳SHA及已确认零分；复验清锁后仍独立校验候选正式结果
 npu_scheduler.py[KW9L]: F:编排WSPT设备队列、参考验证和逐题升分建议 | R:code:scheduler/case_bench.py,code:scheduler/estimator.py,code:runtime/npu-test.py | A:NpuTaskScheduler,NpuTask,ProblemPriority | S:设备验证依据参考套件选择后端，向参考运行器传递来自worker的实验入场约束；榜单未知不按零分恢复。
 pairwise_anchor.py[KA8M]: F:双锚点(latest vs best) Pairwise-v2候选分数估算,热漂移/二进制膨胀修正与锚点择优 | R:code:scheduler/bench_evolution.py,code:scheduler/estimator.py | A:evaluate_pairwise_anchor,select_dual_anchor_prediction | S:regime_mismatch时不额外做low-pair压缩避免与gamma/regime_sigma三重折价;其余低对数温和折价0.50x
-parhelion_paths.py[CP8M]: F:共享~/.parhelion多工作区路径解析、规范化题目清单加载与RFC-8259去NaN/Inf原子写 | R:code:cli/opsb_core/config.py | A:sanitize_json_value,atomic_write_json,read_json_safe,load_problem_manifest | S:清单clean(opsb.workspace.json)优先、legacy(bench/problems.json)回退并归一化path/repo_slug/difficulty;强制allow_nan=False
+parhelion_paths.py[CP8M]: F:共享~/.parhelion多工作区路径解析、规范化题目清单加载与RFC-8259去NaN/Inf原子写 | R:code:cli/opsb_core/config.py | A:sanitize_json_value,atomic_write_json,read_json_safe,load_problem_manifest | S:清单clean(opsb.workspace.json)优先、legacy(配置的 work_prefix/problems.json)回退并归一化path/repo_slug/difficulty;强制allow_nan=False
 feedback_log.py[DW5S]: F:在工作区追加调度与提交反馈事件并按种类读取近期记录 | R:code:cli/opsb_core/services/submit_runner.py | A:feedback_log_path,log_feedback,tail_feedback | S:递归截短过长字段，写失败返回False以免中断提交
 probes.py[CW6S]: F:为调度和最终上传共享逐题开场次数及编译证据判定 | R:code:scheduler/gate.py,code:runtime/submit-validated.py | A:OPENING_PROBES,submitted_attempts,compile_evidence | S:去重合并结果行与回执中的评测ID；没有评测ID的本地尝试不消耗次数
 case_bench.py[AW8L]: F:选择必测用例、安排参考实验并保存可追溯的逐例证据 | R:code:runtime/npu_runtime/reference_cases.py,code:runtime/npu_runtime/case_batch.py | A:catalog,run,compare_runs,formal_evidence | S:抽测优先复验同SHA同输入的失败，否则选择正确性与性能锚点，默认单次8秒预算。抽测不更新正式门控；同条件成功回执可复用30分钟。
@@ -255,14 +255,14 @@ bundle_app.sh[OV7S]: F:构建并签名带CLI与NPU运行时的macOS发行应用 
 generate_icon.swift[OV5S]: F:基于AppKit/CoreGraphics与SDK logo位图渲染全尺寸macOS AppIcon.iconset | R:code:scripts/bundle_app.sh | A:- | S:小于64px自动退化为红色A字标保证小尺寸清晰度
 
 ===/Users/winbeau/Developer/personal/parhelion/skills/kernelc-deep-reference/===
-SKILL.md[SH5T]: F:KernelC soc-a硬件陷阱与高精度/确定性/全谱性能策略可选回退参考技能 | R:code:cli/opsb_core/services/skills_service.py | A:- | S:强调32B对齐+DataCopyPad尾保护距,1/4/8/20/40核与PipeBarrier防脏数据
+SKILL.md[SH5T]: F:KernelC 目标芯片硬件陷阱与高精度/确定性/全谱性能策略可选回退参考技能 | R:code:cli/opsb_core/services/skills_service.py | A:- | S:强调32B对齐+DataCopyPad尾保护距,1/4/8/20/40核与PipeBarrier防脏数据
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/breakthrough/===
 schema.json[FD5T]: F:定义Triad KB突破条目JSON Schema(Draft 2020-12)必填字段,id正则与7类category枚举 | R:code:cli/opsb_core/services/breakthrough_service.py | A:- | S:强校验id格式BT-<YYYYMMDD>-<Problem>-<shortSHA>与status/category枚举
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/community/entries/===
 COM-cuda-fine-branch-anti-pattern.md[SH5T]: F:社区反模式卡片警告逐元素if/else细分支与标量GM Get/SetValue导致Scalar停顿与I-cache膨胀 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:改用编译期schMode+Compare/Select/Gather+UB暂存+DataCopyPad
-COM-cuda-grid-stride-to-divisor-cores.md[SH5T]: F:社区迁移卡片将CUDA网格步长重映射为Accel soc-a 1/4/8/20/40整除核数阶梯 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:小负载<=16KB用1/4核,中负载用20半核降争用,大负载用40核;避开非整除与10核
+COM-cuda-grid-stride-to-divisor-cores.md[SH5T]: F:社区迁移卡片将CUDA网格步长重映射为Accel 目标芯片 1/4/8/20/40整除核数阶梯 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:小负载<=16KB用1/4核,中负载用20半核降争用,大负载用40核;避开非整除与10核
 COM-diagonal-l2-swizzle.md[SH5T]: F:已验证社区卡片以对角Tile Swizzle调度消除2D大张量并行访存的L2/HBM分区聚集 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:仅用于>=4MB L_HBM_TILED且swizzleWidth取4或8列兼顾L2局部性与Bank均衡
 COM-online-welford-softmax.md[SH5T]: F:可移植社区卡片通过单趟在线Welford/Softmax归约减半HBM读流量并省去中间缓冲 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:累加链须插PipeBarrier<PIPE_V>()防冒险且fp16/bf16默认升fp32(除非金标严格要求原精度顺序)
 COM-vectorized-float4-to-32b-burst.md[SH5T]: F:社区迁移卡片将CUDA float4合并访存映射为Accel 32B/512B DMA突发与noinline DataCopyPad | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:DataCopyExtParams中UB步长单位为32B块而GM步长单位为字节,混用会静默错位
@@ -272,9 +272,9 @@ COM-warp-shuffle-to-5hd-ub.md[SH5T]: F:社区迁移卡片将CUDA warp洗牌与SM
 index.json[FD6S]: F:4-Pillar KB社区加速策略初始种子索引保留5条CUDA/通用算法迁移与反模式条目(硬件规律已迁至hardware) | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/query.py | A:- | S:仅保留通用算法与CUDA重映射;hardware发现独立维护于templates/hardware/index.json
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/snippets/code/===
-SNP-direct-gm-tiling-64b.h[LH7T]: F:soc-a单缓存行64B直读__gm__ Tiling头与SetDataSize裁剪及workspace 1KB安全守卫 | R:code:cli/opsb_core/knowledge/seeding.py | A:CompactHotTiling64B,DirectGmTiling,SplitAlignedRange | S:1KB workspace仅限kernel完全不读写workspace时使用;用GetUserWorkspace需16MB+user_bytes防ACL 507035
+SNP-direct-gm-tiling-64b.h[LH7T]: F:目标芯片单缓存行64B直读__gm__ Tiling头与SetDataSize裁剪及workspace 1KB安全守卫 | R:code:cli/opsb_core/knowledge/seeding.py | A:CompactHotTiling64B,DirectGmTiling,SplitAlignedRange | S:1KB workspace仅限kernel完全不读写workspace时使用;用GetUserWorkspace需16MB+user_bytes防ACL 507035
 SNP-noinline-cold-pad.h[LH7T]: F:将非对齐DataCopyPad抽离为static noinline冷路径并保持对齐DataCopy热路径<8KB I-cache | R:code:cli/opsb_core/knowledge/seeding.py | A:Load1DPadCold,Store1DPadCold,Load1DFastOrColdPad,Store1DFastOrColdPad | S:避免多schMode内联展开DataCopyPad导致.o膨胀(>32KB I-cache失效与420s编译TLE)
-SNP-ring4-async-pipe.h[LH7T]: F:soc-a四槽环形缓冲MTE2/PIPE_V/MTE3显式SetFlag/WaitFlag深度流水线重叠模板 | R:code:cli/opsb_core/knowledge/seeding.py | A:RunRing4VecPipeline | S:每个SetFlag硬事件退出前必须等次数WaitFlag回收,否则AI-Core硬件死锁;输入输出按+256B交错着色
+SNP-ring4-async-pipe.h[LH7T]: F:目标芯片四槽环形缓冲MTE2/PIPE_V/MTE3显式SetFlag/WaitFlag深度流水线重叠模板 | R:code:cli/opsb_core/knowledge/seeding.py | A:RunRing4VecPipeline | S:每个SetFlag硬事件退出前必须等次数WaitFlag回收,否则AI-Core硬件死锁;输入输出按+256B交错着色
 SNP-transdata-5hd-transpose.h[LH7T]: F:基于TransDataTo5HD<uint16_t>的16x16硬件SIMD转置/交织模板加速列归约与窄张量重排 | R:code:cli/opsb_core/knowledge/seeding.py | A:Transpose16xColsU16 | S:repeats==1时dst/srcRepStride必须为0且每行须32B对齐;转置后必插PipeBarrier<PIPE_V>()
 SNP-zero-tpipe-ub-arena.h[LH7T]: F:零TPipe/TBuf静态对齐UB Arena与16-Bank-Group(+256B mod 512B)冲突抑制头模板 | R:code:cli/opsb_core/knowledge/seeding.py | A:AlignUp32U,AlignUp512U,MakeUbTensor,NextBankColoredOffset,StaticPingPongArena | S:静态总字节上限硬守kUbSafeCapBytes=188416B以保留192KB系统TMP_UB_OFFSET安全尾区
 
@@ -282,11 +282,11 @@ SNP-zero-tpipe-ub-arena.h[LH7T]: F:零TPipe/TBuf静态对齐UB Arena与16-Bank-G
 index.json[FD6M]: F:Triad KB KernelC代码积木初始种子索引注册5份已验证模板的瓶颈标签,分类与实证win记录 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/query.py | A:- | S:doc_path固定映射至code/SNP-*.h并与seeding.py只读投影联动
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/hardware/entries/===
-HW-10core-dvfs-bimodal-trap.md[SH6T]: F:soc-a硬件反模式规律警告SetBlockDim(10)冷启动双峰DVFS降频9us尖峰陷阱 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/migration.py | A:- | S:保留legacy_id COM-10core-dvfs-bimodal-trap;禁10核,改选{1,4,8,20,40}并用cold3验证
-HW-16kb-aiv-l1i-hot-packing.md[SH6T]: F:soc-a 16KB AIV L1I热入口连续排布与多TU COMDAT/static混合链接规律 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/fast_feedback/elf_guard.py | A:- | S:热入口须落于0x0000..0x4000;跨schMode共享用inline noinline(WEAK COMDAT),单schMode热辅助用static noinline
-HW-compiler-abi-7arg-unroll-guard.md[SH6T]: F:Compiler/arch-v1编译器与ABI红线禁止热循环noinline、短循环unroll(disable)及>7-8标量参数溢出HBM栈 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:rank<=8短循环禁用unroll(disable)实测掉7.24分;noinline被调参数<=7个或走direct __gm__
-HW-dummy-halfcores-launch-illusion.md[SH6T]: F:Accel硬件反模式警告小形状空跑halfCores掩盖本地1核DVFS却在线上多付派发与10核陷阱 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/migration.py | A:- | S:保留legacy_id COM-dummy-halfcores-launch-illusion;20核soc-b上halfCores隐式命中10核陷阱
-HW-multicore-preload-cacheline-bailout.md[SH6T]: F:soc-a多核并发铁律禁PreLoad(N)/10c,cores>16槽位须32B/64B对齐且能力回退先于空核早退 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:if(b0>=B)return true若早于能力fallback检查会导致部分核早退部分核回退的静默WA
+HW-10core-dvfs-bimodal-trap.md[SH6T]: F:目标芯片硬件反模式规律警告SetBlockDim(10)冷启动双峰DVFS降频9us尖峰陷阱 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/migration.py | A:- | S:保留legacy_id COM-10core-dvfs-bimodal-trap;禁10核,改选{1,4,8,20,40}并用cold3验证
+HW-16kb-aiv-l1i-hot-packing.md[SH6T]: F:目标芯片 16KB AIV L1I热入口连续排布与多TU COMDAT/static混合链接规律 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/fast_feedback/elf_guard.py | A:- | S:热入口须落于0x0000..0x4000;跨schMode共享用inline noinline(WEAK COMDAT),单schMode热辅助用static noinline
+HW-compiler-abi-7arg-unroll-guard.md[SH6T]: F:Compiler/目标架构编译器与ABI红线禁止热循环noinline、短循环unroll(disable)及>7-8标量参数溢出HBM栈 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:rank<=8短循环禁用unroll(disable)实测掉7.24分;noinline被调参数<=7个或走direct __gm__
+HW-dummy-halfcores-launch-illusion.md[SH6T]: F:Accel硬件反模式警告小形状空跑halfCores掩盖本地1核DVFS却在线上多付派发与10核陷阱 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/migration.py | A:- | S:保留legacy_id COM-dummy-halfcores-launch-illusion;20核旧代芯片上halfCores隐式命中10核陷阱
+HW-multicore-preload-cacheline-bailout.md[SH6T]: F:目标芯片多核并发铁律禁PreLoad(N)/10c,cores>16槽位须32B/64B对齐且能力回退先于空核早退 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:if(b0>=B)return true若早于能力fallback检查会导致部分核早退部分核回退的静默WA
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/hardware/===
 index.json[FD7M]: F:4-Pillar KB hardware支柱初始种子索引注册5条Accel硅片/Compiler/ABI/多核规律及legacy_id映射 | R:code:cli/opsb_core/knowledge/seeding.py,code:cli/opsb_core/knowledge/migration.py | A:- | S:包含COM-*旧ID的legacy_id字段以兼容已有引用和反馈脚本

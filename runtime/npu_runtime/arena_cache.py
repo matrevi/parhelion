@@ -79,8 +79,8 @@ class _FastNpuReplayer:
         self.vendor = vendor
         self.poison_outputs = poison_outputs
         pkg = repo / "build/packages/vendors" / vendor
-        os.environ["EXTRA_OPS_PATH"] = str(pkg)
-        self.acl = C.CDLL("libruntime.so", mode=C.RTLD_GLOBAL)
+        os.environ[os.environ.get("OPSB_EXTRA_OPS_ENV") or "EXTRA_OPS_PATH"] = str(pkg)
+        self.acl = C.CDLL(os.environ.get("OPSB_RUNTIME_LIB") or "libruntime.so", mode=C.RTLD_GLOBAL)
         self.base = C.CDLL("libnnopbase.so", mode=C.RTLD_GLOBAL)
         self.lib = C.CDLL(str(pkg / "op_api/lib/libcust_opapi.so"), mode=C.RTLD_GLOBAL)
         self.acl.aclrtMalloc.argtypes = [C.POINTER(P), U64, C.c_int]

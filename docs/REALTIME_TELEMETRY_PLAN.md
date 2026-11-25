@@ -18,7 +18,7 @@
 
 ```text
 ┌──────────────────────────────────────────────────────────┐
-│ soc-a 服务器 (ssh npu)                              │
+│ soc-a 服务器 (ssh npu)                                    │
 │  ~/.opsb/npu_stream_probe.py (单进程常驻，零 flock)        │
 │   ├─ ctypes 直连 libdevmgr.so (<2ms/次，失败自动降级 npu-smi) │
 │   ├─ 内存级 /proc/stat delta + /proc/meminfo (<0.5ms)    │

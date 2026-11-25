@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import utc_now
+from ..device_env import device_text
 from .breakthrough_service import scaffold_breakthrough_dir
 from .templates_md import DESIGN_MD, PROBLEM_AGENTS_MD, PROBLEM_SPEC_MD, SCORE_HISTORY_MD, WORKSPACE_AGENTS_MD
 
@@ -159,7 +160,7 @@ def scaffold_workspace(
                 encoding="utf-8",
             )
         if not (p_dir / "DESIGN.md").exists():
-            (p_dir / "DESIGN.md").write_text(DESIGN_MD.format(problem=p["title"]), encoding="utf-8")
+            (p_dir / "DESIGN.md").write_text(DESIGN_MD.format(problem=p["title"], soc=device_text("soc")), encoding="utf-8")
         if not (p_dir / "SCORE_HISTORY.md").exists():
             (p_dir / "SCORE_HISTORY.md").write_text(SCORE_HISTORY_MD.format(problem=p["title"]), encoding="utf-8")
         created_dirs.append(str(p_dir))

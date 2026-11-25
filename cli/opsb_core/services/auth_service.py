@@ -24,6 +24,7 @@ from ..config import (
     utc_now,
     write_ttl_cache,
 )
+from ..device_env import device_text
 
 LEGACY_SESSIONS_DIR = Path.home() / ".judge" / "sessions"
 
@@ -67,7 +68,7 @@ def _read_session_file_status(cj_path: Path) -> dict[str, Any]:
     info: dict[str, Any] = {
         "logged_in": False,
         "session_file": str(cj_path),
-        "base_url": "https://judge.invalid",
+        "base_url": device_text("judge_base"),
         "user_id": None,
         "logged_in_at": None,
         "expires_at": None,
@@ -97,7 +98,7 @@ def _read_session_file_status(cj_path: Path) -> dict[str, Any]:
             info.update(
                 {
                     "logged_in": rem_h > 0,
-                    "base_url": d.get("base_url") or "https://judge.invalid",
+                    "base_url": d.get("base_url") or device_text("judge_base"),
                     "user_id": uid,
                     "logged_in_at": dt.isoformat(),
                     "expires_at": exp.isoformat(),

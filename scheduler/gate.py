@@ -44,6 +44,20 @@ from .estimator import (
 from .parhelion_paths import list_eligible_account_slots
 from .probes import OPENING_PROBES, compile_evidence, submitted_attempts
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 STATUS_TAGS: tuple[str, ...] = (
     "READY",
     "EXPLORE",
@@ -371,7 +385,7 @@ class SubmissionGate:
         return None
 
     def _check_kernel_cross_core_tokens(self, title: str, sha: str) -> list[str]:
-        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"{_dev('work_prefix')}/{title}")
         if not (repo / ".git").exists() or not sha:
             return []
         ls_proc = subprocess.run(
@@ -400,7 +414,7 @@ class SubmissionGate:
         return sorted(found)
 
     def _verify_git_commit_exists(self, title: str, sha: str) -> tuple[bool, str]:
-        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"{_dev('work_prefix')}/{title}")
         if not (repo / ".git").exists():
             return True, "no_git_repo_fixture"
         cat = subprocess.run(
@@ -502,7 +516,7 @@ class SubmissionGate:
             )
 
         from .case_bench import formal_evidence, has_reference
-        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"bench/{title}")
+        repo = self.workspace / (self.estimator.problems_meta.get(title, {}).get("path") or f"{_dev('work_prefix')}/{title}")
         if res_data.get("scheme") == "reference" or has_reference(repo,sha):
             report = formal_evidence(val_dir, repo, res_data)
             if not report:

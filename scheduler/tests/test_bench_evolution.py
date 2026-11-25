@@ -24,6 +24,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.bench_evolution import (  # noqa: E402
     append_buckets_to_spec,
     apply_proxy_aliases,
@@ -40,10 +41,15 @@ from scheduler.estimator import ProblemLedger, parse_validation_perf, resolve_sh
 from scheduler.gate import SubmissionGate  # noqa: E402
 from scheduler.pairwise_anchor import select_dual_anchor_prediction  # noqa: E402
 
+#: Deployment vocabulary is configured, never hard-coded.  A plain checkout resolves
+#: to the neutral defaults (`soc-a`, `bench`).
+SOC = device_text("soc")
+WORK_PREFIX = device_text("work_prefix")
+
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
     for cand in (start, *start.parents):
-        if (cand / "bench" / "problems.json").is_file():
+        if (cand / WORK_PREFIX / "problems.json").is_file():
             return cand
     return start.parent
 
@@ -54,7 +60,7 @@ REAL_WORKSPACE = _find_workspace(pathlib.Path(__file__).resolve())
 class RichTelemetryAndDenoisingTest(unittest.TestCase):
     def test_parses_min_max_binary_and_cold_start_stats(self) -> None:
         log = (
-            "RUNTIME_SOC=soc-a\n"
+            f"RUNTIME_SOC={SOC}\n"
             'KERNEL_BINARY_STATS {"count": 4, "max_bytes": 176128, "sum_bytes": 512000, "max_text_bytes": 98304}\n'
             'KPERF_JSON [{"case": "tiny_a", "block_dim": 20, "median_us": 3.14, "min_us": 1.60, "max_us": 4.20}]\n'
             'COLD_START_STATS {"cases": 1, "first_iter_us": 4.2, "cold_spread_median_us": 2.6}\n'
@@ -211,10 +217,10 @@ class PairwiseCalibrationAndExploreTest(unittest.TestCase):
     def test_predict_candidate_does_not_fold_cand_timings_into_min_tau(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             ws = pathlib.Path(tmp)
-            op = ws / "bench" / "DemoOp"
+            op = ws / WORK_PREFIX / "DemoOp"
             (op / "op_kernel").mkdir(parents=True)
-            (ws / "bench" / "problems.json").write_text(
-                json.dumps([{"title": "DemoOp", "slug": "demoop", "difficulty": 2, "path": "bench/DemoOp"}])
+            (ws / WORK_PREFIX / "problems.json").write_text(
+                json.dumps([{"title": "DemoOp", "slug": "demoop", "difficulty": 2, "path": f"{WORK_PREFIX}/DemoOp"}])
             )
             base_sha = "a" * 40
             best_sha = "b" * 40
@@ -238,7 +244,7 @@ class PairwiseCalibrationAndExploreTest(unittest.TestCase):
                 d.mkdir(parents=True)
                 (d / "result.json").write_text(json.dumps({"exit_code": 0, "profiler_regime": "fast_single_session_l0"}))
                 (d / "validation.log").write_text(
-                    "RUNTIME_SOC=soc-a\nEXTENDED_PASSED 10 cases\nKPERF_JSON " + json.dumps(cs) + "\n"
+                    f"RUNTIME_SOC={SOC}\nEXTENDED_PASSED 10 cases\nKPERF_JSON " + json.dumps(cs) + "\n"
                 )
             cal = BenchmarkCalibrator(ws, state_dir=ws / "state")
             ledger = ProblemLedger(

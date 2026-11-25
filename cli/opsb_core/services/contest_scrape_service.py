@@ -18,7 +18,9 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
-DEFAULT_BASE_URL = "https://judge.invalid"
+from ..device_env import device_text
+
+DEFAULT_BASE_URL = device_text("judge_base")
 _USER_AGENT = "parhelion/1.0 (contest scaffold)"
 _OBJECT_ID_RE = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 
@@ -32,8 +34,8 @@ def parse_contest_ref(ref: str, base_url: str = DEFAULT_BASE_URL) -> dict[str, s
 
     Accepted shapes::
 
-        https://judge.invalid/public/<contest>[/...]
-        https://judge.invalid/<group>/<contest>[/...]
+        <judge-base>/public/<contest>[/...]
+        <judge-base>/<group>/<contest>[/...]
         <24-hex object id>
         <contest name>
     """

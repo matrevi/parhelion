@@ -43,8 +43,8 @@ func drawIcon(size: Int) -> Data? {
     ctx.addPath(bgPath)
     ctx.clip()
 
-    // Light, brand-clean surface: the official SDK mark is black + red, it needs a
-    // neutral background to stay legible at every size.
+    // Light, clean surface: the mark is black + red, so it needs a neutral background
+    // to stay legible at every size.
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let gradColors = [
         CGColor(red: 1.00, green: 1.00, blue: 1.00, alpha: 1.0),
@@ -76,62 +76,42 @@ func drawIcon(size: Int) -> Data? {
         )
     }
 
-    // MARK: - Official SDK mark
-    // Drawn from `assets/logo.png` (example.invalid SDK wordmark: black letters, red A).
-    let scriptDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
-    let logoCandidates = [
-        scriptDir.appendingPathComponent("assets/logo.png"),
-        URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("assets/logo.png")
+    // MARK: - Drawn mark
+    // The mark is drawn in code, no external artwork: a heavy "A" monogram in accent
+    // red, plus a thin three-segment operator rule beneath it. One monogram stays
+    // legible at every size, including 16 px, where a multi-letter wordmark turns to mush.
+    let glyph = "A" as NSString
+    let f = NSFont.systemFont(ofSize: s * 0.60, weight: .heavy)
+    let para = NSMutableParagraphStyle()
+    para.alignment = .center
+    let attrs: [NSAttributedString.Key: Any] = [
+        .font: f,
+        .foregroundColor: NSColor(srgbRed: 0.855, green: 0.102, blue: 0.118, alpha: 1.0),
+        .paragraphStyle: para
     ]
-    if size < 64 {
-        // Small sizes: the wordmark turns to mush below ~64 px, so fall back to the
-        // mark's signature element — the Vendor-red "A".
-        let glyph = "A" as NSString
-        let f = NSFont.systemFont(ofSize: s * 0.60, weight: .heavy)
-        let para = NSMutableParagraphStyle()
-        para.alignment = .center
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: f,
-            .foregroundColor: NSColor(srgbRed: 0.855, green: 0.102, blue: 0.118, alpha: 1.0),
-            .paragraphStyle: para
-        ]
-        let gs = glyph.size(withAttributes: attrs)
-        glyph.draw(at: NSPoint(x: rect.midX - gs.width / 2, y: rect.midY - gs.height / 2), withAttributes: attrs)
-    } else if let logoURL = logoCandidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
-       let logoImage = NSImage(contentsOf: logoURL),
-       let logoCG = logoImage.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-        let aspect = CGFloat(logoCG.width) / CGFloat(logoCG.height)
-        let maxW = rect.width * 0.76
-        let maxH = rect.height * 0.40
-        var w = maxW
-        var h = w / aspect
-        if h > maxH { h = maxH; w = h * aspect }
-        let logoRect = CGRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h)
-        ctx.saveGState()
-        ctx.interpolationQuality = .high
-        ctx.draw(logoCG, in: logoRect)
-        ctx.restoreGState()
+    let gs = glyph.size(withAttributes: attrs)
+    let glyphOrigin = NSPoint(x: rect.midX - gs.width / 2, y: rect.midY - gs.height / 2)
+    glyph.draw(at: glyphOrigin, withAttributes: attrs)
 
-        // one thin operator rule under the mark: 3 cores, brand red accent in the middle
-        if size > 48 {
-            let ruleW = w * 0.56
-            let ruleY = logoRect.minY - rect.height * 0.10
-            let seg = ruleW / 3
-            let barH = max(1.0, rect.height * 0.012)
-            let colors: [CGColor] = [
-                CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55),
-                CGColor(red: 0.86, green: 0.12, blue: 0.16, alpha: 0.95),
-                CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55)
-            ]
-            for i in 0..<3 {
-                let r = CGRect(x: rect.midX - ruleW / 2 + CGFloat(i) * seg + seg * 0.12,
-                               y: ruleY,
-                               width: seg * 0.76,
-                               height: barH)
-                ctx.setFillColor(colors[i])
-                ctx.addPath(CGPath(roundedRect: r, cornerWidth: barH / 2, cornerHeight: barH / 2, transform: nil))
-                ctx.fillPath()
-            }
+    // one thin operator rule under the mark: 3 cores, red accent in the middle
+    if size > 48 {
+        let ruleW = rect.width * 0.34
+        let ruleY = glyphOrigin.y - rect.height * 0.10
+        let seg = ruleW / 3
+        let barH = max(1.0, rect.height * 0.012)
+        let colors: [CGColor] = [
+            CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55),
+            CGColor(red: 0.86, green: 0.12, blue: 0.16, alpha: 0.95),
+            CGColor(red: 0.10, green: 0.10, blue: 0.12, alpha: 0.55)
+        ]
+        for i in 0..<3 {
+            let r = CGRect(x: rect.midX - ruleW / 2 + CGFloat(i) * seg + seg * 0.12,
+                           y: ruleY,
+                           width: seg * 0.76,
+                           height: barH)
+            ctx.setFillColor(colors[i])
+            ctx.addPath(CGPath(roundedRect: r, cornerWidth: barH / 2, cornerHeight: barH / 2, transform: nil))
+            ctx.fillPath()
         }
     }
 

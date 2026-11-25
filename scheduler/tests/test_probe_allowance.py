@@ -12,13 +12,18 @@ SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(SUP_ROOT) not in sys.path:
     sys.path.insert(0, str(SUP_ROOT))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.gate import GateConfig, SubmissionGate  # noqa: E402
+
+#: Bench worktree prefix of the live workspace: configured, with the neutral default
+#: `bench` when nothing is configured.
+WORK_PREFIX = device_text("work_prefix")
 
 
 def _make_workspace(root: pathlib.Path, *, exit_code: int, log: str) -> tuple[pathlib.Path, str, str]:
     ws = root / "ws"
     title = "ProbeOp"
-    op = ws / "bench" / title
+    op = ws / WORK_PREFIX / title
     (op / "op_host").mkdir(parents=True)
     (op / "op_kernel").mkdir(parents=True)
     (op / "op_host" / "h.cpp").write_text("// host\n", encoding="utf-8")
@@ -37,8 +42,8 @@ def _make_workspace(root: pathlib.Path, *, exit_code: int, log: str) -> tuple[pa
         encoding="utf-8",
     )
     (vdir / "validation.log").write_text(log, encoding="utf-8")
-    (ws / "bench" / "problems.json").write_text(
-        json.dumps([{"title": title, "slug": "probeop", "path": f"bench/{title}", "difficulty": 5}]),
+    (ws / WORK_PREFIX / "problems.json").write_text(
+        json.dumps([{"title": title, "slug": "probeop", "path": f"{WORK_PREFIX}/{title}", "difficulty": 5}]),
         encoding="utf-8",
     )
     (ws / "results" / "submit-queue.jsonl").write_text("", encoding="utf-8")

@@ -18,6 +18,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.backfill import (  # noqa: E402
     LANE_BACKFILL,
     TICKET_TIER,
@@ -39,13 +40,21 @@ from scheduler.backfill import (  # noqa: E402
 
 from scheduler.parhelion_paths import workspace_bench_specs_dir
 
+#: Deployment vocabulary is configured, never hard-coded.  A plain checkout resolves
+#: to the neutral defaults (`soc-a`, `soc-b`, `bench`); the tests build their fixtures
+#: from the same settings the scheduler reads, so they also hold on a machine whose
+#: local config names the real device.
+SOC = device_text("soc")
+SOC_OLD = device_text("soc_legacy")
+WORK_PREFIX = device_text("work_prefix")
+
 SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _find_workspace(start: pathlib.Path) -> pathlib.Path:
     """Resolve real workspace if configured in ~/.parhelion/config.json or ancestors."""
     for cand in (start, *start.parents):
-        if (cand / "bench" / "problems.json").is_file():
+        if (cand / WORK_PREFIX / "problems.json").is_file():
             return cand
     cfg_path = pathlib.Path.home() / ".parhelion" / "config.json"
     if cfg_path.is_file():
@@ -72,7 +81,7 @@ def _row(title: str, bucket: str, headroom: float, sha: str = SHA) -> dict:
         "baseline_sha": sha,
         "baseline_short": sha[:7],
         "modality": "profiler",
-        "runtime_soc": "soc-a",
+        "runtime_soc": SOC,
         "description": "",
         "headroom_pts": headroom,
         "key": bucket_key(title, bucket, sha),
@@ -432,7 +441,7 @@ class DispatchTest(unittest.TestCase):
         self.sched = _FakeScheduler(self.state, self.rows)
         self.sched.save_config(min_interval_sec=0.0)
         self.lines = [
-            "RUNTIME_SOC=soc-a",
+            f"RUNTIME_SOC={SOC}",
             "MS_PROF case=a1 median=12.50 min=11.00",
             "MS_PROF case=a2 median=30.00 min=29.00",
         ]
@@ -467,7 +476,7 @@ class DispatchTest(unittest.TestCase):
         # timings landed in the store, dedup keys are covered by a success record
         store = self.sched.timings_for("A", SHA)
         self.assertEqual(store["cases"]["a2"], 30.0)
-        self.assertEqual(store["runtime_soc"], "soc-a")
+        self.assertEqual(store["runtime_soc"], SOC)
         self.assertEqual(
             self.sched.ledger.successful_bucket_keys(),
             {bucket_key("A", "a1", SHA), bucket_key("A", "a2", SHA)},
@@ -512,7 +521,7 @@ class DispatchTest(unittest.TestCase):
 
     def test_exec_not_floor_is_normalized_for_exec_modality(self) -> None:
         self.sched.runner = self.sched._recording_runner(
-            ["RUNTIME_SOC=soc-a", "a1 ws=1 call= 1.0/ 1.0/ 1.0 exec=  41.20"]
+            [f"RUNTIME_SOC={SOC}", "a1 ws=1 call= 1.0/ 1.0/ 1.0 exec=  41.20"]
         )
         out = self.sched.dispatch(force=True, dry_run=False, npu=_free_npu(), title="A")
         self.assertEqual(out["result"], "ok")
@@ -616,7 +625,7 @@ class CalibrationMergeTest(unittest.TestCase):
         (ws / "results").mkdir(parents=True, exist_ok=True)
         return ws
 
-    def _cal(self, ws: pathlib.Path, store_cases: dict | None, soc: str | None = "soc-a"):
+    def _cal(self, ws: pathlib.Path, store_cases: dict | None, soc: str | None = SOC):
         from scheduler.calibration import BenchmarkCalibrator
         from scheduler.estimator import ScoreEstimator
 
@@ -644,12 +653,12 @@ class CalibrationMergeTest(unittest.TestCase):
     def test_backfill_fills_holes_without_overriding_the_log(self) -> None:
         buckets = self._buckets()
         b0, b1 = buckets[0]["id"], buckets[1]["id"]
-        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        ws = self._ws(tempfile.mkdtemp(), [f"RUNTIME_SOC={SOC}", f"MS_PROF case={b0} median=11.00 min=10.0"])
         cal = self._cal(ws, {b0: 99.0, b1: 21.5})
         timings, _t, soc, modality = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
         self.assertEqual(timings[b0], 11.0)   # primary log wins
         self.assertEqual(timings[b1], 21.5)   # hole filled from B0
-        self.assertEqual(soc, "soc-a")
+        self.assertEqual(soc, SOC)
         self.assertEqual(modality, "profiler")
 
     def test_cross_soc_backfill_is_rejected(self) -> None:
@@ -659,10 +668,10 @@ class CalibrationMergeTest(unittest.TestCase):
 
         buckets = self._buckets()
         b0, b1 = buckets[0]["id"], buckets[1]["id"]
-        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        ws = self._ws(tempfile.mkdtemp(), [f"RUNTIME_SOC={SOC}", f"MS_PROF case={b0} median=11.00 min=10.0"])
         cal = BenchmarkCalibrator(ws, estimator=ScoreEstimator(ws), specs_root=BENCH_SPECS)
         cal.backfill = type(
-            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": "soc-b",
+            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": SOC_OLD,
                                                           "modality": "exec_normalized"}}
         )()
         timings, _t, _soc, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
@@ -675,10 +684,10 @@ class CalibrationMergeTest(unittest.TestCase):
 
         buckets = self._buckets()
         b0, b1 = buckets[0]["id"], buckets[1]["id"]
-        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-b", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        ws = self._ws(tempfile.mkdtemp(), [f"RUNTIME_SOC={SOC_OLD}", f"MS_PROF case={b0} median=11.00 min=10.0"])
         cal = BenchmarkCalibrator(ws, estimator=ScoreEstimator(ws), specs_root=BENCH_SPECS)
         cal.backfill = type(
-            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": "soc-a",
+            "S", (), {"timings_for": lambda self, t, s: {"cases": {b1: 21.5}, "runtime_soc": SOC,
                                                           "modality": "profiler"}}
         )()
         timings, _t, _soc, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
@@ -691,12 +700,12 @@ class CalibrationMergeTest(unittest.TestCase):
         cal = self._cal(ws, {b0: 12.0})
         timings, _t, soc, modality = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
         self.assertEqual(timings, {b0: 12.0})
-        self.assertEqual((soc, modality), ("soc-a", "profiler"))
+        self.assertEqual((soc, modality), (SOC, "profiler"))
 
     def test_no_store_keeps_legacy_behaviour(self) -> None:
         buckets = self._buckets()
         b0 = buckets[0]["id"]
-        ws = self._ws(tempfile.mkdtemp(), ["RUNTIME_SOC=soc-a", f"MS_PROF case={b0} median=11.00 min=10.0"])
+        ws = self._ws(tempfile.mkdtemp(), [f"RUNTIME_SOC={SOC}", f"MS_PROF case={b0} median=11.00 min=10.0"])
         cal = self._cal(ws, None)
         timings, _t, _s, _m = cal._extract_bucket_timings(self.TITLE, SHA, buckets)
         self.assertEqual(timings, {b0: 11.0})
@@ -725,7 +734,7 @@ class _StubCalibrator:
             "baseline_sha": self.sha,
             "baseline_short": self.sha[:7],
             "modality": "profiler",
-            "runtime_soc": "soc-a",
+            "runtime_soc": SOC,
         }
 
     def load_or_calibrate(self, title: str) -> dict:
@@ -733,14 +742,14 @@ class _StubCalibrator:
 
 
 def _fixture_workspace(root: pathlib.Path, harness: dict[str, list[str]]) -> pathlib.Path:
-    """`<root>/bench/<Title>/validation/perf.py` with a declared case table."""
-    (root / "bench").mkdir(parents=True, exist_ok=True)
+    """`<root>/<work_prefix>/<Title>/validation/perf.py` with a declared case table."""
+    (root / WORK_PREFIX).mkdir(parents=True, exist_ok=True)
     for title, ids in harness.items():
-        vdir = root / "bench" / title / "validation"
+        vdir = root / WORK_PREFIX / title / "validation"
         vdir.mkdir(parents=True, exist_ok=True)
         body = "".join(f"    ('{bid}', 'float32'),\n" for bid in ids)
         (vdir / "perf.py").write_text("CASES = [\n" + body + "]\n", encoding="utf-8")
-    (root / "bench" / "problems.json").write_text("{}\n", encoding="utf-8")
+    (root / WORK_PREFIX / "problems.json").write_text("{}\n", encoding="utf-8")
     return root
 
 
@@ -918,7 +927,7 @@ class SpecPlaceholderTest(unittest.TestCase):
         self.assertEqual(queued, {"Alpha": ["real_a2"], "Gamma": ["g_real"]})
 
     def test_unknown_harness_never_demotes_a_bucket_list(self) -> None:
-        # a workspace whose `bench/<Title>/validation` is absent: "no opinion"
+        # a workspace whose `<work_prefix>/<Title>/validation` is absent: "no opinion"
         bare = _fixture_workspace(self.root / "bare", {})
         sched = _CensusScheduler(bare, self.root / "state2", self.CENSUS)
         self.assertEqual(
@@ -952,7 +961,7 @@ _LIVE_FIXTURE_TITLES = ("ConcatD", "PadV3Grad", "ConfusionTransposeD")
 
 
 def _has_live_fixtures() -> bool:
-    if not (REAL_WORKSPACE / "bench" / "problems.json").is_file():
+    if not (REAL_WORKSPACE / WORK_PREFIX / "problems.json").is_file():
         return False
     return all((BENCH_SPECS / t / "cases_perf.json").is_file() for t in _LIVE_FIXTURE_TITLES)
 

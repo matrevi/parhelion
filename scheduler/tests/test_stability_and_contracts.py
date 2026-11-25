@@ -16,6 +16,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.backfill import BackfillScheduler  # noqa: E402
 from scheduler.calibration import BenchmarkCalibrator  # noqa: E402
 from scheduler.cli_bridge import SchedulerEngine  # noqa: E402
@@ -28,6 +29,10 @@ from scheduler.parhelion_paths import (  # noqa: E402
     sanitize_json_value,
 )
 
+#: Bench worktree prefix of the live workspace: configured, with the neutral default
+#: `bench` when nothing is configured.
+WORK_PREFIX = device_text("work_prefix")
+
 
 def _make_multi_problem_ws(
     tmp: pathlib.Path,
@@ -38,12 +43,12 @@ def _make_multi_problem_ws(
     problems_meta = []
     shas_by_title: dict[str, list[str]] = {}
     for title in titles:
-        op_dir = ws / "bench" / title
+        op_dir = ws / WORK_PREFIX / title
         (op_dir / "op_host").mkdir(parents=True)
         (op_dir / "op_kernel").mkdir(parents=True)
         (ws / "results" / title).mkdir(parents=True)
         problems_meta.append(
-            {"title": title, "slug": title.lower(), "path": f"bench/{title}", "difficulty": 2}
+            {"title": title, "slug": title.lower(), "path": f"{WORK_PREFIX}/{title}", "difficulty": 2}
         )
         subprocess.run(["git", "-C", str(op_dir), "init", "-q"], check=True)
         subprocess.run(["git", "-C", str(op_dir), "config", "user.email", "t@example.com"], check=True)
@@ -65,7 +70,7 @@ def _make_multi_problem_ws(
             (vdir / "validation.log").write_text("EXTENDED_PASSED 40 cases\nEXTENDED_RC=0\n", encoding="utf-8")
         shas_by_title[title] = shas
 
-    (ws / "bench" / "problems.json").write_text(json.dumps(problems_meta), encoding="utf-8")
+    (ws / WORK_PREFIX / "problems.json").write_text(json.dumps(problems_meta), encoding="utf-8")
     (ws / "results" / "submit-queue.jsonl").write_text("", encoding="utf-8")
     (ws / "results" / "submit-queue-outcome.jsonl").write_text("", encoding="utf-8")
     (ws / "results" / "score-snapshot.json").write_text(

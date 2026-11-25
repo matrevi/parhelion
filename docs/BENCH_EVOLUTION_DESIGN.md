@@ -53,7 +53,7 @@ Replaying V1 (`HEAD eff6912`) strictly causally over all historical `Pass -> Pas
    - `LayerNormV3 4061824` (`-7.17` online) had `6/14` spec buckets as unpaired `*_proxy` names.
    - `ConfusionTransposeD 4b4303f` (`-15.82` online) regressed on logged bucket `rev_3d_16` which was absent from `cases_perf.json`.
 5. **Compiled `.o` Cold-Start Penalty & 40-AIV vs 20-AIV Core Mismatch (`PadV3Grad be05c5b`, `StridedSliceGrad 94b61dc`, `QuantUpdateScatter 84e865d / c391115`)**:
-   - Local soc-a exposes `40` AIV cores (`task_devices=1`), whereas online judge evaluates 3-run cold-start latency on fewer cores (e.g. 20 AIV) where `.o` ELF / `.text` bloat (`be05c5b` `172KB`, `94b61dc` template bloat) penalizes online scores even when warm 40-core throughput improves.
+   - Local `soc-a` exposes `40` AIV cores (`task_devices=1`), whereas online judge evaluates 3-run cold-start latency on fewer cores (e.g. 20 AIV) where `.o` ELF / `.text` bloat (`be05c5b` `172KB`, `94b61dc` template bloat) penalizes online scores even when warm 40-core throughput improves.
 6. **Over-Confident Point Estimates with Zero Burial Protection**:
    - V1 applied a hard `delta_expected >= floor` gate with zero awareness of problem-specific out-of-sample reliability (`LOOCV_MAE`, `Spearman ρ`), silently discarding high-upside structural breakthroughs whenever legacy weights disagreed.
 

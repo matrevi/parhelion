@@ -36,6 +36,20 @@ from typing import Any
 from .estimator import PROBLEM_DIFFICULTY, ScoreEstimator, resolve_sha
 from .gate import GateConfig, SubmissionGate
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 NPU_TASK_TAGS: tuple[str, ...] = (
     "BUILD",
     "FAST-LANE",
@@ -164,10 +178,10 @@ except Exception:
 # 2. NPU-SMI (read-only)
 env = os.environ.copy()
 lib_dirs = [
-    "/opt/driver/driver/lib64",
-    "/opt/driver/driver/lib64/common",
-    "/opt/driver/driver/lib64/driver",
-    "/opt/toolchain/latest/latest/lib64",
+    "@@DRIVER_ROOT@@/driver/lib64",
+    "@@DRIVER_ROOT@@/driver/lib64/common",
+    "@@DRIVER_ROOT@@/driver/lib64/driver",
+    "@@TOOLCHAIN_DIR@@/latest/lib64",
 ]
 env["LD_LIBRARY_PATH"] = ":".join(lib_dirs + ([env["LD_LIBRARY_PATH"]] if env.get("LD_LIBRARY_PATH") else []))
 devices = []
@@ -241,7 +255,7 @@ def descendants(rpid):
 
 # 4. Read /proc/locks matched against stat() inodes (strictly read-only, zero open() on locks!)
 inodes = {}
-for p in glob.glob("/srv/work*.lock"):
+for p in glob.glob("@@WORK_ROOT@@/@@WORK_PREFIX@@*.lock"):
     try:
         st = os.stat(p)
         inodes[f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}"] = os.path.basename(p)
@@ -273,7 +287,7 @@ except Exception:
     pass
 
 for pid, p in procs.items():
-    if "bench-device" in p["cmd"] and "flock" in p["cmd"] and pid not in die_holders.values():
+    if "@@WORK_PREFIX@@-device" in p["cmd"] and "flock" in p["cmd"] and pid not in die_holders.values():
         waiting_roots.add(pid)
 
 holder_trees = {}
@@ -307,7 +321,7 @@ def infer_meta(pids):
             if m:
                 sha = m.group(1)
             else:
-                mr = re.search(r"bench-results/[^/]+/([0-9a-f]{7,40})", cmd)
+                mr = re.search(r"@@WORK_PREFIX@@-results/[^/]+/([0-9a-f]{7,40})", cmd)
                 if mr:
                     sha = mr.group(1)
         if not prob or not sha:
@@ -319,7 +333,7 @@ def infer_meta(pids):
                             prob = k
                             break
                 if prob and not sha:
-                    hf = pathlib.Path(f"/srv/work/{prob}/.git/HEAD")
+                    hf = pathlib.Path(f"@@WORK_ROOT@@/@@WORK_PREFIX@@/{prob}/.git/HEAD")
                     if hf.is_file():
                         ht = hf.read_text().strip()
                         if re.fullmatch(r"[0-9a-f]{40}", ht):
@@ -404,7 +418,7 @@ for pid in sorted(procs):
     if pid in covered_pids:
         continue
     low = p["cmd"].lower()
-    if any(k in low for k in ("compiler", "/ccec", "cmake")) and ("sdk" in low or "bench" in low or "tikcfw" in low):
+    if any(k in low for k in ("compiler", "/ccec", "cmake")) and ("sdk" in low or "@@WORK_PREFIX@@" in low or "tikcfw" in low):
         rpid = p["ppid"] if p["ppid"] in procs and p["ppid"] > 100 else pid
         if rpid in covered_pids:
             continue
@@ -532,6 +546,22 @@ print(json.dumps({
     "raw_tasks": raw_tasks,
 }))
 """
+
+
+def _render_remote_probe() -> str:
+    """Substitute deployment paths into the single-file ssh probe payload.
+
+    The probe is shipped as one `python3 -c` source string, so it sdkot import
+    `opsb_core`: the configured driver/toolchain directories and the work-root lock
+    naming are rendered here instead of being baked in as literals.
+    """
+    return (
+        _REMOTE_READONLY_PROBE
+        .replace("@@DRIVER_ROOT@@", _dev("driver_root"))
+        .replace("@@TOOLCHAIN_DIR@@", _dev("toolchain_dir"))
+        .replace("@@WORK_ROOT@@", _dev("work_root"))
+        .replace("@@WORK_PREFIX@@", _dev("work_prefix"))
+    )
 
 
 def _parse_ps_etime(etime_str: str) -> int:
@@ -718,7 +748,7 @@ class NpuTaskScheduler:
                         "-o",
                         "ControlPersist=180",
                         self.npu_host,
-                        "python3 -c " + shlex.quote(_REMOTE_READONLY_PROBE),
+                        "python3 -c " + shlex.quote(_render_remote_probe()),
                     ],
                     capture_output=True,
                     text=True,
@@ -994,7 +1024,7 @@ class NpuTaskScheduler:
         """3-Phase Disaggregated + Cooperative MLFQ/WSPT NPU test entry point (`opsb test`).
 
         Phase A (`0.0s` NPU die lock):
-          Per-repo lock `/srv/work-repo-<Title>.lock`, heartbeat
+          Per-repo lock `<work-root>/<prefix>-repo-<Title>.lock`, heartbeat
           `~/.opsb/cpu_builds/<Title>.json`, detached git checkout, `walk_model.py` (if present),
           and 32-core CPU `build.sh -j4` (without `-e`) + `examples/build` pre-compilation.
           Exits immediately on compile error (`lock_waste_sec = 0.0`) or `--build-only`.
@@ -1009,7 +1039,7 @@ class NpuTaskScheduler:
             raise ValueError(f"Unknown problem title: {title}")
 
         pmeta = self.estimator.problems_meta[title]
-        repo = self.workspace / pmeta.get("path", f"bench/{title}")
+        repo = self.workspace / pmeta.get("path", f"{_dev('work_prefix')}/{title}")
         from . import case_bench
         reference_suite = case_bench.has_reference(repo,sha or 'HEAD')
         if reference_suite and pmu:
@@ -1109,7 +1139,7 @@ class NpuTaskScheduler:
             {
                 "phase": "A_CPU_BUILD_AND_PREFILTER",
                 "holds_npu_die_lock": False,
-                "repo_lock": f"/srv/work-repo-{title}.lock",
+                "repo_lock": _dev("work_root") + "/" + _dev("work_prefix") + f"-repo-{title}.lock",
                 "heartbeat": f"~/.opsb/cpu_builds/{title}.json",
                 "steps": (
                     ["git fetch & detached checkout", "python3 validation/walk_model.py"]
@@ -1129,8 +1159,8 @@ class NpuTaskScheduler:
                         "phase": "B_NPU_ARENA_DIE_EXEC",
                         "holds_npu_die_lock": True,
                         "lock_files": [
-                            "/srv/work-device0.lock",
-                            "/srv/work-device1.lock",
+                            _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
+                            _dev("work_root") + "/" + _dev("work_prefix") + "-device1.lock",
                         ],
                         "ticket_dir": "/tmp/opsb-npu-tickets",
                         "heartbeat": "~/.opsb/die_session.json",

@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..device_env import device_text
 from .common import (
     DEFAULT_ELF_THRESHOLDS,
     _first_num,
@@ -19,6 +20,12 @@ def _scan_op_kernel_template_instantiations(repo_dir: Path) -> tuple[int, dict[s
     op_kernel_dir = repo_dir / "op_kernel"
     if not op_kernel_dir.is_dir():
         return 0, {}
+
+    # The template-macro vocabulary is a toolchain/deployment fact, configured not compiled in.
+    tpl_env = device_text("tpl_env")
+    tpl_prefix = device_text("tpl_prefix")
+    tpl_sel_re = re.compile(rf"\b({re.escape(tpl_env)}(?:_[A-Z0-9_]+)?)\s*\(\s*([^)]*)\)")
+    tpl_decl_re = re.compile(rf"\b(?:{re.escape(tpl_prefix)}[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(")
 
     tiling_keys: set[str] = set()
     macro_calls = 0
@@ -40,11 +47,11 @@ def _scan_op_kernel_template_instantiations(repo_dir: Path) -> tuple[int, dict[s
         for m in re.finditer(r"\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)", txt):
             tiling_keys.add(re.sub(r"\s+", "", m.group(1)))
             macro_calls += 1
-        for m in re.finditer(r"\b(TPL_SEL(?:_[A-Z0-9_]+)?)\s*\(\s*([^)]*)\)", txt):
-            tiling_keys.add(f"TPL_SEL:{re.sub(r'\s+', '', m.group(2))}")
+        for m in tpl_sel_re.finditer(txt):
+            tiling_keys.add(f"{tpl_env}:{re.sub(r'\s+', '', m.group(2))}")
             macro_calls += 1
             kernelc_tpl_macros += 1
-        tpl_decls = re.findall(r"\b(?:TPL_[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(", txt)
+        tpl_decls = tpl_decl_re.findall(txt)
         macro_calls += len(tpl_decls)
         kernelc_tpl_macros += len(tpl_decls)
         macro_calls += len(re.findall(r"\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL)\s*\(", txt))

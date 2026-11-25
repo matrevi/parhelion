@@ -8,12 +8,12 @@ regimes: [S_SMALL_CORE, M_MID_UB, L_HBM_TILED]
 dtypes: [float32, float16, bfloat16, int32]
 ---
 
-# Remap CUDA Grid-Stride Occupancy -> soc-a `1/4/8/20/40` Divisor Ladder
+# Remap CUDA Grid-Stride Occupancy -> SoC `1/4/8/20/40` Divisor Ladder
 
 ## 1. Why Direct Porting Fails
-CUDA kernels saturate dozens of SMs by launching thousands of lightweight threadblocks (`gridDim = 4 * numSMs`). On soc-a (20 AI Cores / 40 Vector AIV cores), launching all 40 blocks pays **`~0.12 us` per launched block** pure dispatch floor plus HBM/L2 port contention on small/mid payloads (`<= 2 MB`).
+CUDA kernels saturate dozens of SMs by launching thousands of lightweight threadblocks (`gridDim = 4 * numSMs`). On the SoC (20 AI Cores / 40 Vector AIV cores), launching all 40 blocks pays **`~0.12 us` per launched block** pure dispatch floor plus HBM/L2 port contention on small/mid payloads (`<= 2 MB`).
 
-## 2. soc-a Remapping Rules
+## 2. SoC Remapping Rules
 1. **Follow 40's Divisor Ladder (`1 / 4 / 8 / 20 / 40`)**:
    - **Tiny (`<= 16 KB`)**: `1` or `4` blocks (`S_SMALL_CORE`) to eliminate multi-block dispatch tax.
    - **Mid (`64 KB - 2 MB`)**: `20` half-core blocks (`M_MID_UB`) to halve HBM/L2 port contention while saturating vector lanes.

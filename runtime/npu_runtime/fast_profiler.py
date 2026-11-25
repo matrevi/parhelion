@@ -3,7 +3,7 @@
 
 Inside Phase B (holding device0.lock):
   - Launches `profiler` in a detached session with minimal low-overhead flags
-    (`--task-time=l0 --ai-core=off --aicpu=off --accl=off --runtime-api=off`
+    (`--task-time=l0 --ai-core=off --aicpu=off --kernelcl=off --runtime-api=off`
     by default, or `--task-time=l1 --ai-core=on --aic-metrics=PipeUtilization`
     when `--pmu` or `OPSB_PMU=1`).
   - When `OPSB_PHASE_C_QUEUE` is set, watches the profiler log until
@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         f"--task-time={task_time}",
         f"--ai-core={'on' if want_pmu else 'off'}",
         "--aicpu=off",
-        "--accl=off",
+        "--kernelcl=off",
         "--runtime-api=off",
         f"--application={args.app}",
     ]
@@ -122,7 +122,12 @@ def main(argv: list[str] | None = None) -> int:
             "early_unlock": saw_analysis,
             "env": {
                 k: v for k, v in os.environ.items()
-                if k in ("EXTRA_OPS_PATH", "TOOLCHAIN_HOME", "LD_LIBRARY_PATH", "PYTHONPATH")
+                if k in (
+                    os.environ.get("OPSB_EXTRA_OPS_ENV") or "EXTRA_OPS_PATH",
+                    os.environ.get("OPSB_HOME_ENV") or "TOOLCHAIN_HOME",
+                    "LD_LIBRARY_PATH",
+                    "PYTHONPATH",
+                )
             },
         }
         with open(phase_c_q, "a", encoding="utf-8") as qf:

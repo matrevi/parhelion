@@ -9,7 +9,7 @@ regimes: [PUBLIC, S_SMALL_CORE, M_MID_UB, L_HBM_TILED]
 dtypes: [float32, float16, bfloat16, int32]
 ---
 
-# [ANTI-PATTERN] Compiler/arch-v1 Compiler & ABI Redlines
+# [ANTI-PATTERN] Kernel Compiler (`arch-v1`) & ABI Redlines
 
 ## 1. Inner-Loop `noinline` & Short-Loop `unroll(disable)`
 - **NEVER** call a `noinline` helper inside a hot inner tile loop.

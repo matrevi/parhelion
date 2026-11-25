@@ -7,7 +7,7 @@
       "legacy_id": "COM-10core-dvfs-bimodal-trap",
       "pillar": "hardware",
       "title": "ANTI-PATTERN: 10-Core SetBlockDim(10) Cold DVFS Bimodal Latency Spike",
-      "summary": "Avoid SetBlockDim(10) on soc-a: warmed local medians mask a ~9us bimodal DVFS down-clocking spike on the first 1-2 runs that hits online 3-run scoring. Always stick to {1, 4, 8, 20, 40}.",
+      "summary": "Avoid SetBlockDim(10) on `soc-a`: warmed local medians mask a ~9us bimodal DVFS down-clocking spike on the first 1-2 runs that hits online 3-run scoring. Always stick to {1, 4, 8, 20, 40}.",
       "category": "hardware-law",
       "tags": ["anti-pattern", "10-core", "dvfs-spike", "cold-3run", "soc-a"],
       "bottlenecks": ["cold-launch-tax", "dvfs-10core-spike", "port-contention"],
@@ -56,7 +56,7 @@
       "legacy_id": "COM-dummy-halfcores-launch-illusion",
       "pillar": "hardware",
       "title": "ANTI-PATTERN: Dummy SetBlockDim(halfCores)/20 + Early Return on Small Shapes",
-      "summary": "Never launch 1-core small shapes with dummy SetBlockDim(halfCores)/SetBlockDim(20) + early return (`if (GetBlockIdx() != 0) return;`): hides local idle-die 1c DVFS spikes while adding online dispatch overhead (`-11.83 pts` on StridedSliceGrad 734e097), and `(maxCores+1)/2` hits the 10-core DVFS trap on 20c soc-b.",
+      "summary": "Never launch 1-core small shapes with dummy SetBlockDim(halfCores)/SetBlockDim(20) + early return (`if (GetBlockIdx() != 0) return;`): hides local idle-die 1c DVFS spikes while adding online dispatch overhead (`-11.83 pts` on StridedSliceGrad 734e097), and `(maxCores+1)/2` hits the 10-core DVFS trap on 20c `soc-b`.",
       "category": "hardware-law",
       "tags": ["anti-pattern", "dummy-multicore", "SetBlockDim", "half-cores", "cold-3run"],
       "bottlenecks": ["cold-launch-tax", "dvfs-10core-spike", "port-contention"],
@@ -76,7 +76,7 @@
           "sha": "734e0975e327642dae6b365b53db0d578fbb6ce8",
           "delta_raw": -11.83,
           "verdict": "anti-pattern",
-          "note": "Online scored 59.74 vs 71.57 (Public #3 3.95->4.56us); `(maxCores+1)/2` also hits 10-core trap on 20c soc-b.",
+          "note": "Online scored 59.74 vs 71.57 (Public #3 3.95->4.56us); `(maxCores+1)/2` also hits 10-core trap on 20c `soc-b`.",
           "recorded_at": "2026-11-23T09:07:13+00:00"
         }
       ],
@@ -86,7 +86,7 @@
     {
       "id": "HW-16kb-aiv-l1i-hot-packing",
       "pillar": "hardware",
-      "title": "Accel soc-a 16 KB AIV L1I Iron Law & Multi-TU Hybrid COMDAT/Static Linker Layout",
+      "title": "Accel SoC 16 KB AIV L1I Iron Law & Multi-TU Hybrid COMDAT/Static Linker Layout",
       "summary": "Pack hot kernel entries (_0.._2 / _0.._3) contiguously inside 0x0000..0x4000 (<= 16 KB AIV L1 I-Cache) and slim .text/.o_max. Across multiple TUs, mark shared cross-schMode helpers `inline __attribute__((noinline))` (WEAK COMDAT saves 5-10 KB) while keeping single-schMode hot helpers `static __attribute__((noinline))` adjacent to callers with zero cross-section jump.",
       "category": "hardware-law",
       "tags": ["16kb-l1i", "aiv-icache", "comdat", "linker-layout", "soc-a", "arch-v1"],
@@ -126,8 +126,8 @@
     {
       "id": "HW-compiler-abi-7arg-unroll-guard",
       "pillar": "hardware",
-      "title": "ANTI-PATTERN: Compiler/arch-v1 Inner-Loop noinline, rank<=8 unroll(disable), & >7-8 Scalar Args HBM Stack Spill",
-      "summary": "Online-verified Compiler compiler & ABI redlines on Accel soc-a: (1) NEVER call `noinline` inside hot loops or put `#pragma clang loop unroll(disable)` on `rank<=8` short loops (StridedSliceGrad a690e69 dropped -7.24 pts online); (2) NEVER pass >7-8 scalar arguments (or const-struct/LocalTensor refs) to `noinline` callees — excess args inevitably spill to HBM stack (verified on CTCLossV2/ConcatD/PadV3Grad/StridedSliceGrad).",
+      "title": "ANTI-PATTERN: Kernel Compiler (arch-v1) Inner-Loop noinline, rank<=8 unroll(disable), & >7-8 Scalar Args HBM Stack Spill",
+      "summary": "Online-verified kernel compiler & ABI redlines on Accel SoC: (1) NEVER call `noinline` inside hot loops or put `#pragma clang loop unroll(disable)` on `rank<=8` short loops (StridedSliceGrad a690e69 dropped -7.24 pts online); (2) NEVER pass >7-8 scalar arguments (or const-struct/LocalTensor refs) to `noinline` callees — excess args inevitably spill to HBM stack (verified on CTCLossV2/ConcatD/PadV3Grad/StridedSliceGrad).",
       "category": "hardware-law",
       "tags": ["anti-pattern", "compiler-abi", "hbm-stack-spill", "noinline", "unroll-disable", "arch-v1"],
       "bottlenecks": ["icache-bloat", "scalar-bound", "cold-launch-tax"],
@@ -165,8 +165,8 @@
     {
       "id": "HW-multicore-preload-cacheline-bailout",
       "pillar": "hardware",
-      "title": "Accel soc-a Multi-Core Iron Laws: No PreLoad(N), 32B/64B Slot Alignment (>16c), & Safe Capability Bailout",
-      "summary": "Online-verified multi-core silicon laws on Accel soc-a: (1) NEVER use `KernelC::PreLoad(N)`, dummy `SetBlockDim(4/halfCores)`, or `10c` (fix core ladder to {1,4,8,20,40}); (2) for `cores > 16`, keep per-core workspace slots 32B/64B aligned (`slotStride=1` caused L2 false sharing losing -3..-4 pts on MML); (3) in multi-core fast-path kernels, NEVER write `if (b0 >= B) return true;` before capability fallback checks (idle cores return early while active cores fall through -> silent WA).",
+      "title": "Accel SoC Multi-Core Iron Laws: No PreLoad(N), 32B/64B Slot Alignment (>16c), & Safe Capability Bailout",
+      "summary": "Online-verified multi-core silicon laws on Accel SoC: (1) NEVER use `KernelC::PreLoad(N)`, dummy `SetBlockDim(4/halfCores)`, or `10c` (fix core ladder to {1,4,8,20,40}); (2) for `cores > 16`, keep per-core workspace slots 32B/64B aligned (`slotStride=1` caused L2 false sharing losing -3..-4 pts on MML); (3) in multi-core fast-path kernels, NEVER write `if (b0 >= B) return true;` before capability fallback checks (idle cores return early while active cores fall through -> silent WA).",
       "category": "hardware-law",
       "tags": ["preload", "false-sharing", "cacheline-align", "capability-bailout", "multicore", "soc-a"],
       "bottlenecks": ["sync-hazard", "cold-launch-tax", "dvfs-10core-spike", "mte3-bound"],

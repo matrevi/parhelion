@@ -10,6 +10,7 @@ from typing import Any
 
 from .. import config as _cfg_mod
 from ..config import SUPERVISOR_ROOT, read_json, workspace_id
+from ..device_env import device_text
 from ..services.contest_service import resolve_workspace_meta
 
 DEFAULT_ELF_THRESHOLDS: dict[str, float | int] = {
@@ -145,14 +146,15 @@ def _parse_validation_perf_safe(log_text: str) -> dict[str, Any]:
 
 def _resolve_problem_info(workspace: Path, title: str) -> tuple[str, Path]:
     ws = workspace.expanduser().resolve()
+    legacy_prefix = device_text("work_prefix")
     meta = resolve_workspace_meta(ws)
     for prob in meta.get("problems") or []:
         pt = str(prob.get("title") or "")
         if pt.lower() == title.lower():
             rel = str(prob.get("path") or pt)
             cand_repo = ws / rel
-            if not cand_repo.exists() and (ws / "bench" / pt).exists():
-                cand_repo = ws / "bench" / pt
+            if not cand_repo.exists() and (ws / legacy_prefix / pt).exists():
+                cand_repo = ws / legacy_prefix / pt
             return pt, cand_repo
 
     results_root = ws / "results"
@@ -160,10 +162,10 @@ def _resolve_problem_info(workspace: Path, title: str) -> tuple[str, Path]:
         for d in results_root.iterdir():
             if d.is_dir() and d.name.lower() == title.lower():
                 pt = d.name
-                cand_repo = (ws / "bench" / pt) if (ws / "bench" / pt).is_dir() else (ws / pt)
+                cand_repo = (ws / legacy_prefix / pt) if (ws / legacy_prefix / pt).is_dir() else (ws / pt)
                 return pt, cand_repo
 
-    cand_repo = (ws / "bench" / title) if (ws / "bench" / title).is_dir() else (ws / title)
+    cand_repo = (ws / legacy_prefix / title) if (ws / legacy_prefix / title).is_dir() else (ws / title)
     return title, cand_repo
 
 

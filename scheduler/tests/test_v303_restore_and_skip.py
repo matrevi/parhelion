@@ -12,20 +12,25 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.cli_bridge import SchedulerEngine  # noqa: E402
 from scheduler.estimator import ProblemLedger, ScoreEstimate, resolve_sha  # noqa: E402
 from scheduler.gate import GateConfig, SubmissionGate  # noqa: E402
 
+#: Bench worktree prefix of the live workspace: configured, with the neutral default
+#: `bench` when nothing is configured.
+WORK_PREFIX = device_text("work_prefix")
+
 
 def _make_git_ws(tmp: pathlib.Path, title: str = "StridedSliceGrad") -> tuple[pathlib.Path, list[str]]:
     ws = tmp / "ws"
-    op_dir = ws / "bench" / title
+    op_dir = ws / WORK_PREFIX / title
     (op_dir / "op_host").mkdir(parents=True)
     (op_dir / "op_kernel").mkdir(parents=True)
     (ws / "results" / title).mkdir(parents=True)
     (ws / "results" / "scoring-evidence").mkdir(parents=True)
-    (ws / "bench" / "problems.json").write_text(
-        json.dumps([{"title": title, "slug": title.lower(), "path": f"bench/{title}", "difficulty": 3}]),
+    (ws / WORK_PREFIX / "problems.json").write_text(
+        json.dumps([{"title": title, "slug": title.lower(), "path": f"{WORK_PREFIX}/{title}", "difficulty": 3}]),
         encoding="utf-8",
     )
     (ws / "results" / "submit-queue.jsonl").write_text("", encoding="utf-8")

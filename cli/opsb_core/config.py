@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .device_env import device_text
+
 CLI_DIR = Path(__file__).resolve().parents[1]
 SUPERVISOR_ROOT = CLI_DIR.parent
 
@@ -62,7 +64,7 @@ def breakthrough_dir() -> Path:
 
 
 def _is_workspace_root(path: Path) -> bool:
-    return (path / "opsb.workspace.json").is_file() or (path / "bench" / "problems.json").is_file()
+    return (path / "opsb.workspace.json").is_file() or (path / device_text("work_prefix") / "problems.json").is_file()
 
 
 def discover_default_workspace(start: Path | None = None) -> Path | None:

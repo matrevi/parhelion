@@ -12,7 +12,14 @@ SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(SUP_ROOT) not in sys.path:
     sys.path.insert(0, str(SUP_ROOT))
 
+from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler.parhelion_paths import load_problem_manifest  # noqa: E402
+
+#: Deployment layout vocabulary is configured, never hard-coded: the legacy bench
+#: worktree prefix and the remote contest work root.  A plain checkout resolves to the
+#: neutral defaults (`bench`, `/srv/work`).
+WORK_PREFIX = device_text("work_prefix")
+WORK_ROOT = device_text("work_root")
 
 
 def _load_runtime_module():
@@ -30,8 +37,8 @@ class ManifestPrecedenceTests(unittest.TestCase):
         )
 
     def _write_legacy(self, ws: pathlib.Path, problems: list[dict]) -> None:
-        (ws / "bench").mkdir(parents=True, exist_ok=True)
-        (ws / "bench" / "problems.json").write_text(json.dumps(problems), encoding="utf-8")
+        (ws / WORK_PREFIX).mkdir(parents=True, exist_ok=True)
+        (ws / WORK_PREFIX / "problems.json").write_text(json.dumps(problems), encoding="utf-8")
 
     def test_clean_layout_wins_over_legacy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -49,8 +56,8 @@ class ManifestPrecedenceTests(unittest.TestCase):
             ws = pathlib.Path(td)
             self._write_legacy(ws, [{"title": "ConcatD", "slug": "concatd"}])
             rows = load_problem_manifest(ws)
-        self.assertEqual(rows[0]["path"], "bench/ConcatD")
-        self.assertEqual(rows[0]["repo_slug"], "bench-concatd")
+        self.assertEqual(rows[0]["path"], f"{WORK_PREFIX}/ConcatD")
+        self.assertEqual(rows[0]["repo_slug"], f"{WORK_PREFIX}-concatd")
 
     def test_empty_manifest_returns_empty_list(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -79,9 +86,9 @@ class ManifestPrecedenceTests(unittest.TestCase):
         runtime = _load_runtime_module()
         with tempfile.TemporaryDirectory() as td:
             ws = pathlib.Path(td)
-            self.assertEqual(runtime._remote_root_for(ws, {}), f"/home/developer/work/{ws.name}")
+            self.assertEqual(runtime._remote_root_for(ws, {}), f"{WORK_ROOT}/{ws.name}")
             self.assertEqual(runtime._remote_root_for(ws, {"contest_id": "mat-chem-sim-pred"}),
-                             "/home/developer/work/mat-chem-sim-pred")
+                             f"{WORK_ROOT}/mat-chem-sim-pred")
             self.assertEqual(runtime._remote_root_for(ws, {"npu_remote_root": "/data/work/x/"}), "/data/work/x")
 
 

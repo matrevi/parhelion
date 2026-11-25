@@ -69,7 +69,7 @@ class ICTClient(upstream.JudgeClient):
         parts = urlsplit(value)
         # Verified canonical deployment: same contest and problem IDs as the IP site.
         if parts.scheme == 'https' and parts.netloc == '123.249.115.173':
-            value = urlunsplit(('https', 'judge.invalid', parts.path, parts.query, parts.fragment))
+            value = urlunsplit(('https', upstream.JUDGE_HOST, parts.path, parts.query, parts.fragment))
         return super().resolve_problem(value)
 
     def prepare_submission(self, problem_id, project_dir, project_type='auto'):

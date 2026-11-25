@@ -2,7 +2,7 @@
 """Validate a pushed commit on the compute server via the 3-Phase Disaggregated Pipeline.
 
 Phase A (0.0s NPU die lock):
-  - Holds per-problem `/srv/work-repo-<Title>.lock` ONLY
+  - Holds per-problem `<remote-work-root>/<prefix>-repo-<Title>.lock` ONLY
     (all 10 problems compile in parallel across the 32 AArch64 CPU cores)
   - Emits heartbeat `~/.opsb/cpu_builds/<Title>.json` for live dashboard visibility
   - Performs detached git checkout of `<SHA>`, pure-host `walk_model.py` (if present),
@@ -12,7 +12,7 @@ Phase A (0.0s NPU die lock):
 
 Phase B (Cooperative WSPT + MLFQ Q0/Q1 Ticket -> Exclusive NPU Die Lock):
   - Registers priority ticket `/tmp/opsb-npu-tickets/<pid>.json`
-  - Acquires `bench-device{0,1}.lock` + shared `bench-validation.lock`
+  - Acquires `<prefix>-device{0,1}.lock` + shared `<prefix>-validation.lock`
   - Emits live substage heartbeat `~/.opsb/die_session.json`
   - Injects `OPSB_ARENA_ACCEL=1` (`PYTHONPATH=/home/developer/.opsb/runtime`) so
     `acl_runner.Runner` executes in-process via `PersistentArenaRunner` (~2ms/case vs 4.15s)
@@ -42,6 +42,71 @@ def _default_workspace() -> Path:
 
 
 ROOT = _default_workspace()
+
+# Neutral fallbacks; the real deployment facts live in ~/.parhelion/config.json ("device").
+_DEVICE_DEFAULTS: dict = {
+    "soc": "soc-a",
+    "soc_legacy": "soc-b",
+    "build_target": "soc-a",
+    "build_target_legacy": "soc-b",
+    "arch": "arch-v1",
+    "toolchain_env": "",
+    "toolchain_root": "",
+    "toolchain_dir": "",
+    "sdk_glob": "sdk-*",
+    "driver_root": "",
+    "driver_lib_dirs": [],
+    "driver_libs": {},
+    "dcmi_lib": "",
+    "driver_version_info": "",
+    "toolkit_info": "toolkit_install.info",
+    "toolkit_name": "toolkit",
+    "lib_runtime": "libruntime.so",
+    "visible_devices_env": "VISIBLE_DEVICES",
+    "extra_ops_env": "EXTRA_OPS_PATH",
+    "toolchain_home_env": "TOOLCHAIN_HOME",
+    "tpl_env": "TPL_SEL",
+    "tpl_prefix": "TPL_",
+    "profiler_bin": "profiler",
+    "profiler_acl_flag": "--acl",
+    "judge_base": "https://judge.invalid",
+    "judge_bot": "judge-bot",
+    "work_root": "/srv/work",
+    "work_prefix": "bench",
+    "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
+    "contest_org": "",
+    "contest_track": "",
+}
+
+
+def _device_settings() -> dict:
+    """Deployment facts (SoC, arch, toolchain, remote roots) for this host.
+
+    Stdlib-only and self-contained on purpose: this script is also copied to the
+    compute host, where the CLI package may not be importable.
+    """
+    if os.environ.get("OPSB_DEVICE_ISOLATED") == "1":
+        return dict(_DEVICE_DEFAULTS)
+    merged = dict(_DEVICE_DEFAULTS)
+    home_override = os.environ.get("PARHELION_HOME") or os.environ.get("OPSB_HOME")
+    cfg_dir = Path(home_override).expanduser().resolve() if home_override else (Path.home() / ".parhelion")
+    try:
+        raw = json.loads((cfg_dir / "config.json").read_text(encoding="utf-8"))
+        sect = raw.get("device") if isinstance(raw, dict) else None
+        if isinstance(sect, dict):
+            for key, value in sect.items():
+                if key in merged and value not in (None, ""):
+                    merged[key] = value
+    except Exception:
+        pass
+    for key in list(merged):
+        raw_env = os.environ.get("OPSB_DEVICE_" + key.upper())
+        if raw_env:
+            merged[key] = raw_env
+    return merged
+
+
+DEVICE = _device_settings()
 
 
 def git(repo: Path, *args: str) -> str:
@@ -101,7 +166,7 @@ def evaluate_build_signature(
     ) if opk_dir.is_dir() else []
     cur_sig = {
         "branch_ref": branch_ref or "HEAD",
-        "target": target or "soc-a",
+        "target": target or DEVICE["build_target"],
         "op_kernel_headers": opk_headers,
         "last_sha": sha,
     }
@@ -136,7 +201,19 @@ mlfq = cfg.get('mlfq') or ('Q0' if fast else 'Q1')
 wspt_base = float(cfg.get('wspt_base', 1.0))
 aging_tau = float(cfg.get('aging_tau', 600.0))
 
-root = pathlib.Path('/srv/work')
+_dev = cfg.get('device') or {}
+work_root = pathlib.Path(_dev.get('work_root') or '/srv/work')
+work_prefix = _dev.get('work_prefix') or 'bench'
+toolchain_env = _dev.get('toolchain_env') or ''
+soc_default = _dev.get('soc') or 'soc-a'
+build_target = _dev.get('build_target') or 'soc-a'
+extra_ops_env = _dev.get('extra_ops_env') or 'EXTRA_OPS_PATH'
+toolchain_home_env = _dev.get('toolchain_home_env') or 'TOOLCHAIN_HOME'
+visible_env = _dev.get('visible_devices_env') or 'VISIBLE_DEVICES'
+tpl_env = _dev.get('tpl_env') or 'TPL_SEL'
+tpl_prefix = _dev.get('tpl_prefix') or 'TPL_'
+
+root = work_root / work_prefix
 root.mkdir(parents=True, exist_ok=True)
 repo = root / title
 opsb_home = pathlib.Path.home() / '.opsb'
@@ -144,7 +221,7 @@ cpu_builds_dir = opsb_home / 'cpu_builds'
 runtime_dir = opsb_home / 'runtime'
 cpu_builds_dir.mkdir(parents=True, exist_ok=True)
 
-logdir = root.parent / 'bench-results' / title / sha
+logdir = root.parent / (work_prefix + '-results') / title / sha
 logdir.mkdir(parents=True, exist_ok=True)
 log_name = (
     'sync.log' if sync_only else
@@ -161,11 +238,16 @@ res_name = (
 
 # Per-problem repo lock: allows all 10 problems to compile in parallel on 32 CPU cores
 # while preventing two overlapping runs of the SAME problem from clobbering git HEAD / build/.
-repo_lock_f = (root.parent / f'bench-repo-{title}.lock').open('a')
+repo_lock_f = (root.parent / f'{work_prefix}-repo-{title}.lock').open('a')
 fcntl.flock(repo_lock_f, fcntl.LOCK_EX)
 
 env = os.environ.copy()
 env['GIT_TERMINAL_PROMPT'] = '0'
+# Publish the configured environment-variable *names* so the in-process helpers
+# (arena cache, profiler wait, environment probe) address the toolchain's own vars.
+env['OPSB_EXTRA_OPS_ENV'] = extra_ops_env
+env['OPSB_HOME_ENV'] = toolchain_home_env
+env['OPSB_RUNTIME_LIB'] = _dev.get('lib_runtime') or 'libruntime.so'
 
 # ---------------- PHASE A: 32-CORE CPU SYNC, BUILD & CASE CACHE (0.0s NPU DIE LOCK) ----------------
 phase_a_t0 = time.monotonic()
@@ -204,7 +286,7 @@ try:
             return subprocess.check_output(args, text=True, env=env, **kw).strip()
 
         if repo.exists() and not (repo / '.git').is_dir():
-            backup = root.parent / ('bench-pre-git-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
+            backup = root.parent / (work_prefix + '-pre-git-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S'))
             backup.mkdir(exist_ok=True)
             repo.rename(backup / title)
             print('Preserved previous directory:', backup / title, flush=True)
@@ -300,7 +382,7 @@ try:
     ) if opk_dir_sig.is_dir() else []
     cur_build_sig = {
         'branch_ref': sig_branch,
-        'target': env.get('OPSB_BUILD_TARGET', 'soc-a'),
+        'target': env.get('OPSB_BUILD_TARGET', soc_default),
         'op_kernel_headers': opk_headers_sig,
         'last_sha': sha,
     }
@@ -338,23 +420,23 @@ try:
     emit(f'[PHASE-A] Building KernelC package + examples on {ncpu}-core CPU with adaptive -j{build_jobs} (active_builds={active_builds}, 0s NPU lock)...')
     phase_a_sh = r"""
 set -uo pipefail
-source /opt/toolchain/latest/set_env.sh
-TARGET="${OPSB_BUILD_TARGET:-soc-a}"
+@@SRC@@
+TARGET="${OPSB_BUILD_TARGET:-@@BUILD_TARGET@@}"
 JOBS="${OPSB_EFFECTIVE_BUILD_JOBS:-4}"
 if [ "${OPSB_MAKE_CLEAN:-0}" = "1" ]; then
   echo "[PHASE-A] Clean rebuild triggered (${OPSB_CLEAN_REASON:-signature_changed}) via --make_clean..."
-  (sed "s/COMPUTE_UNIT=\"soc-a\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- --make_clean) >/dev/null 2>&1 || rm -rf "$PWD/build"/* "$PWD/build_out"/*
+  (sed "s/COMPUTE_UNIT=\"@@BUILD_TARGET@@\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- --make_clean) >/dev/null 2>&1 || rm -rf "$PWD/build"/* "$PWD/build_out"/*
   rm -rf "$PWD/examples/build"
 fi
-sed "s/COMPUTE_UNIT=\"soc-a\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- -j"$JOBS"
+sed "s/COMPUTE_UNIT=\"@@BUILD_TARGET@@\"/COMPUTE_UNIT=\"$TARGET\"/" build.sh | bash -s -- -j"$JOBS"
 BRC=$?
 if [ "$BRC" -ne 0 ]; then
   exit "$BRC"
 fi
 VENDOR_DIR=$(ls -d "$PWD"/build/packages/vendors/*_custom 2>/dev/null | head -n 1 || true)
 if [ -n "$VENDOR_DIR" ] && [ -d "$PWD/examples" ]; then
-  export EXTRA_OPS_PATH="$VENDOR_DIR${EXTRA_OPS_PATH:+:$EXTRA_OPS_PATH}"
-  export LD_LIBRARY_PATH="$VENDOR_DIR/op_api/lib:$TOOLCHAIN_HOME/lib64:${LD_LIBRARY_PATH:-}"
+  export @@EXTRA@@="$VENDOR_DIR${@@EXTRA@@:+:$@@EXTRA@@}"
+  export LD_LIBRARY_PATH="$VENDOR_DIR/op_api/lib:$@@HOME@@/lib64:${LD_LIBRARY_PATH:-}"
   cmake -S "$PWD/examples" -B "$PWD/examples/build" >/dev/null
   cmake --build "$PWD/examples/build" --parallel "$JOBS"
 fi
@@ -363,6 +445,14 @@ if [ -f "$PWD/samples/sample.py" ]; then
   python3 "$PWD/samples/sample.py" generate --directory "$PWD/samples/build" >/dev/null 2>&1 || true
 fi
 """
+    # Toolchain facts are deployment data, substituted here instead of being literal.
+    phase_a_sh = (
+        phase_a_sh
+        .replace('@@SRC@@', f'source {toolchain_env}' if toolchain_env else ':')
+        .replace('@@BUILD_TARGET@@', build_target)
+        .replace('@@EXTRA@@', extra_ops_env)
+        .replace('@@HOME@@', toolchain_home_env)
+    )
     bp = subprocess.Popen(['bash', '-c', phase_a_sh], cwd=repo, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in bp.stdout:
         log_f.write(line)
@@ -511,10 +601,10 @@ fi
                     for km in re.finditer(r'\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)', ktxt):
                         tk_set.add(re.sub(r'\s+', '', km.group(1)))
                         macro_cnt += 1
-                    for km in re.finditer(r'\bTPL_SEL(?:_[A-Z0-9_]+)?\s*\(\s*([^)]*)\)', ktxt):
-                        tk_set.add('TPL_SEL:' + re.sub(r'\s+', '', km.group(1)))
+                    for km in re.finditer(r'\b' + re.escape(tpl_env) + r'(?:_[A-Z0-9_]+)?\s*\(\s*([^)]*)\)', ktxt):
+                        tk_set.add(tpl_env + ':' + re.sub(r'\s+', '', km.group(1)))
                         macro_cnt += 1
-                    macro_cnt += len(re.findall(r'\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL|TPL_[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(', ktxt))
+                    macro_cnt += len(re.findall(r'\b(?:IMPL_OP|EXEC_KERNEL|DISPATCH_KERNEL|INSTANTIATE_KERNEL|' + re.escape(tpl_prefix) + r'[A-Z0-9_]*DECL|GET_TPL_TILING_KEY)\s*\(', ktxt))
                     tmpl_cnt += len(re.findall(r'\btemplate\s*<', ktxt))
                 template_instantiations = max(len(tk_set), macro_cnt) if (tk_set or macro_cnt) else tmpl_cnt
                 template_instantiation_source = 'source_scan'
@@ -632,7 +722,7 @@ def am_top_ticket():
             continue
     return True
 
-legacy_lock = (root.parent / 'bench-validation.lock').open('a')
+legacy_lock = (root.parent / (work_prefix + '-validation.lock')).open('a')
 fcntl.flock(legacy_lock, fcntl.LOCK_SH)
 devices = int(os.environ.get('TASK_DEVICES', '1'))
 wait_budget = int(os.environ.get('TASK_LOCK_WAIT', '3600')) * 60
@@ -644,7 +734,7 @@ try:
     while slot is None:
         if am_top_ticket():
             for index in range(devices):
-                handle = (root.parent / ('bench-device%d.lock' % index)).open('a')
+                handle = (root.parent / ('%s-device%d.lock' % (work_prefix, index))).open('a')
                 try:
                     if devices == 1:
                         if not wait_as_queue_head(handle, ticket_dir, am_top_ticket, deadline):
@@ -694,8 +784,8 @@ def write_die_session(substage):
         pass
 
 write_die_session('acl_setup')
-env['VISIBLE_DEVICES'] = str(die_idx)
-emit('Using NPU die %d (VISIBLE_DEVICES=%d)' % (die_idx, die_idx))
+env[visible_env] = str(die_idx)
+emit('Using NPU die %d (%s=%d)' % (die_idx, visible_env, die_idx))
 
 # Activate PersistentArenaRunner in-process execution if deployed
 arena_stats_file = pathlib.Path(tempfile.mktemp(prefix=f'opsb-arena-{title}-', suffix='.jsonl'))
@@ -739,7 +829,7 @@ if fast:
 phase_c_queue = pathlib.Path(f'/tmp/opsb-phasec-{title}-{my_pid}.jsonl')
 phase_c_queue.unlink(missing_ok=True)
 env['OPSB_PHASE_C_QUEUE'] = str(phase_c_queue)
-env['OPSB_RUNTIME_SOC'] = env.get('OPSB_RUNTIME_SOC', 'soc-a')
+env['OPSB_RUNTIME_SOC'] = env.get('OPSB_RUNTIME_SOC', soc_default)
 env['OPSB_RUNTIME_DIR'] = str(runtime_dir)
 
 run_sh_path = repo / 'validation' / 'run-npu.sh'
@@ -749,7 +839,7 @@ exec_script = orig_script
 # 1) Eliminate Python aclInit SOC probe inside Die-0 lock
 exec_script = re.sub(
     r"SOC=\$\(\s*python3\s+-\s+<<'SOC_PY'.*?SOC_PY\s*\)",
-    'SOC="${OPSB_RUNTIME_SOC:-soc-a}"',
+    f'SOC="${{OPSB_RUNTIME_SOC:-{soc_default}}}"',
     exec_script,
     count=1,
     flags=re.S,
@@ -759,7 +849,7 @@ exec_script = re.sub(
 prebuilt_libs = glob.glob(str(repo / 'build/packages/vendors/*_custom/op_api/lib/libcust_opapi.so'))
 sample_bin = repo / 'examples' / 'build' / 'sample'
 sample_build_dir = repo / 'samples' / 'build'
-build_needle = 'sed "s/COMPUTE_UNIT=\\"soc-a\\"/COMPUTE_UNIT=\\"$TARGET\\"/" build.sh | bash -s -- -j4 -e'
+build_needle = 'sed "s/COMPUTE_UNIT=\\"' + build_target + '\\"/COMPUTE_UNIT=\\"$TARGET\\"/" build.sh | bash -s -- -j4 -e'
 if prebuilt_libs and build_needle in exec_script:
     if (not fast) and ext_py.is_file() and sample_bin.is_file() and env.get('OPSB_RUN_SAMPLE_BIN', '0') != '1':
         # Phase A already compiled & linked examples/build/sample against libcust_opapi.so,
@@ -773,10 +863,10 @@ if prebuilt_libs and build_needle in exec_script:
         replacement = (
             'bash -c \'set -e; echo "[INFO] Running prebuilt sample binary (0s cmake/verify in lock)..."; '
             'VDIR=$(ls -d "$PWD"/build/packages/vendors/*_custom | head -n 1); '
-            'EXTRA_OPS_PATH="$VDIR${EXTRA_OPS_PATH:+:$EXTRA_OPS_PATH}" '
-            'LD_LIBRARY_PATH="$VDIR/op_api/lib:$TOOLCHAIN_HOME/lib64:${LD_LIBRARY_PATH:-}" '
+            '@@EXTRA@@="$VDIR${@@EXTRA@@:+:$@@EXTRA@@}" '
+            'LD_LIBRARY_PATH="$VDIR/op_api/lib:$@@HOME@@/lib64:${LD_LIBRARY_PATH:-}" '
             '"$PWD/examples/build/sample" "$PWD/samples/build" "${DEVICE_ID:-0}"\''
-        )
+        ).replace('@@EXTRA@@', extra_ops_env).replace('@@HOME@@', toolchain_home_env)
         with phase_c_queue.open('a', encoding='utf-8') as qf:
             qf.write(json.dumps({
                 'kind': 'cmd',
@@ -1181,7 +1271,7 @@ def expected_origin_url(workspace: Path, problem: dict) -> str:
 
     `opsb.workspace.json` is authoritative when present (clean-agents-first layout:
     `git_owner` + per-problem `repo_slug`, e.g. `accel-mat-<slug>`). Workspaces without
-    that manifest keep the legacy `bench-<slug>` naming.
+    that manifest keep the legacy `<prefix>-<slug>` naming.
     """
     manifest_path = workspace / "opsb.workspace.json"
     if manifest_path.is_file():
@@ -1193,11 +1283,13 @@ def expected_origin_url(workspace: Path, problem: dict) -> str:
                     return f"https://gitcode.com/{owner}/{entry['repo_slug']}.git"
         except Exception:
             pass
-    return "https://git.invalid/bench-" + problem["slug"] + ".git"
+    template = DEVICE.get("repo_url_template") or "https://git.invalid/{prefix}-{slug}.git"
+    return template.format(prefix=DEVICE.get("work_prefix") or "bench", slug=problem["slug"])
 
 
 def load_problem_manifest(workspace: Path) -> list[dict]:
-    """Clean-layout manifest first, legacy `bench/problems.json` as fallback."""
+    """Clean-layout manifest first, legacy `<prefix>/problems.json` as fallback."""
+    prefix = DEVICE.get("work_prefix") or "bench"
     clean = workspace / "opsb.workspace.json"
     if clean.is_file():
         try:
@@ -1213,15 +1305,15 @@ def load_problem_manifest(workspace: Path) -> list[dict]:
                 return out
         except Exception:
             pass
-    legacy = workspace / "bench" / "problems.json"
+    legacy = workspace / prefix / "problems.json"
     if legacy.is_file():
         try:
             rows = json.loads(legacy.read_text())
             out = []
             for r in rows:
                 row = dict(r)
-                row.setdefault("path", row.get("path") or f"bench/{row['title']}")
-                row.setdefault("repo_slug", row.get("repo_slug") or f"bench-{row.get('slug', row['title'].lower())}")
+                row.setdefault("path", row.get("path") or f"{prefix}/{row['title']}")
+                row.setdefault("repo_slug", row.get("repo_slug") or f"{prefix}-{row.get('slug', row['title'].lower())}")
                 out.append(row)
             return out
         except Exception:
@@ -1236,6 +1328,14 @@ cfg = json.load(sys.stdin)
 title, sha = cfg['title'], cfg['sha']
 exec(cfg.pop('lanes_source'))
 cfg['run_id'] = f"{os.getpid()}-{time.time_ns()}"
+_dev = cfg.get('device') or {}
+toolchain_root = _dev.get('toolchain_root') or ''
+sdk_glob = _dev.get('sdk_glob') or 'sdk-*'
+driver_root = _dev.get('driver_root') or ''
+profiler_bin = _dev.get('profiler_bin') or 'profiler'
+profiler_acl_flag = _dev.get('profiler_acl_flag') or '--acl'
+extra_ops_env = _dev.get('extra_ops_env') or 'EXTRA_OPS_PATH'
+toolchain_home_env = _dev.get('toolchain_home_env') or 'TOOLCHAIN_HOME'
 
 def _parse_task_durations(out_dir):
     import csv
@@ -1269,18 +1369,18 @@ def _parse_task_durations(out_dir):
 
 
 def _profiler_path():
-    shell = (f'source {accel_env} && ' if accel_env else '') + 'command -v profiler'
+    shell = (f'source {accel_env} && ' if accel_env else '') + f'command -v {profiler_bin}'
     probe = subprocess.run(['bash', '-lc', shell], capture_output=True, text=True, env=env, timeout=60)
     hits = [ln.strip() for ln in (probe.stdout or '').splitlines() if ln.strip()]
     if hits:
         return hits[-1]
-    for pattern in ('/opt/toolchain/latest/sdk-*/tools/profiler/bin/profiler',
-                    '/opt/driver//opt/toolchain/*/tools/profiler/bin/profiler',
-                    '/opt/driver/*/tools/profiler/bin/profiler'):
+    for pattern in (f'{toolchain_root}/{sdk_glob}/tools/profiler/bin/{profiler_bin}',
+                    f'{driver_root}/*/*/tools/profiler/bin/{profiler_bin}',
+                    f'{driver_root}/*/tools/profiler/bin/{profiler_bin}'):
         found = sorted(glob.glob(pattern))
         if found:
             return found[-1]
-    return shutil.which('profiler') or ''
+    return shutil.which(profiler_bin) or ''
 
 
 def _run_profiler(repo, build_dir, application, pmu, out_dir):
@@ -1293,7 +1393,7 @@ def _run_profiler(repo, build_dir, application, pmu, out_dir):
     out_dir.mkdir(parents=True, exist_ok=True)
     flags = ['--task-time=l1' if pmu else '--task-time=l0',
              '--ai-core=on' if pmu else '--ai-core=off',
-             '--aicpu=off', '--accl=off', '--runtime-api=off']
+             '--aicpu=off', f'{profiler_acl_flag}=off', '--runtime-api=off']
     if pmu:
         flags.append('--aic-metrics=PipeUtilization')
     cmd = [profiler, f'--application={application}', f'--output={out_dir}', *flags]
@@ -1317,12 +1417,17 @@ root = pathlib.Path(cfg['remote_root'])
 repo = root / title
 build_dir = repo / 'build-npu'
 accel_env = cfg.get('accel_env') or ''
-soc = cfg.get('soc') or 'soc-a'
+soc = cfg.get('soc') or _dev.get('soc') or 'soc-a'
 device_id = cfg.get('device_id', 0)
-arch = cfg.get('arch') or 'arch-v1'
+arch = cfg.get('arch') or _dev.get('arch') or 'arch-v1'
 
 env = os.environ.copy()
 env['GIT_TERMINAL_PROMPT'] = '0'
+# Publish the configured environment-variable *names* so the in-process helpers
+# (arena cache, profiler wait, environment probe) address the toolchain's own vars.
+env['OPSB_EXTRA_OPS_ENV'] = extra_ops_env
+env['OPSB_HOME_ENV'] = toolchain_home_env
+env['OPSB_RUNTIME_LIB'] = _dev.get('lib_runtime') or 'libruntime.so'
 
 def sh(cmd, cwd=None, check=True, timeout=None):
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env,
@@ -1408,12 +1513,12 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth, (root / (title + '
 
 
 def _remote_root_for(workspace: Path, manifest: dict) -> str:
-    """Remote contest root: manifest override, else /home/developer/work/<contest>."""
+    """Remote contest root: manifest override, else `<configured work root>/<contest>`."""
     override = str(manifest.get("npu_remote_root") or "").strip()
     if override:
         return override.rstrip("/")
     name = str(manifest.get("contest_id") or "").strip() or workspace.name
-    return f"/home/developer/work/{name}"
+    return (DEVICE.get("work_root") or "/srv/work").rstrip("/") + f"/{name}"
 
 
 def _stream_remote(script: str, cfg: dict, destination: Path, log_basename: str, stream_stdout: bool) -> tuple[int, dict]:
@@ -1515,6 +1620,7 @@ def run_3phase_validation(
         mlfq=mlfq,
         wspt_base=wspt_base,
         aging_tau=aging_tau,
+        device=DEVICE,
     )
 
     destination = workspace / "results" / problem["title"] / sha
@@ -1548,11 +1654,11 @@ def run_3phase_validation(
         template_cfg.update(
             npu_host=npu_host,
             remote_root=_remote_root_for(workspace, manifest_doc),
-            lock="/srv/work-device0.lock",
-            accel_env=os.environ.get("OPSB_TOOLCHAIN_ENV", "/opt/toolchain/latest/set_env.sh"),
+            lock=(DEVICE.get("work_root") or "/srv/work").rstrip("/") + "/" + (DEVICE.get("work_prefix") or "bench") + "-device0.lock",
+            accel_env=os.environ.get("OPSB_TOOLCHAIN_ENV") or DEVICE.get("toolchain_env") or "",
             device_id=str(os.environ.get("OPSB_DEVICE_ID", "0")),
-            arch=os.environ.get("NPU_ARCH", "arch-v1"),
-            soc=os.environ.get("OPSB_RUNTIME_SOC", "soc-a"),
+            arch=os.environ.get("NPU_ARCH") or DEVICE.get("arch") or "arch-v1",
+            soc=os.environ.get("OPSB_RUNTIME_SOC") or DEVICE.get("soc") or "soc-a",
             jobs=os.environ.get("OPSB_BUILD_JOBS"),
             build_only=build_only,
         )

@@ -100,7 +100,7 @@
       "id": "COM-cuda-grid-stride-to-divisor-cores",
       "pillar": "community",
       "title": "Remap CUDA Grid-Stride Occupancy to 1/4/8/20/40 Divisor Core Ladder",
-      "summary": "Replace CUDA over-subscribed threadblocks with soc-a 40-divisor block counts (1/4 small, 20 half-core mid, 40 large) respecting the ~0.12us/block dispatch floor.",
+      "summary": "Replace CUDA over-subscribed threadblocks with `soc-a` 40-divisor block counts (1/4 small, 20 half-core mid, 40 large) respecting the ~0.12us/block dispatch floor.",
       "category": "tiling-regime",
       "tags": ["divisor-ladder", "half-core-20", "dispatch-floor", "port-contention"],
       "bottlenecks": ["cold-launch-tax", "port-contention", "dispatch-floor"],

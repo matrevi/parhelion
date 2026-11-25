@@ -1,12 +1,12 @@
 #pragma once
 // SNP-zero-tpipe-ub-arena.h
-// soc-a Zero-TPipe/TBuf Static Aligned UB Arena + 16-Bank-Group Coloring
+// SoC Zero-TPipe/TBuf Static Aligned UB Arena + 16-Bank-Group Coloring
 //
 // Why: Eliminates TPipe/TBuf/TQue constructor, slot-bookkeeping, and implicit
 // first-packet zeroing overhead (~0.8-1.6 us on small/mid shapes) while unlocking
 // the full 184 KB safe user UB budget below TMP_UB_OFFSET (188,416 B).
 //
-// Bank-group rule (dav_c220: 16 bank groups x 32 B = 512 B cycle):
+// Bank-group rule (arch-v1: 16 bank groups x 32 B = 512 B cycle):
 // Keep concurrent read/write vector streams staggered by +256 B (mod 512)
 // to suppress UB bank-group conflicts by ~80%+.
 

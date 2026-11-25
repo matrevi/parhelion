@@ -34,7 +34,7 @@ Read input, output, shape, precision and timing requirements from the official p
 
 DESIGN_MD = """# {problem} · Architecture & Tiling Design
 
-## 1. Roofline & Bottleneck Notes (Accel soc-a)
+## 1. Roofline & Bottleneck Notes (Accel {soc})
 - Vector cores: up to `40` AIV (`192 KB` UB per AIV, `32 B` DMA alignment).
 
 ## 2. Stratified Experiment Ledger (`profiler` Single-Session `Task Duration(us)`)

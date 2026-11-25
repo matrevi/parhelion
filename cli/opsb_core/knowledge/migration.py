@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import SUPERVISOR_ROOT, read_json, utc_now
+from ..device_env import device_text
 from .evolution import _render_community_markdown
 from .seeding import ensure_triad_kb_seeded
 from .store import (
@@ -39,10 +40,12 @@ _CANONICAL_COMMUNITY_IDS: frozenset[str] = frozenset({
 })
 
 # Strong hardware/silicon/ISA/compiler/SDK-runtime law markers discovered via docs or silicon benchmarks.
+# Entry blobs are lower-cased before matching, so the configured part is lower-cased too.
+_SOC_TOKEN = re.escape(device_text("soc").lower())
 _HARDWARE_DISCOVERY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("silicon-dvfs-core-wall", r"\b(10-?core|setblockdim\s*\(|halfcores|dvfs|dispatch wall|launch floor|32c/40c|>20-core|20-40 core|slotstride|false sharing|quartercores|byte-range split)\b"),
     ("l1i-elf-linker-abi", r"\b(16\s*kb|l1i|0x0000|aiv l1i|i-?cache|icache|comdat|multi-tu|linker layout|elf diet|\.o_max|symtab|hbm-?stack|stack spill|register-?spill|sroa|<=?7-?arg|7-?arg|3-reg-arg|zero-stack|hang fix|unroll\s*\(\s*disable\s*\)|inner-?loop\s+noinline|never call noinline|always_inline|preload\s*\()\b"),
-    ("isa-intrinsic-microarch", r"\b(dav[-_]c220|accel\s*soc-a?|sdk\s*9\.1|copy_gm_to_ubuf_align|dmainpadded|event_id\s*0|8-slot|ring5|zero-exit-drain|set_va_reg_sb|scatter_vnchwconv|vtranspose\s+16x16|bank-stagger|vector_dup|uint8_t\s+repeat|14-bit\s+param1|hardware\s+leftpad|fetcheventid|mte3->mte2|self-bypass|180s\s+npu\s+hang|idle-core\s+early\s+return|capability\s+bailout|scalar-ub-read|v_s\s+pipe|zero-v_s)\b"),
+    ("isa-intrinsic-microarch", rf"\b(dav[-_]c220|accel\s*{_SOC_TOKEN}?|sdk\s*9\.1|copy_gm_to_ubuf_align|dmainpadded|event_id\s*0|8-slot|ring5|zero-exit-drain|set_va_reg_sb|scatter_vnchwconv|vtranspose\s+16x16|bank-stagger|vector_dup|uint8_t\s+repeat|14-bit\s+param1|hardware\s+leftpad|fetcheventid|mte3->mte2|self-bypass|180s\s+npu\s+hang|idle-core\s+early\s+return|capability\s+bailout|scalar-ub-read|v_s\s+pipe|zero-v_s)\b"),
     ("mte-pipeline-silicon-disproof", r"\b(axismid\s+128kb|pre-queued\s+mte2|pack3c\s+anti-pattern|round-2\s+disproofs|inline\s+multi-branch\s+raw\s+vector)\b"),
 )
 

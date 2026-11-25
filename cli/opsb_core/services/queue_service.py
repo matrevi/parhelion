@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read_json, read_jsonl, utc_now
+from ..device_env import device_text
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, displayed_score_bound, index_submission_history, latest_score_evidence, resolve_workspace_meta
 from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATUSES
@@ -633,7 +634,7 @@ def check_commit_safety_gate(workspace: Path, title: str, sha: str) -> bool:
         sys.path.insert(0,str(SUPERVISOR_ROOT))
     from scheduler.case_bench import formal_evidence, has_reference
     problems = resolve_workspace_meta(workspace)["problems"]
-    repo = workspace / next((p["path"] for p in problems if p["title"]==title),f"bench/{title}")
+    repo = workspace / next((p["path"] for p in problems if p["title"]==title),f"{device_text('work_prefix')}/{title}")
     if r_data.get("scheme")=="reference" or has_reference(repo,sha):
         return bool(formal_evidence(res_json.parent,repo,r_data))
     txt = val_log.read_text(encoding="utf-8", errors="replace")

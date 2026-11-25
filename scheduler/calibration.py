@@ -54,6 +54,20 @@ from .estimator import (
 )
 from .parhelion_paths import atomic_write_json, read_json_safe, workspace_bench_specs_dir
 
+
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 STRATA_ORDER: tuple[tuple[str, str, float], ...] = (
     ("PUBLIC", "Public", 0.10),
     ("S_SMALL_CORE", "Small-Core", 0.27),
@@ -187,7 +201,7 @@ class BenchmarkCalibrator:
         self._esc_cache: dict[tuple[str, str], dict[str, Any]] = {}
 
     def _spec_paths(self, title: str) -> tuple[pathlib.Path, pathlib.Path]:
-        repo_bench = self.workspace / "bench" / title / "bench"
+        repo_bench = self.workspace / _dev("work_prefix") / title / "bench"
         sup_bench = self.specs_root / title
         corr = (repo_bench / "cases_correctness.json") if (repo_bench / "cases_correctness.json").is_file() else (sup_bench / "cases_correctness.json")
         perf = (repo_bench / "cases_perf.json") if (repo_bench / "cases_perf.json").is_file() else (sup_bench / "cases_perf.json")
@@ -347,14 +361,14 @@ class BenchmarkCalibrator:
         title: str,
         sha: str,
         buckets: list[dict[str, Any]],
-        target_soc: str | None = "soc-a",
+        target_soc: str | None = _dev("soc"),
         allow_future_siblings: bool = True,
     ) -> tuple[dict[str, float], dict[str, float], str | None, str]:
         """Extract normalized per-bucket timings (us), torch_npu refs, SoC, and timing modality."""
         t_key = (title, sha, target_soc if allow_future_siblings else None)
         if t_key in self._timings_cache:
             return self._timings_cache[t_key]
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / _dev("work_prefix") / title
         res_dir = self.workspace / "results" / title
         vlog = res_dir / sha / "validation.log"
         rj_path = res_dir / sha / "result.json"
@@ -380,7 +394,7 @@ class BenchmarkCalibrator:
                     1 if (best_perf and best_perf.get("runtime_soc") == target_soc) else 0,
                     len(best_perf["profiler_cases"]) if best_perf else 0,
                 )
-                # Only inspect passing `soc-a` logs (check tiny result.json first!)
+                # Only inspect passing logs measured on the configured SoC (check tiny result.json first!)
                 for cand_rj in sorted(res_dir.glob("*/result.json"), reverse=True):
                     c_sha = cand_rj.parent.name.lower()
                     cvlog = cand_rj.parent / "validation.log"
@@ -468,12 +482,12 @@ class BenchmarkCalibrator:
             # silently swap the measurement floor instead of reporting "no case-level evidence".
             modality = "profiler"
         elif best_perf["same_soc_exec_cases"]:
-            host_ovh = 7.2 if soc == "soc-a" else 3.2
+            host_ovh = 7.2 if soc == _dev("soc") else 3.2
             for k, v in best_perf["same_soc_exec_cases"].items():
                 raw_pool[k] = max(3.6, v - host_ovh)
             modality = "exec"
         elif best_perf["dev_event_cases"]:
-            dev_ovh = 5.2 if soc == "soc-a" else 1.8
+            dev_ovh = 5.2 if soc == _dev("soc") else 1.8
             for k, v in best_perf["dev_event_cases"].items():
                 raw_pool[k] = max(3.6, v - dev_ovh)
             modality = "dev_us"
@@ -509,7 +523,7 @@ class BenchmarkCalibrator:
         self,
         title: str,
         sha: str,
-        target_soc: str | None = "soc-a",
+        target_soc: str | None = _dev("soc"),
         allow_future_siblings: bool = True,
     ) -> dict[str, Any]:
         """Extract ALL logged `profiler` buckets (spec + extra), spike-immune `robust_cases`,
@@ -520,7 +534,7 @@ class BenchmarkCalibrator:
         if cache_key in self._full_tel_cache:
             return self._full_tel_cache[cache_key]
 
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / _dev("work_prefix") / title
         res_dir = self.workspace / "results" / title
         vlog = res_dir / sha / "validation.log"
         rj_path = res_dir / sha / "result.json"
@@ -641,12 +655,12 @@ class BenchmarkCalibrator:
             elif best_perf.get("has_hw_evidence"):
                 modality = "profiler"
             elif best_perf["same_soc_exec_cases"]:
-                host_ovh = 7.2 if soc == "soc-a" else 3.2
+                host_ovh = 7.2 if soc == _dev("soc") else 3.2
                 for k, v in best_perf["same_soc_exec_cases"].items():
                     raw_pool[k] = max(3.6, v - host_ovh)
                 modality = "exec"
             elif best_perf["dev_event_cases"]:
-                dev_ovh = 5.2 if soc == "soc-a" else 1.8
+                dev_ovh = 5.2 if soc == _dev("soc") else 1.8
                 for k, v in best_perf["dev_event_cases"].items():
                     raw_pool[k] = max(3.6, v - dev_ovh)
                 modality = "dev_us"
@@ -1657,7 +1671,7 @@ class BenchmarkCalibrator:
         events = list(cal.get("high_residual_events") or [])
         all_causes = sorted({c for ev in events for c in (ev.get("causes") or [])})
         if "SOC_CORE_MISMATCH" in all_causes or title == "QuantUpdateScatter":
-            unexplained_dims.append("Local soc-a (40 AIV) vs online judge core-count / block_dim sensitivity")
+            unexplained_dims.append(f"Local {_dev('soc')} (40 AIV) vs online judge core-count / block_dim sensitivity")
         if "COLD_START_BINARY_BLOAT" in all_causes or title in ("PadV3Grad", "StridedSliceGrad"):
             unexplained_dims.append("3-run cold-start sensitivity to compiled kernel `.o` ELF size / .text bloat")
         if "MISSING_LARGE_N_DIM" in all_causes or title == "SyncBatchNormGatherStats":
@@ -1771,7 +1785,7 @@ class BenchmarkCalibrator:
         atomic_write_json(fb_path, fb_payload, indent=2, ensure_ascii=False)
 
         # Static scan of C++ kernel/tiling for uncovered slow/fallback branches (read-only)
-        repo = self.workspace / "bench" / title
+        repo = self.workspace / _dev("work_prefix") / title
         fallback_branches: list[str] = []
         for sub in ("op_host", "op_kernel"):
             sdir = repo / sub
@@ -1867,7 +1881,7 @@ class BenchmarkCalibrator:
 
         from .case_bench import has_reference
         from .case_feedback import evolve
-        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"bench/{title}")
+        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"{_dev('work_prefix')}/{title}")
         if has_reference(repo,"HEAD"):
             return evolve(self.workspace,title,repo,self.estimator._filtered_outcomes(title),apply)
 
@@ -1962,7 +1976,7 @@ class BenchmarkCalibrator:
         g_txt = good_log.read_text(errors="replace")
         from .case_bench import has_reference,formal_evidence
         from .case_feedback import regression_evidence
-        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"bench/{title}")
+        repo = self.workspace / self.estimator.problems_meta.get(title,{}).get("path",f"{_dev('work_prefix')}/{title}")
         reference_suite = has_reference(repo,c_good)
         evidence = {}
         if reference_suite:

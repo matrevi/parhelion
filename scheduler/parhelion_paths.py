@@ -33,6 +33,19 @@ import uuid
 from typing import Any
 
 
+def _dev(key: str, default: str = "") -> str:
+    """Deployment setting from `~/.parhelion/config.json` ("device").
+
+    `scheduler` may be imported without the CLI package on `sys.path`, so the
+    accessor is imported lazily and a missing CLI falls back to the neutral default.
+    """
+    try:
+        from cli.opsb_core.device_env import device_text
+        return device_text(key) or default
+    except Exception:
+        return default
+
+
 def sanitize_json_value(obj: Any) -> Any:
     """Recursively convert non-finite floats (NaN/Inf) to None for strict RFC-8259 JSON."""
     if isinstance(obj, bool) or obj is None or isinstance(obj, (int, str)):
@@ -264,7 +277,8 @@ def load_problem_manifest(workspace: pathlib.Path | str) -> list[dict[str, Any]]
     """Return the canonical problem list for a workspace, independent of its layout.
 
     `clean-agents-first` workspaces keep the manifest in `opsb.workspace.json` (written by
-    `opsb workspace init/sync-problems`); older workspaces keep `bench/problems.json`.
+    `opsb workspace init/sync-problems`); older workspaces keep `<prefix>/problems.json` under
+    the configured work-prefix.
     Consumers must use this instead of hard-coding either path — the scheduler used to read
     only the legacy file, so a freshly scraped contest looked like the old 10-problem roster.
 
@@ -289,7 +303,8 @@ def load_problem_manifest(workspace: pathlib.Path | str) -> list[dict[str, Any]]
         if out:
             return out
 
-    legacy, legacy_ok = read_json_safe(ws / "bench" / "problems.json")
+    prefix = _dev("work_prefix")
+    legacy, legacy_ok = read_json_safe(ws / prefix / "problems.json")
     if legacy_ok and isinstance(legacy, list):
         out = []
         for item in legacy:
@@ -298,9 +313,9 @@ def load_problem_manifest(workspace: pathlib.Path | str) -> list[dict[str, Any]]
             title = str(item["title"])
             slug = str(item.get("slug") or title.lower())
             row = dict(item)
-            row.setdefault("path", item.get("path") or f"bench/{title}")
+            row.setdefault("path", item.get("path") or f"{prefix}/{title}")
             row.setdefault("slug", slug)
-            row.setdefault("repo_slug", item.get("repo_slug") or f"bench-{slug}")
+            row.setdefault("repo_slug", item.get("repo_slug") or f"{prefix}-{slug}")
             row.setdefault("difficulty", item.get("difficulty") or 2)
             out.append(row)
         if out:
