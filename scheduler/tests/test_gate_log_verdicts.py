@@ -13,13 +13,17 @@ The rule is now line-anchored and reflog-aware; a green tail is diagnostic only
 """
 from __future__ import annotations
 
+import json
 import pathlib
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
 from cli.opsb_core.device_env import device_text  # noqa: E402
+from scheduler.feedback_log import feedback_log_path, tail_feedback  # noqa: E402
 from scheduler.gate import SubmissionGate, parse_log_verdicts  # noqa: E402
 
 FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
@@ -150,6 +154,54 @@ class AuditSnapshotTest(unittest.TestCase):
             self.assertTrue(rec["sha"].startswith("2b9d49d"))
             log = WORKSPACE / "results" / rec["title"] / rec["sha"] / "validation.log"
             self.assertIsNone(SubmissionGate(WORKSPACE)._check_log_failure_markers(log.read_text(errors="replace")))
+
+
+def _gate_workspace(root: pathlib.Path) -> tuple[pathlib.Path, str, str]:
+    """Minimal workspace with one committed candidate and a validated result."""
+    ws = root / "ws"
+    title = "LogOp"
+    op = ws / WORK_PREFIX / title
+    (op / "op_kernel").mkdir(parents=True)
+    (op / "op_kernel" / "k.cpp").write_text("// kernel\n", encoding="utf-8")
+    for cmd in (
+        ["init", "-q"],
+        ["config", "user.email", "t@example.com"],
+        ["config", "user.name", "Test"],
+        ["add", "."],
+        ["commit", "-qm", "v0"],
+    ):
+        subprocess.run(["git", "-C", str(op), *cmd], check=True)
+    sha = subprocess.check_output(["git", "-C", str(op), "rev-parse", "HEAD"], text=True).strip()
+    vdir = ws / "results" / title / sha
+    vdir.mkdir(parents=True)
+    (vdir / "result.json").write_text(
+        json.dumps({"title": title, "sha": sha, "exit_code": 0, "finished_at": "2026-11-25T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    (vdir / "validation.log").write_text("EXTENDED_PASSED 3 cases\nVALIDATION_PASSED\n", encoding="utf-8")
+    (ws / WORK_PREFIX / "problems.json").write_text(
+        json.dumps([{"title": title, "slug": "logop", "path": f"{WORK_PREFIX}/{title}", "difficulty": 5}]),
+        encoding="utf-8",
+    )
+    (ws / "results" / "submit-queue.jsonl").write_text("", encoding="utf-8")
+    (ws / "results" / "score-snapshot.json").write_text("{}", encoding="utf-8")
+    return ws, title, sha
+
+
+class GateLogThrottleTest(unittest.TestCase):
+    """Repeated status refreshes must not append one gate line per evaluation."""
+
+    def test_three_identical_evaluations_log_one_gate_record(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ws, title, sha = _gate_workspace(pathlib.Path(td))
+            gate = SubmissionGate(ws)
+            verdicts = [gate.evaluate(title, sha) for _ in range(3)]
+            self.assertEqual(len({(v.status_tag, v.approved, v.gate_reason) for v in verdicts}), 1)
+            rows = tail_feedback(ws, kind="gate")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["title"], title)
+            self.assertEqual(rows[0]["sha"], sha[:7])
+            self.assertEqual(len(feedback_log_path(ws).read_text(encoding="utf-8").splitlines()), 1)
 
 
 if __name__ == "__main__":
