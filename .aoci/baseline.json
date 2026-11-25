@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-23T12:16:42Z",
-  "updated_at": "2026-11-25T12:59:07Z",
+  "updated_at": "2026-11-25T13:50:39Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -155,9 +155,9 @@
     },
     "Sources/Parhelion/Domain/ContestModels.swift": {
       "role": "index",
-      "sha256": "0c0088382d3bd246046827f6aa2b3d3b0d502f16e339fb372dc3160d5378d9cf",
-      "size": 9566,
-      "normalized_sha256": "0c0088382d3bd246046827f6aa2b3d3b0d502f16e339fb372dc3160d5378d9cf"
+      "sha256": "af3c294bc7ad14e3e436c0617c575fa8dbb0554273e1251da9d1caf3596c5646",
+      "size": 10498,
+      "normalized_sha256": "af3c294bc7ad14e3e436c0617c575fa8dbb0554273e1251da9d1caf3596c5646"
     },
     "Sources/Parhelion/Domain/DriverModels.swift": {
       "role": "index",
@@ -179,9 +179,9 @@
     },
     "Sources/Parhelion/Domain/QueueModels.swift": {
       "role": "index",
-      "sha256": "2fd2dfb8238576d79c456b2cb538faab849dca0bc2da9b79eeef99a714ed3504",
-      "size": 12231,
-      "normalized_sha256": "2fd2dfb8238576d79c456b2cb538faab849dca0bc2da9b79eeef99a714ed3504"
+      "sha256": "d17a1ec00ad184335b3bc3322fcc34c772b9aeec9ae9f285e3869415b2964d9e",
+      "size": 12386,
+      "normalized_sha256": "d17a1ec00ad184335b3bc3322fcc34c772b9aeec9ae9f285e3869415b2964d9e"
     },
     "Sources/Parhelion/Domain/SettingsModels.swift": {
       "role": "index",
@@ -335,9 +335,9 @@
     },
     "Sources/Parhelion/Features/Contest/ProblemInspectorView.swift": {
       "role": "index",
-      "sha256": "1623719bbfe47371dff41cd3b1dd73b386eb81f18eb8eb09219ba042f7133cf7",
-      "size": 16620,
-      "normalized_sha256": "1623719bbfe47371dff41cd3b1dd73b386eb81f18eb8eb09219ba042f7133cf7"
+      "sha256": "276905a1334443d519a1f66800b745fc6f0ce5607bc6a20664e900a27712236d",
+      "size": 17045,
+      "normalized_sha256": "276905a1334443d519a1f66800b745fc6f0ce5607bc6a20664e900a27712236d"
     },
     "Sources/Parhelion/Features/Contest/ProblemStrataCardView.swift": {
       "role": "index",
@@ -389,9 +389,9 @@
     },
     "Sources/Parhelion/Features/NpuMonitor/SubmissionQueueCardViews.swift": {
       "role": "index",
-      "sha256": "0dfc4dbe0a81c03b34220bd1c14ebbba26a2f58ec4ffc6186a8fab6ddae46ca7",
-      "size": 18165,
-      "normalized_sha256": "0dfc4dbe0a81c03b34220bd1c14ebbba26a2f58ec4ffc6186a8fab6ddae46ca7"
+      "sha256": "d8de53f2f835b15e024d0c165f3f1a348dbe233d97ee41fe80a883e854c5278f",
+      "size": 19516,
+      "normalized_sha256": "d8de53f2f835b15e024d0c165f3f1a348dbe233d97ee41fe80a883e854c5278f"
     },
     "Sources/Parhelion/Features/NpuMonitor/SubmissionQueueSections.swift": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "8ab828abca297cf4a80a57381937c6ab8b0bcda1033dfb3bb6fa710c0afbbdf8",
-      "size": 83264,
-      "normalized_sha256": "8ab828abca297cf4a80a57381937c6ab8b0bcda1033dfb3bb6fa710c0afbbdf8"
+      "sha256": "263fcf45464aa9b3b4ce2b5d1d98e291279b552e3749eaecd8a407e832d2310c",
+      "size": 83318,
+      "normalized_sha256": "263fcf45464aa9b3b4ce2b5d1d98e291279b552e3749eaecd8a407e832d2310c"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "59aa112a7e373e23062bbbad7f08bbd0ba65917ccf732f7ab083d0b6f4b7977d",
+      "sha256": "b3f10836a54a5e4ac4ddebea67f19c493e5aa12dbaf25109d055f5a5e48ad12b",
       "size": 109,
-      "normalized_sha256": "59aa112a7e373e23062bbbad7f08bbd0ba65917ccf732f7ab083d0b6f4b7977d"
+      "normalized_sha256": "b3f10836a54a5e4ac4ddebea67f19c493e5aa12dbaf25109d055f5a5e48ad12b"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -887,9 +887,9 @@
     },
     "cli/opsb_core/services/contest_service.py": {
       "role": "index",
-      "sha256": "928a9505026d88f91e5f4163b6dbe8cff082b564c8bf12432bf9181a71599b35",
-      "size": 28254,
-      "normalized_sha256": "928a9505026d88f91e5f4163b6dbe8cff082b564c8bf12432bf9181a71599b35"
+      "sha256": "27a7c1daf73b79ef21521f41eabf19ccc9e002e0c715eaf9cddd9f96a414f08f",
+      "size": 29320,
+      "normalized_sha256": "27a7c1daf73b79ef21521f41eabf19ccc9e002e0c715eaf9cddd9f96a414f08f"
     },
     "cli/opsb_core/services/contest_state_service.py": {
       "role": "index",
@@ -923,9 +923,9 @@
     },
     "cli/opsb_core/services/judge_score_fetch.py": {
       "role": "index",
-      "sha256": "25bc603115756b8636d21963d103a8d9965302925df1198c5f9523c5563108e0",
-      "size": 12754,
-      "normalized_sha256": "25bc603115756b8636d21963d103a8d9965302925df1198c5f9523c5563108e0"
+      "sha256": "e4c8bdaafb786539d4f8dfd471c6abc3a9f95b09ef57c9c625396ffafd918183",
+      "size": 16076,
+      "normalized_sha256": "e4c8bdaafb786539d4f8dfd471c6abc3a9f95b09ef57c9c625396ffafd918183"
     },
     "cli/opsb_core/services/judge_sync.py": {
       "role": "index",
@@ -953,9 +953,9 @@
     },
     "cli/opsb_core/services/queue_service.py": {
       "role": "index",
-      "sha256": "a8c21592351b456219edcb3f338a8d55d899bd4a40e49b89908ccb32b4618612",
-      "size": 31072,
-      "normalized_sha256": "a8c21592351b456219edcb3f338a8d55d899bd4a40e49b89908ccb32b4618612"
+      "sha256": "32e9f94d0e7c5053164bee1cd97a552b7aa99f09b756fe2c406f4eb162da0dc1",
+      "size": 31746,
+      "normalized_sha256": "32e9f94d0e7c5053164bee1cd97a552b7aa99f09b756fe2c406f4eb162da0dc1"
     },
     "cli/opsb_core/services/quota_helpers.py": {
       "role": "index",
@@ -1001,9 +1001,9 @@
     },
     "cli/opsb_core/services/sync_reconciler.py": {
       "role": "index",
-      "sha256": "181e78176e85169e5337e87177099cb41d3a6d00fde8eb1dc3f88c0986292d67",
-      "size": 15283,
-      "normalized_sha256": "181e78176e85169e5337e87177099cb41d3a6d00fde8eb1dc3f88c0986292d67"
+      "sha256": "135857f8a3d998d2cc336c3a7730b67618bc57000a70b03f6ccf1af58604284d",
+      "size": 18371,
+      "normalized_sha256": "135857f8a3d998d2cc336c3a7730b67618bc57000a70b03f6ccf1af58604284d"
     },
     "cli/opsb_core/services/templates_md.py": {
       "role": "index",
@@ -1139,9 +1139,9 @@
     },
     "cli/tests/test_sync_reconciler.py": {
       "role": "observe",
-      "sha256": "267741f27af954ce276dca389a258bdc955f666ea1852b1779a11dca1f041622",
-      "size": 11922,
-      "normalized_sha256": "267741f27af954ce276dca389a258bdc955f666ea1852b1779a11dca1f041622"
+      "sha256": "7402f5e394673ecae1deaedd9a48148c38811d34944fc2aaa4357c2353c9ce5c",
+      "size": 15125,
+      "normalized_sha256": "7402f5e394673ecae1deaedd9a48148c38811d34944fc2aaa4357c2353c9ce5c"
     },
     "cli/tests/test_triad_kb.py": {
       "role": "observe",
@@ -1492,9 +1492,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "849cc79df756874242a792a6e87e3c9b5b7191a5164fbdec279023f94724ab2f",
+      "sha256": "ed1e069b28e1154e0381201628574147c835560cc85bb3b711991a71bdf035c7",
       "size": 5102,
-      "normalized_sha256": "849cc79df756874242a792a6e87e3c9b5b7191a5164fbdec279023f94724ab2f"
+      "normalized_sha256": "ed1e069b28e1154e0381201628574147c835560cc85bb3b711991a71bdf035c7"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
