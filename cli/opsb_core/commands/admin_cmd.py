@@ -221,6 +221,15 @@ def run_collab(args: argparse.Namespace) -> int:
 
 
 def run_auth(args: argparse.Namespace) -> int:
+    if args.auth_cmd == "judge-captain":
+        from ..services.ranking_service import set_captain
+        try:
+            set_captain(Path(args.workspace).expanduser().resolve(), args.account_id)
+        except (OSError, ValueError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}))
+            return 1
+        print(json.dumps({"ok": True}))
+        return 0
     if args.auth_cmd == "status":
         out = get_auth_status(use_cache=False)
         print(json.dumps(out, ensure_ascii=False) if args.json else json.dumps(out, indent=2))

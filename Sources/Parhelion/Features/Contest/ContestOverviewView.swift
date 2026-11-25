@@ -132,7 +132,13 @@ struct ContestOverviewView: View {
                 let rankDetail: String = {
                     if teamRank != nil {
                         let score = snap.contest.teamRankScore.map { String(format: "%.2f 分 · ", $0) } ?? ""
-                        return lang.tr("\(score)全队总榜", "\(score)team board")
+                        return score + snap.contest.teamName
+                    }
+                    switch snap.contest.rankingState {
+                    case "no_team": return lang.tr("账号暂无已生效的队伍报名", "No active team registration")
+                    case "unavailable": return lang.tr("队长账号查询失败", "Captain lookup unavailable")
+                    case "unlisted": return lang.tr("\(snap.contest.teamName) · 暂未上榜", "\(snap.contest.teamName) · Unranked")
+                    default: break
                     }
                     return lang.tr("等待拉取排行榜", "Awaiting ranking fetch")
                 }()

@@ -82,8 +82,9 @@ struct ProblemTableView: View {
             HStack(spacing: 6) {
                 Text(lang.tr("级别", "Tier")).frame(width: 36, alignment: .leading)
                 Text(lang.tr("算子", "Operator")).frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
-                Text(lang.tr("状态", "Status")).frame(width: 92, alignment: .center)
+                Text(lang.tr("最近判题", "Last verdict")).frame(width: 74, alignment: .center)
                 Text(lang.tr("当前分", "Current")).frame(width: 66, alignment: .trailing)
+                Text(lang.tr("在榜分", "Board")).frame(width: 56, alignment: .trailing)
                 Text(lang.tr("同代最优", "Equiv Best")).frame(width: 74, alignment: .trailing)
                 Text(lang.tr("排名", "Rank")).frame(width: 58, alignment: .trailing)
                 Text(lang.tr("调度建议", "Priority")).frame(width: 110, alignment: .trailing)
@@ -138,13 +139,16 @@ struct ProblemTableView: View {
             }
             .frame(minWidth: 142, maxWidth: .infinity, alignment: .leading)
 
-            SemanticPill(text: lang.evalStatus(p.status), compact: true)
-                .frame(width: 92, alignment: .center)
+            SemanticPill(text: p.latestStatus.map { lang.evalStatus($0) } ?? "—", compact: true)
+                .frame(width: 74, alignment: .center)
 
-            Text(String(format: "%.2f", p.currentScore))
+            Text(p.latestScore.map { String(format: "%.2f", $0) } ?? "—")
                 .font(.system(size: 13.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(p.currentScore == 0 ? .red : .primary)
+                .foregroundStyle(p.latestScore == 0 ? .red : .primary)
                 .frame(width: 66, alignment: .trailing)
+            Text(p.boardScoreText(lang))
+                .font(.system(size: 12, design: .monospaced))
+                .frame(width: 56, alignment: .trailing)
 
             VStack(alignment: .trailing, spacing: 1) {
                 Text(String(format: "%.2f", p.bestScore))

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import statistics
 import threading
 from pathlib import Path
 from typing import Any
@@ -10,7 +12,31 @@ from typing import Any
 from ..config import CACHE_DIR, CONFIG_DIR, DEFAULT_DIFFICULTIES, parse_iso, read_json, read_jsonl, utc_now
 from .calibration_service import build_problem_calibration
 from .git_fast import read_head_fast
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, is_sync_error_outcome
+
+
+def case_run_summary(folder: Path, repo: Path) -> dict:
+    summary = dict(read_json(folder / "latest-bench.json", {}) or {})
+    spec = read_json(repo / "bench/cases_perf.json", {}) or {}
+    groups = {}
+    for field in ("buckets", "public_anchors", "hidden_buckets"):
+        for bucket in spec.get(field, []) if isinstance(spec, dict) else []:
+            if isinstance(bucket, dict) and isinstance(bucket.get("id"), str):
+                groups[bucket["id"]] = {"label": bucket["id"], "stratum": bucket.get("stratum"), "members": []}
+    rid = summary.get("run_id", "")
+    if isinstance(rid, str) and re.fullmatch(r"[0-9a-f]{32}", rid):
+        report = read_json(folder / "bench-runs" / rid / "report.json", {}) or {}
+        if report.get("sha") == folder.name and report.get("run_id") == rid and report.get("title") == folder.parent.name:
+            for case in report.get("cases", []):
+                samples = case.get("device_us") or []
+                member = {"id": case["id"], "name": case.get("name", ""), "status": case["status"],
+                          "us": statistics.median(samples) if samples else None}
+                for label in case.get("buckets", []):
+                    group = groups.setdefault(label, {"label": label, "members": []})
+                    group["members"].append(member)
+    summary["buckets"] = list(groups.values())
+    return summary
 
 
 def resolve_workspace_meta(workspace: Path) -> dict[str, Any]:
@@ -210,13 +236,13 @@ def index_submission_history(workspace: Path) -> dict[str, Any]:
     raw_best_by_prob: dict[str, tuple[float, str, str]] = {}
     latest_sub_by_prob: dict[str, dict[str, Any]] = {}
     for t, h_list in history_by_prob.items():
-        h_list.sort(key=lambda x: x.get("at") or "")
+        h_list.sort(key=lambda x: dt.timestamp() if (dt := parse_iso(x.get("at"))) else 0)
         prev_pass = 0.0
         prev_dt = None
         for h in h_list:
             sc = h.get("score")
             cur_dt = parse_iso(h.get("at"))
-            if h.get("status") not in ("rejected", "skipped", "duplicate", "sync_error"):
+            if h.get("status") in TERMINAL_JUDGE_STATUSES:
                 latest_sub_by_prob[t] = h
             if sc is not None:
                 # Same-Epoch ΔS @ t_eval: discount prev_pass by ~0.48%/day across multi-day gaps
@@ -267,7 +293,12 @@ def build_problem_models(
     results_dir = workspace / "results"
     snapshot = read_json(results_dir / "score-snapshot.json", {})
     boards = load_slim_boards(results_dir / "scoring-evidence" / "board-summary.json")
-    live_boards = read_json(results_dir/"scoring-evidence/live-board-tbest.json",{}).get("problems",{})
+    from .board_refresh_service import board_scope
+    scope = board_scope(workspace)
+    board_payload = read_json(results_dir / "scoring-evidence/live-board-tbest.json", {})
+    live_boards = board_payload.get("problems", {}) if board_payload.get("scope", {}) == scope else {}
+    if scope:
+        snapshot = {}
     reconciled = read_json(results_dir/"scoring-evidence/board-reconciled.json",{}).get("board",[])
     judge_counts = {p["title"]:next((a["cases_total"] for a in sorted(p.get("attempts",[]),
                     key=lambda a:str(a.get("judge_at") or ""),reverse=True) if a.get("cases_total")),None)
@@ -293,6 +324,15 @@ def build_problem_models(
         status = snap_row.get("status") or "no-submission"
         rank = snap_row.get("rank")
         ours_pub = [float(x) for x in (snap_row.get("public_times_us") or [])]
+        live = live_boards.get(title) or {}
+        if live.get("problem_id") and live["problem_id"] != p.get("problem_id"):
+            live = {}
+        listed = live.get("listed")
+        if listed is not None:
+            cur_score = float(live.get("our_score") or 0)
+            rank = live.get("our_rank")
+            status = (live.get("our_status") or "Pass") if listed else "unranked"
+            ours_pub = live.get("our_public_times_us") or []
 
         if status == "Pass" and cur_score > 0:
             passing_count += 1
@@ -348,14 +388,11 @@ def build_problem_models(
 
         b_info = boards.get(title, {})
         tcs_raw = b_info.get("testcases") or []
-        live = live_boards.get(title) or {}
-        if live.get("problem_id") and p.get("problem_id") and live["problem_id"] != p["problem_id"]:
-            live = {}
         case_count = judge_case_count(b_info,live,judge_counts.get(title))
         if not tcs_raw:
             tcs_raw = [{"tbest":v} for v in live.get("tbest",[])]
         b_rows = b_info.get("rows") or []
-        total_teams = (b_info.get("meta") or {}).get("total") or len(b_rows)
+        total_teams = live.get("ranking_total") or (b_info.get("meta") or {}).get("total") or len(b_rows) or None
         ldr = b_rows[0] if b_rows else {}
         leader_score = float(ldr.get("score") or 0.0)
         leader_nick = ldr.get("nickname") or ""
@@ -422,7 +459,7 @@ def build_problem_models(
         repo_dir = workspace / p["path"]
         case_run = None
         if (repo_dir/"reference.py").is_file() and (repo_dir/"main.asc").is_file():
-            case_run = read_json(workspace/"results"/title/head_sha/"latest-bench.json",{})
+            case_run = case_run_summary(workspace / "results" / title / head_sha, repo_dir)
         cb_trips = hist_idx["pressure_12h"].get(title, 0)
         cb_open = cb_trips >= cb_limit or hist_idx["consec_fail_12h"].get(title, 0) >= 2
         rev_history = [dict(h) for h in reversed(hist_idx["history_by_prob"].get(title, []))]
@@ -454,6 +491,11 @@ def build_problem_models(
                 "rank": rank,
                 "total_teams": total_teams,
                 "current_score": round(cur_score, 2),
+                "latest_status": latest_sub.get("status"),
+                "latest_score": latest_sub.get("score"),
+                "latest_sha": latest_sub.get("sha"),
+                "board_listed": listed,
+                "board_score": live.get("our_score") if listed is not None else snap_row.get("score"),
                 "weighted_score": round(diff * cur_score, 2),
                 "best_score": round(best_score, 2),
                 "raw_best_score": round(raw_peak_sc, 2),
@@ -491,6 +533,8 @@ def build_problem_models(
     valid_maes = [float(p["calibration"]["mae_pts"]) for p in problems_out if p["calibration"].get("mae_pts") is not None]
     contest_summary = {
         **meta,
+        "captain_account_id": scope["target"][3] if scope else None,
+        "team_name": (scope.get("team_name") or "") if scope else meta.get("team_name", ""),
         "problem_count": len(problems_out),
         "passing_count": passing_count,
         "raw_score": round(raw_total, 2),

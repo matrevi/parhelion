@@ -23,10 +23,10 @@ struct ProblemInspectorView: View {
                     referenceBench(run)
                 } else {
                     accountingCard
-                    StrataAndSlotsCardView(problem: problem)
                     publicRatioCard
-                    BenchCoverageCardView(problem: problem)
                 }
+                StrataAndSlotsCardView(problem: problem)
+                BenchCoverageCardView(problem: problem)
                 FastFeedbackDiagnosticCardView(problem: problem)
                 timelineCard
             }
@@ -43,9 +43,18 @@ struct ProblemInspectorView: View {
                     TierTagBadge(difficulty: problem.difficulty, text: lang.wsptTag(problem.wsptTag))
                 }
                 let rk = problem.rank.map { "#\($0)" } ?? "—"
-                Text("\(gitOwner)/\(problem.repoSlug) · \(lang.tr("排名", "Rank")) \(rk) / \(problem.totalTeams ?? 0)")
+                Text("\(gitOwner)/\(problem.repoSlug) · \(lang.tr("排名", "Rank")) \(rk) / \(problem.totalTeams.map(String.init) ?? "—")")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(.secondary)
+                HStack {
+                    Text(lang.tr("最近一发", "Last judged"))
+                    Text(problem.latestSha.map { String($0.prefix(7)) } ?? "—")
+                    Text(problem.latestStatus.map { lang.evalStatus($0) } ?? "—")
+                    Text(problem.latestScore.map { String(format: "%.2f", $0) } ?? "—")
+                    Text(lang.tr("在榜分", "Board score"))
+                    Text(problem.boardScoreText(lang))
+                }
+                .font(.caption.monospacedDigit())
             }
             Spacer()
             HStack(spacing: 6) {
@@ -110,6 +119,38 @@ struct ProblemInspectorView: View {
                     }
                 } else {
                     Text(lang.tr("当前提交尚无逐例报告", "No case report for this commit")).foregroundStyle(.secondary)
+                }
+                if let buckets = run.buckets, !buckets.isEmpty {
+                    Divider()
+                    Text(lang.tr("分桶与用例", "Buckets and cases")).font(.subheadline.bold())
+                    ForEach(buckets, id: \.label) { bucket in
+                        let title = [bucket.label, bucket.stratum.map { lang.stratumLabel($0) }].compactMap { $0 }.joined(separator: " · ")
+                        if bucket.members.isEmpty {
+                            HStack {
+                                Text(title)
+                                Spacer()
+                                Text(lang.tr("本次无关联用例", "No linked cases in this run")).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            DisclosureGroup {
+                                ForEach(bucket.members) { member in
+                                    HStack {
+                                        Text("#\(member.id)  \(member.name)")
+                                        Spacer()
+                                        if let us = member.us { Text(String(format: "%.2f µs", us)) }
+                                        Text(member.status).monospaced()
+                                    }
+                                }
+                            } label: {
+                                HStack {
+                                    Text(title)
+                                    Spacer()
+                                    Text("\(bucket.members.filter { $0.status == "PASS" }.count)/\(bucket.members.count) " + lang.tr("通过", "passed"))
+                                }
+                            }
+                        }
+                    }
+                    .font(.caption)
                 }
             }
         }

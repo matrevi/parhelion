@@ -47,6 +47,8 @@ struct ContestSummary: Codable {
     let modelMaePts: Double?
     /// Contest-wide team ranking from the public board (absent until first fetch).
     let teamRank: Int?
+    let captainAccountId: String?
+    let rankingState: String?
     let totalTeams: Int?
     let teamRankScore: Double?
     let teamRankFetchedAt: String?
@@ -69,6 +71,8 @@ struct ContestSummary: Codable {
         case closingPotentialWeighted = "closing_potential_weighted"
         case modelMaePts = "model_mae_pts"
         case teamRank = "team_rank"
+        case captainAccountId = "captain_account_id"
+        case rankingState = "ranking_state"
         case totalTeams = "total_teams"
         case teamRankScore = "team_rank_score"
         case teamRankFetchedAt = "team_rank_fetched_at"
@@ -76,6 +80,18 @@ struct ContestSummary: Codable {
 }
 
 struct CaseRunSummary: Codable, Hashable {
+    struct Bucket: Codable, Hashable {
+        struct Member: Codable, Hashable, Identifiable {
+            let id: String
+            let name: String
+            let status: String
+            let us: Double?
+        }
+        let label: String
+        let stratum: String?
+        let members: [Member]
+    }
+    let buckets: [Bucket]?
     let formal: Bool?
     let experiment: String?
     let passed: Int?
@@ -100,6 +116,15 @@ struct ProblemItem: Codable, Identifiable, Hashable {
     let rank: Int?
     let totalTeams: Int?
     let currentScore: Double
+    let latestStatus: String?
+    let latestScore: Double?
+    let latestSha: String?
+    let boardListed: Bool?
+    let boardScore: Double?
+    func boardScoreText(_ lang: AppLanguage) -> String {
+        if boardListed == false { return lang.tr("未上榜", "Unranked") }
+        return boardScore.map { String(format: "%.2f", $0) } ?? "—"
+    }
     let weightedScore: Double
     let bestScore: Double
     let rawBestScore: Double?
@@ -140,6 +165,8 @@ struct ProblemItem: Codable, Identifiable, Hashable {
         case sdkVersion = "sdk_version"
         case totalTeams = "total_teams"
         case currentScore = "current_score"
+        case latestStatus = "latest_status", latestScore = "latest_score", latestSha = "latest_sha"
+        case boardListed = "board_listed", boardScore = "board_score"
         case weightedScore = "weighted_score"
         case bestScore = "best_score"
         case rawBestScore = "raw_best_score"

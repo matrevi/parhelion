@@ -208,6 +208,10 @@ struct OpsRepository: Sendable {
         return (false, "Invalid response")
     }
 
+    func setCaptain(id: String, workspace: String) async throws {
+        _ = try await client.execute(["auth", "judge-captain", id, "--workspace", workspace, "--json"])
+    }
+
     func toggleJudgeAccount(id: String, enabled: Bool) async throws {
         _ = try await client.execute(["auth", "judge-toggle", id, "--enabled", enabled ? "1" : "0", "--json"])
     }

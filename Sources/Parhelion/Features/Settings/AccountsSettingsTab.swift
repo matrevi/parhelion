@@ -15,6 +15,7 @@ struct AccountsSettingsTab: View {
     @UIState private var captchaCode: String = ""
     @UIState private var cjFeedback: String? = nil
     @UIState private var isSigningInCJ: Bool = false
+    @UIState private var savingCaptain = false
 
     @UIState private var gcToken: String = ""
     @UIState private var gcFeedback: String? = nil
@@ -71,6 +72,25 @@ struct AccountsSettingsTab: View {
                                             .foregroundStyle(.secondary)
                                         }
                                         Spacer()
+                                        if let contest = store.snapshot?.contest {
+                                            let selected = contest.captainAccountId == slot.id
+                                            Button {
+                                                savingCaptain = true
+                                                Task {
+                                                    defer { savingCaptain = false }
+                                                    do {
+                                                        try await store.repository.setCaptain(id: slot.id, workspace: contest.workspace)
+                                                        await store.refreshLocal()
+                                                    } catch { cjFeedback = error.localizedDescription }
+                                                }
+                                            } label: {
+                                                Label(selected ? lang.tr("队长", "Captain") : lang.tr("设为队长", "Set captain"),
+                                                      systemImage: selected ? "flag.fill" : "flag")
+                                            }
+                                            .controlSize(.small)
+                                            .disabled(savingCaptain || !slot.loggedIn || selected)
+                                            .help(lang.tr("用此账号的报名队伍查询本场比赛排名", "Use this account’s registered team for this contest’s rankings"))
+                                        }
                                         Toggle("", isOn: Binding(
                                             get: { slot.enabled },
                                             set: { nv in

@@ -138,7 +138,20 @@ def _resolve_team_name(workspace: Path) -> str:
     from .contest_service import resolve_workspace_meta
 
     ranking = ranking_service.team_ranking(workspace, allow_fetch=False) or {}
+    target = ranking_service._target(workspace)
+    if target and len(target) > 3:
+        return ranking.get("team_name") or ""
     return ranking.get("team_name") or resolve_workspace_meta(workspace).get("team_name") or ""
+
+
+def board_scope(workspace: Path) -> dict:
+    from . import ranking_service
+
+    target = ranking_service._target(workspace)
+    if not target or len(target) == 3:
+        return {}
+    ranking = ranking_service._read_cache(ranking_service._cache_path(workspace), target) or {}
+    return {"target": list(target), "team_id": ranking.get("team_id"), "team_name": ranking.get("team_name")}
 
 
 def inspect_board_freshness(
@@ -151,6 +164,9 @@ def inspect_board_freshness(
     now_ep = utc_now().timestamp()
     bp = live_board_path(workspace)
     data = read_json(bp, {}) if bp.is_file() else {}
+    scope = board_scope(workspace)
+    if data.get("scope", {}) != scope:
+        data = {}
     fetched_dt = parse_iso(data.get("fetched_at")) if isinstance(data, dict) else None
     attempt_dt = parse_iso(data.get("attempt_at")) if isinstance(data, dict) else None
     last_sub_ep = _latest_submit_epoch(workspace)
@@ -182,7 +198,7 @@ def inspect_board_freshness(
     throttled = stale and (attempt_age_sec < ATTEMPT_THROTTLE_SEC)
     return {
         "stale": stale,
-        "should_refresh": stale and not throttled,
+        "should_refresh": stale and not throttled and (not scope or bool(scope["team_name"])),
         "throttled": throttled,
         "reason": reason,
         "last_refreshed_at": data.get("fetched_at") if isinstance(data, dict) else None,
@@ -230,7 +246,12 @@ def refresh_board_and_recalibrate(
                 return {"ok": True, "skipped": True, **fresh2}
 
             bp = live_board_path(workspace)
+            scope = board_scope(workspace)
+            if scope and not scope["team_name"]:
+                return {"ok": False, "error": "Awaiting captain team registration"}
             prev_payload = read_json(bp, {}) if bp.is_file() else {}
+            if prev_payload.get("scope", {}) != scope:
+                prev_payload = {"scope": scope}
             prev_boards = prev_payload.get("problems", {}) if isinstance(prev_payload, dict) else {}
 
             # Mark attempt timestamp immediately so failures don't hot-loop
@@ -242,8 +263,14 @@ def refresh_board_and_recalibrate(
                 except Exception:
                     pass
 
-            base, cookie, user_id = _session_info()
-            team_sessions = _all_team_sessions() or [(base, cookie, user_id)]
+            from . import ranking_service
+            if scope:
+                base, cookie = ranking_service.captain_session(tuple(scope["target"]))
+                user_id = scope["target"][4]
+                team_sessions = [(base, cookie, user_id)]
+            else:
+                base, cookie, user_id = _session_info()
+                team_sessions = _all_team_sessions() or [(base, cookie, user_id)]
             team_user_ids = {uid for _, _, uid in team_sessions if uid}
             if user_id:
                 team_user_ids.add(user_id)
@@ -274,8 +301,11 @@ def refresh_board_and_recalibrate(
                 our_row: dict[str, Any] | None = None
                 tc_ids: list[str] = []
 
-                for page in range(1, 7):
+                page = 1
+                while True:
                     d = _get_json(base, cookie, f"/api/problems/{pid}/ranking?page={page}&size=100")
+                    if not isinstance(d.get("rows"), list) or "pages" not in d:
+                        raise ValueError(f"Incomplete ranking response for {title}")
                     if page == 1:
                         total_cases = int(d["total_testcase_count"]) if d.get("total_testcase_count") else None
                         tcs = d.get("testcases") or []
@@ -298,12 +328,17 @@ def refresh_board_and_recalibrate(
                         is_team_row = (bool(team_user_ids) and bool(r_uid) and r_uid in team_user_ids) or (
                             bool(team_name) and bool(r_tname) and r_tname == team_name
                         )
+                        if scope:
+                            is_team_row = ranking_service.matches_team(r, scope["team_id"], scope["team_name"])
                         if is_team_row:
                             # Prefer highest-scoring / lowest-rank team row across all teammate accounts
                             if our_row is None or float(r.get("score") or 0.0) > float(our_row.get("score") or 0.0):
                                 our_row = r
                     if our_row is not None or page >= int(d.get("pages") or 1):
                         break
+                    if not rows:
+                        raise ValueError(f"Missing ranking page {page} for {title}")
+                    page += 1
 
                 prev_entry = prev_boards.get(title) or {}
                 prev_tbest = prev_entry.get("tbest") or []
@@ -369,19 +404,23 @@ def refresh_board_and_recalibrate(
                         })
 
                 updated_problems[title] = {
+                    "listed": our_row is not None,
+                    "ranking_total": d.get("total"),
+                    "board_submission_id": our_row.get("submission_id") if our_row else None,
                     "problem_id": pid,
                     "tbest": tbest_list,
                     "tbest_delta_pct": tbest_delta_pct,
                     "total_testcase_count": total_cases,
                     "frontier_top1": frontier_top1,
                     "frontier_top5": frontier_top5,
-                    "our_score": snap.get(title, {}).get("score"),
-                    "our_rank": snap.get(title, {}).get("rank"),
-                    "our_status": snap.get(title, {}).get("status"),
+                    "our_score": our_row.get("score") if our_row else None,
+                    "our_rank": our_row.get("rank") if our_row else None,
+                    "our_status": our_row.get("status") if our_row else None,
                     "our_public_times_us": our_times,
                 }
 
             payload = {
+                "scope": scope,
                 "schema_version": 1,
                 "fetched_at": now_iso,
                 "attempt_at": now_iso,
@@ -389,8 +428,11 @@ def refresh_board_and_recalibrate(
                 "problems": updated_problems,
                 "score_drifts": drift_alerts,
             }
+            if board_scope(workspace) != scope:
+                return {"ok": True, "skipped": True, "reason": "team_changed"}
             _atomic_write_json(bp, payload)
-            _atomic_write_json(snap_path, snap)
+            if not scope:
+                _atomic_write_json(snap_path, snap)
 
             calibrated_ok = False
             if recalibrate:

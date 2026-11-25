@@ -163,6 +163,7 @@ class _WorkspaceStateEntry:
         _feed("out", ws / "results" / "submit-queue-outcome.jsonl")
         _feed("tbest", ws / "results" / "scoring-evidence" / "live-board-tbest.json")
         _feed("rank", ws / "results" / "scoring-evidence" / "team-ranking.json")
+        _feed("captain", ws / "results" / "scoring-evidence" / "ranking-captain.json")
         _feed("contest-manifest", ws / "opsb.workspace.json")
         _feed("contest-detail", ws / "results" / "scoring-evidence" / "contest-detail.json")
         _feed("board", ws / "results" / "scoring-evidence" / "board-summary.json")

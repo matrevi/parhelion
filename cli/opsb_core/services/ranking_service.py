@@ -24,7 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
-DEFAULT_TEAM_NAME = "XJU第二少年团"
+from .auth_service import list_judge_accounts
+from .judge_score_fetch import atomic_write_json, fetch_json_with_cookie
 
 CACHE_TTL_SEC = 30.0           # serve-fresh window for status reads (30s)
 ATTEMPT_INTERVAL_SEC = 15.0    # minimum gap between background ranking refreshes
@@ -33,7 +34,7 @@ REQUEST_TIMEOUT_SEC = 6.0
 _refresh_lock = threading.Lock()
 
 
-def _target(workspace: Path) -> tuple[str, str, str] | None:
+def _target(workspace: Path) -> tuple[str, ...] | None:
     from .contest_service import resolve_workspace_meta
 
     meta = resolve_workspace_meta(workspace)
@@ -45,21 +46,65 @@ def _target(workspace: Path) -> tuple[str, str, str] | None:
     ref = str(meta.get("contest_id") or "").strip()
     if not re.fullmatch(r"[0-9a-fA-F]{24}", ref) and len(group_and_name) >= 2:
         ref = group_and_name[1]
-    return (group, ref, str(meta.get("team_name") or "").strip()) if ref else None
+    if not ref:
+        return None
+    path = _cache_path(workspace).with_name("ranking-captain.json")
+    if path.is_file():
+        mark = json.loads(path.read_text(encoding="utf-8"))
+        if mark["contest"] == [group, ref]:
+            return group, ref, "", mark["account_id"], mark["user_id"]
+    return group, ref, str(meta.get("team_name") or "").strip()
+
+
+def set_captain(workspace: Path, account_id: str) -> None:
+    target = _target(workspace)
+    if not target:
+        raise ValueError("Workspace has no contest")
+    account = _captain_account(account_id)
+    atomic_write_json(_cache_path(workspace).with_name("ranking-captain.json"), {
+        "contest": list(target[:2]), "account_id": account_id, "user_id": account["user_id"],
+    })
+    refresh_async(workspace, force=True)
+
+
+def _captain_account(account_id: str) -> dict:
+    for account in list_judge_accounts():
+        if account["id"] == account_id and account["logged_in"]:
+            return account
+    raise ValueError("Captain session unavailable")
+
+
+def captain_session(target: tuple[str, ...]) -> tuple[str, str]:
+    account = _captain_account(target[3])
+    data = json.loads(Path(account["session_file"]).read_text(encoding="utf-8"))
+    if data.get("user_id") != target[4]:
+        raise ValueError("Captain account changed")
+    cookie = "; ".join(f"{item['name']}={item['value']}" for item in data["cookies"])
+    return account["base_url"], cookie
+
+
+def matches_team(row: dict, team_id: str, name: str) -> bool:
+    team = row.get("team") or {}
+    if not isinstance(team, dict):
+        return False
+    row_id = team.get("_id") or row.get("team_object_id")
+    if row_id and team_id:
+        return row_id == team_id
+    return bool(name) and (team.get("team_name") or row.get("team_name")) == name
 
 
 def _cache_path(workspace: Path) -> Path:
     return workspace / "results" / "scoring-evidence" / "team-ranking.json"
 
 
-def _read_cache(path: Path, target: tuple[str, str, str]) -> dict[str, Any] | None:
+def _read_cache(path: Path, target: tuple[str, ...]) -> dict[str, Any] | None:
     try:
         if not path.is_file():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             return None
-        _, ref, team = target
+        _, ref, team = target[:3]
         if data.get("target") != list(target):
             # Older caches can only be identified by a proven contest ID and team.
             if ("target" in data or not re.fullmatch(r"[0-9a-fA-F]{24}", ref)
@@ -138,21 +183,36 @@ def _get_json(path: str) -> Any:
         return _json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_team_ranking(target: tuple[str, str, str]) -> dict[str, Any]:
+def fetch_team_ranking(target: tuple[str, ...]) -> dict[str, Any]:
     """Fetch the whole contest board and locate our team by name. Blocking."""
-    group, ref, team_name = target
+    group, ref, team_name = target[:3]
+    anchored = len(target) > 3
+    get = _get_json
+    if anchored:
+        from functools import partial
+        get = partial(fetch_json_with_cookie, *captain_session(target))
     contest_id = ref
     if not re.fullmatch(r"[0-9a-fA-F]{24}", ref):
         group_path = "/api/groups/public" if group == "public" else "/api/groups/name/" + quote(group, safe="")
-        group_id = _get_json(group_path)["_id"]
-        contests = _get_json("/api/contests/group/" + quote(group_id, safe=""))
+        group_id = get(group_path)["_id"]
+        contests = get("/api/contests/group/" + quote(group_id, safe=""))
         matches = [c for c in contests if c.get("name") == ref]
         if len(matches) != 1:
             raise ValueError(f"Cannot resolve contest {group}/{ref}")
         contest_id = matches[0]["_id"]
         team_name = team_name or (matches[0].get("signup_status") or {}).get("team_name")
-    wanted = (team_name or DEFAULT_TEAM_NAME).strip()
-    rows = _get_json("/api/submissions/contest/" + quote(contest_id, safe="") + "/stats")
+    team_id = ""
+    base_path = "/api/contests/" + quote(contest_id, safe="")
+    if anchored or not team_name:
+        registration = get(base_path + "/registration").get("application") or {}
+        team_name = registration.get("team_name") if registration.get("status") == "active" else ""
+        team_id = registration.get("team_id") or ""
+    wanted = (team_name or "").strip()
+    identity = {"target": list(target), "contest_id": contest_id, "team_name": wanted,
+                "team_id": team_id, "rank": None, "fetched_at": datetime.now(timezone.utc).isoformat()}
+    if not wanted:
+        return {**identity, "ranking_state": "no_team"}
+    rows = get("/api/submissions/contest/" + quote(contest_id, safe="") + "/stats")
     if not isinstance(rows, list):
         raise RuntimeError("ranking payload is not a list")
 
@@ -167,8 +227,9 @@ def fetch_team_ranking(target: tuple[str, str, str]) -> dict[str, Any]:
 
     for idx, (score, pass_count, sub_count, row) in enumerate(scored, start=1):
         name = str((row.get("team") or {}).get("team_name") or "").strip()
-        if name and name == wanted:
+        if matches_team(row, team_id, wanted):
             return {
+                **identity,
                 "team_name": name,
                 "rank": idx,
                 "total": len(scored),
@@ -180,8 +241,7 @@ def fetch_team_ranking(target: tuple[str, str, str]) -> dict[str, Any]:
                 "source": "api/submissions/contest/stats",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             }
-    return {"target": list(target), "contest_id": contest_id, "team_name": wanted, "rank": None,
-            "fetched_at": datetime.now(timezone.utc).isoformat()}
+    return {**identity, "total": len(scored), "ranking_state": "unlisted"}
 
 
 def team_ranking(
@@ -223,7 +283,12 @@ def team_ranking(
             import traceback
             with open("/tmp/ranking-debug.log", "a") as _fh:
                 _fh.write("---- failure ----\n" + traceback.format_exc())
-        if cached and _target(workspace) == target:
+        if _target(workspace) != target:
+            return None
+        if len(target) > 3:
+            cached = {"target": list(target), "rank": None, "ranking_state": "unavailable",
+                      "fetched_at": datetime.now(timezone.utc).isoformat()}
+        if cached:
             cached = dict(cached)
             cached["attempt_at"] = datetime.now(timezone.utc).isoformat()
             _write_cache(path, cached)
@@ -309,6 +374,8 @@ def summary_fields(payload: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     return {
         "team_rank": payload.get("rank"),
+        "team_name": payload.get("team_name") or "",
+        "ranking_state": payload.get("ranking_state"),
         "total_teams": payload.get("total"),
         "team_rank_score": payload.get("score"),
         "team_rank_pass_count": payload.get("pass_count"),
