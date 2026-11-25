@@ -25,8 +25,9 @@ WORKER_FORBIDDEN = ("profile", "experiment", "timing", "repeats", "runner", "buc
 WORKER_MESSAGE = "Workers select a level (smoke|standard|final); the platform owns the suite"
 SUITE_FIELDS = {
     "version", "suite_version", "updated_at", "strict_fp32", "warmup", "repeats",
-    "case_timeout", "reuse_session", "variants", "buckets", "timed", "weights",
+    "case_timeout", "reuse_session", "variants", "buckets", "timed", "weights", "timing_scope",
 }
+TIMING_SCOPES = ("official", "perf")
 VARIANT_FIELDS = {"id", "base", "params", "seed", "name", "perf", "tier"}
 PROFILE_FIELDS = ("version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32", "reuse_session")
 DEFAULTS = {"warmup": 2, "repeats": 5, "case_timeout": 15, "reuse_session": True}
@@ -151,6 +152,7 @@ def normalize(doc, *, strict_default=False) -> dict:
         "buckets": buckets,
         "timed": _id_list(doc.get("timed", []), "timed"),
         "weights": {k: float(w) for k, w in weights.items()},
+        "timing_scope": _timing_scope(doc),
     }
 
 
@@ -220,11 +222,27 @@ def requested_level(level=None, suite=None):
     return None
 
 
+def _timing_scope(doc):
+    scope = doc.get("timing_scope", "official")
+    if scope not in TIMING_SCOPES:
+        raise ValueError("suite.timing_scope must be official or perf")
+    return scope
+
+
 def timed_ids(cases, suite) -> set:
-    """Performance-marked cases plus the suite's explicit timing list; all official cases when empty."""
+    """Cases whose device time is measured.
+
+    The judge times and scores every official case, so by default every official case is
+    timed (scope ``official``), together with performance-marked cases and the suite's
+    explicit list. Scope ``perf`` restricts timing to the marked and listed cases; with
+    nothing marked it still falls back to every official case.
+    """
     known = {c["id"] for c in cases}
+    official = {c["id"] for c in cases if c["source"] == "official"}
     timed = {c["id"] for c in cases if c.get("perf")} | (set(suite.get("timed", [])) & known)
-    return timed or {c["id"] for c in cases if c["source"] == "official"}
+    if suite.get("timing_scope", "official") == "official":
+        return timed | official
+    return timed or official
 
 
 def in_level(case, level) -> bool:

@@ -24,3 +24,4 @@ scheduler/.state/
 .codex/config.toml
 .codex/config.toml.backup.*
 .agents/plugins/aoci/
+.claude/worktrees/

@@ -85,9 +85,14 @@ def test_variant_tier_defaults_to_final():
         suites.normalize({"version": 2, "variants": [{"id": "local/x", "base": "01", "tier": "smoke"}]})
 
 
-def test_timed_ids_fall_back_to_official_cases():
+def test_timed_ids_cover_official_cases_by_default():
     suite = suites.normalize({"version": 2, "timed": ["local/a", "missing"]})
-    assert suites.timed_ids(cases(), suite) == {"02", "local/a"}
+    # The judge scores every official case, so the default scope times all of them.
+    assert suites.timed_ids(cases(), suite) == {"01", "02", "local/a"}
+    narrow = suites.normalize({"version": 2, "timed": ["local/a"], "timing_scope": "perf"})
+    assert suites.timed_ids(cases(), narrow) == {"02", "local/a"}
+    with pytest.raises(ValueError, match="timing_scope"):
+        suites.normalize({"version": 2, "timing_scope": "some"})
     plain = [{**c, "perf": False} for c in cases()]
     assert suites.timed_ids(plain, suites.normalize({"version": 2})) == {"01", "02"}
 

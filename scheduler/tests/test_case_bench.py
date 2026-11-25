@@ -289,10 +289,10 @@ def test_standard_run_announces_and_reports_warm_timing(device, capsys):
     assert res["timing_source"] == "event_warm" and res["timing_score_eligible"] is True
     row = next(c for c in res["cases"] if c["id"] == "02")
     assert row["min_us"] == 10.0 and row["median_us"] == 12.0 and row["cold_us"] == 550.0 and row["samples"] == 5
-    assert not next(c for c in res["cases"] if c["id"] == "01")["timed"]
+    assert next(c for c in res["cases"] if c["id"] == "01")["timed"]  # every official case is timed
     cfg = sent(ws)[0]
     assert cfg["timing"] == "perf" and cfg["warmup"] == 2 and cfg["repeats"] == 5 and cfg["tier"] == 1
-    assert cfg["job_timeout"] == 15 * 2 and [c["timed"] for c in cfg["selected"]] == [False, True]
+    assert cfg["job_timeout"] == 15 * 2 and [c["timed"] for c in cfg["selected"]] == [True, True]
     line = bench.result_line(res)
     for key in bench.RESULT_KEYS:
         assert key in line
@@ -303,7 +303,7 @@ def test_standard_run_announces_and_reports_warm_timing(device, capsys):
     digest = res["digest"]
     assert set(digest) == {"level", "suite_version", "formal", "summary", "failures", "timing",
                            "public", "baseline", "hint"}
-    assert digest["timing"]["cases"] == {"02": {"min_us": 10.0, "median_us": 12.0, "cold_us": 550.0}}
+    assert digest["timing"]["cases"] == {cid: {"min_us": 10.0, "median_us": 12.0, "cold_us": 550.0} for cid in ("01", "02")}
     assert digest["public"] is None and digest["baseline"] is None
 
 
@@ -341,7 +341,7 @@ def test_digest_reports_public_efficiency_and_baseline(device):
     ]
     ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
     first = bench.run(ws, "Op", repo, sha, "npu", stream=False)
-    assert first["digest"]["public"] == {"efficiency": 0.5, "cases": {"02": 0.5}, "tbest_from": "s1"}
+    assert first["digest"]["public"] == {"efficiency": 0.7, "cases": {"02": 0.5, "01": 0.9}, "tbest_from": "s1"}
     assert first["digest"]["baseline"] is None and "ffffff" in first["digest"]["hint"]
     prior = ws / "results" / "Op" / base_sha / "bench-runs" / ("1" * 32) / "report.json"
     prior.parent.mkdir(parents=True)

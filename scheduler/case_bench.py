@@ -330,8 +330,11 @@ def adaptive_cases(folder, cases, timed=None):
                 return [by_id[cid]], "retest_failure"
             if result.get("status") == "PASS":
                 seen.add(cid)
-    anchor = next((c for c in cases if c["source"] == "official" and c["id"] not in timed), cases[0])
-    perf = next((c for c in cases if c["id"] in timed and c["id"] != anchor["id"]), None)
+    anchor = next((c for c in cases if c["source"] == "official" and c["id"] not in timed),
+                  next((c for c in cases if c["source"] == "official"), cases[0]))
+    # Prefer a performance-marked case for the timed probe; any other timed case otherwise.
+    perf = next((c for c in cases if c.get("perf") and c["id"] in timed and c["id"] != anchor["id"]),
+                next((c for c in cases if c["id"] in timed and c["id"] != anchor["id"]), None))
     return [anchor] + ([perf] if perf else []), "anchor_and_performance"
 
 
