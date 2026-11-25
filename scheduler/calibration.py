@@ -858,6 +858,10 @@ class BenchmarkCalibrator:
             return self._esc_cache[e_key]
         rows = self.estimator._filtered_outcomes(title, as_of=as_of)
         live_rows = [r for r in rows if str(r.get("status", "")) not in ("rejected", "skipped", "duplicate")]
+        def submitted_epoch(row):
+            date = _parse_iso(row.get("submitted_at") or row.get("finished_at") or row.get("queued_at"))
+            return date.timestamp() if date else 0.0
+        live_rows.sort(key=submitted_epoch)
 
         escaped_commits: list[dict[str, Any]] = []
         seen_esc: set[str] = set()
@@ -898,6 +902,7 @@ class BenchmarkCalibrator:
         escape_lock = False
         escape_sha = None
         escape_status = None
+        escape_row = {}
         for idx in range(len(live_rows) - 1, -1, -1):
             r = live_rows[idx]
             st = str(r.get("status", ""))
@@ -913,10 +918,15 @@ class BenchmarkCalibrator:
                 break
             if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
                 ver_rec = self.verified_escapes.get(f"{title}:{csha}") or self.verified_escapes.get(f"{title}:{csha[:7]}")
+                sid = r.get("submission_id")
+                if not ver_rec and sid:
+                    ver_rec = next((rec for key, rec in self.verified_escapes.items()
+                                    if key.startswith(f"{title}:") and sid in rec.get("submission_ids", [])), None)
                 if not ver_rec:
                     escape_lock = True
                     escape_sha = csha
                     escape_status = st
+                    escape_row = r
                 break
 
         esc_out = {
@@ -924,6 +934,8 @@ class BenchmarkCalibrator:
             "escape_sha": escape_sha,
             "escape_short_sha": escape_sha[:7] if escape_sha else None,
             "escape_status": escape_status,
+            "escape_submission_id": escape_row.get("submission_id"),
+            "escape_account_id": escape_row.get("account_id"),
             "escaped_commits": escaped_commits,
         }
         self._esc_cache[e_key] = esc_out
@@ -2014,20 +2026,41 @@ class BenchmarkCalibrator:
                 ),
             }
 
+        state = self.inspect_escape_state(title)
+        key = f"{title}:{c_bad}"
+        ids = set(self.verified_escapes.get(key, {}).get("submission_ids", []))
+        sid = state.get("escape_submission_id")
+        if state["escape_lock"] and state["escape_sha"] != c_bad:
+            if not sid:
+                return {"ok": False, "cleared": False, "reason": "Active escape has no matching SHA or submission ID"}
+            from .case_feedback import match_escape_submission
+            try:
+                matches = match_escape_submission(repo, c_bad, self.estimator.problems_meta[title]["problem_id"],
+                                                  {"submission_id": sid, "account_id": state["escape_account_id"],
+                                                   "status": state["escape_status"]})
+            except Exception as exc:
+                return {"ok": False, "cleared": False, "submission_id": sid,
+                        "reason": f"Could not verify judge source: {type(exc).__name__}: {exc}"}
+            if not matches:
+                return {"ok": False, "cleared": False, "submission_id": sid,
+                        "reason": "Bad commit source does not match the active judge submission"}
+            ids.add(sid)
         rec = {
             **evidence,
+            "submission_ids": sorted(ids),
             "bad_sha": c_bad,
             "good_sha": c_good,
             "verified_at": _utc_now(),
             "diff_files": diff_files,
         }
-        self.verified_escapes[f"{title}:{c_bad}"] = rec
+        self.verified_escapes[key] = rec
         self._esc_cache.clear()
         self._cal_cache.clear()
         cal = self.calibrate_problem(title, persist=True)
         return {
             "ok": True,
             "cleared": not cal["escape_lock"],
+            "submission_ids": sorted(ids),
             **evidence,
             "title": title,
             "bad_sha": c_bad,

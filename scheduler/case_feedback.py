@@ -4,11 +4,57 @@ from __future__ import annotations
 
 import fcntl
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 
 from .case_bench import catalog, committed, digest, load_profile, now, read_doc
 from .parhelion_paths import atomic_write_json, workspace_bench_specs_dir
 
 FAILURES = {"Wrong Answer": "WA", "Runtime Error": "RE", "Time Limit Exceeded": "TLE"}
+
+
+def match_escape_submission(repo, bad_sha, problem_id, row):
+    """Bind a historical verdict to the submitted source, even after a source-identical revert."""
+    from cli.opsb_core.services.auth_service import list_judge_accounts
+    from runtime.judge.ict_cli import ICTClient
+    from runtime.judge.project_files import extract_package, template_files
+
+    sid = str(row["submission_id"])
+    accounts = list_judge_accounts()
+    aid = row.get("account_id") or "primary"
+    account = next((a for a in accounts if a["id"] == aid), {})
+    client = ICTClient(session_file=account.get("session_file") or None)
+    if not client.load_session():
+        raise ValueError("Sign in to read the failed submission's source")
+    detail = client.get_submission(sid)
+    if (detail.get("_id") != sid or detail.get("problem_id") != problem_id
+            or detail.get("status") != row["status"]):
+        raise ValueError("Judge submission identity or verdict differs from history")
+    template = client.get_template(problem_id)
+    archive = subprocess.check_output(["git", "-C", str(repo), "archive", "--format=zip", bad_sha])
+    with tempfile.TemporaryDirectory(prefix="opsb-escape-") as tmp:
+        root = extract_package(archive, tmp, {"_id": problem_id}, template)
+        payload = client.prepare_submission(problem_id, root)
+        if "files" not in payload:
+            fields = ("host_cpp", "kernel_cpp", "tiling_h", "tiling_key_h")
+            return (bool(payload.get("kernel_cpp")) and
+                    all(isinstance(detail.get(k), str) and detail[k] == payload[k] for k in fields))
+        expected = {f["path"]: f["content"] for f in payload["files"]}
+        official = template_files(template)
+        remote = template_files({"files": detail.get("files")})
+        if not expected or not expected.keys() <= remote.keys():
+            return False
+        for name, item in remote.items():
+            if name in expected:
+                content = expected[name]
+            elif name in official and not official[name]["editable"]:
+                content = (Path(root) / name).read_text(encoding="utf-8-sig")
+            else:
+                return False
+            if content.replace("\r\n", "\n") != item["content"].replace("\r\n", "\n"):
+                return False
+    return True
 
 
 def regression_evidence(folder, good):

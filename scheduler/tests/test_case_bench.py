@@ -71,6 +71,25 @@ def test_ablation_selection(suite):
         )
 
 
+def test_escape_proof_is_scoped_to_failed_submission(suite):
+    from unittest.mock import Mock
+    from scheduler.calibration import BenchmarkCalibrator
+
+    ws, _, sha = suite
+    estimator = Mock()
+    earlier = {"status": "Wrong Answer", "submission_id": "first", "finished_at": "2026-01-01T00:00:00Z"}
+    latest = {**earlier, "submission_id": "second", "finished_at": "2026-01-02T00:00:00Z"}
+    estimator._filtered_outcomes.return_value = [latest, earlier]
+    proof = {f"Op:{sha}": {"bad_sha": sha, "submission_ids": ["second"]}}
+    cal = BenchmarkCalibrator(ws, estimator=estimator, verified_escapes=proof)
+    assert not cal.inspect_escape_state("Op")["escape_lock"]
+    newer = {**earlier, "submission_id": "third", "finished_at": "2026-01-03T00:00:00Z"}
+    estimator._filtered_outcomes.return_value = [newer, latest, earlier]
+    fresh = BenchmarkCalibrator(ws, estimator=estimator, verified_escapes=proof)
+    state = fresh.inspect_escape_state("Op")
+    assert state["escape_lock"] and state["escape_submission_id"] == "third"
+
+
 def completed(suite):
     ws, repo, sha = suite
     plan = bench.run(ws, "Op", repo, sha, "npu", dry_run=True)
