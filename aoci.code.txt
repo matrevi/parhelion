@@ -244,7 +244,7 @@ REFACTOR_MODULAR_LAYOUT.md[SV6T]: F:模块化重构蓝图：单模块不超过35
 14-orchestration.md[SW7S]: F:工作包C：编排与token经济（席位、熔断、压缩阈值） | R:code:cli/opsb_core/agents/manager.py | A:- | S:-
 15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令（agent沙箱、会话日志、trash） | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末划定清理边界：用户数据只进trash，error席位默认保留，只有--logs与--remote可按窗口删除
 16-e2e-release.md[SV7T]: F:工作包E：集成、端到端测试与发布流程 | R:code:scripts/bundle_app.sh | A:- | S:发版必须同时改__init__版本与bundle的两个版本字段并打tag，漏一处会让daemon握手或打包版本不一致
-RELEASE-NOTES.md[SV8S]: F:发布说明：4.0.0–4.0.4各版本变更、已知限制、4.1路线，以及2026-11-26冲刺暴露的问题（已修与4.1待办） | R:code:docs/v4/00-OVERVIEW.md,code:docs/v4/RUN-LOG-2026-11-26.md | A:- | S:4.1待办编号接续路线1–4；4.0.4与4.0.1两节写有实测数字与清理边界，改遥测或清理策略时同步
+RELEASE-NOTES.md[SV8S]: F:发布说明：4.0.0–4.0.4各版本变更、已知限制、4.1与4.2路线，以及2026-11-26冲刺暴露的问题（已修与4.1待办） | R:code:docs/v4/00-OVERVIEW.md,code:docs/v4/RUN-LOG-2026-11-26.md,code:docs/v4.2/00-PLAN.md | A:- | S:4.1待办编号接续路线1–4；4.0.4与4.0.1两节写有实测数字与清理边界，改遥测或清理策略时同步
 RUN-LOG-2026-11-26.md[SW5S]: F:六题冲刺运行日志：DSH主控流程、时间线、实测延迟与上下文、提交结果和逐项改进 | R:code:docs/v4/RELEASE-NOTES.md | A:- | S:-
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
@@ -327,3 +327,10 @@ SNP-zero-tpipe-ub-arena.h[LP7T]: F:代码积木：零TPipe的静态对齐UB aren
 
 ===/Users/winbeau/Developer/personal/parhelion/templates/snippets/===
 index.json[FP7M]: F:代码积木索引：条目元数据、瓶颈与适用分层与dtype、标签与去重键 | R:code:cli/opsb_core/knowledge/seeding.py | A:- | S:索引与code目录必须同名对应，新增积木漏登记会播种不进去
+
+===/Users/winbeau/Developer/personal/parhelion/docs/v4.2/===
+00-PLAN.md[SP7S]: F:4.2计划：上下文经济与压缩记忆——冲刺实测、压缩为何遗忘、目标指标、A–K工作包与回放验收 | R:code:docs/v4.2/research/token-economy.md,code:docs/v4.2/research/compaction-memory.md,code:docs/v4/RUN-LOG-2026-11-26.md,code:cli/opsb_core/agents/manager.py | A:- | S:目标指标用与§1同口径的冲刺数据验收；压缩新方案须先在回放基准中胜过现方案才上线
+
+===/Users/winbeau/Developer/personal/parhelion/docs/v4.2/research/===
+compaction-memory.md[SA5M]: F:调研：压缩对agent能力的损害证据、记忆与上下文管理论文和社区方案，以及Parhelion实验账本设计 | R:code:docs/v4.2/00-PLAN.md | A:- | S:数字按原文、二手、未核实分别标注；2026年arXiv引用多为摘要级阅读
+token-economy.md[SA5M]: F:调研：Reasonix、Google Antigravity相关仓库与提示缓存、工具输出、轮询、压缩等节约token技术及对Parhelion的排序建议 | R:code:docs/v4.2/00-PLAN.md | A:- | S:Reasonix已于2026-11-12停止维护，其命中率与成本数字为自报；未确认哪个Antigravity仓库是用户所指

@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T05:06:41Z",
+  "updated_at": "2026-11-26T05:33:43Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7a816d21f08887954d6f48f585d45741576ec8bfbdf0dec8bbcd3adb3551e3d1",
-      "size": 78702,
-      "normalized_sha256": "7a816d21f08887954d6f48f585d45741576ec8bfbdf0dec8bbcd3adb3551e3d1"
+      "sha256": "3af51b308d0c4830084ea15f83bbaaaf00db0e02c4888590d50b91e4610ffb34",
+      "size": 79937,
+      "normalized_sha256": "3af51b308d0c4830084ea15f83bbaaaf00db0e02c4888590d50b91e4610ffb34"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1311,6 +1311,24 @@
       "size": 4195,
       "normalized_sha256": "d7fa9d5a93cd09d35377b0ba8de2c5261bf0e56b4442b80dc436a9727600f401"
     },
+    "docs/v4.2/00-PLAN.md": {
+      "role": "index",
+      "sha256": "0376d5a5a4887c8bb75ece3b0f2820881c6a3c5d7d55671ca852ed2a50865c8d",
+      "size": 14267,
+      "normalized_sha256": "0376d5a5a4887c8bb75ece3b0f2820881c6a3c5d7d55671ca852ed2a50865c8d"
+    },
+    "docs/v4.2/research/compaction-memory.md": {
+      "role": "index",
+      "sha256": "3cc887722c33bcddd3d30e6b3dc046f8411795a529211b76b4ac78d660bb9291",
+      "size": 59871,
+      "normalized_sha256": "3cc887722c33bcddd3d30e6b3dc046f8411795a529211b76b4ac78d660bb9291"
+    },
+    "docs/v4.2/research/token-economy.md": {
+      "role": "index",
+      "sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3",
+      "size": 40724,
+      "normalized_sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3"
+    },
     "docs/v4/00-OVERVIEW.md": {
       "role": "index",
       "sha256": "e944b2dfa2f15e55b7438b7fb4784457a0091ea9d1dd303248ec50225d4518e3",
@@ -1361,9 +1379,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "09e282b7bd2ee640b2a6ec2170968f031eb5fb5b5189c02058dbd9eeb14c3bee",
-      "size": 18368,
-      "normalized_sha256": "09e282b7bd2ee640b2a6ec2170968f031eb5fb5b5189c02058dbd9eeb14c3bee"
+      "sha256": "c1b9d0c2fa6a1c8e16c3aa6243992635a69d9b404f16f5f52c69d598dba11f7d",
+      "size": 18670,
+      "normalized_sha256": "c1b9d0c2fa6a1c8e16c3aa6243992635a69d9b404f16f5f52c69d598dba11f7d"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
