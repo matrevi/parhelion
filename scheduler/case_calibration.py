@@ -144,7 +144,15 @@ def refresh(ws: pathlib.Path, title: str, *, write: bool = True,
         return [r for r in stored.values() if _before(r, as_of)]
     rows = receipts.load(ws, title)
     obs = judge_cases.observations(ws, title, rows)
+    from . import submit_intent
     from .receipt_predict import board_sha
+
+    # 4.3 P23 (R5 §7): a forced or overridden shot is not evidence about the local prediction, so it
+    # leaves the per-case table; a probe stays and is marked, because it is a normal gated shot.
+    by_sid = {str(r.get("submission_id") or ""): r for r in rows if r.get("submission_id")}
+    marks = {o["submission_id"]: submit_intent.calibration_marks(
+        ws, by_sid.get(o["submission_id"]) or {"title": title, "sha": o["sha"]}) for o in obs}
+    obs = [o for o in obs if not marks[o["submission_id"]]["excluded"]]
 
     fresh = []
     for o in obs:
@@ -157,7 +165,7 @@ def refresh(ws: pathlib.Path, title: str, *, write: bool = True,
         memo = (str(ws), title, o["submission_id"], json.dumps(_signature(doc)))
         if memo not in _MEMO:
             _MEMO[memo] = pair_record(ws, title, o, obs, doc, board_sha(ws, title, judge_cases.parse_iso(o["at"])))
-        record = _MEMO[memo]
+        record = {**_MEMO[memo], "intent": marks[o["submission_id"]]["intent"]}
         stored[o["submission_id"]] = record
         fresh.append(record)
     if write and fresh and path(ws, title).parent.is_dir() and as_of is None:

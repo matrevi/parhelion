@@ -1362,6 +1362,8 @@ class ScoreEstimator:
         cache, _ = read_json_safe(cache_path)
         cache = cache if isinstance(cache, dict) else {}
         changed, out = False, []
+        from . import submit_intent
+
         for row in self.outcomes:
             title = row.get("title")
             score = receipts.official_score(row)  # includes receipts that did not beat the board
@@ -1369,6 +1371,11 @@ class ScoreEstimator:
             submitted = _parse_iso(row.get("submitted_at"))
             if (row.get("status") != "Pass" or not isinstance(score, (int, float)) or score <= 0
                     or submitted is None or not re.fullmatch(r"[0-9a-f]{40}", sha)):
+                continue
+            marks = submit_intent.calibration_marks(self.workspace, row)
+            if marks["excluded"]:
+                # 4.3 P23 (R5 §7): a forced or overridden shot says nothing about the estimator's
+                # own accuracy; its receipt never enters the residual sample.
                 continue
             key = f"{title}:{sha}:{row.get('submitted_at')}"
             if method != CASE_BENCH_METHOD:
@@ -1381,7 +1388,8 @@ class ScoreEstimator:
                     except Exception:  # noqa: BLE001 - a replay failure only drops this sample
                         cache[key] = None
             if cache[key] is not None:
-                out.append({"title": title, "at": submitted, "residual": float(score) - cache[key]["projected"]})
+                out.append({"title": title, "at": submitted, "intent": marks["intent"],
+                            "residual": float(score) - cache[key]["projected"]})
         if changed:
             try:
                 atomic_write_json(cache_path, cache)
