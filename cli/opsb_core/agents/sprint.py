@@ -9,11 +9,29 @@ from ..drivers.registry import get_active_driver_kind
 from ..services.contest_service import resolve_workspace_meta
 
 
+SOLO_TASK = ("Own this problem end to end. Pick one hypothesis from the state card, change one variable, "
+             "run parhelion_test level=standard, compare against the baseline in the digest, and hand a candidate "
+             "to parhelion_submit_gate only when the digest shows a measured gain. Record negative results with "
+             "parhelion_agent_report.")
+
 DIRECTIONS = {
+    "solo": SOLO_TASK,
     "algorithm": "Explore algorithmic and numerical changes. Compare against the passing baseline.",
     "dataflow": "Explore tiling, memory traffic and kernel launch costs on measured buckets.",
     "calibration": "Calibrate on a new candidate or official receipt. Reuse comparable baseline evidence and measure only the cases needed to test your hypothesis. Share the run IDs and findings, then wait for new evidence.",
 }
+
+# Seats per sprint mode; solo is the default (one worker per problem).
+MODES = {
+    "solo": ("solo",),
+    "dual": ("algorithm", "dataflow"),
+    "full": ("algorithm", "dataflow", "calibration"),
+}
+DEVICE_HINT = " Device work: parhelion_test, then parhelion_test_wait."
+
+
+def seat_role(axis: str) -> str:
+    return "bench-author" if axis == "calibration" else "worker"
 
 
 def sprint_seats(workers):
@@ -26,8 +44,11 @@ def sprint_seats(workers):
 
 
 def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = False,
-                 enable_auto_submit: bool = False) -> dict:
+                 enable_auto_submit: bool = False, mode: str = "solo") -> dict:
     ws = workspace.expanduser().resolve()
+    mode = str(mode or "solo").strip().lower()
+    if mode not in MODES:
+        raise ValueError(f"Unknown sprint mode '{mode}'. Choose one of: {', '.join(MODES)}")
     driver = driver or get_active_driver_kind()
     problems = resolve_workspace_meta(ws)["problems"]
     if not problems:
@@ -46,10 +67,16 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
         if enable_auto_submit and not selected:
             raise ValueError("Select this contest in Parhelion before enabling automatic submission")
         occupied = sprint_seats(manager._store(ws).list_agents(limit=-1))
+        # An explicit sprint start is the administrator confirming the provider has recovered.
+        suspended = manager.driver_suspended(ws, driver)
+        if suspended and not preview:
+            manager.clear_driver_suspension(ws, driver)
+            suspended = False
         for problem in problems:
             title = problem["title"]
             repo = (ws / (problem.get("path") or title)).resolve()
-            for axis, task in DIRECTIONS.items():
+            for axis in MODES[mode]:
+                task = DIRECTIONS[axis]
                 track = "sprint-" + axis
                 slot = dict(problem=title, axis=axis, branch=track)
                 assignments.append(slot)
@@ -59,6 +86,8 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                                 reason=existing.get("error") or "Worker explicitly stopped")
                 elif existing:
                     slot.update(state="existing", agent_id=existing["agent_id"])
+                elif suspended:
+                    slot.update(state="blocked", reason="driver suspended")
                 elif not ready:
                     slot.update(state="blocked", reason="Harness CLI, authentication or worker permission unavailable")
                 elif not repo.is_relative_to(ws) or not (repo / ".git").exists():
@@ -68,9 +97,11 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                 else:
                     try:
                         result = manager.spawn_agent(ws, driver=driver, problem=title, axis=axis,
-                            role_label="bench-author" if axis == "calibration" else "worker",
-                            task=task + " Run device work through parhelion_test_plan.", track=track,
-                            collab_mode="orthogonal", _sprint=True)
+                            role_label=seat_role(axis), task=task + DEVICE_HINT, track=track,
+                            collab_mode="solo" if mode == "solo" else "orthogonal", _sprint=True)
+                        if result.get("blocked"):
+                            slot.update(state="blocked", reason=result.get("reason") or "driver suspended")
+                            continue
                         agent = result["agent"]
                         occupied[(title, track)] = agent
                         slot.update(state="blocked" if agent["status"] == "error" else
@@ -85,4 +116,4 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
             ConfigRepository.save(config)
     return {"ok": all(s["state"] != "blocked" for s in assignments), "driver": driver,
             "auto_submit_enabled": selected and bool(config["scheduler"]["auto_consumer_enabled"]),
-            "preview": preview, "problems": len(problems), "assignments": assignments}
+            "preview": preview, "mode": mode, "problems": len(problems), "assignments": assignments}

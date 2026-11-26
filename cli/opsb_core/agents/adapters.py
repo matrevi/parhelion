@@ -24,8 +24,11 @@ EventCallback = Callable[[str, str], None]
 
 
 def emit_context(used: Any, size: Any, callback: EventCallback) -> None:
+    """Report context usage as a percentage, then absolute tokens and the reported window size."""
     if isinstance(used, int) and used >= 0 and isinstance(size, int) and size > 0:
         callback("context", str(min(100, used * 100 // size)))
+        callback("context_tokens", str(int(used)))
+        callback("context_window", str(int(size)))
 
 
 def terminate_process_group(proc: subprocess.Popen[Any] | None, pgid: int | None, grace_sec: float = 2.0) -> None:
@@ -354,6 +357,11 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
         if self._client is None:
             return ""
         self._client.compact(self.native_session_id)
+        if checkpoint.strip():
+            # Native compaction keeps the thread; seed it with the platform checkpoint and state card.
+            self._client.start_turn(self.native_session_id,
+                                    "Preserve this checkpoint and await the next task.\n" + checkpoint,
+                                    approval_policy="never", sandbox="workspace-write")
         return "Codex compacted the thread after the stage result."
 
     def interrupt(self) -> None:

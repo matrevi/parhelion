@@ -2,27 +2,30 @@
 
 WORKSPACE_AGENTS_MD = """# {contest_title} · Contest Guide
 
-Use the contest manifest to identify problems, repositories and team. Read the official template for each problem's editable files, tolerances and scoring rules. Discover the committed case catalog with `opsb bench cases <Op>`. Use buckets to group those inputs for analysis.
+Use the contest manifest to identify problems, repositories and team. Read the official template for each problem's editable files, tolerances and scoring rules. Each problem has one platform-versioned test suite; discover its cases with `opsb bench cases <Op>`. Buckets are tags on those cases for analysis.
 
 ## Scoring workflow
 
-When asked to start the contest, call `parhelion_sprint_start` and check the returned assignment states. Each problem gets algorithm, dataflow and bench-author workers in separate worktrees. The bench author receives official receipts and matching local reports. Use parhelion_squad for direct teammate updates. Routine calibration stays inside the squad. Inspect worker errors and retry blocked slots once resolved. Compare each candidate against a passing baseline on matching inputs, environment and timing protocol. Review weighted gain over the contemporary board score, uncertainty, failed cases and historical escapes. Count actual judge receipts toward the three opening probes and the six-attempt stagnation window.
+When asked to start the contest, call `parhelion_sprint_start` and check the returned assignment states. The default `mode=solo` starts one worker per problem in its own worktree; `mode=dual` adds algorithm and dataflow seats, and `mode=full` also adds a bench author that receives official receipts and matching local reports. Workers reach teammates with `parhelion_squad` by agent_id, role name or `all`. Routine calibration stays inside the squad. Inspect worker errors and retry blocked slots once resolved. A provider fault (balance, quota, authentication) suspends that driver once with a single strategic alert; restart dispatch with `parhelion_sprint_start` or `parhelion_agent_spawn` after the provider recovers.
 
-Set enable_auto_submit=true on start when the user asks for automatic submission. Verify the switch in the start receipt. Workers independently request tests, preview their gate and enqueue the exact SHA through MCP. The platform owns device access, account selection, cooldown, quota and uploads. Use the returned evidence to plan the next experiment while waiting for the official verdict in the worker inbox.
+Compare each candidate against a passing baseline on matching inputs, environment and timing protocol. Review weighted gain over the contemporary board score, uncertainty, failed cases and historical escapes. Count actual judge receipts toward the three opening probes and the six-attempt stagnation window.
+
+Set enable_auto_submit=true on start when the user asks for automatic submission. Verify the switch in the start receipt. Workers independently request tests, preview their gate and enqueue the exact SHA through MCP. The platform owns device access, account selection, cooldown, quota and uploads; nobody uses `ssh`, `flock` or the device directly. Use the returned evidence to plan the next experiment while waiting for the official verdict in the worker inbox.
 
 The orchestrator can dispatch other Harnesses through the platform and inspect the ordered message history in Agent Mesh. Route admin directives, review local-pass/online-fail escapes, delegate verified breakthroughs for the five-pillar KB, and hand stagnant problems to a new worker with an orthogonal hypothesis. Record reusable lessons with evidence and applicability.
 """
 
 PROBLEM_AGENTS_MD = """# {problem} · Operator Guide
 
-Repository `{git_owner}/{repo_slug}` · contest weight {difficulty} · NPU {npu_host}
+Repository `{git_owner}/{repo_slug}` · contest weight {difficulty} · device host {npu_host}
 
-1. Read the official problem contract and inspect recent receipts, current board score and known Bugs. Find the case or bucket with measured headroom.
-2. Choose one change and a baseline SHA. Commit in your assigned worktree, publish your branch with `git push origin HEAD`, then call `parhelion_test_plan` with the problem, explicit SHA and execute=true. Select individual cases for diagnosis and ablation. Run the full suite for formal evidence. Keep strict precision checks and the golden oracle intact.
-3. Compare identical inputs at matching settings. Use judge per-case times or calibrated local measurements. Record the hypothesis, SHA, cases, environment, result and uncertainty. Use `opsb bench compare` and `opsb bench evolve` to compare runs or propose a receipt-linked trial.
-4. Call `parhelion_submit_gate` to preview, then use enqueue=true to hand off a candidate. Check `parhelion_agent_inbox` for the official verdict. Review discrepancies before the next change. Escalate unresolved decisions through `parhelion_agent_report`.
+1. Read the official problem contract and inspect recent receipts, current board score and known Bugs. Find the case or bucket with measured headroom. The state card in your brief lists the best SHA, recent receipts, public-case gaps and recent tests.
+2. Choose one change and a baseline SHA. Commit in your assigned worktree, publish your branch with `git push origin HEAD`, then call `parhelion_test` with the problem, explicit SHA and a level. It returns a request_id within seconds; poll `parhelion_test_wait` (up to 45 s per call) for the digest. The finished result also arrives in your inbox. Keep strict precision checks and the frozen golden oracle intact.
+3. Levels: `smoke` re-runs failed cases plus one correctness anchor and one timed case for a quick self-check; `standard` runs every correctness case and warm timing for all timed cases, as daily evidence; `final` adds local adversarial cases and more repeats, once per submission candidate. The suite and timing protocol belong to the platform; worker requests only choose a level and cases.
+4. Compare identical inputs at matching settings. Use judge per-case times or the digest's calibrated warm timing and baseline speedup. Record the hypothesis, SHA, cases, environment, result and uncertainty, including negative results.
+5. Call `parhelion_submit_gate` to preview, then use enqueue=true to hand off a candidate. Check `parhelion_agent_inbox` for the official verdict. Review discrepancies before the next change. Escalate unresolved decisions through `parhelion_agent_report`.
 
-The CLI fallback is `opsb test {problem} --sha <SHA>` and `opsb submit {problem} <SHA> --note "<evidence>"`. Only edit files permitted by this contest's official template.
+Device work goes only through `parhelion_test`; never use `ssh`, `flock` or direct device access. The CLI fallback is `opsb test {problem} --sha <SHA> --level standard` and `opsb submit {problem} <SHA> --note "<evidence>"`. Only edit files permitted by this contest's official template.
 """
 
 PROBLEM_SPEC_MD = """# {problem} · Problem Specification

@@ -206,6 +206,10 @@ class OpsbDaemonRuntime:
                 if not (ws / "results").is_dir():
                     continue
                 self.agent_mesh.deliver_judgements(ws, float(cfg.get("scheduler", {}).get("breakthrough_threshold", 5.0)))
+                try:
+                    self.agent_mesh.deliver_test_results(ws)
+                except Exception as exc:
+                    print(f"test result delivery failed: {exc}", file=sys.stderr, flush=True)
                 if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
                     continue
                 _, _, data = self.state_cache.get_snapshot(ws)

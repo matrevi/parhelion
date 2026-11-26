@@ -1,6 +1,9 @@
 """Daemon-hosted Multi-Harness AgentMeshManager coordinating worker lifecycles & message bus."""
 from __future__ import annotations
 
+import importlib
+import json
+import os
 import queue
 import re
 import shlex
@@ -12,8 +15,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config as _cfg
-from ..drivers.base import resolve_session_logs_dir
-from ..drivers.brief import compose_bench_author_brief, prepare_session_worktree, resolve_problem_repo
+from ..drivers.base import resolve_session_logs_dir, resolve_workspace_state_dir
+from ..drivers.brief import (
+    compose_bench_author_brief,
+    compose_session_brief,
+    prepare_session_worktree,
+    resolve_problem_repo,
+)
 from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
@@ -26,8 +34,36 @@ MAX_WAIT_SEC = 45.0
 DEFAULT_WAIT_SEC = 25.0
 STAGNATION_STREAK_THRESHOLD = 6
 STRATEGIC_KINDS = frozenset({"breakthrough", "stagnation", "escape_zero", "directive", "question", "error"})
+PROVIDER_FAULT = re.compile(
+    r"insufficient balance|insufficient_quota|quota exceeded|billing|payment required|\b402\b|\b401\b"
+    r"|unauthori[sz]ed|invalid api key|rate limit|\b429\b", re.I)
+SUSPENDED_ERROR = "suspended: provider fault"
+DEFAULT_CONTEXT_WINDOW = 200_000
+COMPACT_PERCENT = 70
+CHECKPOINT_MAX_CHARS = 4000
+CHECKPOINT_TAIL = "Continue from the state card. Do not re-read files you already summarized."
+SQUAD_MAX_CHARS = 4000
 
 
+def compact_threshold(window: int | None = None, cfg: dict[str, Any] | None = None) -> int:
+    """Absolute-token compaction threshold.
+
+    Default: 30% of the reported model window clamped to [120k, 400k] (200k assumed when
+    no window was reported). `agents.compact_tokens` overrides it, clamped to [80k, 600k].
+    """
+    try:
+        doc = cfg if cfg is not None else _cfg.ConfigRepository.load()
+    except Exception:
+        doc = {}
+    agents_cfg = (doc or {}).get("agents") if isinstance(doc, dict) else None
+    override = agents_cfg.get("compact_tokens") if isinstance(agents_cfg, dict) else None
+    if override is not None:
+        try:
+            return max(80_000, min(600_000, int(override)))
+        except (TypeError, ValueError):
+            pass
+    size = int(window) if isinstance(window, int) and window > 0 else DEFAULT_CONTEXT_WINDOW
+    return max(120_000, min(400_000, int(size * 0.3)))
 
 
 def _git_branch_and_sha(path: Path) -> tuple[str, str]:
@@ -95,7 +131,8 @@ class _WorkerRunner:
     """Per-agent turn pump keeping persistent RPC adapters warm across follow-up messages."""
 
     def __init__(self, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter,
-                 on_notify: Callable[[], None], *, resume: bool = False) -> None:
+                 on_notify: Callable[[], None], *, resume: bool = False,
+                 on_fault: Callable[[str, str], None] | None = None) -> None:
         self.agent_id = agent_id
         self.store = store
         self.adapter = adapter
@@ -104,6 +141,9 @@ class _WorkerRunner:
         self.squad_turn = False
         self._stop_flag = threading.Event()
         self._context_percent: int | None = None
+        self._context_tokens = 0
+        self._context_window: int | None = None
+        self._on_fault = on_fault
         self._stage_result = ""
         self.lease = claim_runner(store.db_path.parent, agent_id)
         if resume:
@@ -142,6 +182,12 @@ class _WorkerRunner:
                 self.store.update_agent(self.agent_id, context_percent=percent)
                 self._on_notify()
             return
+        if kind == "context_tokens":
+            self._context_tokens = int(label)
+            return
+        if kind == "context_window":
+            self._context_window = int(label) or None
+            return
         if kind == "model":
             self.store.append_message(self.agent_id, self._reply_direction, "model", label)
             self._on_notify()
@@ -159,6 +205,34 @@ class _WorkerRunner:
     @property
     def _reply_direction(self):
         return "squad_note" if self.squad_turn else "worker_to_orch"
+
+    def _should_compact(self) -> bool:
+        return (self._context_tokens >= compact_threshold(self._context_window)
+                or (self._context_percent or 0) >= COMPACT_PERCENT)
+
+    def _checkpoint(self, rec: dict[str, Any], reply: str) -> str:
+        """Stage result (or the reply tail), the platform state card and a continuation line."""
+        from ..services import state_card
+        card = state_card.build(self.adapter.workspace, str(rec.get("problem") or ""), self.agent_id)
+        stage = (self._stage_result or str(reply or "")[-1500:]).strip()
+        room = max(0, CHECKPOINT_MAX_CHARS - len(card) - len(CHECKPOINT_TAIL) - 2)
+        return "\n".join([stage[:room], card, CHECKPOINT_TAIL])[:CHECKPOINT_MAX_CHARS]
+
+    def _compact(self, rec: dict[str, Any], reply: str) -> None:
+        self.store.update_agent(self.agent_id, status="compacting")
+        self._on_notify()
+        checkpoint = self._checkpoint(rec, reply)
+        self._context_percent = None
+        try:
+            outcome = self.adapter.compact(checkpoint)
+            if outcome:
+                self.store.append_message(self.agent_id, self._reply_direction, "compact", outcome)
+        finally:
+            self._context_tokens = 0
+            if not self._stop_flag.is_set():
+                self.store.update_agent(self.agent_id, status="idle",
+                    native_session_id=self.adapter.native_session_id,
+                    context_percent=self._context_percent)
 
     def _loop(self) -> None:
         try:
@@ -199,25 +273,21 @@ class _WorkerRunner:
                     self.store.append_message(
                         self.agent_id, self._reply_direction, "result", reply, commit_sha=sha7
                     )
-                    if self._stage_result and (self._context_percent or 0) >= 60:
-                        self.store.update_agent(self.agent_id, status="compacting")
-                        self._on_notify()
-                        self._context_percent = None
-                        try:
-                            outcome = self.adapter.compact(self._stage_result)
-                            if outcome:
-                                self.store.append_message(self.agent_id, self._reply_direction, "compact", outcome)
-                        finally:
-                            if not self._stop_flag.is_set():
-                                self.store.update_agent(self.agent_id, status="idle",
-                                    native_session_id=self.adapter.native_session_id,
-                                    context_percent=self._context_percent)
+                    if self._should_compact():
+                        self._compact(rec, reply)
             except Exception as exc:
+                fault = ""
                 if not self._stop_flag.is_set():
                     err_s = str(exc)[:600]
                     self.store.update_agent(self.agent_id, status="error", error=err_s, last_tool="")
                     self.store.append_message(self.agent_id, "worker_to_orch", "error", err_s)
+                    fault = err_s if PROVIDER_FAULT.search(err_s) else ""
                 self._stop_flag.set()
+                if fault and callable(self._on_fault):
+                    try:
+                        self._on_fault(self.adapter.driver_kind, fault)
+                    except Exception:
+                        pass
                 return
             finally:
                 self.squad_turn = False
@@ -239,6 +309,7 @@ class AgentMeshManager:
         self.max_workers = int(max_workers) if max_workers is not None else None
         self._lock = threading.Lock()
         self.sprint_lock = threading.Lock()
+        self._suspend_lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         self._stores: dict[str, AgentBusStore] = {}
         self._feedback_versions = {}
@@ -246,6 +317,108 @@ class AgentMeshManager:
         self._doctor_cache: tuple[float, dict[str, Any]] = (0.0, {})
         self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
         self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+    # ---- provider fault circuit breaker -------------------------------------------------
+    @staticmethod
+    def _suspensions_path(ws: Path) -> Path:
+        return resolve_workspace_state_dir(Path(ws).expanduser().resolve()) / "driver_suspensions.json"
+
+    def _read_suspensions(self, ws: Path) -> dict[str, Any]:
+        doc = _cfg.read_json(self._suspensions_path(ws), {})
+        return doc if isinstance(doc, dict) else {}
+
+    def _write_suspensions(self, ws: Path, doc: dict[str, Any]) -> None:
+        path = self._suspensions_path(ws)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def driver_suspended(self, ws: Path, driver: str) -> bool:
+        return str(driver or "").strip().lower() in self._read_suspensions(ws)
+
+    def clear_driver_suspension(self, ws: Path, driver: str) -> bool:
+        drv = str(driver or "").strip().lower()
+        with self._suspend_lock:
+            doc = self._read_suspensions(ws)
+            if drv not in doc:
+                return False
+            doc.pop(drv, None)
+            self._write_suspensions(ws, doc)
+        self._notify()
+        return True
+
+    def _make_runner(self, ws: Path, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter,
+                     *, resume: bool = False) -> _WorkerRunner:
+        return _WorkerRunner(agent_id, store, adapter, self._notify, resume=resume,
+                             on_fault=lambda drv, err: self.suspend_driver(ws, drv, err))
+
+    def suspend_driver(self, ws: Path, driver: str, reason: str) -> dict[str, Any]:
+        """Pause every dispatch to `driver` after a provider (balance/quota/auth) fault."""
+        ws = Path(ws).expanduser().resolve()
+        drv = str(driver or "").strip().lower()
+        text = " ".join(str(reason or "").split())[:300]
+        with self._suspend_lock:
+            doc = self._read_suspensions(ws)
+            entry = doc.get(drv)
+            fresh = not isinstance(entry, dict)
+            if fresh:
+                entry = {"since": _cfg.utc_now().strftime("%Y-%m-%dT%H:%M:%SZ"), "reason": text}
+                doc[drv] = entry
+                self._write_suspensions(ws, doc)
+        store = self._store(ws)
+        if fresh:
+            store.append_message(
+                "platform", "worker_to_orch", "error",
+                f"驱动 {drv} 因供应商故障暂停：{entry['reason']}。恢复后用 parhelion_sprint_start 或 parhelion_agent_spawn 重新派发。",
+                priority="strategic", event_key=f"suspend:{drv}:{str(entry['since'])[:13]}")
+        with self._lock:
+            runners = [r for r in self._runners.values()
+                       if r.store is store and str(r.adapter.driver_kind).lower() == drv
+                       and r._thread is not threading.current_thread()]
+        stopped = []
+        for runner in runners:
+            rec = store.get_agent(runner.agent_id) or {}
+            if rec.get("status") in ("stopped", "error"):
+                continue
+            try:
+                runner.stop()
+            except Exception:
+                pass
+            store.update_agent(runner.agent_id, status="error", error=SUSPENDED_ERROR, last_tool="")
+            stopped.append(runner.agent_id)
+        self._notify()
+        return {"ok": True, "driver": drv, "since": entry["since"], "stopped": stopped, "new": fresh}
+
+    def deliver_test_results(self, ws: Path) -> int:
+        """Post finished test runs to the requesting worker; wake it if idle and it has not observed the result."""
+        try:
+            test_runs = importlib.import_module(__package__.rsplit(".", 1)[0] + ".services.test_runs")
+        except Exception:
+            return 0  # work package A not available yet
+        ws = Path(ws).expanduser().resolve()
+        store = self._store(ws)
+        delivered = 0
+        for record in test_runs.list_undelivered(ws) or []:
+            request_id = str(record.get("request_id") or "")
+            agent_id = str(record.get("agent_id") or "")
+            if not request_id or not agent_id:
+                continue
+            line = test_runs.compact_line(record)
+            msg = store.append_message(agent_id, "orch_to_worker", "test_result", line,
+                                       problem=str(record.get("problem") or ""), event_key=f"test:{request_id}")
+            if msg and not record.get("observed"):
+                rec = store.get_agent(agent_id)
+                if rec and rec.get("status") == "idle":
+                    try:
+                        self._enqueue_to_worker(ws, rec, f"{line} Full digest: parhelion_test_wait request_id={request_id}")
+                    except Exception:
+                        pass
+            test_runs.mark_delivered(ws, request_id)
+            delivered += 1
+        if delivered:
+            self._notify()
+        return delivered
 
     def deliver_judgements(self, ws: Path, threshold: float) -> None:
         ledger = ws / "results/submit-queue-outcome.jsonl"
@@ -291,10 +464,9 @@ class AgentMeshManager:
                     msg = store.append_message(agent, "orch_to_worker", "judge_result", feedback,
                                                problem=title, commit_sha=sha, event_key=f"receipt:{sid}:{agent}{revision}")
                     if msg:
-                        with self._lock:
-                            runner = self._runners.get(agent)
-                        if runner:
-                            runner.enqueue(feedback)
+                        target = store.get_agent(agent)
+                        if target:
+                            self._enqueue_to_worker(ws, target, feedback, spawn_runner=False)
                         self._notify()
                 for kind, message in events:
                     msg = store.append_message(agent or "platform", "worker_to_orch", kind, body + " " + message,
@@ -306,7 +478,9 @@ class AgentMeshManager:
                 note = (f"{len(calibration_seqs)} official calibration receipt(s) for {title}. Read your inbox "
                         f"starting at since_seq={calibration_seqs[0] - 1} through seq {calibration_seqs[-1]}. "
                         "Use the linked reports to assess coverage, then send actionable findings to your teammates.")
-                self._enqueue_to_worker(ws, store.get_agent(authors[title]), note, squad=True)
+                author_rec = store.get_agent(authors[title])
+                if author_rec:
+                    self._enqueue_to_worker(ws, author_rec, note, squad=True)
                 self._notify()
         self._feedback_versions[ws] = version
 
@@ -569,6 +743,12 @@ class AgentMeshManager:
         if not str(task or "").strip():
             raise ValueError("task prompt must be non-empty")
 
+        if self.driver_suspended(ws, drv_kind):
+            if _sprint:
+                return {"ok": False, "blocked": True, "reason": "driver suspended"}
+            # An explicit admin spawn confirms the provider has recovered.
+            self.clear_driver_suspension(ws, drv_kind)
+
         store = self._store(ws)
         if self.max_workers is not None:
             live_count = len(store.list_agents(include_stopped=False, limit=-1))
@@ -600,6 +780,12 @@ class AgentMeshManager:
         )
         if safe_role == "bench-author" and prob_title:
             worker_prompt = compose_bench_author_brief(ws, prob_title) + "\n\n" + task.strip()
+        elif prob_title:
+            try:
+                worker_prompt = compose_session_brief(ws, prob_title, goal=task.strip(), worktree=wt, branch=branch,
+                                                      role=safe_role, agent_id=agent_id)
+            except Exception:
+                pass
         rec = store.create_agent({
             "agent_id": agent_id,
             "driver": drv_kind,
@@ -620,7 +806,7 @@ class AgentMeshManager:
         try:
             with self._lock:
                 adapter = self._adapter_factory(ws, wt, drv_kind, agent_id, log_path)
-                runner = _WorkerRunner(agent_id, store, adapter, self._notify)
+                runner = self._make_runner(ws, agent_id, store, adapter)
                 self._runners[agent_id] = runner
         except Exception as exc:
             store.update_agent(agent_id, status="error", error=str(exc)[:600])
@@ -639,31 +825,69 @@ class AgentMeshManager:
             raise RuntimeError(f"Agent '{agent_id}' is stopped; spawn a new worker instead.")
         kind = "interrupt" if delivery == "interrupt" else "followup"
         msg = store.append_message(agent_id, "orch_to_worker", kind, message.strip())
-        self._enqueue_to_worker(ws, rec, message.strip(), interrupt=delivery == "interrupt", explicit=True)
+        wake = self._enqueue_to_worker(ws, rec, message.strip(), interrupt=delivery == "interrupt", explicit=True)
         self._notify()
-        return {"ok": True, "agent_id": agent_id, "delivery": kind, "message": msg}
+        out = {"ok": True, "agent_id": agent_id, "delivery": kind, "message": msg, "woken": bool(wake.get("ok"))}
+        if not wake.get("ok"):
+            out["reason"] = wake.get("reason", "")
+        return out
 
-    def _enqueue_to_worker(self, ws, rec, message, *, interrupt=False, squad=False, explicit=False):
+    def _enqueue_to_worker(self, ws, rec, message, *, interrupt=False, squad=False, explicit=False,
+                           spawn_runner=True) -> dict[str, Any]:
+        """Wake a worker with `message`. Never wakes stopped seats or seats of a suspended driver.
+
+        Error seats are skipped unless an explicit orchestrator follow-up resumes them.
+        Callers record the bus message themselves; a refusal only means nobody is woken.
+        """
         store = self._store(ws)
         agent_id = rec["agent_id"]
+        if self.driver_suspended(ws, rec.get("driver") or ""):
+            return {"ok": False, "reason": "driver suspended"}
         with self._lock:
             old = self._runners.get(agent_id)
-        if explicit and rec["status"] == "error" and old:
+        if explicit and rec["status"] == "error" and old and spawn_runner:
             old.stop()
         with self._lock:
             rec = store.get_agent(agent_id)
-            if not rec or rec["status"] == "stopped" or (rec["status"] == "error" and not explicit):
-                return
+            if not rec or rec["status"] == "stopped":
+                return {"ok": False, "reason": "worker stopped"}
+            if rec["status"] == "error" and not explicit:
+                return {"ok": False, "reason": "worker error"}
             runner = self._runners.get(agent_id)
             if runner is None or not runner._thread.is_alive():
+                if not spawn_runner:
+                    return {"ok": False, "reason": "worker runtime not attached"}
                 log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
                 adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
                 adapter.native_session_id = str(rec.get("native_session_id") or "")
-                runner = _WorkerRunner(agent_id, store, adapter, self._notify, resume=True)
+                runner = self._make_runner(ws, agent_id, store, adapter, resume=True)
                 self._runners[agent_id] = runner
         if interrupt:
             runner.interrupt()
         runner.enqueue(message, squad=squad)
+        return {"ok": True}
+
+    @staticmethod
+    def _squad_targets(mates: dict[str, dict[str, Any]], recipient: str) -> list[str]:
+        """Resolve agent_id, `all`, or an axis / role_label / sprint-<axis> name (case-insensitive)."""
+        key = recipient.strip()
+        if key in mates:
+            return [key]
+        low = key.lower()
+        if low == "all" and mates:
+            return list(mates)
+        hits = []
+        if low and low != "all":
+            for aid, mate in mates.items():
+                axis = str(mate.get("axis") or "").lower()
+                names = {axis, str(mate.get("role_label") or "").lower(), ("sprint-" + axis) if axis else ""}
+                if low in names - {""}:
+                    hits.append(aid)
+        if len(hits) == 1:
+            return hits
+        roster = ", ".join(f"{aid}:{m.get('axis') or '-'}:{m.get('role_label') or '-'}" for aid, m in mates.items())
+        problem = "matches several teammates" if hits else "matches no active teammate"
+        raise ValueError(f"Recipient '{key}' {problem}. Teammates (agent_id:axis:role_label): {roster or 'none'}")
 
     def squad(self, ws, sender, *, recipient="", message="", request_id=""):
         store = self._store(ws)
@@ -675,15 +899,27 @@ class AgentMeshManager:
         if not recipient and not message:
             return {"ok": True, "problem": me["problem"], "peers": [
                 {k: a[k] for k in ("agent_id", "role_label", "axis", "driver", "status")} for a in mates.values()]}
-        if recipient not in mates or not message.strip() or len(message) > 4000 or len(request_id) > 128:
-            raise ValueError("Choose one active teammate and a message of up to 4000 characters")
-        body = f"[{sender} → {recipient}] {message.strip()}"
-        msg = store.append_message(recipient, "squad_to_worker", "peer", body, problem=me["problem"],
-                                   event_key=f"peer:{sender}:{recipient}:{request_id}" if request_id else None)
-        if msg:
-            self._enqueue_to_worker(ws, mates[recipient], body, squad=True)
+        if not message.strip() or len(request_id) > 128:
+            raise ValueError("Send a non-empty message to a teammate; request_id is limited to 128 characters")
+        targets = self._squad_targets(mates, recipient)
+        text = message.strip()
+        if len(text) > SQUAD_MAX_CHARS:
+            text = text[:SQUAD_MAX_CHARS] + "…[truncated]"
+        sent: list[tuple[str, dict[str, Any]]] = []
+        for target in targets:
+            body = f"[{sender} → {target}] {text}"
+            msg = store.append_message(target, "squad_to_worker", "peer", body, problem=me["problem"],
+                                       event_key=f"peer:{sender}:{target}:{request_id}" if request_id else None)
+            if msg:
+                self._enqueue_to_worker(ws, mates[target], body, squad=True)
+            sent.append((target, msg))
+        if any(msg for _, msg in sent):
             self._notify()
-        return {"ok": True, "recipient": recipient, "duplicate": not bool(msg), "seq": msg.get("seq")}
+        if recipient.strip().lower() == "all" and recipient.strip() not in mates:
+            return {"ok": True, "recipients": [t for t, _ in sent], "seqs": [m.get("seq") for _, m in sent],
+                    "duplicate": not any(m for _, m in sent)}
+        target, msg = sent[0]
+        return {"ok": True, "recipient": target, "duplicate": not bool(msg), "seq": msg.get("seq")}
 
     def wait_events(
         self,
