@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T03:26:17Z",
+  "updated_at": "2026-11-26T03:30:36Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "8a6500683ae6c8f4fde3ed03ed513d6d6bf18d1a9e2a7d39463ad010092d6bca",
-      "size": 73836,
-      "normalized_sha256": "8a6500683ae6c8f4fde3ed03ed513d6d6bf18d1a9e2a7d39463ad010092d6bca"
+      "sha256": "75e48bd17d64a399517319c91b00f0d123c0f9f2a1416128b4e60d17fe692b67",
+      "size": 74473,
+      "normalized_sha256": "75e48bd17d64a399517319c91b00f0d123c0f9f2a1416128b4e60d17fe692b67"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1036,7 +1036,7 @@
       "normalized_sha256": "8bdd4857afbfa3379f7cef6388a5e6c61c6dd9b960b4a9a69865521db078bc08"
     },
     "cli/opsb_core/services/test_runs.py": {
-      "role": "observe",
+      "role": "index",
       "sha256": "836b869b9f4a2900b2dbac9dfefb87b66b254772efabfcad58f3c7876f0d5041",
       "size": 22154,
       "normalized_sha256": "836b869b9f4a2900b2dbac9dfefb87b66b254772efabfcad58f3c7876f0d5041"
@@ -1770,7 +1770,7 @@
   },
   "managed_scope": {
     "version": "managed-scope-baseline/v1",
-    "policy_identity": "3b029307ca9a998f7863146b9aae29089dbd7d695d8e543a5334a9ba32f41394",
+    "policy_identity": "6e99d165b6270997787d274cf440aaf49e28c3a94c9748ac42d758dcac5b126a",
     "observe_change_policy": "review_required",
     "budget_policy_identity": "15e9b37a6c57e9bf03c9df3d0d049eb5b9a7f5540f9d34960408114e2538a32d",
     "budget_policy": {

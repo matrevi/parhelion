@@ -129,6 +129,17 @@
         "created_by": "aoci-init",
         "order": 106,
         "enabled": true
+      },
+      {
+        "rule_id": "index-test-runs-service",
+        "action": "index",
+        "pattern": "cli/opsb_core/services/test_runs.py",
+        "pattern_kind": "file",
+        "reason": "Production MCP test-run registry behind parhelion_test and parhelion_test_wait",
+        "source": "user",
+        "created_by": "human",
+        "order": 0,
+        "enabled": true
       }
     ]
   },

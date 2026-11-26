@@ -217,6 +217,7 @@ submit_runner.py[DW9L]: F:单发跳队提交worker与在途检测：打包、上
 sync_reconciler.py[DR8L]: F:对账与去重：sync_error、Pass无分、RE与TLE等终态的回执归并与补偿 | R:code:cli/opsb_core/services/submit_reconcile.py,code:cli/opsb_core/services/judge_sync.py | A:- | S:去重按回执身份（submission_id）而非题目加SHA，重放同一批回执不得重复触发交接或扣额
 templates_md.py[DC5T]: F:工作区服务生成的英文比赛与算子指南模板 | R:code:cli/opsb_core/services/scaffold_service.py | A:- | S:指南正文里的芯片名称取自device配置的占位符，不能写死具体型号
 triad_kb_service.py[CA4T]: F:三元知识库的向后兼容门面 | R:code:cli/opsb_core/knowledge/query.py | A:- | S:-
+test_runs.py[AW8L]: F:MCP异步测试登记表：后台拉起opsb test，按题/SHA/级别/用例去重加入或在30分钟内复用，提供进度、等待、取消与完成投递 | R:code:cli/opsb_core/mcp/handlers_bench.py,code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/commands/queue_cmd.py,code:scheduler/case_bench.py | A:submit,refresh,wait,cancel,list_undelivered,compact_line | S:后台进程以新会话启动并由守护线程收尾，daemon重启丢线程时refresh按pid存活补做收尾；记录读改写在单条lock上flock并原子替换。wait拿到终态会置observed，编排据此不再重复唤醒worker
 
 ===/Users/winbeau/Developer/personal/parhelion/docs/===
 BENCH_EVOLUTION_DESIGN.md[SP7M]: F:本地基准演进与线上反馈标定设计：分桶、真值获取与预测校准 | R:code:scheduler/bench_evolution.py | A:- | S:-
