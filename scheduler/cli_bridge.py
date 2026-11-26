@@ -30,6 +30,7 @@ from .bench_evolution import compute_spearman
 from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
+from . import judge_align_cmd, receipts
 from .npu_scheduler import NpuTaskScheduler
 from .parhelion_paths import (
     atomic_write_json,
@@ -579,7 +580,7 @@ class SchedulerEngine:
             csha = rec.get("canonical_sha") or resolve_sha(self.workspace, t, rec.get("sha"))
             st = str(rec.get("status", ""))
             prev_b = board_tracker.get(t, 0.0)
-            sc = float(rec["score"]) if isinstance(rec.get("score"), (int, float)) else None
+            sc = receipts.official_score(rec)
 
             if idx_o < start_hist_idx:
                 if st not in ("rejected", "skipped", "duplicate"):
@@ -1438,7 +1439,7 @@ class SchedulerEngine:
                 override_board_status=prev_b_status,
             )
 
-            sc = float(rec["score"]) if isinstance(rec.get("score"), (int, float)) else None
+            sc = receipts.official_score(rec)
             is_live_shot = st not in ("rejected", "skipped", "duplicate", "sync_error")
             actual_delta = round(sc - prev_board, 2) if (is_live_shot and sc is not None) else None
 
@@ -1695,6 +1696,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_su.add_argument("op", choices=["show", "migrate", "add-variant"])
     p_su.add_argument("--title", required=True, help="Operator problem title")
     p_su.add_argument("--json", dest="variant_json", default=None, help="Variant object for add-variant")
+    judge_align_cmd.add_parsers(sub, common)
     return parser
 
 
@@ -1740,6 +1742,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "suite":
         return _suite_command(args)
+    if args.command in ("case-map", "receipts"):
+        return judge_align_cmd.run(args)
     engine = SchedulerEngine(
         workspace=args.workspace,
         state_dir=args.state_dir,

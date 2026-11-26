@@ -30,6 +30,44 @@ def run_bench_suite(args: argparse.Namespace) -> int:
     return subprocess.call(cmd, cwd=str(CLI_DIR.parent))
 
 
+def run_bench_judge_align(args: argparse.Namespace) -> int:
+    """Forward `opsb bench case-map` / `opsb bench receipts` to `scheduler.cli_bridge`."""
+    import subprocess
+
+    from .config import CLI_DIR, ConfigRepository, resolve_python_exe
+
+    ws = ConfigRepository.resolve_workspace(args.workspace, ConfigRepository.load())
+    if args.bench_cmd == "case-map":
+        cmd = ["case-map", "--title", args.problem] + (["--rebuild"] if args.rebuild else [])
+    else:
+        cmd = ["receipts", args.receipts_action] + (["--apply"] if args.apply else [])
+    full = [resolve_python_exe(ws), "-m", "scheduler.cli_bridge", *cmd, "--workspace", str(ws)]
+    if args.json:
+        return subprocess.call(full, cwd=str(CLI_DIR.parent))
+    proc = subprocess.run(full, cwd=str(CLI_DIR.parent), capture_output=True, text=True)
+    if proc.returncode != 0:
+        print((proc.stderr or proc.stdout).strip())
+        return proc.returncode
+    import json as _json
+
+    doc = _json.loads(proc.stdout)
+    if args.bench_cmd == "case-map":
+        for item in doc["maps"]:
+            pairs = item.get("pairs") or []
+            mapped = sum(1 for p in pairs if p.get("judge_mapped"))
+            print(f"{item['title']}: {item['method']} ({item['confidence']}), {mapped}/{len(item.get('local_ids') or [])} "
+                  f"local cases timed against the judge, judge roster {item.get('judge_count')}")
+            for p in pairs:
+                if p.get("reason"):
+                    print(f"  {p['local']} -> {p['judge']}: {p['reason']}")
+    else:
+        verb = "appended" if args.apply else "would append"
+        print(f"{doc['receipts']} receipts, {verb} {doc['append']} normalized rows; missing: {doc['missing_counts']}")
+        for row in doc["appended"]:
+            print(f"  {row['title']} {row['sha']} {row['status']} {row['official_score']}: {', '.join(row['adds'])}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="opsb", description="Parhelion · Unified KernelC Contest & NPU CLI")
     p.add_argument("--lang", choices=["zh", "en"], help="Output language (zh / en)")
@@ -236,6 +274,20 @@ def build_parser() -> argparse.ArgumentParser:
     bn_su.add_argument("--json", dest="variant_json", help="Variant object for add-variant")
     bn_su.add_argument("--workspace", "-w")
     bn_su.set_defaults(func=run_bench_suite)
+
+    bn_cm = bn_sub.add_parser("case-map", help="Map local official cases to judge testcases")
+    bn_cm.add_argument("problem")
+    bn_cm.add_argument("--rebuild", action="store_true", help="Rebuild and store results/<problem>/.case-map.json")
+    bn_cm.add_argument("--json", action="store_true")
+    bn_cm.add_argument("--workspace", "-w")
+    bn_cm.set_defaults(func=run_bench_judge_align)
+
+    bn_rc = bn_sub.add_parser("receipts", help="Normalize judge receipt rows from data on disk")
+    bn_rc.add_argument("receipts_action", choices=["backfill"])
+    bn_rc.add_argument("--apply", action="store_true", help="Append the rows (default: list only)")
+    bn_rc.add_argument("--json", action="store_true")
+    bn_rc.add_argument("--workspace", "-w")
+    bn_rc.set_defaults(func=run_bench_judge_align)
 
     bn_st = bn_sub.add_parser("status", help="Show 5-stratum learned weights, efficiency & headroom")
     bn_st.add_argument("problem", nargs="?")

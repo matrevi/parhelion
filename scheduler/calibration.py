@@ -42,6 +42,7 @@ from .bench_evolution import (
     fit_pairwise_simplex_map,
     infer_bucket_metadata,
 )
+from . import receipts
 from .pairwise_anchor import evaluate_pairwise_anchor, select_dual_anchor_prediction
 from .estimator import (
     SIGMA_HIDDEN_JITTER,
@@ -899,7 +900,7 @@ class BenchmarkCalibrator:
             prior_pass_before.append(set(acc_pass))
             st = str(r.get("status", ""))
             csha = str(r.get("canonical_sha") or r.get("sha") or "")
-            if st == "Pass" and csha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+            if st == "Pass" and csha and (receipts.official_score(r) or 0.0) > 0:
                 acc_pass.add(csha)
 
         escape_lock = False
@@ -969,13 +970,13 @@ class BenchmarkCalibrator:
         sha_raw: dict[str, list[float]] = {}
         sha_order: list[str] = []
         for r in rows:
-            if r.get("status") != "Pass" or not isinstance(r.get("score"), (int, float)) or r["score"] <= 0:
+            raw_s = receipts.official_score(r) or 0.0
+            if r.get("status") != "Pass" or raw_s <= 0:
                 continue
             csha = str(r.get("canonical_sha") or r.get("sha") or "")
             if not csha:
                 continue
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
-            raw_s = float(r["score"])
             if as_of is None and csha == ledger.active_board_sha and ledger.current_score > 0:
                 cnt_s = ledger.current_score
             else:

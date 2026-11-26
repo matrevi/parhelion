@@ -97,7 +97,7 @@
 
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
-| P01 | impl/P01-judge-alignment | 待开始 | | |
+| P01 | impl/P01-judge-alignment | 已合入 | a4a3eda | 留一回测 MAE 2.75→1.32；按位置配对的身份是对的，FFT 05 等是不同工作量（标 judge_mapped=false）；回填 19 行 |
 | P02 | impl/P02-wa-reproducers | 待开始 | | |
 | P03 | impl/P03-metering-replay | 待开始 | | |
 | P04 | impl/P04-change-driven-wait | 待开始 | | |
@@ -105,7 +105,7 @@
 | P06 | impl/P06-ledger-seed | 待开始 | | |
 | P07 | impl/P07-gate-queue | 待开始 | | |
 | P08 | impl/P08-startup-pack | 待开始 | | |
-| P09 | impl/P09-host-daemon | 待开始 | | |
+| P09 | impl/P09-host-daemon | 进行中 | | |
 | P10 | impl/P10-profiler-ab | 待开始 | | |
 | P11 | impl/P11-batch-ui | 待开始 | | |
 | P12 | impl/P12-report-views | 待开始 | | |

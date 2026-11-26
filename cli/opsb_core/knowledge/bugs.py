@@ -76,6 +76,8 @@ def sync_bugs(workspace: Path, *, noise_floor: float | None = None):
             ):
                 continue
             kind = ERRORS.get(status)
+            # Board-refreshing receipts only: a Pass judged below the board carries its score
+            # in `timing_score`, and a drop against the board is not a code defect by itself.
             score = r.get("score")
             base = None
             delta = None
