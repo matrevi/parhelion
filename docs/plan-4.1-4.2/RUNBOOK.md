@@ -56,7 +56,7 @@
 
 已合入（4.3 调研）：P19。
 
-4.2 的包已全部合入（含 P20），4.2.0 与 4.2.1 已发布。下一步：在新对话里写 4.3 的完整计划，交 DSH 实现。
+4.2 的包已全部合入（含 P20），4.2.0 与 4.2.1 已发布。4.3 的计划已写在 `docs/v4.3/`（P21–P29，DSH 实现），之后的续跑看 [docs/v4.3/RUNBOOK.md](../v4.3/RUNBOOK.md)。
 
 **预计会冲突的位置**：`mcp/schemas.py`、`mcp/tools.py`（P12、P13、P08）；工具计数断言 `cli/tests/test_agent_mesh_http.py`、`cli/tests/test_mcp_server.py`（P12、P13、P08）；`agents/manager.py`（P14、P15）；`mcp/handlers_bench.py`（P13）。
 
