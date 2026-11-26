@@ -87,7 +87,7 @@ def _stop_seats(manager, ws: Path, names: list[str], *, preview: bool) -> list[d
     return out
 
 
-def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, driver: str, ready: bool,
+def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, driver: str,
                    suspended: bool) -> list[dict[str, Any]]:
     """Ask the live seats of each title to hand off, then start one orthogonal replacement seat.
 
@@ -108,11 +108,16 @@ def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, drive
         title = problem["title"]
         live = [w for w in workers if str(w["problem"]).lower() == title.lower()
                 and w["status"] not in ("stopped", "error")]
+        # The replacement continues the harness of the seats it replaces; an explicit driver wins when
+        # its CLI is ready here.
+        drv = driver or get_active_driver_kind()
+        if not _ready(manager, drv) and live:
+            drv = str(live[0]["driver"] or drv)
+        ready = _ready(manager, drv)
         trigger = str(store.latest_event_key(title, "stagnation") or "manual")
-        base = f"seat-replace:{title.lower()}:{trigger}"
-        round_no, prior = 1, None
+        key_base = f"seat-replace:{title.lower()}:{trigger}"
+        key, retry, prior = key_base, 0, None
         while True:
-            key = f"{base}:{round_no}"
             row = store.message_by_event(key)
             if row is None:
                 break
@@ -120,12 +125,17 @@ def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, drive
             if prior is not None and prior["status"] not in ("stopped", "error"):
                 break
             prior = None
-            round_no += 1
+            retry += 1
+            key = f"{key_base}:retry-{retry}"
         if prior is not None:
             out.append({"problem": title, "seat": seat_of(prior), "agent_id": prior["agent_id"],
                         "state": "existing", "handoff_to": [w["agent_id"] for w in live]})
             continue
         direction = orthogonal_direction({seat_of(w) or str(w.get("axis") or "") for w in live})
+        used = {seat_of(w) for w in workers if str(w["problem"]).lower() == title.lower()}
+        round_no = 1
+        while f"replace-{round_no}" in used:
+            round_no += 1
         seat = f"replace-{round_no}"
         slot = {"problem": title, "seat": seat, "state": "planned" if preview else "blocked",
                 "handoff_to": [w["agent_id"] for w in live], "direction": direction, "trigger": trigger}
@@ -143,7 +153,7 @@ def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, drive
             continue
         try:
             result = manager.spawn_agent(
-                ws, driver=driver, problem=title, axis=seat, seat=seat, role_label="worker",
+                ws, driver=drv, problem=title, axis=seat, seat=seat, role_label="worker",
                 task=REPLACE_TASK.format(title=title, direction=direction), track=track_name(seat),
                 collab_mode="orthogonal", handover=replace_handover(ws, title, [w["agent_id"] for w in live], direction),
                 _sprint=True)
@@ -159,7 +169,7 @@ def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, drive
         store.append_message(agent["agent_id"], "system", "seat_replace",
                              json.dumps({"title": title, "seat": seat, "direction": direction,
                                          "trigger": trigger, "replaced": [w["agent_id"] for w in live]}),
-                             problem=title, event_key=f"{base}:{round_no}")
+                             problem=title, event_key=key)
         slot.update(state="blocked" if agent["status"] == "error" else
                     "existing" if result.get("reused") else "started", agent_id=agent["agent_id"])
         workers.append(agent)
@@ -183,12 +193,14 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
     if not catalogue:
         raise ValueError("No problems discovered in the selected contest")
     specs = normalize_specs(problems, mode=mode, tracks=seats)
-    if not specs:
+    if adjust and not specs:
+        raise ValueError("adjust=true needs the problems whose seats should grow")
+    # `stop`/`replace` alone change seats; they do not re-expand the contest behind the caller's back.
+    seat_change_only = bool(stop or replace) and not adjust and not specs
+    if not specs and not seat_change_only:
         # No selection is a whole-contest sprint; a knowledge seat on its own needs no problem.
         specs = ([{"title": "", "mode": mode, "seats": None, "role": "knowledge"}] if role == "knowledge"
                  else [{"title": p["title"], "mode": mode, "seats": seats, "role": role} for p in catalogue])
-    if adjust and not specs:
-        raise ValueError("adjust=true needs the problems whose seats should grow")
     rows, unbound = _select(catalogue, specs, mode, role)
     ready = _ready(manager, driver)
     assignments: list[dict[str, Any]] = []
@@ -212,7 +224,7 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
             occupied = sprint_seats(manager._store(ws).list_agents(limit=-1))
         if replace:
             replaced = _replace_seats(manager, ws, [str(t) for t in replace], preview=preview,
-                                      driver=driver, ready=ready, suspended=suspended)
+                                      driver=driver, suspended=suspended)
             occupied = sprint_seats(manager._store(ws).list_agents(limit=-1))
         plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for spec, problem in rows:

@@ -70,6 +70,8 @@ def seat_role(seat: str) -> str:
     """Role label of a seat: the axis name, except calibration/harness which are bench-author seats."""
     if seat in ("calibration", "harness"):
         return "bench-author"
+    if seat.startswith("race-"):
+        return "race"
     return seat if seat in ("recon", "knowledge", "integrator", "race") else "worker"
 
 
