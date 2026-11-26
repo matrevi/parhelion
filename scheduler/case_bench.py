@@ -21,7 +21,7 @@ from collections import Counter
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from . import case_map, receipts
+from . import case_map, pairing, receipts
 from . import suite as suites
 from .parhelion_paths import (
     atomic_write_json,
@@ -453,6 +453,7 @@ def run(
         "experiment": experiment,
         "level": level_label,
         "suite_version": spec["suite_version"],
+        "pairing_key": pairing.official_key(cases) or f"suite-v{spec['suite_version']}",
         "formal": formal,
         "oracle": oracle,
         "engine": digest([engine, modules]),
@@ -847,7 +848,7 @@ def baseline_comparison(ws, ledger, report, rows):
     candidates = []
     for path in (ws / "results" / title / base_sha).glob("bench-runs/*/report.json"):
         doc = read_doc(path)
-        if (doc.get("suite_version") == report.get("suite_version")
+        if (pairing.same_inputs(doc, report)
                 and doc.get("timing_score_eligible") is True and doc.get("sha") == base_sha):
             candidates.append(doc)
     if not candidates:
@@ -892,13 +893,13 @@ NOISY_RATIO = 1.5
 
 
 def best_known_minima(ws, report):
-    """Per-case best warm minimum over earlier eligible runs of the same SHA and suite version."""
+    """Per-case best warm minimum over earlier eligible runs of the same SHA and official inputs."""
     best = {}
     folder = ws / "results" / report["title"] / report["sha"] / "bench-runs"
     for path in folder.glob("*/report.json"):
         doc = read_doc(path)
         if (doc.get("run_id") == report.get("run_id") or doc.get("timing_score_eligible") is not True
-                or doc.get("suite_version") != report.get("suite_version")):
+                or not pairing.same_inputs(doc, report)):
             continue
         for c in doc.get("cases", []):
             if _positive(c.get("min_us")):
