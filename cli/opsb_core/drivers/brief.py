@@ -132,10 +132,16 @@ def compose_session_brief(
     role: str = "worker",
     agent_id: str | None = None,
     include_state_card: bool = True,
+    include_startup_pack: bool = False,
+    driver: str = "",
+    startup_pack_tokens: int | None = None,
 ) -> str:
     """Lean worker brief (<= MAX_BRIEF_BYTES) followed by the platform state card.
 
     The state card is appended after the budgeted part and does not count toward it.
+    ``include_startup_pack`` appends the 4.2 G start-up pack (``startup_pack.build``) instead: its
+    section 1 is this same contract under the 1.5 KB cap, and its section 5 already carries the
+    per-case evidence, so the small state card is not repeated.
     """
     ws = workspace.expanduser().resolve()
     title, repo_dir, p_meta = resolve_problem_repo(ws, problem)
@@ -164,8 +170,19 @@ def compose_session_brief(
         "becomes a file path, and messages merge at the teammate's next turn boundary.",
         "When needed, call parhelion_kb_query (3 summaries by default).",
         "Report results, negative ones too, with parhelion_agent_report.",
+        # P15 (worker boundary) inserts its data-channel routing line (board, tbest and receipts via
+        # parhelion_report) as the last line of this list; keep the contract under the 1.5 KB cap.
     ])
     body = _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
+    if include_startup_pack:
+        from . import startup_pack
+        pack = startup_pack.build(
+            ws, title, contract=body, worktree=wt, branch=branch, role=role, agent_id=agent_id,
+            driver=driver, tokens=startup_pack_tokens,
+        )
+        # P03's meter records the pack size so `opsb replay metrics` counts it (never raises).
+        startup_pack.record_size(ws, pack, agent_id=agent_id, role=role)
+        return pack["text"]
     if not include_state_card:
         return body
     from ..services import state_card
@@ -187,7 +204,7 @@ Each problem has one platform-versioned suite (opsb bench cases <op>); suite cha
 
 Each worker directly queues validation with parhelion_test (level smoke, standard or final) and parhelion_test_wait; finished results also reach its inbox. Parhelion schedules CPU and device time; nobody uses ssh or flock. Diagnose, fix and retest independently. Escalate only unresolved decisions.
 
-Workers enqueue their own candidates via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds, in-flight work, pacing and quota. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the normal safety, gain, circuit and quota gates.
+Workers enqueue their own candidates via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds and in-flight work. Quota is not a gate: S4 only decides dispatch timing, so a missing slot delays an approved candidate. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the safety, gain and circuit gates; quota never blocks them.
 
 Before changing a kernel, query opsb kb query --pillar bugs --text <problem> and inspect relevant receipts and prevention notes. Keep predictions separate from judged scores. Follow each queued SHA through its receipt and final verdict. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
     brief += ("\n\nMonitor strategic events. For an escape, ask the owner for a failure review and delegate a reusable "

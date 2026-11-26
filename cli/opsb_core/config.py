@@ -140,6 +140,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rate_limit_gap_sec": 190,
         "circuit_breaker_limit": 6,
     },
+    # 4.2 G worker start-up pack. ``tokens`` caps the whole pack (~6K tokens by default) and
+    # ``repo_map`` stays off until a replay shows the generated map pays for itself (research R11).
+    "startup_pack": {"tokens": 6000, "repo_map": False},
 }
 
 

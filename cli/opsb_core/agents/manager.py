@@ -880,7 +880,8 @@ class AgentMeshManager:
         elif prob_title:
             try:
                 worker_prompt = compose_session_brief(ws, prob_title, goal=task.strip(), worktree=wt, branch=branch,
-                                                      role=safe_role, agent_id=agent_id)
+                                                      role=safe_role, agent_id=agent_id,
+                                                      include_startup_pack=True, driver=drv_kind)
             except Exception:
                 pass
         rec = store.create_agent({
