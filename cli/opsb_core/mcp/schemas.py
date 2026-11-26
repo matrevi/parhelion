@@ -437,14 +437,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_wait",
         "description": "Block until inbox, tests, seats or judge receipts change; returns changes since `since`. Prefer it to polling; "
-                       "omit timeout to lengthen it (max 100s).",
+                       "omit timeout to lengthen it (max 50s).",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "since": {"type": "string", "description": "rev from the last reply; omit to watch from now"},
                 "until": {"type": "array", "items": {"type": "string", "enum": ["inbox", "test", "agent", "judge"]}},
-                "timeout": {"type": "number", "minimum": 0, "maximum": 100},
+                "timeout": {"type": "number", "minimum": 0, "maximum": 50},
                 "agent_ids": {"type": "array", "items": {"type": "string"}},
                 "problem": {"type": "string"},
                 "strategic_only": {"type": "boolean"},

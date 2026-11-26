@@ -180,7 +180,9 @@ def test_quiet_waits_back_off_to_the_cap(env) -> None:
     hub.publish("agent", agent_id="dee-aaaaaa", line="seat")
     changed = hub.wait(role="worker", agent_id="dee-aaaaaa", since=res["rev"], timeout=1)
     assert changed["changed"] and changed["next_timeout"] == eh.DEFAULT_BLOCK_SEC
-    assert eh.MAX_BLOCK_SEC < 120  # the DSH plugin aborts MCP calls at 120 s
+    # 4.3.1: a managed DSH worker aborts an MCP request at 60 s (the desktop plugin at 120 s); every
+    # wait the first sprint asked 60-100 s for died at exactly 60.0 s.
+    assert eh.MAX_BLOCK_SEC < 60
 
 
 def test_status_if_rev_answers_not_modified() -> None:

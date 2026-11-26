@@ -12,9 +12,9 @@
 - bursts: delivery waits until ``COALESCE_SEC`` after the first pending event, then returns at
   most ``MAX_PER_SEC`` events per caller per second (``more=true`` when some remain);
 - quiet: without a change the reply is ``{changed: false, rev, waiting_for, idle_streak,
-  next_timeout}``; ``next_timeout`` grows with ``idle_streak`` up to ``MAX_BLOCK_SEC`` (DSH
-  aborts MCP calls at 120 s), and a call without ``timeout`` uses it, or the full cap while a
-  watched test run is in flight.
+  next_timeout}``; ``next_timeout`` grows with ``idle_streak`` up to ``MAX_BLOCK_SEC`` (a managed
+  DSH worker aborts an MCP request at 60 s, the desktop plugin at 120 s), and a call without
+  ``timeout`` uses it, or the full cap while a watched test run is in flight.
 
 Sources are scanned by ``event_sources.SourceScanner`` on a background thread, immediately
 when the owning manager reports a change (``kick``) and every ``SCAN_SEC`` while somebody waits.
@@ -33,7 +33,8 @@ from .bus_store import AgentBusStore
 from .event_sources import SourceScanner
 
 SOURCES = ("inbox", "test", "agent", "judge")
-MAX_BLOCK_SEC = 100.0
+#: Below the 60 s request timeout of a managed DSH worker (4.3.1: 100 s timed out every long wait).
+MAX_BLOCK_SEC = 50.0
 DEFAULT_BLOCK_SEC = 25.0
 IDLE_GROWTH = 1.5
 COALESCE_SEC = 0.25

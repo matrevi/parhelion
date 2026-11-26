@@ -172,6 +172,20 @@ def test_worker_cannot_use_another_problem(contest):
                   role="worker", agent_id=WORKER)
 
 
+
+def test_a_bound_worker_writes_its_own_ledger_without_naming_the_problem(contest):
+    """4.3.1: the first sprint's workers called parhelion_note without ``problem`` and got
+    "the problem of this call is unknown" although the bus knew their problem."""
+    ws = contest["ws"]
+    (ws / "state").mkdir(exist_ok=True)
+    from opsb_core.agents.bus_store import AgentBusStore
+    AgentBusStore(ws).create_agent({"agent_id": WORKER, "driver": "deepseek", "problem": "Op00",
+                                    "worktree_mode": "readonly"})
+    out = call_tool("parhelion_note", {"type": "insight", "claim": "case 05 is the tail tile"}, ws,
+                    role="worker", agent_id=WORKER)
+    assert out["ok"] and out["problem"] == "Op00"
+    assert store.Ledger(ws, "Op00", WORKER).rows()[0]["claim"] == "case 05 is the tail tile"
+
 # ---------------------------------------------------------------- #3 gate hypothesis
 
 def test_gate_request_without_hypothesis_is_generated_and_named(contest):

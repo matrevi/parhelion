@@ -65,6 +65,7 @@ def owned_ledger(args: dict[str, Any], workspace: Path, *, write: bool) -> tuple
             raise PermissionError("A bound worker identity is required")
         if problem and mine and problem.lower() != mine.lower():
             raise PermissionError(f"You are staffed on {mine}; a worker cannot use another problem's ledger")
+        problem = problem or mine  # 4.3.1: a bound worker need not name its own problem
         owner = agent_id
     else:
         if not problem:
