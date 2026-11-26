@@ -88,14 +88,21 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         team_rem = sum(max(0, int(s.get("daily_limit") or per_acc_lim) - int(s.get("used_today") or 0)) for s in active_slots)
         sched["daily_quota_limit"] = team_limit
         sched["used_today_24h"] = team_used
-        sched["available_normal_shots"] = max(0, team_rem - int(sched.get("closing_reserve") or 0))
+        # Free quota as reported by the accounts. The closing reserve stays a separate display
+        # field (`closing_reserve`) and is never deducted here: it is not a gate threshold.
+        sched["available_normal_shots"] = max(0, team_rem)
     else:
         if "used_today" in b_quota:
             sched["used_today_24h"] = int(b_quota["used_today"])
         if "daily_limit" in b_quota:
             sched["daily_quota_limit"] = int(b_quota["daily_limit"])
-        if "discretionary_remaining" in b_quota:
-            sched["available_normal_shots"] = int(b_quota["discretionary_remaining"])
+        if "remaining_today" in b_quota:
+            sched["available_normal_shots"] = max(0, int(b_quota["remaining_today"]))
+        elif "daily_limit" in b_quota and "used_today" in b_quota:
+            sched["available_normal_shots"] = max(0, int(b_quota["daily_limit"]) - int(b_quota["used_today"]))
+        elif "discretionary_remaining" in b_quota:
+            # Older bridges report only the reserve-adjusted number; add the display reserve back.
+            sched["available_normal_shots"] = int(b_quota["discretionary_remaining"]) + int(sched.get("closing_reserve") or 0)
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
 

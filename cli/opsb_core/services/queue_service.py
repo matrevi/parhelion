@@ -184,16 +184,18 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
     cooldown_sec = int(pipeline["cooldown_remaining_sec"])
     eff_closing_reserve = compute_effective_closing_reserve(problems_out, closing_reserve, noise_floor)
     active_slots = [s for s in (pipeline.get("account_slots") or []) if s.get("enabled") and s.get("logged_in")]
+    # Shown free quota; the closing reserve is a separate display field and is not deducted
+    # here, because quota is not a gate threshold (4.2 P18).
     if active_slots:
         team_daily_limit = sum(int(s.get("daily_limit") or daily_limit) for s in active_slots)
         team_used_today = sum(int(s.get("used_today") or 0) for s in active_slots)
         team_remaining = sum(max(0, int(s.get("daily_limit") or daily_limit) - int(s.get("used_today") or 0)) for s in active_slots)
-        avail_shots = max(0, team_remaining - eff_closing_reserve)
+        avail_shots = max(0, team_remaining)
     else:
         team_daily_limit = daily_limit
         team_used_today = hist_idx["used_24h"]
         team_remaining = max(0, daily_limit - hist_idx["used_24h"])
-        avail_shots = max(0, team_remaining - eff_closing_reserve)
+        avail_shots = max(0, team_remaining)
 
     advisory_items: list[dict[str, Any]] = []
     queued_pairs = {
