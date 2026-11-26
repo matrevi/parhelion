@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import IO, Any
 
@@ -14,6 +16,7 @@ from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "parhelion-mcp", "version": OPSB_VERSION}
+STDIO_MAX_WORKERS = 8
 
 
 def _resolve_workspace(workspace: Path | str | None) -> Path:
@@ -96,7 +99,7 @@ def handle_jsonrpc_message(
         ws = _resolve_workspace(workspace)
         try:
             payload = call_tool(tool_name, raw_args or {}, ws, role=norm_role, agent_id=agent_id)
-            text = json.dumps(payload, ensure_ascii=False, indent=2)
+            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
             return _jsonrpc_result(
                 req_id,
                 {"content": [{"type": "text", "text": text}], "isError": False},
@@ -142,41 +145,57 @@ def serve_stdio(
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
 ) -> int:
-    """Run line-delimited JSON-RPC 2.0 MCP server over stdio."""
+    """Run line-delimited JSON-RPC 2.0 MCP server over stdio.
+
+    Each decoded request is handled on a worker thread so a long tool call never blocks later
+    requests; replies are written whole under a lock and may arrive out of order (matched by id).
+    """
     in_stream = stdin or sys.stdin
     out_stream = stdout or sys.stdout
     err_stream = stderr or sys.stderr
     ws = _resolve_workspace(workspace)
     norm_role = normalize_role(role)
+    write_lock = threading.Lock()
 
-    for raw_line in in_stream:
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            decoded = json.loads(line)
-        except json.JSONDecodeError as exc:
-            err_stream.write(f"[parhelion-mcp] parse error: {exc}\n")
-            err_stream.flush()
-            resp = _jsonrpc_error(None, -32700, f"Parse error: {exc}")
-            out_stream.write(json.dumps(resp, ensure_ascii=False, separators=(",", ":")) + "\n")
+    def write_reply(resp: Any) -> None:
+        line = json.dumps(resp, ensure_ascii=False, separators=(",", ":")) + "\n"
+        with write_lock:
+            out_stream.write(line)
             out_stream.flush()
-            continue
 
+    def log_error(text: str) -> None:
+        with write_lock:
+            err_stream.write(text)
+            err_stream.flush()
+
+    def process(decoded: Any) -> None:
         try:
             if norm_role == "worker" and agent_id:
                 resp = forward_worker_request(ws, agent_id, decoded)
             else:
                 resp = handle_mcp_payload(decoded, workspace=ws, role=norm_role, agent_id=agent_id)
         except Exception as exc:
-            err_stream.write(f"[parhelion-mcp] internal error: {exc}\n")
-            err_stream.flush()
+            log_error(f"[parhelion-mcp] internal error: {exc}\n")
             req_id = decoded.get("id") if isinstance(decoded, dict) else None
             resp = _jsonrpc_error(req_id, -32603, f"Internal error: {exc}")
-
         if resp is not None:
-            out_stream.write(json.dumps(resp, ensure_ascii=False, separators=(",", ":")) + "\n")
-            out_stream.flush()
+            write_reply(resp)
+
+    executor = ThreadPoolExecutor(max_workers=STDIO_MAX_WORKERS, thread_name_prefix="parhelion-mcp")
+    try:
+        for raw_line in in_stream:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                decoded = json.loads(line)
+            except json.JSONDecodeError as exc:
+                log_error(f"[parhelion-mcp] parse error: {exc}\n")
+                write_reply(_jsonrpc_error(None, -32700, f"Parse error: {exc}"))
+                continue
+            executor.submit(process, decoded)
+    finally:
+        executor.shutdown(wait=True)
     return 0
 
 

@@ -1,4 +1,4 @@
-"""JSON Schema definitions for the 9 focused Parhelion MCP tools (`parhelion_*`)."""
+"""JSON Schema definitions for the role-scoped Parhelion MCP tools (`parhelion_*`)."""
 from __future__ import annotations
 
 from typing import Any
@@ -6,13 +6,14 @@ from typing import Any
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_status",
-        "description": "Live contest scores, active NPU telemetry (optional), quota & queue summary.",
+        "description": "Compact contest scores, quota and per-problem rows (under 2KB). verbose=true returns the full structure.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string", "description": "Optional problem title filter"},
-                "include_npu": {"type": "boolean", "description": "Probe live NPU via SSH (default false)"},
-                "include_queue": {"type": "boolean", "description": "Include queue preview (default true)"},
+                "include_npu": {"type": "boolean", "description": "Probe live device telemetry via SSH (default false)"},
+                "include_queue": {"type": "boolean", "description": "Include up to 5 queue items (default false)"},
+                "verbose": {"type": "boolean", "description": "Return the full uncompacted structure (default false)"},
             },
         },
     },
@@ -24,6 +25,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "problem": {"type": "string", "description": "Optional operator problem title"},
                 "sha": {"type": "string", "description": "Optional commit SHA"},
+                "verbose": {"type": "boolean", "description": "Include the coverage grid (default false)"},
             },
         },
     },
@@ -54,7 +56,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_query",
-        "description": "Query 5-Pillar KB (breakthrough + snippets + hardware + community + anti-patterns) by symptom, regime, or dtype.",
+        "description": "Query the 5-pillar KB by symptom, regime, dtype or text. Returns top 3 compact entries (600-char summaries); full=true returns complete entries.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -64,8 +66,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "bugs", "all"]},
                 "text": {"type": "string"},
                 "include_anti_patterns": {"type": "boolean"},
-                "limit": {"type": "integer"},
+                "limit": {"type": "integer", "description": "Maximum entries (default 3)"},
                 "digest": {"type": "boolean"},
+                "full": {"type": "boolean", "description": "Return complete entries instead of compact summaries"},
             },
         },
     },
@@ -113,14 +116,52 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "parhelion_test",
+        "description": "Submit a platform test run and get a request_id within 2s. Then call parhelion_test_wait; the result also arrives in your inbox when it ends.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "problem": {"type": "string"},
+                "sha": {"type": "string", "description": "Commit to test (default HEAD)"},
+                "level": {"type": "string", "enum": ["smoke", "standard", "final"], "description": "smoke: quick self-check; standard (default): all correctness cases plus warm timing; final: candidate validation"},
+                "cases": {"type": "array", "items": {"type": "string"}, "description": "Optional case IDs to restrict the run"},
+                "remeasure": {"type": "boolean", "description": "Measure again instead of reusing a recent passing result"},
+                "build_only": {"type": "boolean", "description": "Compile only, no device time"},
+            },
+            "required": ["problem"],
+        },
+    },
+    {
+        "name": "parhelion_test_wait",
+        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the compact result digest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string"},
+                "wait_sec": {"type": "number", "minimum": 1, "maximum": 45},
+            },
+            "required": ["request_id"],
+        },
+    },
+    {
+        "name": "parhelion_test_cancel",
+        "description": "Cancel a running parhelion_test request (workers may cancel only their own).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"request_id": {"type": "string"}},
+            "required": ["request_id"],
+        },
+    },
+    {
         "name": "parhelion_test_plan",
-        "description": "Preview 3-Phase WSPT NPU test plan (--build-only / --fast / full) or execute `opsb test`.",
+        "description": "Deprecated: preview the test command, or execute=true to submit and wait 40s. Prefer parhelion_test + parhelion_test_wait.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string"},
                 "sha": {"type": "string"},
-                "mode": {"type": "string", "enum": ["build-only", "fast", "full"]},
+                "mode": {"type": "string", "enum": ["build-only", "fast", "full"], "description": "build-only, fast (smoke) or full (standard)"},
+                "level": {"type": "string", "enum": ["smoke", "standard", "final"]},
                 "execute": {"type": "boolean"},
                 "cases": {"type": "array", "items": {"type": "string"}},
                 "bucket": {"type": "string"},
@@ -158,10 +199,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_sprint_start",
-        "description": "On a contest start request, launch or reuse algorithm, dataflow and bench-author workers per problem. Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
+        "description": "On a contest start request, launch or reuse workers per problem (one per problem by default). Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
         "roles": ("orchestrator",),
         "inputSchema": {"type": "object", "properties": {
             "driver": {"type": "string"}, "preview": {"type": "boolean"},
+            "mode": {"type": "string", "enum": ["solo", "dual", "full"], "description": "solo (default): 1 worker per problem; dual adds algorithm/dataflow tracks; full also adds bench-author"},
             "enable_auto_submit": {"type": "boolean", "description": "Enable the existing queue consumer for the active contest when the user requests automatic submission. Defaults to preserving the switch."}
         }},
     },
@@ -261,7 +303,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "roles": ("worker",),
         "description": "List teammates for your problem, or send one teammate a finding, report path or calibration update.",
         "inputSchema": {"type": "object", "properties": {
-            "recipient": {"type": "string"}, "message": {"type": "string"},
+            "recipient": {"type": "string", "description": "agent_id, teammate role name (e.g. algorithm, dataflow, bench-author) or all; omit all arguments to list teammates"},
+            "message": {"type": "string"},
             "request_id": {"type": "string", "description": "Reuse on retries to deliver only once."},
         }},
     },
