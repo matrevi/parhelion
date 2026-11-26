@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T19:54:27Z",
+  "updated_at": "2026-11-26T20:20:30Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -17,9 +17,9 @@
     },
     "AGENTS.md": {
       "role": "index",
-      "sha256": "19424f648dfa974532497dd0f2a1186e296d55511156de26765493d71980ada8",
-      "size": 21681,
-      "normalized_sha256": "19424f648dfa974532497dd0f2a1186e296d55511156de26765493d71980ada8"
+      "sha256": "34e44dd37341591f7781cf114cce95ada9cad761483ab7745fae1fbcb6f857a9",
+      "size": 22648,
+      "normalized_sha256": "34e44dd37341591f7781cf114cce95ada9cad761483ab7745fae1fbcb6f857a9"
     },
     "Package.swift": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7fb9e1ef14f10c7f274d9b7aedc0fbc25d2925f8a7c891e40f80f614f6884368",
-      "size": 200282,
-      "normalized_sha256": "7fb9e1ef14f10c7f274d9b7aedc0fbc25d2925f8a7c891e40f80f614f6884368"
+      "sha256": "03a846d91be454ffe4599bf22f45c39277160832be3139f66f64a194ebee754f",
+      "size": 200137,
+      "normalized_sha256": "03a846d91be454ffe4599bf22f45c39277160832be3139f66f64a194ebee754f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -491,9 +491,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "770968b8af9ad5d75d3ae405eb0308da2c5c2c385283f7c7668bd294fb591eb2",
+      "sha256": "71d9c74a779885bce50489f0ae027a80e900550804a657c27b83527792a5ca4f",
       "size": 109,
-      "normalized_sha256": "770968b8af9ad5d75d3ae405eb0308da2c5c2c385283f7c7668bd294fb591eb2"
+      "normalized_sha256": "71d9c74a779885bce50489f0ae027a80e900550804a657c27b83527792a5ca4f"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -743,9 +743,9 @@
     },
     "cli/opsb_core/drivers/brief.py": {
       "role": "index",
-      "sha256": "bb0cddfddd6aa1849df379c64ff36651f0594dea999bd69310381e996af4a8b9",
-      "size": 24654,
-      "normalized_sha256": "bb0cddfddd6aa1849df379c64ff36651f0594dea999bd69310381e996af4a8b9"
+      "sha256": "051693e1531682855b4716dd8b85147fa0f2b12d6aa1f923b25ad5d40e346784",
+      "size": 24813,
+      "normalized_sha256": "051693e1531682855b4716dd8b85147fa0f2b12d6aa1f923b25ad5d40e346784"
     },
     "cli/opsb_core/drivers/change_targets.py": {
       "role": "index",
@@ -1709,9 +1709,9 @@
     },
     "cli/tests/test_orchestration_v4.py": {
       "role": "observe",
-      "sha256": "cfe828bdacdc59ba22a8614ced0c75537de41cf6c70dde85b6d61f1a328bbc56",
-      "size": 25325,
-      "normalized_sha256": "cfe828bdacdc59ba22a8614ced0c75537de41cf6c70dde85b6d61f1a328bbc56"
+      "sha256": "bb0d6caf151b70d25eccad95fb895940679a10f6df04bf0e30760a3def91414c",
+      "size": 25627,
+      "normalized_sha256": "bb0d6caf151b70d25eccad95fb895940679a10f6df04bf0e30760a3def91414c"
     },
     "cli/tests/test_p27_intel_broadcast_sweep.py": {
       "role": "observe",
@@ -2507,9 +2507,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "14c3cbd178e4fa707e32d98fe3bc9404b82ad0d06a95daa4b0c929e06bfa94dd",
-      "size": 34240,
-      "normalized_sha256": "14c3cbd178e4fa707e32d98fe3bc9404b82ad0d06a95daa4b0c929e06bfa94dd"
+      "sha256": "0926bf798b8648fba47d403e8509f2db375b7b8a0e2816b578bf6770a6e5bac0",
+      "size": 41279,
+      "normalized_sha256": "0926bf798b8648fba47d403e8509f2db375b7b8a0e2816b578bf6770a6e5bac0"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
@@ -3083,9 +3083,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "7658dd0f40ce8d8ead7497af5dea697812a02b89de330f8c688d83fde4e3f197",
+      "sha256": "ff9457559b6ca8b369f20c4470e065d6c34e688fef33d0ed1551e445db73848b",
       "size": 5102,
-      "normalized_sha256": "7658dd0f40ce8d8ead7497af5dea697812a02b89de330f8c688d83fde4e3f197"
+      "normalized_sha256": "ff9457559b6ca8b369f20c4470e065d6c34e688fef33d0ed1551e445db73848b"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
