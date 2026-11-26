@@ -10,6 +10,7 @@ from collections import deque
 from pathlib import Path
 
 from case_cache import CaseCache
+from profiler_capture import timing_fields  # noqa: F401  (verify and case_pairs use it)
 from device_broker import SampleProcess, ensure_broker
 from lanes import case_series, device_lane
 
@@ -103,6 +104,9 @@ def prepare(repo, cfg, root, update):
             base = Path(part["path"])
             part["warm"] = [_workdir(base, f"warm-{k}") for k in range(warmup)]
             part["runs"] = [_workdir(base, f"run-{r}") for r in range(count)]
+            if cfg.get("compare"):  # the baseline arm of a paired run reads the same inputs
+                part["base_warm"] = [_workdir(base, f"base-warm-{k}") for k in range(warmup)]
+                part["base_runs"] = [_workdir(base, f"base-run-{r}") for r in range(count)]
     if cache:
         cache.finish(cfg, hits=total - len(missing), misses=len(missing), stored=stored)
     return plans
@@ -168,6 +172,8 @@ def broker_job(repo, cfg, ready):
         "created": time.time(), "fast": bool(cfg.get("fast")),
         "executable": str(repo / "build-casebench/sample"), "device": str(cfg["device"]),
         "reuse_session": bool(cfg.get("reuse_session", True)), "case_timeout": cfg["timeout"],
+        # Kernel task time from the device profiler on top of event timing (profiler_capture).
+        "profiler": cfg.get("profiler") or None,
         "job_timeout": cfg.get("job_timeout") or min(1800, cfg["timeout"] * sum(
             max(1, sum(len(part.get("warm") or []) + len(part["runs"]) for part in plan["parts"])) for plan in ready)),
         "cases": [{"index": plan["progress"]["index"], "id": plan["progress"]["id"], "timed": bool(plan["timed"]),
@@ -176,6 +182,28 @@ def broker_job(repo, cfg, ready):
                               "runs": [str(p) for p in part["runs"]]} for part in plan["parts"]]}
                   for plan in ready],
     }
+
+
+def _stream_job(path, job, on_event):
+    """Submit one broker job and feed its events to ``on_event``; return the done event or None."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as conn:
+            conn.connect(path)
+            conn.sendall((json.dumps({"op": "submit", "job": job}) + "\n").encode())
+            with conn.makefile("rb") as reader:
+                for line in reader:
+                    msg = json.loads(line)
+                    if msg.get("event") == "done":
+                        return msg
+                    if msg.get("event") == "error":
+                        print("device broker: " + str(msg.get("detail")), file=sys.stderr, flush=True)
+                        return None
+                    if msg.get("event") == "profiler":
+                        PROFILER_EVENTS.append({k: v for k, v in msg.items() if k != "event"})
+                    on_event(msg)
+    except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+        print(f"device broker unavailable: {exc!r}", file=sys.stderr, flush=True)
+    return None
 
 
 def _execute_broker(path, repo, cfg, ready, update):
@@ -205,6 +233,14 @@ def _execute_broker(path, repo, cfg, ready, update):
                             plan["samples"], plan["cold"] = [msg.get("samples") or []], [msg.get("cold") or []]
                         else:
                             plan["error"] = {"status": msg["status"], "detail": msg.get("detail", "")}
+                    elif kind == "profile":
+                        plan = by_index[msg["index"]]
+                        if "samples" in msg:
+                            plan["profile"] = {"samples": msg["samples"], "cold": msg.get("cold") or []}
+                        else:
+                            plan["profile_error"] = str(msg.get("error") or "no profile")
+                    elif kind == "profiler":
+                        PROFILER_EVENTS.append({k: v for k, v in msg.items() if k != "event"})
                     elif kind == "done":
                         return msg, reported
                     elif kind == "error":
@@ -215,10 +251,21 @@ def _execute_broker(path, repo, cfg, ready, update):
     return None, reported
 
 
+PROFILER_EVENTS = []  # broker "profiler" reports of this run (availability, release and export time)
+
+
+def _companions():
+    """Modules the broker imports from its lib directory; shipped next to this file when present."""
+    here = Path(__file__).parent
+    return {name: (here / f"{name}.py").read_text(encoding="utf-8")
+            for name in ("profiler_capture",) if (here / f"{name}.py").is_file()}
+
+
 def execute_batch(repo, cfg, plans, update=None):
     update = update or (lambda progress: None)
     ready = [plan for plan in plans if "error" not in plan]
-    path = ensure_broker(cfg, Path(__file__).with_name("device_broker.py").read_text(encoding="utf-8"))
+    path = ensure_broker(cfg, Path(__file__).with_name("device_broker.py").read_text(encoding="utf-8"),
+                         companions=_companions())
     result = {"wait_sec": 0.0, "hold_sec": 0.0, "segments": 0, "broker": path is not None}
     if path is not None and ready:
         done, reported = _execute_broker(path, repo, cfg, ready, update)
@@ -233,7 +280,8 @@ def execute_batch(repo, cfg, plans, update=None):
                       hold_sec=result["hold_sec"] + lane["hold_sec"],
                       segments=result["segments"] + lane["acquisitions"])
     return {"wait_sec": round(result["wait_sec"], 3), "hold_sec": round(result["hold_sec"], 3),
-            "acquisitions": result["segments"], "segments": result["segments"], "broker": result["broker"]}
+            "acquisitions": result["segments"], "segments": result["segments"], "broker": result["broker"],
+            "profiler": list(PROFILER_EVENTS)}
 
 
 def verify(plan, cfg, compare):
@@ -255,10 +303,7 @@ def verify(plan, cfg, compare):
                 checks[f"{index}/{name}"] = check
                 if not check["pass"]:
                     return {"status": "WA", "outputs": checks, "repeat": repeat}
-    times = _sum_parts(plan["samples"]) if plan["timed"] else []
-    cold = _sum_parts(plan.get("cold") or []) if plan["timed"] else []
-    return {"status": "PASS", "outputs": checks, "device_us": [t for t in times if t > 0],
-            "cold_us": [t for t in cold if t > 0]}
+    return {"status": "PASS", "outputs": checks, **timing_fields(plan)}
 
 
 def run_series(repo, cfg, compare, emit):
@@ -267,9 +312,16 @@ def run_series(repo, cfg, compare, emit):
         plans = prepare(repo, cfg, Path(tmp), update)
         emit("prepared", seconds=round(time.monotonic() - started, 3), cases=len(plans),
              cached=sum(1 for plan in plans if plan.get("cached")), errors=sum(1 for plan in plans if "error" in plan))
-        emit("device_batch", **execute_batch(repo, cfg, plans, update))
+        if cfg.get("compare"):
+            import case_pairs
+            emit("device_batch", **case_pairs.execute(repo, cfg, plans, update))
+        else:
+            emit("device_batch", **execute_batch(repo, cfg, plans, update))
         for plan in plans:
             update(dict(plan["progress"], phase="verify"))
+            if cfg.get("compare") and "error" not in plan:
+                emit("case", id=plan["progress"]["id"], **case_pairs.result(plan, cfg, compare))
+                continue
             try:
                 result = plan.get("error") or verify(plan, cfg, compare)
             except (ValueError, OSError) as exc:

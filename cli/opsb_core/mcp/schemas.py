@@ -127,6 +127,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "cases": {"type": "array", "items": {"type": "string"}, "description": "Optional case IDs to restrict the run"},
                 "remeasure": {"type": "boolean", "description": "Measure again instead of reusing a recent passing result"},
                 "build_only": {"type": "boolean", "description": "Compile only, no device time"},
+                "compare": {"type": "string", "description": "A/B paired run against this baseline commit, or 'board': both builds alternate in one device job and the result reports per-case speedup intervals"},
             },
             "required": ["problem"],
         },

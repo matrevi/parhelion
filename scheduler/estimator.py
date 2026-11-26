@@ -296,7 +296,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from . import receipt_predict, receipts
+from . import paired_timing, receipt_predict, receipts, timing
 from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
@@ -1176,8 +1176,10 @@ class ScoreEstimator:
             restore_gap=true_restore_gain,
         )
 
-    def _case_bench_minima(self, title: str, sha: str | None, as_of: datetime.datetime | None = None):
-        """Best warm minimum per official case over this SHA's formal, timing-eligible runs.
+    def _case_bench_minima(self, title: str, sha: str | None, as_of: datetime.datetime | None = None,
+                           source: str = "event"):
+        """Best warm minimum per official case in one timing source over this SHA's formal,
+        timing-eligible runs.
 
         Returns ``(suite_version, {case_id: min_us}, runs)`` for the newest suite version, or None.
         """
@@ -1198,36 +1200,58 @@ class ScoreEstimator:
         if not by_version:
             return None
         version = max(by_version, key=lambda v: max(d.get("finished_at") or "" for d in by_version[v]))
-        minima: dict[str, float] = {}
-        for doc in by_version[version]:
-            for case in doc.get("cases") or []:
-                value = case.get("min_us")
-                if case.get("source") == "official" and isinstance(value, (int, float)) and value > 0:
-                    minima[case["id"]] = min(minima.get(case["id"], value), float(value))
+        minima = timing.best_minima(by_version[version], source)
         return (version, minima, len(by_version[version])) if minima else None
 
     def _case_bench_pair(self, title: str, cand_sha: str | None, base_sha: str | None,
                          as_of: datetime.datetime | None = None) -> dict[str, Any] | None:
-        """Pair the candidate with the board SHA case by case on platform-run official cases."""
+        """Pair the candidate with the board SHA case by case on platform-run official cases.
+
+        Evidence order: profiler minima of separate runs when the profiler covers every shared
+        case (run-to-run CV about 1%); else an A/B paired run of exactly these two SHAs
+        (paired_timing; its arms alternate in one job, so drift between runs cancels); else
+        event minima of separate runs. One comparison never mixes timing sources.
+        """
         if not cand_sha or not base_sha or cand_sha == base_sha:
             return None
-        cand = self._case_bench_minima(title, cand_sha, as_of)
-        base = self._case_bench_minima(title, base_sha, as_of)
-        if not cand or not base or cand[0] != base[0]:
+        sides = {}
+        for source in timing.SOURCES:
+            cand = self._case_bench_minima(title, cand_sha, as_of, source)
+            base = self._case_bench_minima(title, base_sha, as_of, source)
+            if cand and base and cand[0] == base[0]:
+                sides[source] = (cand, base)
+        chosen = timing.common_source({s: c[1] for s, (c, _) in sides.items()},
+                                      {s: b[1] for s, (_, b) in sides.items()})
+        paired = paired_timing.load(self.workspace, title, cand_sha, base_sha, as_of=as_of)
+        paired_ratios = paired_timing.ratios(paired) if paired is not None else {}
+        if paired_ratios and (chosen is None or chosen[0] != "profiler"):
+            ratios = {cid: max(0.25, min(4.0, ci["ratio"])) for cid, ci in paired_ratios.items()}
+            official = {c["id"] for c in paired.get("cases") or [] if c.get("source") == "official"}
+            rounds = min((ci.get("n") or 1) for ci in paired_ratios.values())
+            return self._pair_summary(ratios, len(official) or len(ratios), rounds, rounds,
+                                      paired=paired.get("run_id"),
+                                      source=(paired.get("compare") or {}).get("source") or "event")
+        if chosen is None:
             return None
-        common = sorted(set(cand[1]).intersection(base[1]))
-        if not common:
-            return None
-        ratios = {cid: max(0.25, min(4.0, base[1][cid] / cand[1][cid])) for cid in common}
+        source, cand_min, base_min = chosen
+        cand, base = sides[source]
+        common = sorted(set(cand_min).intersection(base_min))
+        ratios = {cid: max(0.25, min(4.0, base_min[cid] / cand_min[cid])) for cid in common}
+        return self._pair_summary(ratios, len(set(cand_min) | set(base_min)), cand[2], base[2], source=source)
+
+    @staticmethod
+    def _pair_summary(ratios: dict[str, float], official: int, runs_cand: int, runs_base: int,
+                      **extra: Any) -> dict[str, Any]:
         geo = math.exp(sum(math.log(r) for r in ratios.values()) / len(ratios))
         return {
             "geo": geo,
-            "matched": len(common),
-            "official": len(set(cand[1]) | set(base[1])),
-            "runs_cand": cand[2],
-            "runs_base": base[2],
+            "matched": len(ratios),
+            "official": official,
+            "runs_cand": runs_cand,
+            "runs_base": runs_base,
             "improved": sum(1 for r in ratios.values() if r > 1.03),
             "regressed": [f"{cid}({r:.2f}x)" for cid, r in sorted(ratios.items()) if r < 0.95],
+            **extra,
         }
 
     def _case_bench_projection(self, title, sha, ledger, anchor_score, anchor_pub, anchor_hid, as_of=None):
@@ -1239,7 +1263,8 @@ class ScoreEstimator:
         coverage = pair["matched"] / max(1, pair["official"])
         effective_speedup = max(0.35, min(2.5, 1.0 + coverage * (pair["geo"] - 1.0)))
         # Local evidence quality: enough paired cases, and a best-of-runs minimum on both sides.
-        local_quality = min(1.0, pair["matched"] / 10.0) * (1.0 if min(pair["runs_cand"], pair["runs_base"]) >= 2 else 0.75)
+        local_quality = min(1.0, pair["matched"] / 10.0) * (
+            1.0 if pair.get("paired") or min(pair["runs_cand"], pair["runs_base"]) >= 2 else 0.75)
         projected = _project_score_from_speedup(anchor_score, anchor_pub, anchor_hid, effective_speedup,
                                                 ledger.frontier_top1)
         return {"projected": projected, "pair": pair, "base_sha": base_sha,

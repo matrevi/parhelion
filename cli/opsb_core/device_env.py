@@ -47,6 +47,8 @@ DEFAULTS: dict[str, Any] = {
     "tpl_prefix": "TPL_",
     "profiler_bin": "profiler",
     "profiler_acl_flag": "--acl",
+    # Suite levels whose timed executions run under the profiler (comma list, or "off").
+    "profiler_levels": "standard,final",
     "judge_base": "https://judge.invalid",
     "judge_bot": "judge-bot",
     "work_root": "/srv/work",

@@ -226,6 +226,7 @@ def tool_parhelion_test(args: dict[str, Any], workspace: Path) -> dict[str, Any]
         workspace, problem=problem, sha=str(args.get("sha") or "HEAD"), level=args.get("level") or "standard",
         cases=args.get("cases") or [], remeasure=bool(args.get("remeasure", False)),
         build_only=bool(args.get("build_only", False)), agent_id=agent_id, role=role,
+        compare=str(args.get("compare") or "").strip() or None,
     )
 
 

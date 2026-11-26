@@ -71,6 +71,12 @@ def _problem_commit(workspace: Path, problem: str, revision: str) -> tuple[str, 
     return prob["title"], ref.stdout.strip()
 
 
+def _compare_ref(workspace: Path, problem: str, compare: str) -> str:
+    """Baseline of an A/B paired run: ``board`` (resolved by the run) or a commit of the problem."""
+    text = str(compare).strip()
+    return "board" if text.lower() == "board" else _problem_commit(workspace, problem, text)[1]
+
+
 # ---------------------------------------------------------------- registry storage
 
 def registry_dir(ws: Path | str) -> Path:
@@ -180,7 +186,7 @@ def _group_alive(pgid: int) -> bool:
 
 def _dedup_key(rec: dict[str, Any]) -> tuple[Any, ...]:
     return (rec.get("problem"), rec.get("sha"), rec.get("level"), tuple(sorted(rec.get("cases") or [])),
-            bool(rec.get("build_only")))
+            bool(rec.get("build_only")), rec.get("compare") or None)
 
 
 def _base_command(ws: Path) -> list[str]:
@@ -191,8 +197,10 @@ def _base_command(ws: Path) -> list[str]:
 
 
 def build_command(ws: Path, title: str, sha: str, level: str, cases: list[str], remeasure: bool,
-                  build_only: bool) -> list[str]:
+                  build_only: bool, compare: str | None = None) -> list[str]:
     cmd = [*_base_command(ws), "test", title, "--workspace", str(ws), "--sha", sha, "--level", level]
+    if compare:
+        cmd.extend(["--compare", compare])
     for case_id in cases:
         cmd.extend(["--case", case_id])
     if remeasure:
@@ -212,7 +220,7 @@ def _normalize_cases(cases: Any) -> list[str]:
 
 def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None = "standard",
            cases: list[str] | None = None, remeasure: bool = False, build_only: bool = False,
-           agent_id: str | None = None, role: str = "orchestrator") -> dict[str, Any]:
+           agent_id: str | None = None, role: str = "orchestrator", compare: str | None = None) -> dict[str, Any]:
     """Start (or join / reuse) a background `opsb test` run and return its public view immediately."""
     ws = Path(ws).expanduser().resolve()
     req_level = str(level or "standard").strip().lower()
@@ -223,7 +231,9 @@ def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None 
     rec_level = "build" if build_only else req_level
     gc(ws)
 
-    candidate = {"problem": title, "sha": full_sha, "level": rec_level, "cases": case_ids, "build_only": bool(build_only)}
+    compare = _compare_ref(ws, title, compare) if compare and not build_only else None
+    candidate = {"problem": title, "sha": full_sha, "level": rec_level, "cases": case_ids, "build_only": bool(build_only),
+                 "compare": compare}
     key = _dedup_key(candidate)
     with _flock(registry_dir(ws) / ".submit.lock"):
         for rec in reversed(_all_records(ws)):
@@ -245,7 +255,7 @@ def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None 
             "progress": None, "joined": None, "reused": None, "deferred": None, "reason": None, "error": None,
         }
         _write(ws, record)
-        cmd = build_command(ws, title, full_sha, req_level, case_ids, bool(remeasure), bool(build_only))
+        cmd = build_command(ws, title, full_sha, req_level, case_ids, bool(remeasure), bool(build_only), compare)
         env = dict(os.environ)
         if role == "worker":
             env["PARHELION_MCP_ROLE"] = "worker"

@@ -384,18 +384,31 @@ def main():
     )
     source.write_text(generated)
     (repo.parent / "schema.json").write_text(json.dumps([groups, attrs]))
+    trees = [repo]
+    if cfg.get("compare"):
+        # A/B paired run (case_pairs): the baseline checkout must share the kernel I/O contract.
+        base = repo.parent / "base"
+        generated, base_groups, base_attrs = generate(
+            (base / "main.asc").read_text(), (base / "sample.py").read_text()
+        )
+        if [base_groups, base_attrs] != [groups, attrs]:
+            raise ValueError("the baseline's kernel inputs, outputs or attributes differ from the candidate's")
+        (base / "main.asc").write_text(generated)
+        trees.append(base)
     from lanes import compilation_units, compile_lane
-    with compile_lane(cfg, units=1):
-        subprocess.run(
-            ["cmake", "-S", ".", "-B", "build-casebench", "-DCMAKE_ASC_RUN_MODE=npu",
-             "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DCMAKE_ASC_ARCHITECTURES=" + cfg["arch"]], check=True, timeout=600,
-        )
-    units = compilation_units(repo / "build-casebench")
-    with compile_lane(cfg, units=units) as jobs:
-        emit("compiling", units=units, jobs=jobs)
-        subprocess.run(
-            ["cmake", "--build", "build-casebench", "--parallel", str(jobs)], check=True, timeout=900,
-        )
+    for tree in trees:
+        with compile_lane(cfg, units=1):
+            subprocess.run(
+                ["cmake", "-S", ".", "-B", "build-casebench", "-DCMAKE_ASC_RUN_MODE=npu",
+                 "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON", "-DCMAKE_ASC_ARCHITECTURES=" + cfg["arch"]],
+                check=True, timeout=600, cwd=tree,
+            )
+        units = compilation_units(tree / "build-casebench")
+        with compile_lane(cfg, units=units) as jobs:
+            emit("compiling", units=units, jobs=jobs, tree=tree.name)
+            subprocess.run(
+                ["cmake", "--build", "build-casebench", "--parallel", str(jobs)], check=True, timeout=900, cwd=tree,
+            )
     emit("built")
     from case_batch import run_series
     run_series(repo, cfg, compare_output, emit)
