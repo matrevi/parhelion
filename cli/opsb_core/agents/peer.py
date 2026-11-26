@@ -9,6 +9,11 @@ waking the recipient per message: at its next turn boundary the queue flushes as
 wake (``peer batch``), while administrator directives and judge feedback stay immediate. A stage
 ``result`` follows the same rule, persists its full text and records one ledger ``decision``; the
 recipient's ledger row (``source=peer``) outlives the bus row.
+
+4.3 P27: ``evidence`` is a required ``{class, ref}`` (``opsb_core.evidence``); a message that is not
+backed by an online receipt reads behind the ``待验证`` marker. ``to="all"`` is a workspace-wide
+broadcast (4.3 P27): the sender is excluded, a worker seat is limited to one broadcast per
+``BROADCAST_MIN_SEC`` and the orchestrator is not limited.
 """
 from __future__ import annotations
 
@@ -18,11 +23,13 @@ import fcntl
 import json
 import os
 import re
+import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..drivers.base import resolve_workspace_state_dir
+from .. import evidence as _evidence
 from ..ledger import model, note
 from ..ledger.store import Ledger
 
@@ -35,6 +42,8 @@ SHINGLE = 3
 REF_MAX = 12
 INDEX_HARD_BYTES = 256_000
 INDEX_KEEP = 500
+BROADCAST_MIN_SEC = 600  # 4.3 P27: a worker seat sends at most one workspace broadcast per 10 minutes
+BROADCAST_KEEP = 200  # senders remembered in the rate-limit file; oldest entries fall off
 CLAIM_HINT = ("claim was taken from the start of the text; pass claim (<= 280 characters) next time and "
               "keep the body out of the message")
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -75,20 +84,18 @@ def parse_refs(value: Any) -> list[str]:
     return out
 
 def envelope(workspace: Path | str, *, sender: str, recipient: str, claim: Any = "", message: Any = "",
-             refs: Any = None, evidence: Any = "", ask: Any = "") -> dict[str, Any]:
+             refs: Any = None, evidence: Any = None, ask: Any = "") -> dict[str, Any]:
     text = str(message or "").strip()
     given = " ".join(str(claim or "").split())  # a claim is one line
-    evidence = " ".join(str(evidence or "").split())
+    item_evidence = _evidence.require(evidence)
     if len(given) > CLAIM_MAX:
         raise ValueError(f"claim is limited to {CLAIM_MAX} characters; put the rest in message or cite "
-                         "the path in evidence")
-    if len(evidence) > EVIDENCE_MAX:
-        raise ValueError(f"evidence is limited to {EVIDENCE_MAX} characters; cite the path or id only")
+                         "the path in evidence.ref")
     if not given and not text:
         raise ValueError("claim or message is required")
     item: dict[str, Any] = {
         "msg_id": uuid.uuid4().hex[:12], "from": sender, "to": recipient,
-        "claim": given or clip(text, CLAIM_MAX), "refs": parse_refs(refs), "evidence": evidence,
+        "claim": given or clip(text, CLAIM_MAX), "refs": parse_refs(refs), "evidence": item_evidence,
         "ask": clip(ask, CLAIM_MAX) if str(ask or "").strip() else "", "detail": "", "full": "",
         "chars": len(text), "derived_claim": not given,
         "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
@@ -105,21 +112,24 @@ def envelope(workspace: Path | str, *, sender: str, recipient: str, claim: Any =
 def _write_full(workspace: Path | str, item: dict[str, Any], text: str) -> Path:
     path = attachment_path(workspace, str(item["msg_id"]))
     path.parent.mkdir(parents=True, exist_ok=True)
+    seen = _evidence.line(item["evidence"]) if item.get("evidence") else "-"
     head = [f"# peer {item['msg_id']}", f"from: {item['from']}", f"to: {item['to']}", f"created: {item['ts']}",
-            f"refs: {', '.join(item['refs']) or '-'}", f"evidence: {item['evidence'] or '-'}",
-            f"claim: {item['claim']}"]
+            f"refs: {', '.join(item['refs']) or '-'}", f"evidence: {seen}", f"claim: {item['claim']}"]
     path.write_text("\n".join(head) + "\n\n" + text + "\n", encoding="utf-8")
     return path
 
 def block(item: dict[str, Any]) -> str:
-    """What the recipient reads for one envelope: who, refs, claim, evidence path, ask."""
+    """What the recipient reads for one envelope: the evidence mark, who, refs, claim, evidence, ask."""
     lines = [f"[peer {item['msg_id']}] from={item['from']} refs={','.join(item['refs']) or '-'} "
-             f"evidence={item['evidence'] or '-'}", f"claim: {item['claim']}"]
+             f"evidence={_evidence.line(item.get('evidence'))}", f"claim: {item['claim']}"]
     lines += [f"{label}: {item[field]}" for label, field in (("ask", "ask"), ("text", "detail")) if item.get(field)]
     if item.get("full"):
         lines.append(f"full: {item['full']} ({item['chars']} chars)")
     if item.get("deduped"):
         lines.append("quote: duplicate of an earlier message, dropped; use refs")
+    mark = _evidence.marker(item.get("evidence"))  # 4.3 P27: a non-receipt claim is flagged first
+    if mark:
+        lines.insert(0, mark)
     return "\n".join(lines)
 
 def batch_body(items: Sequence[dict[str, Any]]) -> str:
@@ -247,12 +257,13 @@ def remember_quotes(workspace: Path | str, recipient: str, items: Iterable[dict[
             _append(fd, lines)
 
 def record(workspace: Path | str, problem: str, recipient: str, item: dict[str, Any]) -> str:
-    """One recipient-ledger row (``source=peer``) citing the sender's message id."""
-    evidence = [item["full"]] if item.get("full") else ([item["evidence"]] if item.get("evidence") else [])
+    """One recipient-ledger row (``source=peer``) citing the sender's message id and evidence class."""
+    doc = _evidence.normalize(item.get("evidence"))
+    evidence = [item["full"]] if item.get("full") else ([doc["ref"]] if doc["ref"] else [])
     try:
         row = note.write(Ledger(workspace, problem, recipient), {
             "type": "insight", "claim": item["claim"], "confidence": "unverified",
-            "why": f"peer message {item['msg_id']} from {item['from']}",
+            "why": f"peer message {item['msg_id']} from {item['from']} (evidence {doc['class']})",
             "evidence": evidence, "links": list(item.get("refs") or []),
         }, source="peer")
     except Exception:
@@ -261,8 +272,13 @@ def record(workspace: Path | str, problem: str, recipient: str, item: dict[str, 
 
 def send(*, workspace: Path | str, sender: str, problem: str, targets: Sequence[str],
          broadcast: bool, request_id: str = "", claim: Any = "", message: Any = "", refs: Any = None,
-         evidence: Any = "", ask: Any = "", flush: Callable[[str], None] | None = None) -> dict[str, Any]:
-    """Queue one envelope per target and return the tool reply (a duplicate request is not queued)."""
+         evidence: Any = None, ask: Any = "", flush: Callable[[str], None] | None = None,
+         problems: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Queue one envelope per target and return the tool reply (a duplicate request is not queued).
+
+    ``problems`` maps a target to *its own* problem, so a workspace-wide broadcast writes each
+    recipient's ledger row into that recipient's problem instead of the sender's.
+    """
     queued: list[dict[str, Any]] = []
     duplicates: list[str] = []
     for target in targets:
@@ -275,9 +291,12 @@ def send(*, workspace: Path | str, sender: str, problem: str, targets: Sequence[
         strip_repeats([item], recent_bodies(workspace, target))
         queue(workspace, target, [item])
         remember(workspace, key, item["msg_id"])
+        ledger_problem = (problems or {}).get(target) or problem
         queued.append({"recipient": target, "msg_id": item["msg_id"], "claim": item["claim"],
                        "chars": item["chars"], "attachment": item.get("full", ""), "hint": item.get("hint", ""),
-                       "deduped": bool(item.get("deduped")), "ledger_id": record(workspace, problem, target, item)})
+                       "deduped": bool(item.get("deduped")),
+                       "evidence": _evidence.line(item.get("evidence")),
+                       "ledger_id": record(workspace, ledger_problem, target, item)})
         if flush is not None:
             try:
                 flush(target)
@@ -290,11 +309,59 @@ def send(*, workspace: Path | str, sender: str, problem: str, targets: Sequence[
         out["hint"] = hint
     if broadcast:
         out["recipients"] = [q["recipient"] for q in queued]
+        out["broadcast"] = True
     elif queued:
-        out.update({k: queued[0][k] for k in ("recipient", "msg_id", "attachment", "deduped", "ledger_id")})
+        out.update({k: queued[0][k] for k in ("recipient", "msg_id", "attachment", "deduped", "ledger_id",
+                                              "evidence")})
     elif duplicates:
         out["recipient"] = duplicates[0]
     return out
+
+def broadcast_path(workspace: Path | str) -> Path:
+    """``<peer>/broadcast.json``: sender -> epoch of its last workspace-wide broadcast."""
+    return peer_dir(workspace) / "broadcast.json"
+
+
+def _broadcast_state(workspace: Path | str) -> dict[str, float]:
+    try:
+        doc = json.loads(broadcast_path(workspace).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in (doc or {}).items() if isinstance(doc, dict) else []:
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def broadcast_gate(workspace: Path | str, sender: str, *, role: str = "worker",
+                   now: float | None = None) -> dict[str, Any]:
+    """Whether ``sender`` may send a workspace-wide broadcast now (4.3 P27).
+
+    A worker seat gets one broadcast per ``BROADCAST_MIN_SEC``; the orchestrator is not limited.
+    The reply is always a dict so a caller can explain a refusal instead of delivering.
+    """
+    stamp = float(now if now is not None else time.time())
+    limited = str(role or "").strip().lower() not in ("", "orchestrator")
+    last = _broadcast_state(workspace).get(str(sender), 0.0) if limited else 0.0
+    wait = max(0.0, float(last) + BROADCAST_MIN_SEC - stamp) if last else 0.0
+    return {"allowed": not limited or wait <= 0.0, "limited": limited, "retry_after_sec": round(wait, 1),
+            "window_sec": BROADCAST_MIN_SEC, "last_epoch": last or None}
+
+
+def note_broadcast(workspace: Path | str, sender: str, *, now: float | None = None) -> None:
+    """Record one delivered broadcast so the next one from this seat respects the window."""
+    stamp = float(now if now is not None else time.time())
+    with _locked(broadcast_path(workspace).with_suffix(".lock")) as _fd:
+        state = _broadcast_state(workspace)
+        state[str(sender)] = stamp
+        keep = dict(sorted(state.items(), key=lambda kv: kv[1])[-BROADCAST_KEEP:])
+        path = broadcast_path(workspace)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(keep, separators=(",", ":")), encoding="utf-8")
+
 
 def result_envelope(workspace: Path | str, *, agent_id: str, text: str, problem: str = "") -> dict[str, Any]:
     item: dict[str, Any] = {"msg_id": uuid.uuid4().hex[:12], "from": agent_id, "to": "orchestrator",

@@ -71,7 +71,7 @@ SUBROLE_PREVIEW_ONLY = {"recon": ("parhelion_submit_gate",)}
 WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
 # Tools whose handler needs to know whether a worker or the orchestrator is calling.
 ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait", "parhelion_note", "parhelion_ledger",
-                                               "parhelion_recall", "parhelion_spill_read")
+                                               "parhelion_recall", "parhelion_spill_read", "parhelion_squad")
 # Tools that check a worker acts on the problem its bus record names (escape locks, report views).
 WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebind", "parhelion_escape_reproducer",
                                "parhelion_report")

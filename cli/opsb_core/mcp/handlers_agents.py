@@ -13,6 +13,9 @@ from ..agents.event_hub import MAX_BLOCK_SEC, EventHub, normalize_sources
 from ..agents.manager import DEFAULT_WAIT_SEC, MAX_WAIT_SEC, AgentMeshManager
 from .paging import finish_page, page_window
 
+#: 4.3 P27: the orchestrator has no bus seat, so its broadcast envelope is signed with this name.
+ORCHESTRATOR_SENDER = "orchestrator"
+
 _LOCAL_MANAGER: AgentMeshManager | None = None
 _ACTIVE_DAEMON_MANAGER: AgentMeshManager | None = None
 
@@ -292,7 +295,12 @@ def tool_parhelion_agent_inbox(args: dict[str, Any], workspace: Path) -> dict[st
 def squad_body(args: dict[str, Any]) -> dict[str, Any]:
     """The envelope fields of one ``parhelion_squad`` call (shared by the MCP handler and the route)."""
     body = {k: str(args.get(k) or "").strip()
-            for k in ("recipient", "to", "message", "request_id", "claim", "evidence", "ask")}
+            for k in ("recipient", "to", "message", "request_id", "claim", "ask")}
+    evidence = args.get("evidence")
+    if isinstance(evidence, dict):
+        body["evidence"] = {k: str(evidence.get(k) or "").strip() for k in ("class", "ref")}
+    elif evidence is not None:
+        body["evidence"] = evidence
     refs = args.get("refs")
     if isinstance(refs, list):
         body["refs"] = [str(ref).strip() for ref in refs if str(ref).strip()]
@@ -302,9 +310,12 @@ def squad_body(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def tool_parhelion_squad(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    sender = args.get("_caller_agent_id")
+    """One peer envelope, or a workspace broadcast with ``to="all"`` (4.3 P27)."""
+    sender = str(args.get("_caller_agent_id") or "").strip()
     if not sender:
-        raise ValueError("A bound worker identity is required")
+        if args.get("_worker_request"):
+            raise ValueError("A bound worker identity is required")
+        sender = ORCHESTRATOR_SENDER  # the orchestrator has no seat: it broadcasts and names itself
     body = squad_body(args)
     if proxied := _proxy_daemon("POST", f"/v1/agents/{urllib.parse.quote(sender, safe='')}/squad", workspace, body):
         return proxied

@@ -12,7 +12,9 @@ worker needs them:
    ``aoci.txt`` in the worktree, or a code-built one-line-per-file map when there is none;
 4. ``files``      the 3-5 files to edit with line ranges, from ``git diff`` of the current best SHA
    against the problem-template baseline, plus the kernel entry files;
-5. ``ledger``     ``ledger.digest.render`` plus the per-case evidence of ``services.state_card_ext``.
+5. ``ledger``     ``ledger.digest.render``, the 4.3 P27 intel block (leader and weighted space, the
+   last three shots, the stop condition, the judge rule line) and the per-case evidence of
+   ``services.state_card_ext``.
 
 The whole pack is capped in UTF-8 **bytes** (``bytes_per_token`` * token budget, configurable through
 ``startup_pack.tokens`` or ``PARHELION_STARTUP_PACK_TOKENS``). When it does not fit, sections shrink
@@ -137,8 +139,8 @@ def ledger_rows(workspace: Path | str, problem: str) -> list[dict[str, Any]]:
 
 
 def section_ledger(workspace: Path | str, problem: str, agent_id: str | None = None,
-                   max_chars: int = DIGEST_CHARS) -> str:
-    """The code-built digest, the per-case evidence and the platform state card; never raises."""
+                   max_chars: int = DIGEST_CHARS, intel: str | None = None) -> str:
+    """The code-built digest, the P27 intel block, the per-case evidence and the state card."""
     ws = Path(workspace).expanduser().resolve()
     parts: list[str] = []
     rows = ledger_rows(ws, problem)
@@ -147,6 +149,13 @@ def section_ledger(workspace: Path | str, problem: str, agent_id: str | None = N
     except Exception:
         digest = ""
     parts.append(digest or "Ledger: no rows yet; record hypotheses with parhelion_note as you go.")
+    try:  # 4.3 P27: standing, recent shots, the stop condition and the rule line, above the card
+        from ..services import state_card_ext
+        block = state_card_ext.intel_text(ws, problem, agent_id) if intel is None else intel
+        if block:
+            parts.append(block)
+    except Exception:
+        pass
     try:
         from ..services import state_card_ext
         card_data = state_card_ext.data(ws, problem, agent_id)
@@ -224,8 +233,10 @@ def record_size(workspace: Path | str, pack: dict[str, Any], *, agent_id: str | 
             result_text=_json.dumps({"bytes": pack["bytes"], "tokens": pack["tokens"],
                                      "budget_bytes": pack["budget_bytes"],
                                      "sections": {k: v["bytes"] for k, v in pack["sections"].items()},
+                                     "intel_bytes": pack.get("intel_bytes", 0),
                                      "repo_map": pack["repo_map_source"]}, separators=(",", ":")),
-            ms=0.0, is_error=False)
+            ms=0.0, is_error=False,
+            extra={"intel_bytes": int(pack.get("intel_bytes") or 0)})
     except Exception:
         return False
 
@@ -258,7 +269,13 @@ def build(
                                        enabled=True)["text"]
     files = change_targets(wt, best_sha=best_sha) if wt.is_dir() else {"files": [], "base": "", "best": ""}
     sections[4] = section_files(files)
-    sections[5] = section_ledger(ws, problem, agent_id)
+    intel_text = ""
+    try:
+        from ..services import state_card_ext
+        intel_text = state_card_ext.intel_text(ws, problem, agent_id)
+    except Exception:
+        intel_text = ""
+    sections[5] = section_ledger(ws, problem, agent_id, intel=intel_text)
     # A replacement seat carries the failures view and the replaced worker's handoff; ``fit`` never
     # truncates section 6 (it is not in TRUNCATE_ORDER), so the handover survives a full budget.
     if str(handover or "").strip():
@@ -275,6 +292,7 @@ def build(
         "budget_bytes": budget_bytes(token_budget),
         "repo_map_source": (repo_map(wt)["source"] if want_map and wt.is_dir() else "disabled"),
         "cuts": cuts,
+        "intel_bytes": len(intel_text.encode("utf-8")),
         "changed": {"base": files.get("base", ""), "best": files.get("best", ""),
                     "files": [f["path"] for f in files.get("files") or []]},
     }

@@ -130,27 +130,28 @@ def test_envelope_validation_aliases_listing_and_request_id(env):
     mate = _spawn(mgr, ws, axis="dataflow")
 
     with pytest.raises(ValueError, match="280"):
-        mgr.squad(ws, sender, recipient=mate, claim="x" * 281)
+        mgr.squad(ws, sender, recipient=mate, claim="x" * 281, evidence={"class": "local", "ref": "run-p14"})
     with pytest.raises(ValueError, match="ledger ids"):
-        mgr.squad(ws, sender, recipient=mate, claim="x", refs=["L-1", "not-a-ref"])
+        mgr.squad(ws, sender, recipient=mate, claim="x", refs=["L-1", "not-a-ref"], evidence={"class": "local", "ref": "run-p14"})
     with pytest.raises(ValueError, match="claim or message"):
-        mgr.squad(ws, sender, recipient=mate)
-    with pytest.raises(ValueError, match="evidence is limited"):
-        mgr.squad(ws, sender, recipient=mate, claim="x", evidence="q" * 301)
+        mgr.squad(ws, sender, recipient=mate, evidence={"class": "local", "ref": "run-p14"})
+    with pytest.raises(ValueError, match="evidence ref is limited"):
+        mgr.squad(ws, sender, recipient=mate, claim="x", evidence={"class": "local", "ref": "q" * 301})
 
     assert {p["agent_id"] for p in mgr.squad(ws, sender)["peers"]} == {mate}
 
     out = mgr.squad(ws, sender, to=mate, claim="the small bucket repeats once",
-                    refs=["L-0001", "platform/L-0002"], evidence="results/Demo/report.json#bucket", ask="repeat?")
+                    refs=["L-0001", "platform/L-0002"], evidence={"class": "local", "ref": "results/Demo/report.json#bucket"},
+                    ask="repeat?")
     assert out["ok"] and out["recipient"] == mate and not out["duplicate"] and out["msg_id"]
     body = _deliver(ws, mgr, mate)
     assert f"from={sender}" in body and "refs=L-0001,platform/L-0002" in body
-    assert "evidence=results/Demo/report.json#bucket" in body
+    assert "evidence=local:results/Demo/report.json#bucket" in body  # 4.3 P27: class:ref
     assert "claim: the small bucket repeats once" in body and "ask: repeat?" in body
 
-    again = mgr.squad(ws, sender, to=mate, claim="retry", request_id="r-1")
+    again = mgr.squad(ws, sender, to=mate, claim="retry", request_id="r-1", evidence={"class": "local", "ref": "run-p14"})
     assert not again["duplicate"]
-    retried = mgr.squad(ws, sender, to=mate, claim="retry", request_id="r-1")
+    retried = mgr.squad(ws, sender, to=mate, claim="retry", request_id="r-1", evidence={"class": "local", "ref": "run-p14"})
     assert retried["duplicate"] and retried["recipient"] == mate
     _deliver(ws, mgr, mate, expect=2)
     assert len(_peer_rows(ws, mgr, mate)) == 2  # the retry is not delivered twice
@@ -163,14 +164,14 @@ def test_legacy_message_short_is_the_claim_and_long_becomes_an_attachment(env):
     sender = _spawn(mgr, ws, axis="algorithm")
     mate = _spawn(mgr, ws, axis="dataflow")
 
-    mgr.squad(ws, sender, recipient=mate, message="repeat bucket small")
+    mgr.squad(ws, sender, recipient=mate, message="repeat bucket small", evidence={"class": "local", "ref": "run-p14"})
     short = _deliver(ws, mgr, mate)
     assert "claim: repeat bucket small" in short and "text:" not in short and "full:" not in short
 
     marker = "middle-of-the-report"
     body = "".join(f"line {i:03d} of the experiment record\n" for i in range(80)) + marker + "\n" + "tail " * 40
     assert len(body) > peer.ATTACH_MAX
-    out = mgr.squad(ws, sender, recipient=mate, message=body)
+    out = mgr.squad(ws, sender, recipient=mate, message=body, evidence={"class": "local", "ref": "run-p14"})
     assert out["hint"]  # the sender is told to write a claim next time
     long_body = _deliver(ws, mgr, mate, expect=2)
     attachment = _attachment_of(long_body)
@@ -188,10 +189,10 @@ def test_repeated_quote_is_stripped_while_refs_survive(env):
     mate = _spawn(mgr, ws, axis="dataflow")
     paragraphs = "\n".join(f"evidence row {i}: the small bucket is stable" for i in range(8))
 
-    mgr.squad(ws, sender, recipient=mate, claim="first copy", message=paragraphs)
+    mgr.squad(ws, sender, recipient=mate, claim="first copy", message=paragraphs, evidence={"class": "local", "ref": "run-p14"})
     assert "evidence row 0" in _deliver(ws, mgr, mate)
 
-    mgr.squad(ws, sender, recipient=mate, claim="second copy, cite it", message=paragraphs, refs=["L-0007"])
+    mgr.squad(ws, sender, recipient=mate, claim="second copy, cite it", message=paragraphs, refs=["L-0007"], evidence={"class": "local", "ref": "run-p14"})
     _deliver(ws, mgr, mate, expect=2)
     second = next(row["body"] for row in _peer_rows(ws, mgr, mate) if "second copy" in row["body"])
     assert "evidence row 0" not in second and "quote: duplicate" in second
@@ -206,7 +207,7 @@ def test_recipient_ledger_gets_a_peer_unverified_row(env):
     mate = _spawn(mgr, ws, axis="dataflow")
 
     out = mgr.squad(ws, sender, recipient=mate, claim="the repeat bucket is stable on small shapes",
-                    refs=["L-0003"], evidence="results/Demo/run/report.json")
+                    refs=["L-0003"], evidence={"class": "local", "ref": "results/Demo/run/report.json"})
     row = _ledger_rows(ws, mate)[-1]
     assert row["type"] == "insight" and row["source"] == "peer" and row["confidence"] == "unverified"
     assert "repeat bucket is stable" in row["claim"] and row["links"] == ["L-0003"]
@@ -227,7 +228,7 @@ def test_peer_messages_merge_at_the_turn_boundary_into_one_hub_event(env):
     hub = EventHub(ws, mgr._store(ws), background=False)  # primed after the follow-up row
 
     for index in range(3):
-        mgr.squad(ws, sender, recipient=mate, claim=f"finding number {index}")
+        mgr.squad(ws, sender, recipient=mate, claim=f"finding number {index}", evidence={"class": "local", "ref": "run-p14"})
     assert len(_pending(ws, mate)) == 3
     assert _peer_rows(ws, mgr, mate) == []
     hub.scan_now()
@@ -255,7 +256,7 @@ def test_an_idle_recipient_gets_one_coalesced_wake_for_a_burst(env, monkeypatch)
     mate = _spawn(mgr, ws, axis="dataflow")
 
     for index in range(2):
-        mgr.squad(ws, sender, recipient=mate, claim=f"idle finding {index}")
+        mgr.squad(ws, sender, recipient=mate, claim=f"idle finding {index}", evidence={"class": "local", "ref": "run-p14"})
     assert _wait(lambda: len(_peer_rows(ws, mgr, mate)) == 1)
     assert _wait(lambda: sum("[peer batch" in prompt for prompt in adapters[mate].turns) == 1)
     assert "idle finding 0" in _peer_rows(ws, mgr, mate)[0]["body"]
@@ -272,7 +273,7 @@ def test_admin_directive_and_judge_feedback_do_not_join_the_peer_batch(env):
     mgr.send_message(ws, mate, "hold this turn")
     assert _wait(lambda: mgr._runners[mate].busy)
     for index in range(2):
-        mgr.squad(ws, sender, recipient=mate, claim=f"peer finding {index}")
+        mgr.squad(ws, sender, recipient=mate, claim=f"peer finding {index}", evidence={"class": "local", "ref": "run-p14"})
 
     mgr.post_admin_directive(ws, "switch the axis now", problem="Demo", broadcast_workers=True)
     immediate = [row for row in _messages(ws, mgr, mate, direction="orch_to_worker")
@@ -357,13 +358,14 @@ def test_the_mcp_tool_and_the_daemon_route_forward_the_envelope(env):
     mate = _spawn(mgr, ws, axis="dataflow")
 
     body = squad_body({"to": "dee-1", "claim": "claim", "refs": ["L-0001"],
-                       "evidence": "results/x#a", "ask": "why"})
+                       "evidence": {"class": "paired", "ref": "results/x#a"}, "ask": "why"})
     assert body == {"recipient": "", "to": "dee-1", "message": "", "request_id": "", "claim": "claim",
-                    "evidence": "results/x#a", "ask": "why", "refs": ["L-0001"]}
+                    "evidence": {"class": "paired", "ref": "results/x#a"}, "ask": "why", "refs": ["L-0001"]}
 
     bind_daemon_agent_manager(mgr)
     try:
-        out = call_tool("parhelion_squad", {"claim": "through the MCP handler", "refs": ["L-0009"], "to": mate},
+        out = call_tool("parhelion_squad", {"claim": "through the MCP handler", "refs": ["L-0009"], "to": mate,
+                                            "evidence": {"class": "local", "ref": "run-p14"}},
                         ws, role="worker", agent_id=sender)
     finally:
         bind_daemon_agent_manager(None)
@@ -382,6 +384,7 @@ def test_the_mcp_tool_and_the_daemon_route_forward_the_envelope(env):
         agent_mesh = Mesh()
 
     status, routed = handle_agent_post(f"/v1/agents/{sender}/squad",
-                                       {"to": mate, "claim": "through the route", "refs": ["L-0004"]}, ws, Runtime())
+                                       {"to": mate, "claim": "through the route", "refs": ["L-0004"],
+                                        "evidence": {"class": "local", "ref": "run-p14"}}, ws, Runtime())
     assert status == 200 and routed["ok"]
     assert seen["to"] == mate and seen["claim"] == "through the route" and seen["refs"] == ["L-0004"]

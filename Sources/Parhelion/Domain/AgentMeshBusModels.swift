@@ -44,12 +44,15 @@ struct AgentBusMessage: Codable, Identifiable, Hashable {
     let commitSha: String
     let createdAt: String
     let epoch: Double
+    /// 4.3 P27: the evidence class of a peer batch (local/paired/online_receipt); nil for other rows.
+    let evidenceClass: String?
 
     enum CodingKeys: String, CodingKey {
         case seq, problem, direction, kind, priority, body, artifacts, epoch
         case agentId = "agent_id"
         case commitSha = "commit_sha"
         case createdAt = "created_at"
+        case evidenceClass = "evidence_class"
     }
 
     init(from decoder: Decoder) throws {
@@ -65,7 +68,14 @@ struct AgentBusMessage: Codable, Identifiable, Hashable {
         commitSha = try c.decodeIfPresent(String.self, forKey: .commitSha) ?? ""
         createdAt = try c.decodeIfPresent(String.self, forKey: .createdAt) ?? ""
         epoch = try c.decodeIfPresent(Double.self, forKey: .epoch) ?? 0
+        let rawClass = try c.decodeIfPresent(String.self, forKey: .evidenceClass) ?? ""
+        evidenceClass = rawClass.isEmpty ? nil : rawClass
     }
+
+    /// 4.3 P27: a peer message that is not backed by an online judge receipt reads behind 待验证.
+    var isUnverified: Bool { isPeer && evidenceClass != nil && evidenceClass != "online_receipt" }
+
+    var isPeer: Bool { direction == "squad_note" || direction == "squad_to_worker" }
 }
 
 struct AgentMessagesResponse: Codable {
