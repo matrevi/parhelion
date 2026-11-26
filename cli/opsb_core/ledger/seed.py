@@ -75,8 +75,8 @@ def rules_text(workspace: Path | str) -> list[str]:
     except OSError:
         return []
     picked = [(h, body) for h, body in _sections(text) if h and RULE_WORD.search(h)]
-    blocks = [f"{h}\n{body}".strip() for h, body in picked] or [text.strip()]
-    return [_clip("\n\n".join(blocks), RULES_MAX)]
+    blocks = [f"## {h}\n{body}".strip() for h, body in picked] or [text.strip()]
+    return [_clip_verbatim("\n\n".join(blocks), RULES_MAX)]
 
 
 def _sections(text: str) -> list[tuple[str, str]]:
@@ -124,8 +124,8 @@ def _bus_rows(workspace: Path | str, agent_id: str, *, kind: str, limit: int) ->
 
 
 def admin_directives(workspace: Path | str, agent_id: str, limit: int = DIRECTIVE_MAX) -> list[str]:
-    """The last ``limit`` ``directive`` messages the bus sent this worker."""
-    return [_clip(text, 600) for text in _bus_rows(workspace, agent_id, kind="directive", limit=limit)]
+    """The last ``limit`` ``directive`` messages the bus sent this worker, quoted verbatim."""
+    return [_clip_verbatim(text, 600) for text in _bus_rows(workspace, agent_id, kind="directive", limit=limit)]
 
 
 def recent_rounds(workspace: Path | str, agent_id: str, *, turns: int = TAIL_TURNS) -> str:
@@ -143,9 +143,10 @@ def worktree_state(worktree: Path | str) -> str:
     worktree = Path(worktree).expanduser()
     if not worktree.is_dir():
         return ""
-    status = (gitref.git_out(worktree, "status", "--short") or "").strip()
-    diff = (gitref.git_out(worktree, "diff", "--stat", "HEAD") or "").strip()
-    edited = [ln[3:].strip() for ln in status.splitlines() if len(ln) > 3 and ln[3:].strip()]
+    # Not ``.strip()``: it would eat the leading space that makes " M src/x" a modified file.
+    status = (gitref.git_out(worktree, "status", "--short") or "").strip("\n").rstrip()
+    diff = (gitref.git_out(worktree, "diff", "--stat", "HEAD") or "").strip("\n").rstrip()
+    edited = [ln[3:].strip() for ln in status.splitlines() if len(ln) > 3 and ln[3:].strip()]  # "XY path"
     parts: list[str] = []
     if status:
         parts.append("git status:\n" + _clip_tail(status, STATUS_MAX))
@@ -161,8 +162,14 @@ def _clip(text: Any, limit: int) -> str:
     return s if len(s) <= limit else s[: max(0, limit - 1)] + "…"
 
 
+def _clip_verbatim(text: str, limit: int) -> str:
+    """Cut to ``limit`` characters without touching the whitespace: a rules block is quoted as written."""
+    body = str(text or "").strip()
+    return body if len(body) <= limit else body[: max(0, limit - 1)] + "…"
+
+
 def _clip_tail(text: str, limit: int) -> str:
-    text = text.strip()
+    text = text.strip("\n").rstrip()
     return text if len(text) <= limit else "…" + text[-(limit - 1):]
 
 
@@ -242,7 +249,7 @@ def build(workspace: Path | str, problem: str, agent_id: str, rows: list[dict[st
 
 
 def _digest(rows: list[dict[str, Any]], agent_id: str, max_chars: int) -> str:
-    block = digest.render(rows, own=agent_id, max_chars=max_chars)
+    block = digest.render(rows, own=agent_id, max_chars=max_chars, header="")
     missing = digest.ids_missing(block, rows, agent_id)
     return block + ("\nAlso open: " + ", ".join(missing) if missing else "")
 

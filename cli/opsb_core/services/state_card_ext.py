@@ -155,10 +155,9 @@ def receipt_cases(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {}
 
 
-def case_rows(ws: Path, title: str) -> list[dict[str, Any]]:
-    """One row per timed judge case: ours, tbest, gap, speedup and the head SHA's prediction."""
+def base_of(ws: Path, title: str) -> str:
+    """The same-generation baseline: the SHA that last refreshed the board, else the newest board mover."""
     rows = receipts_rows(ws, title)
-    head = head_sha(ws, title)
     board = ""
     try:
         _cfg.ensure_scheduler_path()
@@ -166,7 +165,15 @@ def case_rows(ws: Path, title: str) -> list[dict[str, Any]]:
         board = str(receipt_predict.board_sha(Path(ws), title) or "")
     except Exception:
         board = ""
-    base = board or next((str(r.get("sha") or "") for r in reversed(rows) if receipts_module().beat_board(r)), "")
+    return board or next((str(r.get("sha") or "") for r in reversed(rows)
+                          if receipts_module().beat_board(r)), "")
+
+
+def case_rows(ws: Path, title: str) -> list[dict[str, Any]]:
+    """One row per timed judge case: ours, tbest, gap, speedup and the head SHA's prediction."""
+    rows = receipts_rows(ws, title)
+    head = head_sha(ws, title)
+    base = base_of(ws, title)
     pair = speedups(ws, title, head, base)
     pred = predictions(ws, title, head, base) if head else {}
     received = receipt_cases(rows)
@@ -224,8 +231,8 @@ def data(ws: Path | str, title: str, agent_id: str | None = None) -> dict[str, A
         weight = 1.0
         return {
             "title": title, "worktree": worktree_of(ws, agent_id or ""), "head_sha": head_sha(ws, title),
-            "cases": rows, "targets": targets(rows, weight),
-            "receipts": receipts_summary(receipts_rows(ws, title)),
+            "base_sha": base_of(ws, title), "cases": rows,
+            "targets": targets(rows, weight), "receipts": receipts_summary(receipts_rows(ws, title)),
         }
     except Exception:
         return {"title": title, "worktree": worktree_of(ws, agent_id or ""), "error": "unavailable",
@@ -236,8 +243,11 @@ def render(doc: dict[str, Any]) -> str:
     """The card text, at most ``MAX_EXT_BYTES`` bytes; the rules line stays the last line."""
     from .state_card import RULES_LINE
     cases = doc.get("cases") or []
+    head = str(doc.get("head_sha") or "")[:7]
     lines = [f"EXT {doc.get('title')} @ {_cfg.utc_now().strftime('%H:%M')}"
              + (f" | worktree {doc['worktree']}" if doc.get("worktree") else "")]
+    if head:
+        lines.append(f"head: {head}" + (f" | base: {str(doc['base_sha'])[:7]}" if doc.get("base_sha") else ""))
     if doc.get("error"):
         lines.append("case detail: unavailable")
     speed = [c for c in cases if c.get("speedup") is not None]
@@ -250,6 +260,8 @@ def render(doc: dict[str, Any]) -> str:
         body = " · ".join(f"{c['case']} {c.get('ours_us') or '-'}/{c.get('tbest_us') or '-'} "
                           f"{float(c['gap_pct']) * 100:+.1f}%" for c in gap)
         lines.append(f"case gap ours/tbest µs: {body}")
+    elif not speed:
+        lines.append("case gap ours/tbest µs: n/a (no receipt with per-case times yet)")
     if doc.get("targets"):
         body = " · ".join(f"{t['case']} {float(t['gap_pct']) * 100:+.1f}% (headroom {t['headroom_pts']} pts)"
                           for t in doc["targets"])

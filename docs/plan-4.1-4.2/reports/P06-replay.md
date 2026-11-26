@@ -72,6 +72,6 @@ CI 来自 13 个 worker，其中多数没有任何变化，所以区间窄不代
 
 ## 5. 验证
 
-- 新增 55 个测试：`cli/tests/test_ledger_tools.py` 30 个（`parhelion_note` 字段校验与平台字段保护、状态更新走 `supersedes`、跨题目权限、门禁 `hypothesis_id` 缺省自动生成与不可拒绝、各 ledger 视图、recall 的片段与 `文件#行` 来源与只读（含索引缓存不写日志目录）、重测拦截与 `force_rerun`+理由、近似 diff 与阈值、指纹跨改名稳定、3 次尝试预算、5 次平台期、警告随测试返回、三个工具在 schema/handler/角色三处登记一致），`cli/tests/test_ledger_seed.py` 25 个（种子段落顺序与行动指令、规则原文、预算截断顺序、id 不丢、R4 封顶、`constraint` 幂等钉住、`seed_scheme` 三档与默认值、交接与 Codex 两条路径、压缩时机的三种边界与「工具调用中不压缩」、40% 下限、硬上限、两种状态卡的大小上限与扩展卡内容、`parhelion_status(detail=true)`）。
-- 全量：根目录 `580 passed, 18 skipped, 2 subtests passed`；`cli/tests runtime/tests` 见交付报告。
+- 新增 57 个测试：`cli/tests/test_ledger_tools.py` 30 个（`parhelion_note` 字段校验与平台字段保护、状态更新走 `supersedes`、跨题目权限、门禁 `hypothesis_id` 缺省自动生成与不可拒绝、各 ledger 视图、recall 的片段与 `文件#行` 来源与只读（含索引缓存不写日志目录）、重测拦截与 `force_rerun`+理由、近似 diff 与阈值、指纹跨改名稳定、3 次尝试预算、5 次平台期、警告随测试返回、三个工具在 schema/handler/角色三处登记一致），`cli/tests/test_ledger_seed.py` 27 个（种子段落顺序与行动指令、规则原文、预算截断顺序、id 不丢、R4 封顶、`constraint` 幂等钉住、`seed_scheme` 三档与默认值、交接与 Codex 两条路径、压缩时机的三种边界与「工具调用中不压缩」、40% 下限、硬上限、两种状态卡的大小上限与扩展卡内容、`parhelion_status(detail=true)`）。
+- 全量：根目录 `582 passed, 18 skipped, 2 subtests passed`；`cli/tests runtime/tests` `377 passed`。
 - 没有碰真实比赛目录、守护进程、worker 与判题站；回放只读日志，账本只在内存里重建。

@@ -214,7 +214,7 @@ def load_documents(workspace: Path | str, problem: str, agent_id: str = "", *, r
         if doc:
             docs.append(doc)
             changed = True
-    if changed or refresh or not path.is_file():
+    if changed or refresh or len(cached) != len(sources) or not path.is_file():
         _write_cache(path, {doc["path"]: doc for doc in docs})
     return docs
 

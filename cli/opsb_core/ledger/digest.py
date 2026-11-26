@@ -61,11 +61,12 @@ def _hyp_line(row: dict[str, Any], detail: int, own: str) -> str:
 
 def _insight_line(row: dict[str, Any], detail: int, own: str) -> str:
     cases = row.get("cases") or (row.get("scope") or {}).get("cases") or []
-    head = f"- {ref(row, own)}" + (f" cases {','.join(str(c) for c in cases[:6])}" if cases else "")
+    head = f"- {ref(row, own)}"
+    tail = f" cases {','.join(str(c) for c in cases[:6])}" if cases else ""
     if not detail:
-        return head
+        return head + tail
     nxt = f" next: {model.clip(row.get('actionable_next'), detail // 2)}" if row.get("actionable_next") else ""
-    return f"{head} {model.clip(row.get('claim'), detail)}{key_numbers(row)[: max(16, detail // 2)]}{nxt}"
+    return f"{head} {model.clip(row.get('claim'), detail)}{key_numbers(row)[: max(16, detail // 2)]}{nxt}{tail}"
 
 
 def _failure_line(row: dict[str, Any], detail: int, own: str) -> str:
@@ -106,7 +107,8 @@ def latest_measurement(rows: Iterable[dict[str, Any]]) -> str:
     body = " ".join(f"{k}:{v}" for k, v in list(last["per_case_us"].items())[:CASE_LINES])
     noise = last.get("noise_band")
     tail = f" noise {noise}" if noise else ""
-    return f"Latest test {str(last.get('sha') or '')[:7]} {last.get('test_level')} (min µs): {body}{tail}"
+    who = " ".join(p for p in (str(last.get("sha") or "")[:7], str(last.get("test_level") or "")) if p)
+    return f"Latest test {who} (min µs): {body}{tail}"
 
 
 def _live_sections(hyps: list[dict[str, Any]], insights: list[dict[str, Any]], detail: int, own: str

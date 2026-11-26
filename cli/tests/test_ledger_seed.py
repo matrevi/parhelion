@@ -86,6 +86,25 @@ def test_seed_sections_come_in_order_and_end_with_the_action(contest):
     assert "Take the highest-priority open hypothesis" in text
 
 
+def test_worktree_block_names_the_edited_files_verbatim(contest):
+    repo = contest["repo"]
+    (repo / "src" / "kernel.cpp").write_text("int main() { return 1; }\n")
+    block = seed.worktree_state(repo)
+    assert "git status:" in block and "git diff --stat:" in block
+    assert "edited: src/kernel.cpp" in block
+    (repo / "src" / "notes with a space.md").write_text("x\n")
+    assert '"src/notes with a space.md"' in seed.worktree_state(repo)
+    assert seed.worktree_state("/nonexistent/path") == ""
+
+
+def test_rules_block_is_quoted_verbatim(contest):
+    ws = contest["ws"]
+    (ws / "AGENTS.md").write_text("# Contest\n\n## Rules\n- One device job at a time.\n- Never ssh.\n")
+    (rules,) = seed.rules_text(ws)
+    assert rules == "## Rules\n- One device job at a time.\n- Never ssh."
+    assert seed.rules_text(ws / "missing") == []
+
+
 def test_seed_keeps_open_ids_and_rules_when_the_budget_is_tiny(contest):
     ws = contest["ws"]
     rows = _rows(ws)
