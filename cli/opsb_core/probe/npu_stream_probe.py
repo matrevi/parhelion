@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# OPSB_STREAM_PROBE_V5
+# OPSB_STREAM_PROBE_V6
 """Persistent, strictly read-only DCMI ctypes + /proc NPU telemetry stream probe.
 
 Deployed to `~/.opsb/npu_stream_probe.py` on the remote Accel NPU host.

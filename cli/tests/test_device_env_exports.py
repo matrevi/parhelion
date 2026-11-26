@@ -49,12 +49,17 @@ class DeviceEnvExportsTest(unittest.TestCase):
         env = self._exports(DEVICE)
         self.assertEqual(env["OPSB_DEVICE_DRIVER_ROOT"], "/opt/vendor")
         self.assertEqual(env["OPSB_DEVICE_DCMI_LIB"], "libdcmi.so")
-        self.assertEqual(env["OPSB_DEVICE_PROFILER_BIN"], "profiler")
+        # Only keys the probes read travel; everything else stays off the shared host.
+        self.assertNotIn("OPSB_DEVICE_PROFILER_BIN", env)
 
     def test_structured_settings_travel_as_json(self) -> None:
         env = self._exports(DEVICE)
         self.assertEqual(json.loads(env["OPSB_DEVICE_DRIVER_LIBS"]), DEVICE["driver_libs"])
-        self.assertEqual(json.loads(env["OPSB_DEVICE_DRIVER_LIB_DIRS"]), ["a", "b"])
+        self.assertNotIn("OPSB_DEVICE_DRIVER_LIB_DIRS", env)  # not read by the probes
+
+    def test_values_equal_to_the_neutral_default_are_not_sent(self) -> None:
+        env = self._exports(DEVICE)
+        self.assertNotIn("OPSB_DEVICE_SOC", env)  # "soc-a" is the probe's own default
 
     def test_empty_and_structured_empty_are_skipped(self) -> None:
         env = self._exports(DEVICE)
@@ -98,3 +103,23 @@ class ProbeEnvOverrideTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProbeRoundTripTest(unittest.TestCase):
+    """The exported prefix, run by a real shell, configures a fresh probe process."""
+
+    def test_remote_shell_round_trip(self) -> None:
+        import subprocess
+        settings = {"soc": "soc z", "driver_libs": {"dcmi": "lib x.so"}, "driver_root": "/opt/d'rv",
+                    "judge_base": "https://judge.example"}
+        with mock.patch.object(device_env, "device_settings", return_value=dict(settings)):
+            prefix = device_env.device_env_exports()
+        self.assertNotIn("JUDGE_BASE", prefix)
+        probe_dir = Path(sp.__file__).resolve().parent
+        snippet = ("import json,sys;sys.path.insert(0,%r);import npu_stream_probe as m;"
+                   "print(json.dumps({k:m.DEVICE.get(k) for k in ('soc','driver_libs','driver_root')}))" % str(probe_dir))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("OPSB_DEVICE_")}
+        out = subprocess.run(["bash", "-c", prefix + "python3 -c " + shlex.quote(snippet)],
+                             capture_output=True, text=True, env=env, check=True)
+        self.assertEqual(json.loads(out.stdout.strip().splitlines()[-1]),
+                         {"soc": "soc z", "driver_libs": {"dcmi": "lib x.so"}, "driver_root": "/opt/d'rv"})

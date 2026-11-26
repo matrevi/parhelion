@@ -12,7 +12,7 @@ from typing import Any, Callable
 from ..device_env import device_env_exports
 from ..services.npu_service import deploy_probe, enrich_npu_payload, read_mac_npu_waiters, sort_npu_payload
 
-PROBE_VERSION_MARKER = "OPSB_STREAM_PROBE_V5"
+PROBE_VERSION_MARKER = "OPSB_STREAM_PROBE_V6"
 RECONNECT_BACKOFFS = (1.0, 2.0, 5.0)
 TASK_TRANSITION_GRACE_SEC = 1.8
 

@@ -153,8 +153,17 @@ def device_list(key: str) -> list[str]:
     return [str(item) for item in value] if isinstance(value, list) else []
 
 
-def device_env_exports() -> str:
-    """Shell prefix forwarding the scalar device settings to a remote host.
+#: Settings the standalone NPU probes read (``device_text``/``DEVICE.get`` in
+#: ``probe/npu_probe.py`` and ``probe/npu_stream_probe.py``). Only these travel to the
+#: shared device host, where a remote command line is visible to every user via ``ps``.
+PROBE_DEVICE_KEYS: tuple[str, ...] = (
+    "dcmi_lib", "driver_libs", "driver_root", "soc", "toolchain_dir",
+    "toolkit_info", "toolkit_name", "work_prefix", "work_root",
+)
+
+
+def device_env_exports(keys: tuple[str, ...] = PROBE_DEVICE_KEYS) -> str:
+    """Shell prefix forwarding the probe's device settings to a remote host.
 
     The NPU probes are deployed as standalone copies, so they cannot read this
     machine's ``config.json``; without the values they fall back to neutral
@@ -165,7 +174,10 @@ def device_env_exports() -> str:
     unconfigured host behaves exactly as before.
     """
     assignments: list[str] = []
-    for key, value in sorted(device_settings().items()):
+    settings = device_settings()
+    for key, value in sorted((k, settings[k]) for k in keys if k in settings):
+        if value == DEFAULTS.get(key):
+            continue  # the probe already falls back to the same neutral default
         if isinstance(value, bool):
             continue
         if isinstance(value, (dict, list)):
