@@ -38,7 +38,12 @@ GROUP_420: dict[str, Any] = {
     "board_mode_from_rules": False, "tle_arms_escape_lock": True, "circuit_blocks": True,
     "noise_floor_from_judge_sigma": False, "approve_low_gain_positive": False,
 }
-GROUPS: dict[str, dict[str, Any]] = {"default": {}, "420": GROUP_420}
+#: 4.3 P29: the constant same-source jitter the estimator used before sigma was measured.
+GROUP_SIGMA: dict[str, Any] = {"jitter_sigma_from_judge_noise": False}
+#: 4.3 P29: the two-tier cross-generation prediction on top of the measured sigma.
+GROUP_RANKING: dict[str, Any] = {"ranking_v2": True}
+GROUPS: dict[str, dict[str, Any]] = {"default": {}, "420": GROUP_420, "sigma": GROUP_SIGMA,
+                                     "ranking": GROUP_RANKING}
 DEFAULT_JOBS = 6
 
 
@@ -251,6 +256,14 @@ def _replay_title(task: tuple[str, str, tuple[str, ...], str | None, str,
             "board_mode": "best" if keeps_best else "latest",
             "paired_cases": int(getattr(verdict.estimate, "matched_cases", 0) or 0),
             "method": str(getattr(verdict.estimate, "estimation_method", "")),
+            # 4.3 P29: what the ranking metrics need -- the gate's priority, what it predicted, and
+            # the tier that prediction came from (`scheduler.ranking.adjust`).
+            "priority": round(float(verdict.priority_score), 4),
+            "predicted_gain": round(float(verdict.estimate.delta_expected), 4),
+            "predicted_score": round(float(verdict.estimate.estimated_score), 4),
+            "sigma": round(float(verdict.estimate.confidence_sigma), 4),
+            "tier": (getattr(verdict.estimate, "ranking", None) or {}).get("tier", ""),
+            "ranking": getattr(verdict.estimate, "ranking", None) or {},
         }
         if intents:
             extra = intent_replay.intents(gate, title, record, shot["at"], before, verdict, passed,
@@ -270,13 +283,15 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
         board_mode: str | None = None, gate_switches: list[str] | None = None,
         since: str | None = None, until: str | None = None, groups: list[str] | None = None,
         jobs: int = DEFAULT_JOBS, keep_copy: bool = False, detail: bool = False,
-        intents: bool = False) -> dict[str, Any]:
+        intents: bool = False, ranking: bool = False) -> dict[str, Any]:
     """Replay every judged receipt of ``workspace`` through the gate, once per switch group."""
     from ..config import ensure_scheduler_path
     from . import gate_metrics
     # `cli/opsb` only puts cli/ on sys.path; every helper below imports `scheduler.*`, so the
     # repository root must be added before the first one runs (forked workers inherit it).
     ensure_scheduler_path()
+    from scheduler import ranking_metrics
+
     started = time.time()
     source = pathlib.Path(workspace).expanduser().resolve()
     if not (source / "results" / "submit-queue-outcome.jsonl").is_file():
@@ -343,6 +358,9 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
             if intents and name == "default":
                 # 4.3 P23 acceptance block: G4, the hypothetical probe series and the opening window.
                 result["groups"][name]["intents"] = gate_metrics.intents(shots)
+            if ranking:
+                # 4.3 P29 acceptance block: Spearman, top-1 hit rate and the gain error.
+                result["groups"][name]["ranking"] = ranking_metrics.evaluate(shots)
         result["elapsed_sec"] = round(time.time() - started, 1)
         return result
     finally:
