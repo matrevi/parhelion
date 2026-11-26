@@ -54,6 +54,7 @@ from .estimator import (
     resolve_sha,
 )
 from . import receipts
+from . import submit_intent
 from .parhelion_paths import list_eligible_account_slots
 from .probes import OPENING_PROBES, compile_evidence, submitted_attempts
 
@@ -91,6 +92,63 @@ BEIJING_TZ = datetime.timezone(datetime.timedelta(hours=8))
 DAILY_HARD_LIMIT = 50
 MIN_SUBMIT_GAP_SEC = 190
 
+#: S1 refusals an opening probe may never bypass: locks and identity, not missing measurement.
+OPENING_HARD_CODES = frozenset({
+    "ESCAPE_LOCK_ACTIVE", "TLE_SHA_REPEAT", "UNRESOLVED_SHA",
+    "GIT_TREE_MISMATCH", "CORRUPT_RESULT_JSON", "JUDGE_COMPILE_FAILED",
+})
+
+# 4.3 P23 §6a: every failed stage names the next action, so a held shot is never a dead end (P21
+# measured 6/50 = 12% before this). S1's escape lock and TLE carry their own contextual step; this
+# table fills the rest by stage code, with the reason string as the last resort.
+STAGE_NEXT_STEPS: dict[str, str] = {
+    # S1 SAFETY
+    "CORRUPT_RESULT_JSON": "re-run parhelion_test level=final for this SHA so result.json parses",
+    "UNRESOLVED_SHA": "commit the change and hand over the full `git rev-parse HEAD` SHA",
+    "SHA_MISMATCH": "hand over the SHA whose tree the validation really ran on",
+    "GIT_TREE_MISMATCH": "commit the working-tree change, then re-run the validation on that commit",
+    "MISSING_LOG": "re-run parhelion_test level=final to produce validation.log",
+    "REFERENCE_SUITE_REQUIRED": "run parhelion_test level=final with the reference scheme",
+    "FAST_LANE_ONLY": "run the full suite (level standard or final), not the fast lane",
+    "MISSING_EXTENDED_PASSED": "run parhelion_test level=final; EXTENDED_PASSED is required",
+    "NONZERO_MISMATCH": "fix the mismatching cases and re-test",
+    "GATE_BAD_LANES": "make the lanes deterministic (GATE_BAD bad=0) and re-test",
+    "NON_DETERMINISTIC_GATE": "remove the non-determinism and re-test until GATE_DET identical=True",
+    "STRESS_FAILURES": "fix the stress-case failures and re-test",
+    "MISSING_CROSS_CORE_STRESS": "add a cross-core/barrier stress run (SetAtomicAdd/SyncAll) and re-test",
+    "JUDGE_COMPILE_FAILED": "make the SHA compile with the judge toolchain, then re-test",
+    # S2 NOISE_FLOOR
+    "OPERATOR_SKIPPED": "clear the operator skip to make this SHA eligible again",
+    "ALREADY_ACTIVE_ON_BOARD": "this SHA is already the board entry: change it, or re-roll with intent=probe",
+    "BELOW_NOISE_FLOOR": "add a paired measurement that clears the floor, or send this SHA as intent=probe",
+    "BELOW_BEST_IN_RESTORE": "land a SHA above the best, or send this SHA as intent=probe",
+    "NEGATIVE_EXPECTED_RESTORE": "the estimate is below the board: improve the kernel, or use intent=probe",
+    "RESTORE_INTENT": "restore a proven SHA whose priced gain clears the floor, or wait for an open board",
+    "PROBE_NO_UNDO": "no rollback target: land a higher proven SHA first, or improve the kernel",
+    "PROBE_BUDGET_SPENT": "the probe budget is spent for this window: wait for it to roll over, or improve the kernel",
+    "PROBE_NO_ODDS": "P(gain>0) is below probe_min_prob: record a paired measurement first",
+    # S3 CIRCUIT_BREAKER
+    "CIRCUIT_OPEN_SWITCH_BASELINE": "try an orthogonal mechanism direction (six non-improving shots in the window)",
+    "HALF_OPEN_UNPROVEN_SHA": "land a SHA that passed online before, or send this one as intent=probe",
+    # S4 dispatch (never withholds approval, but the card still says what happens next)
+    "DAILY_LIMIT_REACHED": "wait for the Beijing-day reset; approval is unaffected",
+}
+
+
+def with_next_step(stage: StageResult) -> StageResult:
+    """A failed stage always carries ``metrics['next_step']`` (4.3 P23 §6a). Passed stages are left alone."""
+    if stage.passed:
+        return stage
+    metrics = dict(stage.metrics or {})
+    if not str(metrics.get("next_step") or "").strip():
+        step = STAGE_NEXT_STEPS.get(stage.code, "")
+        if not step and stage.code.startswith("EXIT_CODE_"):
+            step = "read the failing case in result.json, fix it and re-run parhelion_test"
+        metrics["next_step"] = step or (
+            f"read the stage reason and address it before the next shot: {stage.reason}")
+        stage.metrics = metrics
+    return stage
+
 
 @dataclasses.dataclass
 class GateConfig:
@@ -123,12 +181,23 @@ class GateConfig:
     # Below the floor but more likely to gain than lose: approve at low priority instead of holding.
     approve_low_gain_positive: bool = True
     low_gain_min_prob: float = 0.5
+    # 4.3 P23 submission intents (`intent=exploit|probe|restore`). Each switch on its own restores
+    # the 4.2.1 behaviour: `submit_intents=false` judges every intent as exploit.
+    submit_intents: bool = True
+    # Opening exemption runs until the problem's first scored Pass, at most `opening_max_probes`
+    # judged receipts (D1). Off: the 4.2.1 fixed `probe_submissions_per_problem` window.
+    opening_until_first_score: bool = True
+    opening_max_probes: int = 8
+    # A probe is a trial, not a quota spend: `probe_per_window` probes per `probe_window_hours`.
+    probe_per_window: int = 2
+    probe_window_hours: float = 12.0
+    probe_min_prob: float = 0.3
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
     def set_switch(self, text: str) -> tuple[str, Any]:
-        """Apply one ``name=value`` 4.2.1 switch (``opsb queue config --gate``); unknown names raise."""
+        """Apply one ``name=value`` gate switch (``opsb queue config --gate``); unknown names raise."""
         name, sep, raw = str(text).partition("=")
         name, raw = name.strip(), raw.strip().lower()
         kind = GATE_SWITCHES.get(name)
@@ -139,7 +208,14 @@ class GateConfig:
                 raise ValueError(f"{name} takes true or false, not {raw!r}")
             value: Any = raw in ("1", "true", "on", "yes")
         else:
-            value = min(1.0, max(0.0, float(raw)))
+            try:
+                parsed = float(raw) if kind is float else int(float(raw))
+            except ValueError:
+                raise ValueError(f"{name} takes a {'number' if kind is float else 'whole number'}, not {raw!r}")
+            low, high = GATE_SWITCH_BOUNDS.get(name, (0.0, 1.0) if kind is float else (0, None))
+            value = kind(parsed)
+            value = max(low, value) if low is not None else value
+            value = min(high, value) if high is not None else value
         setattr(self, name, value)
         return name, value
 
@@ -150,7 +226,7 @@ class GateConfig:
         return cls(**filtered)
 
 
-# The 4.2.1 switches `opsb queue config --gate name=value` may set.
+# The gate switches `opsb queue config --gate name=value` may set.
 GATE_SWITCHES: dict[str, type] = {
     "board_mode_from_rules": bool,
     "tle_arms_escape_lock": bool,
@@ -158,6 +234,19 @@ GATE_SWITCHES: dict[str, type] = {
     "noise_floor_from_judge_sigma": bool,
     "approve_low_gain_positive": bool,
     "low_gain_min_prob": float,
+    "submit_intents": bool,
+    "opening_until_first_score": bool,
+    "opening_max_probes": int,
+    "probe_per_window": int,
+    "probe_window_hours": float,
+    "probe_min_prob": float,
+}
+
+#: Clamp per switch; a float not listed here keeps the 4.2.1 ``[0, 1]`` clamp (a probability).
+GATE_SWITCH_BOUNDS: dict[str, tuple[Any, Any]] = {
+    "probe_window_hours": (0.0, 168.0),
+    "opening_max_probes": (0, 64),
+    "probe_per_window": (0, 64),
 }
 
 
@@ -229,6 +318,13 @@ class GateVerdict:
     stages: list[StageResult]
     circuit_breaker: CircuitBreakerStatus
     quota: QuotaStatus
+    # 4.3 P23: the intent the shot was judged with, what the caller asked for, and the undo plan
+    # (`probe`) or pricing (`restore`) that decided it. `exploit` carries the 4.2.1 verdict.
+    intent: str = "exploit"
+    requested_intent: str = "exploit"
+    intent_reason: str = ""
+    intent_code: str = "EXPLOIT"
+    undo: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -245,6 +341,11 @@ class GateVerdict:
             "raw_historical_best_score": self.raw_historical_best_score,
             "contemporary_best_score": self.contemporary_best_score,
             "true_restore_gain": self.true_restore_gain,
+            "intent": self.intent,
+            "requested_intent": self.requested_intent,
+            "intent_code": self.intent_code,
+            "intent_reason": self.intent_reason,
+            "undo": self.undo,
             "estimate": self.estimate.to_dict(),
             "stages": [s.to_dict() for s in verdict_stages_list(self.stages)],
             "circuit_breaker": self.circuit_breaker.to_dict(),
@@ -401,17 +502,28 @@ class SubmissionGate:
         record, log_path = self._result_record(title, sha)
         return compile_evidence(record, pathlib.Path(log_path))
 
-    def probe_allowance(self, title: str, sha: str = "", *, unsolved: bool = True) -> dict[str, Any]:
-        """The first three acknowledged submissions may use compile-only evidence."""
-        bootstrap = int(self.config.probe_submissions_per_problem)
+    def probe_allowance(self, title: str, sha: str = "", *, unsolved: bool = True,
+                        as_of: datetime.datetime | None = None) -> dict[str, Any]:
+        """Opening probes: the first acknowledged submissions may use compile-only evidence.
+
+        4.3 (00-PLAN D1): with ``opening_until_first_score`` the window runs until the problem's
+        first scored Pass, at most ``opening_max_probes`` judged receipts; switched off it is the
+        4.2.1 fixed window of ``probe_submissions_per_problem``.
+        """
+        base = int(self.config.probe_submissions_per_problem)
+        until_first = bool(self.config.opening_until_first_score) and base > 0
+        bootstrap = int(self.config.opening_max_probes) if until_first else base
+        scored = submit_intent.has_scored_pass(self.estimator.outcomes, title, as_of=as_of)
         used = submitted_attempts(self.workspace, title, self.estimator.outcomes)
-        within_bootstrap = used < bootstrap
+        within_bootstrap = used < bootstrap and not (until_first and scored)
         allowed, why = self._compile_ok(title, sha) if within_bootstrap else (False, "opening probes used")
         return {
             "bootstrap": bootstrap,
             "used": used,
             "remaining": max(0, bootstrap - used),
             "bootstrap_stage": bool(within_bootstrap),
+            "until_first_score": until_first,
+            "first_score_seen": scored,
             "allowed": bool(allowed),
             "reason": why,
         }
@@ -1097,6 +1209,32 @@ class SubmissionGate:
         meta = self.estimator.problems_meta.get(title) or {}
         return str(meta.get("ranking_submission_mode") or "").strip().lower() != "latest"
 
+    def _opening_hold(self, title: str, sha: str, as_of: datetime.datetime | None = None) -> StageResult | None:
+        """A lock or identity refusal still stops an opening probe (4.3 D1).
+
+        The opening window substitutes *evidence completeness* (a remote build that ran instead of
+        the full extended suite). It never forgives an escape lock, a TLE re-submit, an unresolved
+        or mismatched SHA, or a corrupt result: those are facts about the SHA, not a missing
+        measurement.
+        """
+        safety = self.evaluate_safety(title, sha, as_of=as_of)
+        if not safety.passed and safety.code in OPENING_HARD_CODES:
+            return safety
+        return None
+
+    def _last_judged_status(self, title: str, as_of: datetime.datetime | None = None) -> str:
+        """Status of the problem's last judged receipt: a failed verdict arms the restore path."""
+        last: tuple[datetime.datetime, str] | None = None
+        for row in self.estimator.outcomes:
+            if str(row.get("title") or "") != title or not receipts.judged(row):
+                continue
+            when = _parse_iso(row.get("submitted_at") or row.get("finished_at"))
+            if when is None or (as_of is not None and when >= as_of):
+                continue
+            if last is None or when >= last[0]:
+                last = (when, str(row.get("status") or ""))
+        return last[1] if last else ""
+
     def _noise_floor(self, title: str) -> tuple[float, dict[str, Any] | None]:
         """4.2.1: ``clamp(sigma_hat, floor, 2 * floor)`` from repeated judgments, else the configured floor."""
         base = float(self.config.noise_floor_pts)
@@ -1138,8 +1276,14 @@ class SubmissionGate:
         as_of: datetime.datetime | None = None,
         override_board_score: float | None = None,
         override_board_status: str | None = None,
+        intent: str = "exploit",
+        probe_used: int | None = None,
     ) -> GateVerdict:
-        """Run all 4 stages (SAFETY -> NOISE_FLOOR -> CIRCUIT_BREAKER -> QUOTA_RESERVE)."""
+        """Run all 4 stages (SAFETY -> NOISE_FLOOR -> CIRCUIT_BREAKER -> QUOTA_RESERVE).
+
+        ``intent`` (4.3 P23) is ``exploit`` (the 4.2.1 gate), ``probe`` or ``restore``;
+        ``probe_used`` lets the replay price a hypothetical probe series against the budget.
+        """
         canonical_sha = resolve_sha(self.workspace, title, sha)
         ov = self._find_override(title, canonical_sha)
         ov_action = ov.get("action")
@@ -1166,11 +1310,30 @@ class SubmissionGate:
         keeps_best = self._keeps_best(title)  # 4.2.1: the contest's own board rule
         floor, noise = self._noise_floor(title)  # 4.2.1: measured judge noise
 
+        # 4.3 P23: what kind of shot this is. `exploit` leaves the 4.2.1 gate exactly as it was; a
+        # probe or restore either gets its own S2 rule or is handed back to the exploit evaluation
+        # with the reason (a speculative request is never refused outright).
+        requested_intent, intent_source = submit_intent.resolve_intent(
+            self.workspace, title, canonical_sha, intent)
+        intent_decision: submit_intent.Decision | None = None
+        if requested_intent != "exploit":
+            intent_decision = submit_intent.plan(
+                intent=requested_intent, requested=requested_intent, estimator=self.estimator,
+                ledger=ledger, estimate=estimate, title=title, sha=canonical_sha,
+                difficulty=int(estimate.difficulty), floor=floor, keeps_best=keeps_best,
+                config=self.config, outcomes=self.estimator.outcomes,
+                last_status=self._last_judged_status(title, as_of=as_of),
+                as_of=as_of, probe_used=probe_used)
+
         is_critical_restore = (
             ledger.confirmed_board_zero
             and bool(ledger.historical_best_sha)
             and canonical_sha.lower().startswith(ledger.historical_best_sha.lower()[:7])
         )
+        if intent_decision is not None and intent_decision.critical and intent_decision.approved:
+            # 4.3: a restore approved because the board is open or the last shot failed is the
+            # `is_critical_restore` recovery case, no longer limited to "board confirmed zero".
+            is_critical_restore = True
         is_already_active_on_board = (
             as_of is None
             and override_board_score is None
@@ -1202,8 +1365,12 @@ class SubmissionGate:
             and not bool(ev.get("veto_small_core"))
         )
 
-        # Acknowledged submission IDs define the three opening probes.
-        probe = self.probe_allowance(title, canonical_sha, unsolved=is_critical_restore)
+        # Acknowledged submission IDs define the opening window (D1: until the first score).
+        probe = self.probe_allowance(title, canonical_sha, unsolved=is_critical_restore, as_of=as_of)
+        if as_of is None and probe["allowed"] and not explicit_skip:
+            hold = self._opening_hold(title, canonical_sha, as_of=as_of)
+            if hold is not None:
+                probe = {**probe, "allowed": False, "reason": hold.reason, "opening_hold": hold.code}
         if as_of is None and probe["allowed"] and not explicit_skip:
             slot = self._slot_stage(quota)
             stages = [
@@ -1247,6 +1414,8 @@ class SubmissionGate:
                 stages=stages,
                 circuit_breaker=cb,
                 quota=quota,
+                requested_intent=requested_intent,
+                intent_reason="opening window: compile-only evidence, no intent needed",
             )
 
         # Stage 1: SAFETY
@@ -1256,6 +1425,7 @@ class SubmissionGate:
         is_explore_pass = False
         is_ei_pass = False
         is_low_gain_pass = False
+        is_probe_pass = False
         if explicit_skip:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
@@ -1275,6 +1445,20 @@ class SubmissionGate:
                     f"(contemp est +{estimate.delta_expected:.2f} pts)"
                 ),
                 metrics={"delta_expected": estimate.delta_expected, "threshold": floor},
+            )
+        elif intent_decision is not None and intent_decision.approved is not None:
+            # 4.3 P23: the probe or restore rule decided this shot, not the 4.2.1 noise floor.
+            is_probe_pass = intent_decision.intent == "probe" and bool(intent_decision.approved)
+            is_explore_pass = bool(intent_decision.approved and intent_decision.explore)
+            is_low_gain_pass = is_explore_pass
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=bool(intent_decision.approved),
+                code=intent_decision.code,
+                reason=intent_decision.reason,
+                metrics={**self._s2_metrics(estimate, floor, noise, keeps_best),
+                         **intent_decision.metrics,
+                         "next_step": intent_decision.metrics.get("next_step", "")},
             )
         elif is_already_active_on_board and ov_action != "approve":
             s2 = StageResult(
@@ -1532,7 +1716,7 @@ class SubmissionGate:
         # Stage 4: dispatch slot (orders dispatch, never withholds approval)
         s4 = self._slot_stage(quota)
 
-        stages = [s1, s2, s3, s4]
+        stages = [with_next_step(s) for s in (s1, s2, s3, s4)]
 
         if explicit_skip:
             approved = False
@@ -1562,6 +1746,10 @@ class SubmissionGate:
             elif is_critical_restore:
                 status_tag = "CRITICAL_RESTORE"
                 gate_reason = f"CRITICAL_RESTORE approved: {s2.reason}"
+            elif is_probe_pass:
+                # 4.3 P23: a speculative shot with an undo and a budget, never a READY exploit.
+                status_tag = "PROBE"
+                gate_reason = f"PROBE intent approved: {s2.reason}"
             elif is_explore_pass or is_low_gain_pass or circuit_advisory:
                 why = f"[S3 advisory] {s3.reason} | {s2.reason}" if circuit_advisory else s2.reason
                 if quota.rate_wait_sec > 0 and as_of is None:
@@ -1579,6 +1767,10 @@ class SubmissionGate:
 
         if approved and is_critical_restore:
             priority_score = round(1000.0 + estimate.weighted_delta, 2)
+        elif approved and intent_decision is not None and intent_decision.priority is not None:
+            # 4.3 P23: probe = weight * E[max(0, gain)] * 0.5, below a READY exploit of the same
+            # problem; a restore priced above the floor uses weight * gain.
+            priority_score = round(float(intent_decision.priority), 2)
         elif approved and is_explore_pass:
             # Ordered below high-confidence READY gains while still actionable
             priority_score = round(estimate.difficulty * max(0.5, 0.5 * estimate.ucb_delta), 2)
@@ -1609,4 +1801,12 @@ class SubmissionGate:
             stages=stages,
             circuit_breaker=cb,
             quota=quota,
+            intent=(intent_decision.intent if intent_decision is not None else "exploit"),
+            requested_intent=requested_intent,
+            intent_code=(intent_decision.code if intent_decision is not None else "EXPLOIT"),
+            intent_reason=(
+                (intent_decision.reason or f"judged as exploit ({intent_source})") if intent_decision is not None
+                else ("queued as a " + requested_intent if requested_intent != "exploit" else "")),
+            undo=(intent_decision.metrics.get("undo") or intent_decision.metrics.get("pricing") or {})
+            if intent_decision is not None else {},
         )
