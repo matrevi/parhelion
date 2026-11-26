@@ -105,7 +105,7 @@ opsb[EG9T]: F:可执行入口：在LaunchServices的系统python下自动重入�
 __init__.py[CV6T]: F:包声明与版本号单一来源，MCP服务端与ACP与Codex客户端的版本信息都读它 | R:code:cli/opsb_core/mcp/server.py,code:scripts/bundle_app.sh | A:__version__ | S:build_dmg.sh从这里解析版本并核对bundle，但Info.plist版本是写死的，发版时两处要手工同步
 cli_app.py[EG9L]: F:统一CLI解析与分发：装配全部子命令、多语言与JSON输出，把异常收敛成退出码 | R:code:cli/opsb_core/commands/admin_cmd.py,code:cli/opsb_core/commands/queue_cmd.py,code:cli/opsb_core/commands/kb_cmd.py | A:build_parser,main,run_bench_suite | S:新子命令只在这里注册，命令实现留在commands包内，让commands反向依赖解析器会把全量命令拖进daemon导入链
 config.py[CC9M]: F:配置仓库与工作区发现：~/.parhelion迁移、默认配置合并、原子JSON与JSONL读写、python解释器解析 | R:code:cli/opsb_core/device_env.py,code:scheduler/parhelion_paths.py | A:ConfigRepository,ensure_parhelion_migrated,read_json,append_jsonl_locked,resolve_python_exe | S:迁移表约定config.json为0600，save()必须在原子替换前chmod，否则每次保存都掉回umask
-device_env.py[FH8S]: F:硬件与工具链设置的唯一读取入口：~/.parhelion/config.json的device段，可被OPSB_DEVICE_*覆盖，未配置时回中性默认；并把设置渲染成可在远端使用的环境前缀 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/npu_service.py | A:device_settings,device,device_text,device_list,device_env_exports | S:仓库里不得出现真实设备值；测试用conftest设OPSB_DEVICE_ISOLATED=1强制中性默认；字典与列表以JSON过环境变量，否则远端探针丢掉driver_libs就无法预载DCMI
+device_env.py[FH8S]: F:硬件与工具链设置的唯一读取入口：config.json的device段可OPSB_DEVICE_*覆盖、未配置回中性默认；并把探针所需设置渲染成远端环境前缀 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/npu_service.py,code:cli/opsb_core/daemon/npu_stream.py | A:device_settings,device_text,device_list,device_env_exports,PROBE_DEVICE_KEYS | S:仓库里不得出现真实设备值；只导出PROBE_DEVICE_KEYS且跳过默认值，因为远端命令行在共享主机上对所有用户可见；字典与列表以JSON传递
 ipc_bridge.py[IM7M]: F:到scheduler.cli_bridge的IPC适配层，带mtime感知的TTL缓存 | R:code:scheduler/cli_bridge.py | A:invoke_bridge,merge_bridge_enrichment,_queue_fingerprint | S:桥接失败一律返回None让调用方降级，不能抛异常，否则status会因兄弟模块缺失而整体失败
 worker_access.py[ES7T]: F:把受管worker绑定到自己的回环MCP路由并保持SSH环境隔离 | R:code:cli/opsb_core/daemon/server.py | A:- | S:worker只能拿到自己的回环路由与角色化工具，复用同一路由会破坏权限边界
 
@@ -116,7 +116,7 @@ bus_store.py[PM8L]: F:SQLite WAL消息总线：agent记录、消息追加与确�
 judge_feedback.py[DA7T]: F:从付费判题回执算战略事件：配对提交时刻已有的不可变报告，得出标定证据 | R:code:cli/opsb_core/services/judge_score_fetch.py | A:calibration_evidence,judge_feedback | S:只认提交时刻已存在的报告，事后写入的报告不得用于标定，否则会把未来信息注入当前评估
 manager.py[AW9L]: F:daemon内的AgentMeshManager：派发与停止与清理worker、消息总线投递、驱动熔断、压缩与检查点 | R:code:cli/opsb_core/agents/adapters.py,code:cli/opsb_core/agents/bus_store.py,code:cli/opsb_core/agents/ownership.py | A:AgentMeshManager,compact_threshold,claude_workers_allowed,stop_agent,cleanup_stopped,build_hot_mesh | S:compact_threshold取模型窗口的30%并夹在12万至40万token；驱动熔断只告警一次，只有管理员显式派发才解除
 ownership.py[RR7T]: F:独占runner租约与原生worker进程组回收：校验进程身份、按agent回收残留进程组 | R:code:cli/opsb_core/agents/manager.py | A:claim_runner,owned_groups,reap_groups,_has_identity | S:租约用fcntl flock持有，进程表被复用时靠身份串校验，不能只按pid判归属
-sprint.py[AW7S]: F:冲刺派发：按题目与优化方向为每题开一个独立worker，solo与dual与full三种席位 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/services/contest_service.py | A:start_sprint,sprint_seats,seat_role,SOLO_TASK | S:默认每题一个worker，双轨与校准席位必须显式开启，否则会越过账号槽与设备配额
+sprint.py[AW7S]: F:冲刺派发：按题目与优化方向开独立worker，solo/dual/full三种席位，可只为指定题目子集开席 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/services/contest_service.py | A:start_sprint,sprint_seats,seat_role,SOLO_TASK | S:默认每题一个worker，双轨与校准席位必须显式开启；problems子集保持清单顺序，未知题名直接报错而不是忽略
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/commands/===
 __init__.py[CG3T]: F:CLI命令处理器的包标记 | R:code:cli/opsb_core/cli_app.py | A:- | S:-
@@ -133,8 +133,8 @@ tools_cmd.py[EP7M]: F:快速反馈工具命令：bench elf与cold3与pmu与scaff
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/daemon/===
 __init__.py[CN4T]: F:daemon包门面：导出状态路径、健康查询与启停入口 | R:code:cli/opsb_core/daemon/server.py | A:start_daemon,stop_daemon,get_daemon_status | S:-
-agent_routes.py[IM7S]: F:/v1/agents/*与/v1/mcp/*的路由处理：查询池、派发、消息与停止清理动作 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/daemon/server.py | A:handle_agent_get,handle_agent_post | S:这里只返回status与payload，鉴权与工作区解析在server层完成，不要在此自行放行请求
-npu_stream.py[RH8M]: F:单条SSH的NDJSON遥测流管理器：常驻连接、断线重连、探针版本校验与跨工作区切换 | R:code:cli/opsb_core/probe/npu_stream_probe.py,code:cli/opsb_core/services/npu_service.py | A:NpuStreamManager,PROBE_VERSION_MARKER | S:远端退出码42是探针过期的信号，必须用wait收割而不是poll；stdout的EOF先到，poll会拿到None，自动重部署就永远不触发
+agent_routes.py[IM7S]: F:/v1/agents/*与/v1/mcp/*的路由处理：查询池、冲刺（模式与题目子集）、派发、消息与停止清理动作 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/agents/sprint.py,code:cli/opsb_core/daemon/server.py | A:handle_agent_get,handle_agent_post | S:这里只返回status与payload，鉴权与工作区解析在server层完成，不要在此自行放行请求
+npu_stream.py[RH8M]: F:单条SSH的NDJSON遥测流管理器：常驻连接、断线重连、探针版本校验与跨工作区切换 | R:code:cli/opsb_core/probe/npu_stream_probe.py,code:cli/opsb_core/services/npu_service.py,code:cli/opsb_core/device_env.py | A:NpuStreamManager,PROBE_VERSION_MARKER | S:远端退出码42是探针过期信号，必须用wait收割而非poll；探针源码变动时标记要与npu_stream_probe.py头部一起升级，否则旧副本不会重部署
 server.py[MN9L]: F:仅本机回环的带鉴权HTTP与SSE daemon：端口绑定、token、快照与热流与失效路由，以及启停与健康探测 | R:code:cli/opsb_core/daemon/state_cache.py,code:cli/opsb_core/daemon/agent_routes.py | A:OpsbDaemonRuntime,run_daemon_server,start_daemon,probe_daemon_health | S:daemon.json为0600且所有请求校验X-Opsb-Token；只能监听127.0.0.1，绑到0.0.0.0等于把token暴露到局域网
 state_cache.py[MD9L]: F:增量冷热状态缓存：文件指纹算cold_etag，仅指纹变化时后台重算快照；热帧合并内存遥测 | R:code:cli/opsb_core/daemon/server.py | A:WorkspaceStateCache,_WorkspaceStateEntry,_strip_volatile_for_digest | S:指纹只取mtime_ns与size，原地改写且大小不变的修改不会被发现；易变字段必须从digest里剥离，否则每帧都重算
 
@@ -184,7 +184,7 @@ tools.py[MW7S]: F:角色化工具注册表：按orchestrator与worker过滤可�
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/probe/===
 npu_probe.py[RH8L]: F:轻量只读NPU遥测与任务队列探针：/proc与锁表与ps与设备管理库读卡，合成一次探测 | R:code:cli/opsb_core/device_env.py,code:cli/opsb_core/probe/npu_stream_probe.py | A:- | S:绝不flock任何.lock文件，只读/proc与锁表；环境覆盖里的字典与列表是JSON，不解析就只能拿到空driver_libs与默认路径
-npu_stream_probe.py[RH8L]: F:常驻NDJSON遥测探针：单SSH会话内按间隔输出帧，含设备管理器利用率与任务队列 | R:code:cli/opsb_core/probe/npu_probe.py,code:cli/opsb_core/daemon/npu_stream.py | A:- | S:必须按行flush输出，缓冲会让daemon等到整批才收到；driver_libs等结构化配置以JSON进环境变量，丢了解析就会丢掉DCMI预载链
+npu_stream_probe.py[RH8L]: F:常驻NDJSON遥测探针：单SSH会话内按间隔输出帧，含设备管理器利用率与任务队列 | R:code:cli/opsb_core/probe/npu_probe.py,code:cli/opsb_core/daemon/npu_stream.py | A:- | S:必须按行flush输出；driver_libs等结构化配置以JSON进环境变量，丢了解析就会丢DCMI预载；头部版本标记必须与npu_stream.py一致
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/services/===
 __init__.py[CG3T]: F:领域服务层的包标记 | R:code:cli/opsb_core/services/auth_service.py | A:- | S:-

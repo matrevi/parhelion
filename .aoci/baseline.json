@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T03:44:57Z",
+  "updated_at": "2026-11-26T03:51:47Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7326d683d82ffb3546f21032c9e2f992734385d93050677590f58d11dc0e604e",
-      "size": 75375,
-      "normalized_sha256": "7326d683d82ffb3546f21032c9e2f992734385d93050677590f58d11dc0e604e"
+      "sha256": "60c7c29caba7311645a40ac54741b9112ffea7e0cbf8358350a80ce5cb0c0ffc",
+      "size": 75563,
+      "normalized_sha256": "60c7c29caba7311645a40ac54741b9112ffea7e0cbf8358350a80ce5cb0c0ffc"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -599,15 +599,15 @@
     },
     "cli/opsb_core/daemon/agent_routes.py": {
       "role": "index",
-      "sha256": "38d438d22efa4a750aa7b53fea75e76e508b121156ff9f9e9cd30b20c983b08f",
-      "size": 6139,
-      "normalized_sha256": "38d438d22efa4a750aa7b53fea75e76e508b121156ff9f9e9cd30b20c983b08f"
+      "sha256": "07f6872a80ec0a670365af2f49f2de7f082f63c5a6fa710556b817e17067c325",
+      "size": 6267,
+      "normalized_sha256": "07f6872a80ec0a670365af2f49f2de7f082f63c5a6fa710556b817e17067c325"
     },
     "cli/opsb_core/daemon/npu_stream.py": {
       "role": "index",
-      "sha256": "b64ba89c9d295d838d2e4bc27dab02ceb33dee2d8bfa4542c56f9f9c97658712",
+      "sha256": "d35c4520bfec29d0929165aa8f0ed1fd5d9a471a256219da2c0bd0dfa7a96d75",
       "size": 15797,
-      "normalized_sha256": "b64ba89c9d295d838d2e4bc27dab02ceb33dee2d8bfa4542c56f9f9c97658712"
+      "normalized_sha256": "d35c4520bfec29d0929165aa8f0ed1fd5d9a471a256219da2c0bd0dfa7a96d75"
     },
     "cli/opsb_core/daemon/server.py": {
       "role": "index",
@@ -623,9 +623,9 @@
     },
     "cli/opsb_core/device_env.py": {
       "role": "index",
-      "sha256": "6210073088946cde19b287d2b177bab656b6b7a932d8840ed80e7874f216eeff",
-      "size": 6538,
-      "normalized_sha256": "6210073088946cde19b287d2b177bab656b6b7a932d8840ed80e7874f216eeff"
+      "sha256": "76bb7f9cad72ed6520f7ea0288c4ef9f88d8024fabbd6a79e0db9aea75fcda13",
+      "size": 7185,
+      "normalized_sha256": "76bb7f9cad72ed6520f7ea0288c4ef9f88d8024fabbd6a79e0db9aea75fcda13"
     },
     "cli/opsb_core/drivers/__init__.py": {
       "role": "index",
@@ -857,9 +857,9 @@
     },
     "cli/opsb_core/probe/npu_stream_probe.py": {
       "role": "index",
-      "sha256": "2795705b80a4d0d5b9f3866b8dafb70ddb789d196b391b6e79a4f0ef43a681ab",
+      "sha256": "9d12a6a8b4139dc72e783d7ecd5cdd6adcace19b0e251e593b99390b4283c34a",
       "size": 72979,
-      "normalized_sha256": "2795705b80a4d0d5b9f3866b8dafb70ddb789d196b391b6e79a4f0ef43a681ab"
+      "normalized_sha256": "9d12a6a8b4139dc72e783d7ecd5cdd6adcace19b0e251e593b99390b4283c34a"
     },
     "cli/opsb_core/services/__init__.py": {
       "role": "index",
@@ -1109,9 +1109,9 @@
     },
     "cli/tests/test_device_env_exports.py": {
       "role": "observe",
-      "sha256": "ade4fc62d36624d9e76668074875ea21d6ef8392a24539c5114bf3915224842c",
-      "size": 4247,
-      "normalized_sha256": "ade4fc62d36624d9e76668074875ea21d6ef8392a24539c5114bf3915224842c"
+      "sha256": "e42d1d637b3ffb5d7a3d0500ffdebc331a09732be670fa817c61afc083f5031e",
+      "size": 5800,
+      "normalized_sha256": "e42d1d637b3ffb5d7a3d0500ffdebc331a09732be670fa817c61afc083f5031e"
     },
     "cli/tests/test_dispatch_lifecycle.py": {
       "role": "observe",
@@ -1163,9 +1163,9 @@
     },
     "cli/tests/test_orchestration_v4.py": {
       "role": "observe",
-      "sha256": "57adf18a6a7147d3e46f6e733a2cd0a992960764bf26d81231447d319046f871",
-      "size": 23077,
-      "normalized_sha256": "57adf18a6a7147d3e46f6e733a2cd0a992960764bf26d81231447d319046f871"
+      "sha256": "8e39446ff3ee2b1013bdeef7464039c08e7bdb93b909d08794caaea09b3cdea7",
+      "size": 23848,
+      "normalized_sha256": "8e39446ff3ee2b1013bdeef7464039c08e7bdb93b909d08794caaea09b3cdea7"
     },
     "cli/tests/test_problem_repo_bootstrap.py": {
       "role": "observe",
