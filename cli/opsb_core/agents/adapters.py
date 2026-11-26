@@ -102,6 +102,21 @@ class BaseWorkerAdapter:
         self.on_boundary: Callable[[str], None] | None = None
         #: Set by the runner before ``compact``: the ledger-backed handoff checks (``ledger.handoff.HandoffSession``).
         self.handoff: Any = None
+        #: Set by the manager when it resumes a seat: the seat brief, rebuilt. A driver that cannot reload
+        #: the old conversation sends it before the next prompt (``context_lost``).
+        self.resume_brief: Callable[[], str] | None = None
+        self.context_lost = False
+
+    def _with_resume_brief(self, prompt: str) -> str:
+        """Prefix ``prompt`` with the rebuilt seat brief once, after a resume that lost the conversation."""
+        if not self.context_lost:
+            return prompt
+        self.context_lost = False
+        try:
+            brief = self.resume_brief() if self.resume_brief else ""
+        except Exception:
+            brief = ""
+        return f"{brief.strip()}\n\n{prompt}" if brief.strip() else prompt
 
     def _spawn_proc(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
         with self._lock:
@@ -214,8 +229,11 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         mcp_servers = build_acp_mcp_servers(
             self.workspace, mcp_url=_daemon_worker_mcp_url(self.agent_id), role="worker", agent_id=self.agent_id
         )
-        sid, _ = client.open_session(cwd=self.worktree, mcp_servers=mcp_servers,
-                                     resume_id=self.native_session_id or None, model=self.model)
+        requested = self.native_session_id
+        sid, loaded = client.open_session(cwd=self.worktree, mcp_servers=mcp_servers,
+                                          resume_id=requested or None, model=self.model)
+        # DeepSeek Harness has no `session/load`: a resumed seat starts a new conversation.
+        self.context_lost = bool(requested) and not loaded
         self.native_session_id = sid or self.native_session_id or self.agent_id
         if on_event and self.model:
             on_event("model", self.model)
@@ -244,7 +262,7 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         except Exception:
             self.stop()
             raise
-        res = client.send_prompt(self.native_session_id, prompt)
+        res = client.send_prompt(self.native_session_id, self._with_resume_brief(prompt))
         return str(res.get("text") or res.get("stopReason") or "Turn completed.")
 
     def compact(self, checkpoint: str) -> str:

@@ -28,12 +28,17 @@ struct SSHSettingsTab: View {
                 }
 
                 List(store.sshHosts) { host in
+                    let isPrimary = host.alias == store.activeSSHHost
+                    let inPool = isPrimary || store.sshPool.contains(host.alias)
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
                                 Text(host.alias).font(.system(size: 12.5, weight: .bold, design: .monospaced))
-                                if host.alias == store.activeSSHHost {
-                                    SemanticPill(text: lang.tr("启用中", "ACTIVE"), compact: true)
+                                if isPrimary {
+                                    SemanticPill(text: lang.tr("主", "MAIN"), compact: true)
+                                }
+                                if inPool && store.sshPool.count > 1 {
+                                    SemanticPill(text: lang.tr("设备池", "POOL"), compact: true)
                                 }
                             }
                             Text("\(host.user)@\(host.hostname):\(host.port)")
@@ -41,11 +46,27 @@ struct SSHSettingsTab: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Button(lang.tr("选用", "Use")) {
+                        Toggle(lang.tr("设备池", "Pool"), isOn: Binding(
+                            get: { inPool },
+                            set: { member in Task { await store.setDevicePool(host.alias, member: member) } }
+                        ))
+                        .toggleStyle(.checkbox)
+                        .controlSize(.mini)
+                        .font(.system(size: 10.5))
+                        .disabled(isPrimary)
+                        .help(isPrimary
+                              ? lang.tr("主主机始终在设备池里；要移出它，先把别的主机设为主。",
+                                        "The main host is always in the pool; make another host main first.")
+                              : lang.tr("勾选后加入设备池：守护进程为它开遥测流，题目按清单顺序轮流固定到池内各台设备上测试。增减设备会重新分配题目，估分只在同一台设备内配对比较。",
+                                        "Pooled hosts get a telemetry stream, and problems are pinned to pool devices in roster order. Changing the pool reassigns problems; estimates pair runs only within one device."))
+                        Button(lang.tr("设为主", "Make Main")) {
                             populateForm(host)
                             Task { await store.selectSSHHost(host.alias) }
                         }
                         .controlSize(.mini)
+                        .disabled(isPrimary)
+                        .help(lang.tr("主主机是仪表盘默认显示的设备；没有设备池时所有测试都在它上面运行。更换主主机不会把题目换到别的设备。",
+                                      "The main host is the one the dashboard shows first and, without a pool, runs every test. Changing it moves no problem to another device."))
                     }
                     .contentShape(Rectangle())
                     .onTapGesture { populateForm(host) }
@@ -59,7 +80,10 @@ struct SSHSettingsTab: View {
                 HStack {
                     Text(lang.tr("NPU 主机连接参数", "NPU Host Details")).font(.system(size: 13, weight: .bold))
                     Spacer()
-                    SemanticPill(text: "\(lang.tr("当前", "Active")): \(store.activeSSHHost)", compact: true)
+                    SemanticPill(text: "\(lang.tr("主", "Main")): \(store.activeSSHHost)", compact: true)
+                    if store.sshPool.count > 1 {
+                        SemanticPill(text: "\(lang.tr("设备池", "Pool")): \(store.sshPool.joined(separator: lang.tr("、", ", ")))", compact: true)
+                    }
                 }
 
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
@@ -89,7 +113,7 @@ struct SSHSettingsTab: View {
                     .font(.system(size: 11))
 
                 HStack(spacing: 8) {
-                    Button(lang.tr("保存并启用", "Save & Activate")) {
+                    Button(lang.tr("保存并设为主", "Save as Main")) {
                         guard !editAlias.isEmpty, !editHost.isEmpty else { return }
                         Task {
                             do {

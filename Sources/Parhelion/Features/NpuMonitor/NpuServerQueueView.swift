@@ -9,16 +9,26 @@ struct NpuServerQueueView: View {
 
     private var lang: AppLanguage { store.lang }
     private var liveNpu: NpuTelemetry { hotStore.npu ?? npu }
+    private var multiHost: Bool { hotStore.deviceHosts.count > 1 }
+
+    /// Tasks of every device host, each tagged with its host (the primary's alone on one host).
+    private var liveTasks: [NpuTaskItem] {
+        multiHost ? hotStore.allDeviceTasks : liveNpu.tasks
+    }
+
+    private var anyHostOnline: Bool {
+        liveNpu.online || hotStore.deviceHosts.contains { $0.npu?.online == true }
+    }
 
     /// Lightweight Equatable signature so `laneModel` ingests on every meaningful hot NPU change.
     private var taskFingerprint: [String] {
-        liveNpu.tasks.map {
-            "\($0.runId ?? "")|\($0.pid)|\($0.state)|\($0.stage)|\($0.lane ?? "")|\($0.problem ?? "")|\($0.shortSha ?? "")|\($0.die ?? -1)|\($0.elapsedSec ?? -1)|\($0.boosted == true)|\($0.detail)|\($0.caseProgress?.hashValue ?? 0)"
+        liveTasks.map {
+            "\($0.host ?? "")|\($0.runId ?? "")|\($0.pid)|\($0.state)|\($0.stage)|\($0.lane ?? "")|\($0.problem ?? "")|\($0.shortSha ?? "")|\($0.die ?? -1)|\($0.elapsedSec ?? -1)|\($0.boosted == true)|\($0.detail)|\($0.caseProgress?.hashValue ?? 0)"
         }
     }
 
     private var activeCards: [NpuLaneCard] {
-        laneModel.hasIngested ? laneModel.cards : NpuLaneModel.preview(liveNpu.tasks)
+        laneModel.hasIngested ? laneModel.cards : NpuLaneModel.preview(liveTasks)
     }
 
     private var dieExecCards: [NpuLaneCard] {
@@ -56,7 +66,7 @@ struct NpuServerQueueView: View {
 
             Divider()
 
-            if !liveNpu.online && activeCards.isEmpty {
+            if !anyHostOnline && activeCards.isEmpty {
                 emptyState(lang.tr("等待 SSH 探针连接…", "Waiting for SSH probe…"))
             } else {
                 ScrollView {
@@ -64,11 +74,15 @@ struct NpuServerQueueView: View {
                     // across all three lanes without destroying views or leaving slot gaps.
                     VStack(alignment: .leading, spacing: 10) {
                         laneSection(
-                            title: lang.tr("① DIE 0 硬件独占执行区", "① DIE 0 EXECUTING"),
+                            title: multiHost
+                                ? lang.tr("① NPU 硬件独占执行区 · \(hotStore.deviceHosts.count) 台", "① NPU EXECUTING · \(hotStore.deviceHosts.count) devices")
+                                : lang.tr("① DIE 0 硬件独占执行区", "① DIE 0 EXECUTING"),
                             badge: "\(liveDieCount)",
                             tint: .blue,
                             items: dieExecCards,
-                            emptyText: lang.tr("Die 0 空闲 · 可立即进入 Phase B", "Die 0 Free · Ready for Phase B")
+                            emptyText: multiHost
+                                ? lang.tr("所有设备空闲 · 可立即进入 Phase B", "All devices free · Ready for Phase B")
+                                : lang.tr("Die 0 空闲 · 可立即进入 Phase B", "Die 0 Free · Ready for Phase B")
                         )
 
                         laneSection(
@@ -93,10 +107,10 @@ struct NpuServerQueueView: View {
             }
         }
         .onAppear {
-            laneModel.ingest(liveNpu.tasks)
+            laneModel.ingest(liveTasks)
         }
         .onChange(of: taskFingerprint) { _, _ in
-            laneModel.ingest(liveNpu.tasks)
+            laneModel.ingest(liveTasks)
         }
         .onChange(of: store.activeSSHHost) { _, _ in
             laneModel.reset()
@@ -158,6 +172,15 @@ struct NpuServerQueueView: View {
                             ? (active ? "waveform.path.ecg" : (isBuild ? "hammer.fill" : "clock.arrow.circlepath"))
                             : (active ? "play.fill" : (isBuild ? "hammer.fill" : "clock"))
                     )
+                    if multiHost, let host = task.host {
+                        Label(host, systemImage: "cpu")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.purple)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule(style: .continuous).fill(Color.purple.opacity(0.13)))
+                            .help(lang.tr("此任务在设备主机 \(host) 上运行", "Runs on device host \(host)"))
+                    }
                     if isBackfill {
                         Text(lang.tr("B0 样例桶", "B0 Bucket"))
                             .font(.system(size: 9.5, weight: .bold, design: .rounded))
@@ -234,7 +257,8 @@ struct NpuServerQueueView: View {
                                 await store.boostNpuTicket(
                                     pid: task.pid,
                                     problem: task.problem ?? "Operator",
-                                    sha: task.sha ?? ""
+                                    sha: task.sha ?? "",
+                                    host: task.host
                                 )
                             }
                         } label: {
@@ -249,7 +273,7 @@ struct NpuServerQueueView: View {
                     if (card.lane == .waiting || card.lane == .build) && task.pid > 0 && !card.lingering {
                         Button {
                             Task {
-                                await store.cancelNpuTicket(pid: task.pid, problem: task.problem ?? "Task")
+                                await store.cancelNpuTicket(pid: task.pid, problem: task.problem ?? "Task", host: task.host)
                             }
                         } label: {
                             Text(lang.tr("取消", "Cancel"))

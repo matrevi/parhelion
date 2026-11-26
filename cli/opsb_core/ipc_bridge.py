@@ -108,6 +108,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         sched["slot_hint"] = str(b_quota["slot_hint"])
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
+    # The gate switches the app's gate popover edits (`opsb queue config --gate name=value`).
+    switches = {k: b_cfg[k] for k in ("approve_low_gain_positive", "low_gain_min_prob") if k in b_cfg}
+    if switches:
+        sched["gate_switches"] = switches
 
     # Overlay per-problem `calibration` from `scheduler.cli_bridge` when present
     b_probs = bridge.get("problems") or bridge.get("calibrations") or {}

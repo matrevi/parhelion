@@ -340,7 +340,7 @@ private struct NpuRouteBadgeView: View {
     let fallbackCount: Int
 
     var body: some View {
-        let count = hotStore.npu?.tasks.count ?? fallbackCount
+        let count = hotStore.deviceHosts.count > 1 ? hotStore.allDeviceTasks.count : (hotStore.npu?.tasks.count ?? fallbackCount)
         if count > 0 {
             Text("\(count)")
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
@@ -396,6 +396,13 @@ private struct SidebarNpuFooterView: View {
                              : lang.tr("Die0: 空闲", "Die0: Free"))
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundStyle(.secondary)
+                    }
+                    let hosts = hotStore.deviceHosts
+                    if hosts.count > 1 {
+                        let busy = hosts.filter { $0.dieHeld }.count
+                        Text(lang.tr("+\(hosts.count - 1) 设备 · 共 \(busy)/\(hosts.count) 占用", "+\(hosts.count - 1) devices · \(busy)/\(hosts.count) busy"))
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.purple)
                     }
                 }
                 Spacer()

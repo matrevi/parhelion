@@ -12,6 +12,7 @@ struct SchedulerBarView: View {
     @UIState private var showGatePopover: Bool = false
     @UIState private var reserveVal: Double = 12
     @UIState private var noiseVal: Double = 2.7
+    @UIState private var lowGainVal: Double = 0.6
     @UIState private var syncingGateValues: Bool = false
 
     private var lang: AppLanguage { store.lang }
@@ -28,6 +29,7 @@ struct SchedulerBarView: View {
         syncingGateValues = true
         reserveVal = Double(hotStore.schedulerHot?.closingReserve ?? scheduler.closingReserve)
         noiseVal = hotStore.schedulerHot?.noiseFloorDelta ?? scheduler.noiseFloorDelta
+        lowGainVal = scheduler.gateSwitches?.lowGainMinProb ?? lowGainVal
         syncingGateValues = false
     }
 
@@ -194,6 +196,37 @@ struct SchedulerBarView: View {
         }
     }
 
+    /// `low_gain_min_prob`: how sure the estimate must be before a below-floor candidate is approved.
+    private var lowGainSection: some View {
+        let enabled = scheduler.gateSwitches?.approveLowGainPositive ?? true
+        let floor = hotStore.schedulerHot?.noiseFloorDelta ?? scheduler.noiseFloorDelta
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(lang.tr("低增益试探门槛", "Low-Gain Explore Bar"))
+                    .font(.system(size: 11.5))
+                Spacer()
+                Stepper(String(format: "P ≥ %.2f", lowGainVal), value: $lowGainVal, in: 0.5...0.95, step: 0.05)
+                    .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                    .disabled(!enabled)
+                    .onChange(of: lowGainVal) { _, nv in
+                        guard !syncingGateValues else { return }
+                        Task { await store.updateGateSwitch("low_gain_min_prob", value: String(format: "%.2f", nv)) }
+                    }
+            }
+            Text(enabled
+                 ? lang.tr(
+                    String(format: "期望增益低于防抖阈值（Δ %.1f）的候选，只有提升概率 P(增益>0) ≥ %.0f%% 才批准为「试探」；平台不代为请求这类候选，由 worker 自己决定是否提交。调高：少交低收益的试探；调低：多试探、多耗额度。", floor, lowGainVal * 100),
+                    String(format: "A candidate below the noise floor (Δ %.1f) is approved as EXPLORE only when P(gain>0) ≥ %.0f%%. The platform never requests these on a worker's behalf. Higher: fewer low-yield shots; lower: more exploration, more quota.", floor, lowGainVal * 100))
+                 : lang.tr("低增益批准已关闭（approve_low_gain_positive=false）：低于防抖阈值的候选一律暂缓。",
+                           "Low-gain approval is off (approve_low_gain_positive=false): every below-floor candidate is held."))
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .help(lang.tr("门禁开关 low_gain_min_prob，等同 opsb queue config --gate low_gain_min_prob=<值>。",
+                      "Gate switch low_gain_min_prob, same as opsb queue config --gate low_gain_min_prob=<value>."))
+    }
+
     private var gateConfigPopover: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(lang.tr("自动门禁与筛选阈值", "Gate & Filter Thresholds"))
@@ -251,8 +284,12 @@ struct SchedulerBarView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
             }
+
+            Divider()
+
+            lowGainSection
         }
         .padding(14)
-        .frame(width: 295)
+        .frame(width: 320)
     }
 }

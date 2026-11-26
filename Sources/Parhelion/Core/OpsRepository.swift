@@ -142,6 +142,16 @@ struct OpsRepository: Sendable {
         _ = try await client.execute(["ssh", "select", alias])
     }
 
+    /// Adds or removes one device host of the pool; the primary always stays in it.
+    func setDevicePool(alias: String, member: Bool) async throws {
+        _ = try await client.execute(["ssh", "pool", member ? "--add" : "--remove", alias])
+    }
+
+    /// One `opsb queue config --gate name=value` switch.
+    func setGateSwitch(name: String, value: String) async throws {
+        _ = try await client.execute(["queue", "config", "--gate", "\(name)=\(value)"])
+    }
+
     func saveSSHHost(alias: String, hostname: String, port: Int, user: String, identityFile: String, writeConfig: Bool, activate: Bool) async throws {
         var args = ["ssh", "save", "--alias", alias, "--hostname", hostname, "--port", "\(port)", "--user", user, "--identity-file", identityFile]
         if writeConfig { args.append("--write-ssh-config") }

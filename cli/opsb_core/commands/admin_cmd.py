@@ -25,6 +25,7 @@ from ..services.problem_repo_service import bootstrap_workspace_repos
 from ..services.scaffold_service import scaffold_workspace, write_agent_guides
 from ..services.skills_service import get_skills_status, install_skills
 from ..services.ssh_service import parse_ssh_hosts, upsert_ssh_config_block
+from ..device_hosts import device_hosts, set_pool
 
 
 def _parse_problem_spec(spec: str) -> list[dict]:
@@ -347,12 +348,31 @@ def run_auth(args: argparse.Namespace) -> int:
 def run_ssh(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     if args.ssh_cmd == "list":
-        print(json.dumps({"active_host": cfg.get("npu_ssh_host", "npu"), "hosts": parse_ssh_hosts(cfg)}, ensure_ascii=False))
+        print(json.dumps({"active_host": cfg.get("npu_ssh_host", "npu"), "pool": device_hosts(cfg),
+                          "hosts": parse_ssh_hosts(cfg)}, ensure_ascii=False))
         return 0
     if args.ssh_cmd == "select":
+        # The primary is the host the app shows first; it stays in (or joins) a configured pool, and
+        # the pool keeps its order, so no problem moves to another device.
+        pool = device_hosts(cfg)
         cfg["npu_ssh_host"] = args.alias
+        if cfg.get("npu_ssh_hosts"):
+            set_pool(cfg, pool + [args.alias])
         ConfigRepository.save(cfg)
-        print(json.dumps({"ok": True, "active_host": args.alias}))
+        print(json.dumps({"ok": True, "active_host": args.alias, "pool": device_hosts(cfg)}))
+        return 0
+    if args.ssh_cmd == "pool":
+        if args.set is not None:
+            hosts = [h for h in args.set.split(",") if h.strip()]
+        else:
+            hosts = [h for h in device_hosts(cfg) if h not in (args.remove or [])] + list(args.add or [])
+        if args.remove and cfg.get("npu_ssh_host") in args.remove:
+            print(json.dumps({"ok": False, "error": "the primary host stays in the pool; select another primary first"}))
+            return 2
+        if args.add or args.remove or args.set is not None:
+            set_pool(cfg, hosts)
+            ConfigRepository.save(cfg)
+        print(json.dumps({"ok": True, "active_host": cfg.get("npu_ssh_host", "npu"), "pool": device_hosts(cfg)}))
         return 0
     if args.ssh_cmd == "save":
         entry = {

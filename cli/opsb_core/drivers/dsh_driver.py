@@ -824,5 +824,6 @@ class DeepSeekDriver(BaseDriver):
         log_path: Path,
     ) -> int:
         return run_acp_headless_turn(
-            workspace, worktree, brief, session_id, native_session_id, resume_id, cmd, env, log_path
+            workspace, worktree, brief, session_id, native_session_id, resume_id, cmd, env, log_path,
+            live_seats=self.live_seats,
         )

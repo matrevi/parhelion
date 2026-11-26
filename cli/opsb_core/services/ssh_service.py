@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from ..device_hosts import device_hosts
+
 
 def parse_ssh_hosts(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     hosts: list[dict[str, Any]] = []
@@ -49,9 +51,11 @@ def parse_ssh_hosts(cfg: dict[str, Any]) -> list[dict[str, Any]]:
             by_alias[ch["alias"]] = {**ch, "source": ch.get("source", "opsb_config")}
 
     active_alias = cfg.get("npu_ssh_host", "npu")
+    pool = set(device_hosts(cfg))
     out = list(by_alias.values())
     for h in out:
         h["is_active"] = h["alias"] == active_alias
+        h["in_pool"] = h["alias"] in pool
     out.sort(key=lambda h: (not h["is_active"], "npu" not in h["alias"].lower(), h["alias"]))
     return out
 

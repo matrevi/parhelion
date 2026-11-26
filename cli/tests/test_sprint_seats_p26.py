@@ -463,3 +463,38 @@ def test_startup_pack_keeps_the_handover_section(env):
     assert pack["sections"]["Handover"]["bytes"] > 0
     plain = startup_pack.build(ws, titles[0], contract="contract body")
     assert "## 6. Handover" not in plain["text"]
+
+
+def test_a_resumed_seat_that_lost_its_conversation_gets_its_brief_again(env):
+    """4.3 run 2: DeepSeek Harness has no `session/load`, so a seat resumed after a daemon restart
+    started a fresh conversation that held only the follow-up text."""
+    from opsb_core.agents.sprint import start_sprint
+
+    ws, mgr = env
+    title = _make_contest(ws, 1)[0]
+    aid = start_sprint(mgr, ws, driver="deepseek")["assignments"][0]["agent_id"]
+    assert _wait(lambda: mgr._runners[aid].adapter.turns)
+    mgr._runners[aid].stop()
+    mgr._store(ws).update_agent(aid, status="error", error="Previous worker runtime ended")
+    mgr.send_message(ws, aid, "continue from your ledger")
+    adapter = mgr._runners[aid].adapter
+    brief = adapter.resume_brief()
+    assert "could not be reloaded" in brief and title in brief
+    # The adapter sends it once, ahead of the follow-up, only when the conversation was lost.
+    adapter.context_lost = True
+    assert adapter._with_resume_brief("continue").endswith("\n\ncontinue")
+    assert adapter._with_resume_brief("next") == "next"
+
+
+def test_a_daemon_shutdown_leaves_seats_resumable(env):
+    """4.3 run 2: `opsb daemon stop` marked all 14 live seats `stopped`, which refuses follow-ups."""
+    from opsb_core.agents.sprint import start_sprint
+
+    ws, mgr = env
+    _make_contest(ws, 1)
+    aid = start_sprint(mgr, ws, driver="deepseek")["assignments"][0]["agent_id"]
+    assert _wait(lambda: mgr._runners[aid].adapter.turns)
+    mgr.stop_all()
+    rec = mgr._store(ws).get_agent(aid)
+    assert rec["status"] == "error" and "follow-up" in rec["error"]
+    assert mgr.send_message(ws, aid, "continue")["woken"]

@@ -100,10 +100,12 @@ struct SkillTargetState: Codable {
 struct SSHHostListResponse: Codable {
     let activeHost: String
     let hosts: [SSHHostEntry]
+    /// The device pool (`npu_ssh_hosts`), primary included; absent from older CLIs.
+    let pool: [String]?
 
     enum CodingKeys: String, CodingKey {
         case activeHost = "active_host"
-        case hosts
+        case hosts, pool
     }
 }
 
@@ -116,11 +118,13 @@ struct SSHHostEntry: Codable, Identifiable, Hashable {
     var identityFile: String
     var source: String?
     var isActive: Bool?
+    var inPool: Bool?
 
     enum CodingKeys: String, CodingKey {
         case alias, hostname, port, user, source
         case identityFile = "identity_file"
         case isActive = "is_active"
+        case inPool = "in_pool"
     }
 }
 

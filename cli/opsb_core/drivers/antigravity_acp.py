@@ -275,6 +275,37 @@ def build_acp_mcp_servers(
     return [{"name": "parhelion", "command": cmd, "args": args, "env": [{"name": k, "value": v} for k, v in env.items()]}]
 
 
+CONTINUE_PROMPT = (
+    "The sprint is still running ({live} seats not stopped). Continue as the orchestrator: wait for events "
+    "with parhelion_agent_wait or parhelion_wait (timeout 45 or less), answer worker reports, act on judged "
+    "receipts, stagnation events and seats waiting for a follow-up. Do not end your turn while seats are live."
+)
+MAX_CONTINUATIONS = 120
+MIN_ROUND_SEC = 30.0
+
+
+def continue_turns(send, live_seats, *, max_rounds: int = MAX_CONTINUATIONS, min_round_sec: float = MIN_ROUND_SEC,
+                   clock=time.monotonic, sleep=time.sleep) -> int:
+    """Re-prompt a headless orchestrator after each ended turn while the sprint has live seats.
+
+    A background (ACP) session gets one prompt and exits when its turn ends; DeepSeek Harness's own
+    ``create_goal`` only continues inside its desktop app, and twice in the 4.3 sprint the orchestrator
+    summarised and ended its turn within minutes. Returns the number of continuation prompts sent. A
+    round that ends quickly waits out ``min_round_sec`` so an agent that ends turns at once cannot spin.
+    """
+    sent = 0
+    while sent < max_rounds:
+        live = live_seats()
+        if live <= 0:
+            break
+        started = clock()
+        send(CONTINUE_PROMPT.format(live=live))
+        sent += 1
+        if clock() - started < min_round_sec:
+            sleep(min_round_sec)
+    return sent
+
+
 def run_acp_headless_turn(
     workspace: Path,
     worktree: Path,
@@ -285,6 +316,7 @@ def run_acp_headless_turn(
     cmd: list[str],
     env: dict[str, str],
     log_path: Path,
+    live_seats=None,
 ) -> int:
     from .session_store import update_session
 
@@ -303,6 +335,8 @@ def run_acp_headless_turn(
             if active_id:
                 update_session(workspace, session_id, native_session_id=active_id)
             client.send_prompt(active_id or native_session_id, brief)
+            if live_seats is not None:
+                continue_turns(lambda text: client.send_prompt(active_id or native_session_id, text), live_seats)
         finally:
             try:
                 proc.stdin.close()

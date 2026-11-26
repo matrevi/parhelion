@@ -37,6 +37,7 @@ from . import dispatch as _dispatch
 from .agent_routes import handle_agent_get, handle_agent_post
 from .hot_reload import daemon_reloader
 from .npu_stream import NpuStreamManager
+from .. import device_hosts
 from .state_cache import WorkspaceStateCache
 from ..services.submit_runner import spawn_jump_submit
 from ..ipc_bridge import invoke_bridge
@@ -179,17 +180,63 @@ class OpsbDaemonRuntime:
             default_workspace=self.workspace,
             on_cold_updated=self.notify_subscribers,
         )
-        self.stream_mgr = NpuStreamManager(
-            host=self.ssh_host,
-            interval=1.0,
-            on_frame=self.notify_subscribers,
-            problems_provider=lambda: self.state_cache.get_problems_by_title(self.workspace),
-        )
+        self.stream_mgr = self._new_stream(self.ssh_host)
+        # One telemetry stream per further device host in the pool (``npu_ssh_hosts``), reconciled
+        # with the config on every tick, so adding or removing a host needs no restart.
+        self.extra_streams: dict[str, NpuStreamManager] = {}
+        self._hosts_lock = threading.Lock()
         self.agent_mesh = AgentMeshManager(on_change=self.notify_subscribers)
         bind_daemon_agent_manager(self.agent_mesh)
         # Stateless scheduling modules reload between dispatch ticks (see hot_reload.py).
         self.reloader = daemon_reloader()
         self._tick_lock = threading.Lock()
+
+    def _new_stream(self, host: str) -> NpuStreamManager:
+        return NpuStreamManager(
+            host=host,
+            interval=1.0,
+            on_frame=self.notify_subscribers,
+            problems_provider=lambda: self.state_cache.get_problems_by_title(self.workspace),
+        )
+
+    def sync_device_streams(self, cfg: dict[str, Any]) -> None:
+        """Start a stream for each pool host besides the primary stream's; stop removed ones."""
+        wanted = [h for h in device_hosts.device_hosts(cfg) if h != self.stream_mgr.host]
+        with self._hosts_lock:
+            gone = [h for h in self.extra_streams if h not in wanted]
+            for host in wanted:
+                if host not in self.extra_streams:
+                    mgr = self._new_stream(host)
+                    self.extra_streams[host] = mgr
+                    mgr.start()
+            stopped = [self.extra_streams.pop(h) for h in gone]
+        for mgr in stopped:
+            mgr.stop()
+
+    def stop_device_streams(self) -> None:
+        with self._hosts_lock:
+            streams = list(self.extra_streams.values())
+            self.extra_streams.clear()
+        for mgr in streams:
+            mgr.stop()
+
+    def device_host_frames(self, *, full_history: bool) -> list[dict[str, Any]]:
+        """``npu_hosts`` of a hot frame: every device host, the primary first.
+
+        The primary entry carries no ``npu``; clients read it from the frame's top-level ``npu``.
+        """
+        def head(host: str, primary: bool, st: dict[str, Any]) -> dict[str, Any]:
+            return {"host": host, "primary": primary, "stream_connected": bool(st.get("stream_connected")),
+                    "probe_backend": st.get("probe_backend"), "dcmi_sample_ms": round(float(st.get("dcmi_sample_ms") or 0.0), 2),
+                    "last_error": st.get("last_error")}
+
+        out = [head(self.stream_mgr.host, True, self.stream_mgr.stats())]
+        with self._hosts_lock:
+            extras = list(self.extra_streams.items())
+        for host, mgr in extras:
+            out.append({**head(host, False, mgr.stats()),
+                        "npu": mgr.snapshot(compact_history=not full_history, history_tail=5)})
+        return out
 
     def dispatch_next(self, workspace: Path, snapshot: dict, backoff: dict) -> None:
         # Looked up on the module at call time, so a hot reload takes effect on the next tick.
@@ -222,6 +269,10 @@ class OpsbDaemonRuntime:
             with self._tick_lock:
                 try:
                     cfg = ConfigRepository.load()
+                    try:
+                        self.sync_device_streams(cfg)
+                    except Exception as exc:
+                        print(f"device stream sync failed: {exc}", file=sys.stderr, flush=True)
                     ws = Path(cfg.get("active_workspace") or self.workspace).expanduser().resolve()
                     if not (ws / "results").is_dir():
                         continue
@@ -356,6 +407,8 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                         "cold_etag": cold_etag,
                         "dcmi_sample_ms": round(float(st["dcmi_sample_ms"]), 2),
                         "cold_recompute_ms": cold_ms,
+                        "hosts": [{k: h[k] for k in ("host", "primary", "stream_connected")}
+                                  for h in runtime.device_host_frames(full_history=False)],
                     },
                 )
                 return
@@ -372,6 +425,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                     stream_stats=runtime.stream_mgr.stats(),
                     uptime_sec=runtime.uptime_sec(),
                 )
+                frame["npu_hosts"] = runtime.device_host_frames(full_history=full_hist)
                 frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
                 frame["test_runs"] = _test_registry(ws)
                 self._send_json(200, frame)
@@ -421,6 +475,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                             stream_stats=runtime.stream_mgr.stats(),
                             uptime_sec=runtime.uptime_sec(),
                         )
+                        frame["npu_hosts"] = runtime.device_host_frames(full_history=first_frame)
                         frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
                         frame["test_runs"] = _test_registry(ws)
                         first_frame = False
@@ -559,6 +614,10 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
     # Warm cold cache before accepting traffic so the first snapshot & hot frame are ready immediately.
     runtime.state_cache.warm(workspace)
     runtime.stream_mgr.start()
+    try:
+        runtime.sync_device_streams(ConfigRepository.load())
+    except Exception as exc:
+        print(f"device stream start failed: {exc}", file=sys.stderr, flush=True)
     consumer = threading.Thread(target=runtime.consume_queue, args=(stop_event,), name="submission-consumer", daemon=True)
     consumer.start()
 
@@ -589,6 +648,7 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
         runtime.agent_mesh.stop_all()
         bind_daemon_agent_manager(None)
         runtime.stream_mgr.stop()
+        runtime.stop_device_streams()
         server.server_close()
         _remove_daemon_state(expected_pid=os.getpid())
     return 0

@@ -154,6 +154,8 @@ struct HotStreamFrame: Codable {
     let agentMesh: AgentMeshHotState?
     /// Newest `parhelion_test` registry rows (no digests); absent from older daemons.
     let testRuns: [TestRunEntry]?
+    /// Every device host in the pool, the primary first (4.3.2); absent from older daemons.
+    let npuHosts: [DeviceHostFrame]?
 
     enum CodingKeys: String, CodingKey {
         case ts, workspace, npu, pipeline
@@ -162,6 +164,26 @@ struct HotStreamFrame: Codable {
         case daemonStats = "daemon_stats"
         case agentMesh = "agent_mesh"
         case testRuns = "test_runs"
+        case npuHosts = "npu_hosts"
+    }
+}
+
+/// One device host of a hot frame. The primary entry carries no `npu`: it is the frame's own `npu`.
+struct DeviceHostFrame: Codable {
+    let host: String
+    let primary: Bool
+    let streamConnected: Bool
+    let probeBackend: String?
+    let dcmiSampleMs: Double?
+    let lastError: String?
+    let npu: NpuTelemetry?
+
+    enum CodingKeys: String, CodingKey {
+        case host, primary, npu
+        case streamConnected = "stream_connected"
+        case probeBackend = "probe_backend"
+        case dcmiSampleMs = "dcmi_sample_ms"
+        case lastError = "last_error"
     }
 }
 
@@ -305,7 +327,9 @@ struct NpuCaseProgress: Codable, Hashable {
 struct NpuTaskItem: Codable, Identifiable {
     let runId: String?
     let caseProgress: NpuCaseProgress?
-    var id: String { "\(pid)-\(state)-\(problem ?? "")" }
+    /// Device host the task runs on, filled in by the client when it merges several hosts' tasks.
+    var host: String? = nil
+    var id: String { "\(host ?? "")#\(pid)-\(state)-\(problem ?? "")" }
     let pid: Int
     let die: Int?
     let state: String
@@ -340,5 +364,17 @@ struct NpuTaskItem: Codable, Identifiable {
         case wsptTag = "wspt_tag"
         case elapsedSec = "elapsed_sec"
         case estimatedWaitSec = "estimated_wait_sec"
+    }
+}
+
+extension NpuTelemetry {
+    /// A device host whose stream has not delivered a frame yet.
+    static func offline(host: String, error: String?) -> NpuTelemetry {
+        NpuTelemetry(
+            online: false, sshHost: host, rttMs: nil, probeLatencyMs: nil, probeBackend: nil, sampleMs: nil,
+            hostname: nil, arch: nil, sdkVersion: nil, smiVersion: nil, error: error, primaryNpu: nil, cpu: nil,
+            memory: nil, history: nil, dieDuty10m: nil, slotsPerHr: nil, avgDieHoldSec: nil, parallelCpuBuilds: nil,
+            dieLocks: [], tasks: []
+        )
     }
 }

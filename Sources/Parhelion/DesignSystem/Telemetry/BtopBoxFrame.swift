@@ -29,6 +29,8 @@ struct BtopBox<Trailing: View, Content: View>: View {
     let keyIndex: String
     let title: String
     let accent: Color
+    /// Shown after the title as written (host aliases are case-sensitive), e.g. `@npu2`.
+    var titleSuffix: String = ""
     @ViewBuilder var trailing: () -> Trailing
     @ViewBuilder var content: () -> Content
 
@@ -47,6 +49,12 @@ struct BtopBox<Trailing: View, Content: View>: View {
                     .font(.system(size: 10.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(BtopPalette.textPrimary)
                     .tracking(0.5)
+
+                if !titleSuffix.isEmpty {
+                    Text(titleSuffix)
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accent)
+                }
 
                 Spacer(minLength: 4)
                 trailing()

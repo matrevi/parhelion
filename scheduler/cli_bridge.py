@@ -299,6 +299,10 @@ class SchedulerEngine:
                 self.overrides = dict(payload["overrides"])
                 self.held_items = dict(payload["held_items"])
                 self.verified_escapes = dict(payload["verified_escapes"])
+                # The config too: a switch another process set since this engine loaded is now in
+                # `_raw_state`, so a stale in-memory value would look like this engine's own change
+                # on its next save and be written back (4.3 run 2 lost low_gain_min_prob=0.6 so).
+                self.config = GateConfig.from_dict(payload["config"])
                 self._raw_state = payload
             finally:
                 fcntl.flock(lk.fileno(), fcntl.LOCK_UN)

@@ -319,3 +319,14 @@ def test_shown_free_shots_keep_the_closing_reserve_separate() -> None:
                                       "config": {}})
     assert payload["scheduler"]["available_normal_shots"] == 70
     assert payload["scheduler"]["closing_reserve"] == 10
+
+
+def test_the_gate_popover_switches_reach_the_snapshot() -> None:
+    """4.3.2: the app's gate popover shows and edits `low_gain_min_prob` from the snapshot."""
+    payload = {"scheduler": {}, "problems": [], "contest": {}, "submission_queue": []}
+    merge_bridge_enrichment(payload, {"quota": {}, "config": {"noise_floor_pts": 1.9, "low_gain_min_prob": 0.6,
+                                                              "approve_low_gain_positive": True, "circuit_blocks": False}})
+    assert payload["scheduler"]["gate_switches"] == {"low_gain_min_prob": 0.6, "approve_low_gain_positive": True}
+    payload = {"scheduler": {}, "problems": [], "contest": {}, "submission_queue": []}
+    merge_bridge_enrichment(payload, {"quota": {}, "config": {}})
+    assert "gate_switches" not in payload["scheduler"]

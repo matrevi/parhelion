@@ -177,6 +177,7 @@ class TestDaemonStateAndHttp(unittest.TestCase):
                             obj = json.loads(line[6:].strip())
                             self.assertIn("cold_etag", obj)
                             self.assertIn("npu", obj)
+                            self.assertEqual([h["host"] for h in obj["npu_hosts"]], ["npu"])
                             seen += 1
                     sse.close()
                 finally:
@@ -184,6 +185,29 @@ class TestDaemonStateAndHttp(unittest.TestCase):
                     runtime.notify_subscribers()
                     server.shutdown()
                     server.server_close()
+
+    def test_each_pool_host_gets_its_own_stream_and_frame_entry(self) -> None:
+        """4.3.2: with ``npu_ssh_hosts`` set, the second device host had no telemetry in the app."""
+        with tempfile.TemporaryDirectory() as td:
+            ws = _make_fake_workspace(Path(td))
+            started: list[str] = []
+            stopped: list[str] = []
+            with (
+                mock.patch.object(NpuStreamManager, "start", lambda self: started.append(self.host)),
+                mock.patch.object(NpuStreamManager, "stop", lambda self: stopped.append(self.host)),
+                mock.patch.object(NpuStreamManager, "snapshot", lambda self, **_: {"online": True, "ssh_host": self.host, "tasks": []}),
+            ):
+                runtime = OpsbDaemonRuntime(workspace=ws, ssh_host="npu", port=0, token="t")
+                runtime.sync_device_streams({"npu_ssh_host": "npu", "npu_ssh_hosts": ["npu", "npu2"]})
+                runtime.sync_device_streams({"npu_ssh_host": "npu", "npu_ssh_hosts": ["npu", "npu2"]})
+                self.assertEqual(started, ["npu2"])
+                frames = runtime.device_host_frames(full_history=True)
+                self.assertEqual([(f["host"], f["primary"]) for f in frames], [("npu", True), ("npu2", False)])
+                self.assertNotIn("npu", frames[0])
+                self.assertEqual(frames[1]["npu"]["ssh_host"], "npu2")
+                runtime.sync_device_streams({"npu_ssh_host": "npu", "npu_ssh_hosts": []})
+                self.assertEqual(stopped, ["npu2"])
+                self.assertEqual([f["host"] for f in runtime.device_host_frames(full_history=False)], ["npu"])
 
     def test_npu_stream_manager_parses_stream_and_configures(self) -> None:
         import io

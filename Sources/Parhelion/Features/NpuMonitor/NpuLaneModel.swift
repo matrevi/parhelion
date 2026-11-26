@@ -34,7 +34,8 @@ final class NpuLaneModel: ObservableObject {
     static let lingerSec: TimeInterval = 2.5
 
     private var gone: [String: (card: NpuLaneCard, index: Int, since: Date)] = [:]
-    private var pidOwner: [Int: String] = [:]
+    /// Keyed by `host#pid`: two device hosts may run processes with the same pid.
+    private var pidOwner: [String: String] = [:]
     private var shaOwner: [String: String] = [:]
     private var slotRank: [String: Int] = [:]
     private var startedEpochById: [String: Double] = [:]
@@ -70,7 +71,7 @@ final class NpuLaneModel: ObservableObject {
         lastTasks = tasks
         let nowEpoch = now.timeIntervalSince1970
         var used = Set<String>()
-        var nextPidOwner: [Int: String] = [:]
+        var nextPidOwner: [String: String] = [:]
         var nextShaOwner: [String: String] = [:]
         var live: [NpuLaneCard] = []
 
@@ -80,9 +81,9 @@ final class NpuLaneModel: ObservableObject {
             let sha7 = Self.shortSha(of: task)
             let shaKey = sha7.isEmpty ? nil : "\(base)|\(sha7)"
 
-            let id = resolveId(base: base, pid: task.pid, shaKey: shaKey, used: used)
+            let id = resolveId(base: base, pidKey: task.pid > 0 ? Self.pidKey(task) : nil, shaKey: shaKey, used: used)
             used.insert(id)
-            if task.pid > 0 { nextPidOwner[task.pid] = id }
+            if task.pid > 0 { nextPidOwner[Self.pidKey(task)] = id }
             if let shaKey { nextShaOwner[shaKey] = id }
             if slotRank[id] == nil {
                 nextRank += 1
@@ -122,10 +123,10 @@ final class NpuLaneModel: ObservableObject {
             gone[prev.id] = (lingeringCard, laneIndex, now)
         }
         for id in used { gone[id] = nil }
-        let livePids = Set(live.map { $0.task.pid })
+        let livePids = Set(live.map { Self.pidKey($0.task) })
         gone = gone.filter {
             let card = $0.value.card
-            return card.lane != .active && !livePids.contains(card.task.pid)
+            return card.lane != .active && !livePids.contains(Self.pidKey(card.task))
                 && now.timeIntervalSince($0.value.since) < Self.lingerSec
         }
 
@@ -171,8 +172,8 @@ final class NpuLaneModel: ObservableObject {
         return out
     }
 
-    private func resolveId(base: String, pid: Int, shaKey: String?, used: Set<String>) -> String {
-        if pid > 0, let owned = pidOwner[pid], matchesBase(owned, base), !used.contains(owned) {
+    private func resolveId(base: String, pidKey: String?, shaKey: String?, used: Set<String>) -> String {
+        if let pidKey, let owned = pidOwner[pidKey], matchesBase(owned, base), !used.contains(owned) {
             return owned
         }
         if let shaKey, let owned = shaOwner[shaKey], matchesBase(owned, base), !used.contains(owned) {
@@ -194,6 +195,8 @@ final class NpuLaneModel: ObservableObject {
         switch lane {
         case .active:
             return items.sorted { a, b in
+                let ha = a.task.host ?? "", hb = b.task.host ?? ""
+                if ha != hb { return ha < hb }
                 let da = a.task.die ?? Int.max
                 let db = b.task.die ?? Int.max
                 if da != db { return da < db }
@@ -227,10 +230,14 @@ final class NpuLaneModel: ObservableObject {
         return String(raw.prefix(7))
     }
 
+    private static func pidKey(_ task: NpuTaskItem) -> String {
+        "\(task.host ?? "")#\(task.pid)"
+    }
+
     private static func baseKey(_ task: NpuTaskItem) -> String {
         if let runId = task.runId, !runId.isEmpty { return "run-\(runId)" }
         let kind = task.isBackfillTask ? "B0" : "Q"
-        guard let problem = task.problem, !problem.isEmpty else { return "pid-\(task.pid)|\(kind)" }
+        guard let problem = task.problem, !problem.isEmpty else { return "pid-\(pidKey(task))|\(kind)" }
         return "\(problem)|\(kind)"
     }
 }

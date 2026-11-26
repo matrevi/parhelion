@@ -19,14 +19,32 @@ DEFAULT_HOST = "npu"
 
 
 def device_hosts(cfg: dict[str, Any]) -> list[str]:
-    """Every configured device host, the primary ``npu_ssh_host`` first, without duplicates."""
+    """Every configured device host without duplicates, in the pool's own order.
+
+    The pool order decides the pins, so choosing another primary (the host the app shows first) does
+    not move problems between devices. A primary missing from the pool is put in front of it.
+    """
     primary = str(cfg.get("npu_ssh_host") or DEFAULT_HOST)
-    hosts = [primary]
+    hosts: list[str] = []
     for host in cfg.get("npu_ssh_hosts") or []:
         alias = str(host or "").strip()
         if alias and alias not in hosts:
             hosts.append(alias)
-    return hosts
+    return hosts if primary in hosts else [primary, *hosts]
+
+
+def set_pool(cfg: dict[str, Any], hosts: list[str]) -> list[str]:
+    """Write ``hosts`` as the device pool, keeping the primary in it; returns the stored pool."""
+    primary = str(cfg.get("npu_ssh_host") or DEFAULT_HOST)
+    pool: list[str] = []
+    for host in hosts:
+        alias = str(host or "").strip()
+        if alias and alias not in pool:
+            pool.append(alias)
+    if primary not in pool:
+        pool.insert(0, primary)
+    cfg["npu_ssh_hosts"] = pool if len(pool) > 1 else []
+    return device_hosts(cfg)
 
 
 def _roster(workspace: Path) -> list[str]:

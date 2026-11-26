@@ -9,7 +9,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .. import config as _cfg
 from .. import worker_sandbox
@@ -181,6 +181,9 @@ class BaseDriver(ABC):
     display_name: str = ""
     protocol: str = ""
     gui_apps: tuple[str, ...] = ()
+    #: Set for the contest orchestrator's background job: how many sprint seats are live. An ACP
+    #: driver keeps the orchestrator's turn going while it is positive (``antigravity_acp.continue_turns``).
+    live_seats: Callable[[], int] | None = None
 
     def __init__(self) -> None:
         self.last_launch_meta: dict[str, Any] = {}

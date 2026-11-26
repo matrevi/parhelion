@@ -36,6 +36,23 @@ def test_problems_alternate_over_the_roster_and_stay_pinned(tmp_path):
     assert device_hosts.host_for(cfg, ws, "beta") == device_hosts.host_for(cfg, ws, "Beta") == "npu2"
 
 
+def test_choosing_another_primary_keeps_every_problem_on_its_device(tmp_path):
+    ws = _ws(tmp_path)
+    before = device_hosts.assignment({"npu_ssh_host": "npu", "npu_ssh_hosts": ["npu", "npu2"]}, ws)
+    after = device_hosts.assignment({"npu_ssh_host": "npu2", "npu_ssh_hosts": ["npu", "npu2"]}, ws)
+    assert before == after
+    # a primary outside the pool still runs tests, in front of it
+    assert device_hosts.device_hosts({"npu_ssh_host": "npu3", "npu_ssh_hosts": ["npu", "npu2"]}) == ["npu3", "npu", "npu2"]
+
+
+def test_set_pool_keeps_the_primary_and_clears_a_single_host_pool():
+    cfg = {"npu_ssh_host": "npu"}
+    assert device_hosts.set_pool(cfg, ["npu2", "npu2", ""]) == ["npu", "npu2"]
+    assert cfg["npu_ssh_hosts"] == ["npu", "npu2"]
+    assert device_hosts.set_pool(cfg, []) == ["npu"]
+    assert cfg["npu_ssh_hosts"] == []
+
+
 def test_a_pin_overrides_the_roster_order_only_for_a_known_host(tmp_path):
     ws = _ws(tmp_path)
     cfg = {"npu_ssh_host": "npu", "npu_ssh_hosts": ["npu2"], "npu_host_by_problem": {"Alpha": "npu2", "Beta": "gone"}}

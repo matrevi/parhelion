@@ -39,6 +39,8 @@ final class ContestStore: ObservableObject {
     @Published var workspacesLoaded: Bool = false
     @Published var sshHosts: [SSHHostEntry] = []
     @Published var activeSSHHost: String = "npu"
+    /// Device pool, primary included (`opsb ssh pool`).
+    @Published var sshPool: [String] = []
 
     @Published var selectedWorkspace: String = ""
     @Published var selectedProblemTitle: String? = nil
@@ -146,6 +148,20 @@ final class ContestStore: ObservableObject {
         if let res = try? await repository.listSSHHosts() {
             sshHosts = res.hosts
             activeSSHHost = res.activeHost
+            sshPool = res.pool ?? [res.activeHost]
+        }
+    }
+
+    /// The daemon reconciles its telemetry streams with the pool on its next tick (about a second).
+    func setDevicePool(_ alias: String, member: Bool) async {
+        do {
+            try await repository.setDevicePool(alias: alias, member: member)
+            await reloadSSHHosts()
+            bannerMessage = member
+                ? tr("\(alias) 已加入设备池：开始采集遥测，部分题目的测试将在它上面运行", "\(alias) joined the device pool")
+                : tr("\(alias) 已移出设备池", "\(alias) left the device pool")
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 

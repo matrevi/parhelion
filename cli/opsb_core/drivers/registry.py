@@ -251,6 +251,17 @@ def list_all_sessions(
     return merged[:cap]
 
 
+def _live_seat_count(ws: Path) -> int:
+    """Sprint seats that are not stopped; a seat waiting for a follow-up after a restart counts."""
+    from ..agents.bus_store import AgentBusStore
+
+    try:
+        rows = AgentBusStore(ws).list_agents(limit=-1)
+    except Exception:
+        return 0
+    return sum(1 for r in rows if r.get("role_label") != "orchestrator" and r.get("status") != "stopped")
+
+
 def _run_worker_job(job_path: Path) -> int:
     job = json.loads(job_path.read_text(encoding="utf-8"))
     drv = get_driver(job["driver"])
@@ -259,6 +270,9 @@ def _run_worker_job(job_path: Path) -> int:
     cmd = [str(x) for x in job["cmd"]]
     env = {str(k): str(v) for k, v in (job.get("env") or {}).items()}
     log_path = Path(job["log_path"])
+    if job.get("problem") == ORCHESTRATOR_PROBLEM:
+        # The contest orchestrator keeps its turn going while the sprint has seats (ACP drivers).
+        drv.live_seats = lambda: _live_seat_count(ws)
 
     try:
         rc = drv._execute_headless_turn(

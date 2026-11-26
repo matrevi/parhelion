@@ -48,6 +48,7 @@ PROVIDER_FAULT = re.compile(
     r"insufficient balance|insufficient_quota|quota exceeded|billing|payment required|\b402\b|\b401\b"
     r"|unauthori[sz]ed|invalid api key|rate limit|\b429\b", re.I)
 SUSPENDED_ERROR = "suspended: provider fault"
+DAEMON_STOPPED = "Daemon stopped; send a follow-up to resume this seat."
 DEFAULT_CONTEXT_WINDOW = 200_000
 COMPACT_PERCENT = 70
 #: 4.2 F: how long an idle recipient's peer queue may coalesce before one merged wake.
@@ -1005,12 +1006,34 @@ class AgentMeshManager:
                 log_path = resolve_session_logs_dir() / f"mesh-{agent_id}.jsonl"
                 adapter = self._adapter_factory(ws, Path(rec["worktree"] or ws), rec["driver"], agent_id, log_path)
                 adapter.native_session_id = str(rec.get("native_session_id") or "")
+                adapter.resume_brief = lambda ws=ws, rec=dict(rec): self._resume_brief(ws, rec)
                 runner = self._make_runner(ws, agent_id, store, adapter, resume=True)
                 self._runners[agent_id] = runner
         if interrupt:
             runner.interrupt()
         runner.enqueue(message, squad=squad)
         return {"ok": True}
+
+    def _resume_brief(self, ws: Path, rec: dict[str, Any]) -> str:
+        """The seat brief again, for a resumed seat whose driver could not reload its conversation."""
+        store = self._store(ws)
+        agent_id = rec["agent_id"]
+        tasks = [m for m in store.list_messages(agent_id=agent_id, direction="orch_to_worker", limit=20)
+                 if m.get("kind") == "task"]
+        task = str(tasks[0]["body"] if tasks else "").strip()
+        role, problem = str(rec.get("role_label") or "worker"), str(rec.get("problem") or "")
+        wt = Path(rec.get("worktree") or ws)
+        branch = str(rec.get("branch") or "")
+        if role in SEAT_CONTRACTS:
+            brief = compose_seat_contract(ws, role, problem=problem, worktree=wt, branch=branch, goal=task)
+        elif role == "bench-author":
+            brief = compose_bench_author_brief(ws, problem) + "\n\n" + task
+        else:
+            brief = compose_session_brief(ws, problem, goal=task, worktree=wt, branch=branch, role=role,
+                                          agent_id=agent_id, include_startup_pack=True, driver=str(rec.get("driver") or ""))
+        return ("Your previous conversation ended (platform restart) and could not be reloaded, so this is "
+                "your seat brief again. Your worktree, branch, ledger and inbox are unchanged: read git log, "
+                "your ledger and parhelion_inbox before you continue.\n\n" + brief)
 
     @staticmethod
     def _squad_targets(mates: dict[str, dict[str, Any]], recipient: str) -> list[str]:
@@ -1389,12 +1412,15 @@ class AgentMeshManager:
             timer.cancel()
         for hub in hubs:
             hub.stop()
+        # A daemon shutdown is not an administrator stopping the seat: `stopped` refuses follow-ups and
+        # blocks sprint_start, so a restart used to end every worker of a running sprint (4.3 run 2).
+        # The seat stays resumable, as after a crash (`recover_workers`).
         for r in runners:
             try:
                 r.stop()
                 rec = r.store.get_agent(r.agent_id)
                 if rec and rec["status"] not in ("error", "stopped"):
-                    r.store.update_agent(r.agent_id, status="stopped", pid=None, pgid=None)
+                    r.store.update_agent(r.agent_id, status="error", pid=None, pgid=None, error=DAEMON_STOPPED)
             except Exception:
                 pass
 

@@ -3,9 +3,10 @@ import Foundation
 /// User-initiated queue / gate / NPU mutations on `ContestStore`.
 /// Every mutation invalidates the daemon cold cache and forces a coalesced cold refresh.
 extension ContestStore {
-    func boostNpuTicket(pid: Int, problem: String, sha: String) async {
+    /// `host` is the device host the ticket's process runs on (lane cards carry it); the primary by default.
+    func boostNpuTicket(pid: Int, problem: String, sha: String, host: String? = nil) async {
         do {
-            try await repository.boostNpuTicket(host: activeSSHHost, pid: pid, problem: problem, sha: sha)
+            try await repository.boostNpuTicket(host: host ?? activeSSHHost, pid: pid, problem: problem, sha: sha)
             bannerMessage = tr("已将 \(problem) 置顶为下一顺位获卡", "Boosted \(problem) to #1 NPU ticket")
             await refreshNpu(silent: true)
         } catch {
@@ -13,9 +14,10 @@ extension ContestStore {
         }
     }
 
-    func cancelNpuTicket(pid: Int, problem: String) async {
+    /// A pid is only meaningful on its own host: cancelling an `npu2` card must not signal `npu`.
+    func cancelNpuTicket(pid: Int, problem: String, host: String? = nil) async {
         do {
-            try await repository.cancelNpuTask(host: activeSSHHost, pid: pid)
+            try await repository.cancelNpuTask(host: host ?? activeSSHHost, pid: pid)
             bannerMessage = tr("已取消远程任务 \(problem) (PID \(pid))", "Cancelled remote task \(problem) (PID \(pid))")
             await refreshNpu(silent: true)
         } catch {
@@ -52,6 +54,17 @@ extension ContestStore {
             await refreshLocal(force: true)
         } catch {
             if autoConsumer != nil { clearAutoConsumerOverride() }
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Sets one gate switch (`opsb queue config --gate name=value`) and refreshes the snapshot.
+    func updateGateSwitch(_ name: String, value: String) async {
+        do {
+            try await repository.setGateSwitch(name: name, value: value)
+            await daemonClient.invalidate(workspace: selectedWorkspace)
+            await refreshLocal(force: true)
+        } catch {
             errorMessage = error.localizedDescription
         }
     }

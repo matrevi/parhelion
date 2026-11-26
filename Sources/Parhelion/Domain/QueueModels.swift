@@ -203,9 +203,12 @@ struct SchedulerState: Codable {
     let pipeline: LivePipelineState?
     /// B0 auto-backfill lane snapshot; `nil` when the probe was skipped/unavailable.
     let backfill: BackfillPassthrough?
+    /// Gate switches the popover edits (`opsb queue config --gate`); absent from older daemons.
+    let gateSwitches: GateSwitchValues?
 
     enum CodingKeys: String, CodingKey {
         case pipeline, backfill
+        case gateSwitches = "gate_switches"
         case autoConsumerEnabled = "auto_consumer_enabled"
         case rateLimitGapSec = "rate_limit_gap_sec"
         case cooldownRemainingSec = "cooldown_remaining_sec"
@@ -222,6 +225,16 @@ struct SchedulerState: Codable {
         case circuitBreakerLimit = "circuit_breaker_limit"
         case queueLockHeld = "queue_lock_held"
         case actionableCount = "actionable_count"
+    }
+}
+
+struct GateSwitchValues: Codable, Hashable {
+    let approveLowGainPositive: Bool?
+    let lowGainMinProb: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case approveLowGainPositive = "approve_low_gain_positive"
+        case lowGainMinProb = "low_gain_min_prob"
     }
 }
 
