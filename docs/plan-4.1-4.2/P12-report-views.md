@@ -31,6 +31,11 @@
 
 在 schema、handler 与角色三处同步登记。
 
+### 调研补充
+
+- **R6 `view=bottleneck`**：返回紧凑诊断，包括瓶颈类别、受限资源占峰值的百分比、前 3 个指标值、知识库里的候选修复族，以及原始剖析数据的路径。依据 `docs/v4.2/research/agent-optimization-practice.md` R6。
+- **R3 三态判定**：`per_case` 视图对每个用例给出 improved / indistinguishable / regressed 三态，取代原始 µs 差值；判定逻辑见 P17。
+
 ## 3. 覆盖核对
 
 - `opsb queue list --json` 与 `opsb history --json` 的每个字段，在对应视图中都能拿到，或者有明确的去处。报告附对照表。

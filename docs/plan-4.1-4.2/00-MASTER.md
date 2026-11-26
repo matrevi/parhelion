@@ -7,6 +7,7 @@
 - `docs/v4/RELEASE-NOTES.md`：「4.1 路线」（1–4）与「2026-11-26 冲刺暴露的问题 · 4.1 待办」（5–20，编号接续路线）。
 - `docs/v4.2/00-PLAN.md`：工作包 A–K、§3 目标指标、§5 回放验收。
 - 依据材料：`docs/v4/RUN-LOG-2026-11-26.md`、`docs/v4.2/research/token-economy.md`、`docs/v4.2/research/compaction-memory.md`（账本字段见其 §5.3）。
+- 补充调研：`docs/v4.2/research/agent-optimization-practice.md`，内容是 Kaggle 实践、算子优化系统、记忆组织与社区 skill。其 R1–R12 已并入相关子计划，R1–R3 单列为 P17。
 
 ## 1. 子计划索引与落地顺序
 
@@ -29,7 +30,8 @@
 | 13 | [P13 统一输出上限 bound_output](P13-bound-output.md) | 4.2 E | `mcp/server.py` 新模块 `cli/opsb_core/mcp/bound.py` | P12 |
 | 14 | [P14 同伴消息协议](P14-peer-protocol.md) | 4.2 F | `agents/manager.py`(squad) `mcp/handlers_agents.py` `ledger/` | P06 |
 | 15 | [P15 worker 边界](P15-worker-boundary.md) | 4.2 K | `agents/adapters.py` `worker_access.py` `drivers/*` | P12（board 视图） |
-| 16 | P16 H/I/J 决策 | 4.2 H I J | 由主会话根据 P03 的测量与回放结果决定，届时补写子计划 | P03–P15 |
+| 15a | [P17 本地验证加固、逐例校准表、噪声感知判定](P17-verify-calibrate.md) | 调研 R1 R2 R3 | `runtime/npu_runtime/*` `scheduler/{gate,case_bench,suite}.py` 新模块 | P01、P02、P07 |
+| 16 | P16 H/I/J 决策 | 4.2 H I J | 由主会话根据 P03 的测量与回放结果决定，届时补写子计划；调研 R10（按代码相似度注入知识、按驱动 A/B）并入 J | P03–P15 |
 
 ### 1.1 执行分组
 
@@ -39,7 +41,7 @@
 
 | 组 | 子计划（按序） | 区域 |
 |---|---|---|
-| 1 判题与门禁 | P01 → P02 → P07 | 回执、用例映射、WA 复现、门禁与队列、逃逸锁 MCP |
+| 1 判题与门禁 | P01 → P02 → P07 → P17 | 回执、用例映射、WA 复现、门禁与队列、逃逸锁 MCP、验证加固与校准 |
 | 2 上下文经济内核 | P03 → P04 → P05 → P06 | 计量与回放、等待、账本、压缩种子 |
 | 3 设备与守护进程 | P09 → P10 → P11 | 用例缓存、总线序号、daemon 热加载、编译检查、profiler 计时、A/B 配对、跨题批次、界面 |
 | 4 工具面与边界 | P12 → P13 → P14 → P08 → P15 | 平台视图、输出上限、同伴协议、启动包、worker 边界（P06 合入后启动） |
@@ -112,4 +114,5 @@
 | P13 | impl/P13-bound-output | 待开始 | | |
 | P14 | impl/P14-peer-protocol | 待开始 | | |
 | P15 | impl/P15-worker-boundary | 待开始 | | |
+| P17 | impl/P17-verify-calibrate | 待开始 | | |
 | P16 | — | 待测量 | | |

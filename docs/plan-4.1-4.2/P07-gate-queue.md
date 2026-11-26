@@ -41,6 +41,12 @@ Swift 卡片 `Features/NpuMonitor/SubmissionQueueCardViews.swift` 只显示 `jud
 
 队列卡片：ESCAPE LOCK 卡片的理由后附「下一步」。这是 bridge 新增的 `next_step` 字段，Swift 用 `decodeIfPresent`。
 
+## 调研 R12：每题保留 top-K 候选
+
+依据 `docs/v4.2/research/agent-optimization-practice.md` R12。每题保留逐例记录最好的 3 个候选 SHA（按门禁预测分排序，相互之间要有差异）。死路实验不能挤掉在位候选。
+
+`parhelion_report(view=queue)` 与队列卡片显示这份候选档案。默认仍是每题一个 worker 串行改进。
+
 ## 验收
 
 - 单测：

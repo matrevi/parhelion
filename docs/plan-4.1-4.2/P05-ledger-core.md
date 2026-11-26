@@ -25,6 +25,16 @@
   - 题目级视图合并该题所有 worker 的账本。
 - 去重：平台写入的条目按证据键（`test_run_id`、`submission_id`）幂等，重放不重复。
 
+### 实验条目的预测与结果字段（调研 R5）
+
+`experiment` 条目增加以下字段：
+- 模型写：`expected_outcome`；
+- 平台写：`actual_outcome`，由测试运行与回执填写；
+- 判定：`was_diagnosis_correct`、`was_fix_effective`；
+- 经验：`lessons`、`avoid_patterns`（带 scope 与 `revisit_if`）、`try_patterns`。
+
+做法参照 KernelAgent 的 reflexion 结构，见 `docs/v4.2/research/agent-optimization-practice.md` R5。本包只定字段并由平台填写 `actual_outcome`；其余字段的写入口在 P06 的 `parhelion_note`。
+
 ## #2 平台自动写入
 
 1. 测试完成时，接入 `services/test_runs.py` 的终态收尾（`refresh` / 守护线程收尾，以及 `manager.deliver_test_results`）。由 digest 写一条 `measurement`（逐例 min/median µs、噪声带、级别、套件版本）和一条 `experiment`（sha、`base_sha`、相对基线的逐例增量与 outcome：better/worse/neutral/noise/WA/RE/TLE/compile_fail；`diff_hash` 由 git 计算）。

@@ -75,6 +75,15 @@
    
    两者都只读日志。
 
+## 5. 成本效率指标（调研 R9）
+
+依据 `docs/v4.2/research/agent-optimization-practice.md` R9。按 worker 与题目汇总三项：
+- 每个被保留改进（本地门禁判为 improved 的实验）消耗的 token 与设备秒；
+- 每分官方增益消耗的 token 与设备秒；
+- 每次判题的增益。
+
+数据来自 §1 的用量、§2 的工具记录、测试登记表与规范回执（`scheduler/receipts.py`）。§3 的冲刺口径报告同时给出这三项的现状。
+
 ## 验收
 
 - 单测：
