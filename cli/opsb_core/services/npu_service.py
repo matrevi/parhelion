@@ -255,7 +255,9 @@ def boost_npu_ticket(host: str, pid: int, problem: str = "", sha: str = "") -> d
         "os.chmod(tp, 0o444)\n"
         "print(json.dumps({'ok': True, 'pid': cur['pid'], 'boosted': True}))\n"
     )
-    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-c", remote_py], capture_output=True, text=True, timeout=6.0)
+    # ssh joins its arguments into one remote shell command line, so a multi-line `-c` script is
+    # re-split by the remote shell (python sees only `import`). Feed the script on stdin instead.
+    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-"], input=remote_py, capture_output=True, text=True, timeout=6.0)
     if proc.returncode != 0:
         return {"ok": False, "error": (proc.stderr or proc.stdout).strip()[:200]}
     return {"ok": True, "pid": pid, "boosted": True}
@@ -281,7 +283,9 @@ def cancel_npu_task(host: str, pid: int) -> dict[str, Any]:
         "        except Exception: pass\n"
         "print(json.dumps({'ok': True, 'pid': pid, 'killed': killed}))\n"
     )
-    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-c", remote_py], capture_output=True, text=True, timeout=6.0)
+    # ssh joins its arguments into one remote shell command line, so a multi-line `-c` script is
+    # re-split by the remote shell (python sees only `import`). Feed the script on stdin instead.
+    proc = subprocess.run(["ssh", *SSH_CONTROL_OPTS, host, "python3", "-"], input=remote_py, capture_output=True, text=True, timeout=6.0)
     if proc.returncode != 0:
         return {"ok": False, "error": (proc.stderr or proc.stdout).strip()[:200]}
     return {"ok": True, "pid": pid}
