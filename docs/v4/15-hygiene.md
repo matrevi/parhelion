@@ -37,7 +37,7 @@
 导出 `register_doctor_subcommands(sub)` 和 `run_doctor(args) -> int`。集成方会在 `cli_app.py` 里加一行注册调用，D 不要修改 `cli_app.py`。
 
 ```
-opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] [--logs-max-mb MB] [--purge-trash] [--json]
+opsb doctor clean [--apply] [--remote] [--agents [--include-errored]] [--logs DAYS] [--logs-max-mb MB] [--purge-trash] [--json]
 ```
 
 - 默认只列出、不动手。`--apply` 才执行，并且是移动而不是删除。
@@ -51,6 +51,7 @@ opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] [--logs-max-mb M
 - **Agent 沙箱**（`--agents`）：
   - 每个 worker 会拿到 `workspaces/<id>/agents/<agent_id>/`，里面是一份独立的 `codex_home`（含一份 Codex 应用副本，约 100 MB）。worker 结束后 `AgentBusStore.cleanup_stopped` 只删数据库记录，沙箱目录会一直留着，实测 175 个目录累计 1.0 GB。
   - 判定口径与 `cleanup_stopped` 完全一致：`status IN ('stopped','error')` 且 `pid`/`pgid` 都已清空；另外把数据库里**没有任何记录**的沙箱也算可回收（同名孤儿）。数据库不可读时一律只列出、不移动。
+  - `error` 状态的席位默认只列出、不移动（原因记为 `agent error (resumable)`）：显式 followup 可以让它续跑，Codex 续跑还要用沙箱里的 `codex_home`，移走就断了。确认不再续跑时，加 `--include-errored` 一并回收。
   - 登记工作区的**状态目录本身仍然不碰**，只回收它 `agents/` 下已被证明结束的沙箱——否则最需要清理的恰好是正在用的那个工作区。
   - `--apply` 时移动到 `PARHELION_HOME/trash/<UTC 时间戳>/agents/<workspace 目录>/<agent_id>`。
 - **会话日志**（`--logs DAYS`、`--logs-max-mb MB`）：
@@ -67,7 +68,7 @@ opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] [--logs-max-mb M
 2. `test_feedback_log.py`：相同签名写两次只记一行；签名变化后再记一行；超过阈值时会轮转（测试里用 monkeypatch 把阈值调小）。
 3. `test_gate_log_verdicts.py`：对同一个候选连续评估 3 次，日志里只有 1 条 gate 记录。
 4. 隔离测试：断言 `config.PARHELION_HOME` 不等于 `Path.home()/".parhelion"`。
-5. Agent 沙箱：用真实 `_SCHEMA_SQL` 建库，放入 finished / error / running 三条记录外加一个无记录孤儿。dry-run 一个都不动；`--apply` 只移走前三类中的 finished、error 与孤儿，`running` 必须原地保留，工作区 `state/` 必须仍在；数据库删掉后所有沙箱都只能列出、不能移动。
+5. Agent 沙箱：用真实 `_SCHEMA_SQL` 建库，放入 finished / error / running 三条记录外加一个无记录孤儿。dry-run 一个都不动；`--apply` 只移走 finished 与孤儿，error 与 `running` 原地保留；加 `--include-errored` 后 error 也被移走，工作区 `state/` 必须仍在；数据库删掉后所有沙箱都只能列出、不能移动。
 6. 会话日志：三个不同 mtime 的 `*.jsonl`，dry-run 不动文件，`--apply` 只删超过窗口的两个，`--logs` 不带参数时等于默认 14 天；另用独立 `PARHELION_HOME` 验证总量封顶——4 个 400 KB 文件配 1 MB 预算时，只保留最新的两个，`--logs-max-mb 0` 关闭封顶。
 7. Trash：dry-run 只列批次与占用，`--apply` 后 `trash/` 为空目录。
 8. 权限：`ConfigRepository.save()` 落盘后 `config.json` 必须是 `0600`；从 `~/.config/parhelion` 迁移过来的同名文件同样是 `0600`。

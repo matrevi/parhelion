@@ -274,7 +274,7 @@ class DoctorAgentSandboxTests(unittest.TestCase):
         self.assertFalse(report["applied"])
         names = {h["agent_id"]: h["reason"] for h in report["agents"]}
         self.assertEqual(names["cod-finished"], "agent stopped")
-        self.assertEqual(names["cod-errored"], "agent error")
+        self.assertEqual(names["cod-errored"], "agent error (resumable)")
         self.assertEqual(names["cla-orphan"], "no agent record")
         self.assertNotIn("cod-running", names)
         self.assertTrue(self.finished.is_dir())
@@ -284,15 +284,22 @@ class DoctorAgentSandboxTests(unittest.TestCase):
         rc, report = _run(["doctor", "clean", "--agents", "--apply", "--json"])
         self.assertEqual(rc, 0)
         moved = {h["agent_id"] for h in report["agents"] if h.get("applied")}
-        self.assertEqual(moved, {"cod-finished", "cod-errored", "cla-orphan"})
+        self.assertEqual(moved, {"cod-finished", "cla-orphan"})
         self.assertFalse(self.finished.exists())
-        self.assertFalse(self.errored.exists())
+        self.assertTrue(self.errored.is_dir(), "an errored seat stays resumable by default")
         self.assertFalse(self.orphan.exists())
         self.assertTrue(self.running.is_dir(), "a live agent sandbox must survive")
         trash = Path(report["trash"])
         self.assertTrue((trash / "agents" / "ws-active-0000aaaa" / "cod-finished").is_dir())
         # The workspace data directory itself is never moved.
         self.assertTrue((self.home / "workspaces" / "ws-active-0000aaaa" / "state").is_dir())
+
+    def test_include_errored_reclaims_errored_seats(self) -> None:
+        rc, report = _run(["doctor", "clean", "--agents", "--include-errored", "--apply", "--json"])
+        self.assertEqual(rc, 0)
+        moved = {h["agent_id"] for h in report["agents"] if h.get("applied")}
+        self.assertEqual(moved, {"cod-finished", "cod-errored", "cla-orphan"})
+        self.assertTrue(self.running.is_dir())
 
     def test_unreadable_store_keeps_every_sandbox(self) -> None:
         (self.home / "workspaces" / "ws-active-0000aaaa" / "state" / "agent_bus.db").unlink()

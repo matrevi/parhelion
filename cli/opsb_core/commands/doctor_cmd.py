@@ -10,7 +10,7 @@ device tickets:
   touched. `--apply` moves the hits to `PARHELION_HOME/trash/<UTC timestamp>/`; nothing
   is deleted.
 * agents (`--agents`): per-agent sandboxes under `workspaces/<id>/agents/<agent_id>` whose
-  agent is finished — the same predicate `AgentBusStore.cleanup_stopped` uses (`stopped`
+  agent is finished (errored seats only with `--include-errored`, since they stay resumable) — the same predicate `AgentBusStore.cleanup_stopped` uses (`stopped`
   or `error`, and neither `pid` nor `pgid` left behind) — plus sandboxes the store has no
   record of at all. A registered workspace's *state* is still never moved; only these
   sandboxes, and only when the store proves the agent is gone. `--apply` moves them into
@@ -213,18 +213,20 @@ def _finished(record: dict[str, Any] | None) -> bool:
             and record["pid"] is None and record["pgid"] is None)
 
 
-def scan_agents(home: Path, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Per-agent sandboxes that a finished (or forgotten) agent left behind."""
+def scan_agents(home: Path, cfg: dict[str, Any], include_errored: bool = False) -> list[dict[str, Any]]:
+    """Per-agent sandboxes that a finished (or forgotten) agent left behind.
+
+    An ``error`` seat is still resumable: an explicit follow-up restarts it, and a Codex
+    resume needs the sandbox's ``codex_home``. Such sandboxes are listed but kept unless
+    ``include_errored`` is set.
+    """
     root = home / "workspaces"
     if not root.is_dir():
         return []
-    reg_names, _ = _registered(cfg)
     hits: list[dict[str, Any]] = []
+    # Registered workspaces are scanned too: their state stays untouched and only the
+    # sandboxes below agents/ are judged, one by one.
     for data_dir in sorted(p for p in root.iterdir() if p.is_dir() and not p.is_symlink()):
-        if data_dir.name in reg_names:
-            # A registered workspace's own state stays untouched; its agents/ sandboxes are
-            # judged individually below, exactly like any other data directory.
-            pass
         agents_dir = data_dir / "agents"
         if not agents_dir.is_dir():
             continue
@@ -237,7 +239,9 @@ def scan_agents(home: Path, cfg: dict[str, Any]) -> list[dict[str, Any]]:
                              "reason": "agent store unreadable", "reclaimable": False,
                              "applied": False})
                 continue
-            if _finished(record):
+            if _finished(record) and record["status"] == "error" and not include_errored:
+                reason, reclaimable = "agent error (resumable)", False
+            elif _finished(record):
                 reason, reclaimable = f"agent {record['status']}", True
             elif record is None:
                 reason, reclaimable = "no agent record", True
@@ -433,7 +437,7 @@ def run_doctor(args: argparse.Namespace) -> int:
     report: dict[str, Any] = {"local": local, "remote": [], "applied": apply}
     rc = 0
     if getattr(args, "agents", False):
-        agents = scan_agents(home, cfg)
+        agents = scan_agents(home, cfg, include_errored=getattr(args, "include_errored", False))
         if apply:
             trash = apply_agents(home, agents, trash)
         report["agents"] = agents
@@ -479,6 +483,8 @@ def register_doctor_subcommands(sub: argparse._SubParsersAction[Any]) -> None:
     clean.add_argument("--remote", action="store_true", help="Also check dead tickets on the device host")
     clean.add_argument("--agents", action="store_true",
                        help="Also reclaim per-agent sandboxes of finished agents")
+    clean.add_argument("--include-errored", action="store_true",
+                       help="With --agents, also reclaim errored seats (they lose follow-up and resume)")
     clean.add_argument("--logs", type=int, nargs="?", const=DEFAULT_LOG_KEEP_DAYS,
                        metavar="DAYS",
                        help=f"Also prune driver session logs older than DAYS (default {DEFAULT_LOG_KEEP_DAYS})")
