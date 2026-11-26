@@ -2,6 +2,16 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.0.2 — 重建仓库认知索引
+
+4.0.0 主动删除了旧的 AOCI 索引以便重建。本次按 AOCI 的正式流程从零建立仓库级认知层：`aoci init` → `aoci scan`（294 个受管文件，其中 247 个需要条目）→ 分批创作 → 对齐。
+
+- 索引共 **247 条**条目，覆盖 `Sources/`（Swift 前端）、`cli/opsb_core/`（CLI、daemon、MCP、驱动）、`scheduler/`、`runtime/`、`docs/`、`templates/`、`scripts/` 与根文件。
+- 每条按紧凑标签 `A+B+C+E` 与 F/R/A/S 语义书写；S 只记不可推断且能防错的约束（如：inflight 文件是账号提交的唯一锁、`cleanup_stopped` 的判定谓词被 doctor 复用、stdout 只留给 JSON-RPC 协议流）。
+- 测试文件（`cli/tests/**`，44 个）保持在观察层，不单独建条目，与既有 scope 策略一致。
+- 终局验证：`aoci verify` 结构与治理均对齐；`aoci check` ok、0 findings；`aoci guide` 为 `stage=aligned, complete=true`。
+- `aoci init` 会重写 `AGENTS.md` 的托管块并留下 `*.backup.*` 副本，后者已加入 `.gitignore`。
+
 ## 4.0.1 — 卫生修复
 
 4.0 的清理只覆盖了"测试污染的工作区目录"和"远端死票"，两条平台自己写入的路径因此无界增长：每个 worker 的 `workspaces/<id>/agents/<agent_id>/`（各带一份 ~100MB 的 `codex_home`，实测 175 个共 1.0GB）与驱动会话流水（125MB，其中 90% 来自单日）。本次补齐回收，并修正一处权限漂移。
