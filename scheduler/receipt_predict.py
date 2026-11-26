@@ -117,7 +117,7 @@ def predict(workspace: pathlib.Path, title: str, cand_sha: str, base_shas: list[
         tbest, seen_at, tbest_source = judge_cases.tbest_now(workspace, title, as_of, rows, order)
     if set(tbest) != set(keys):
         return None
-    version = doc.get("suite_version")
+    version = doc.get("pairing_key")
     mapped = [p["local"] for p in pairs]
 
     def minima(sha):

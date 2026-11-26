@@ -695,6 +695,7 @@ class SchedulerEngine:
                 "last_residual_pts": _opt_float(cdoc.get("last_residual_pts")),
                 "escape_lock": bool(cdoc.get("escape_lock", False)),
                 "escape_sha": str(cdoc["escape_sha"]) if cdoc.get("escape_sha") is not None else None,
+                "escape_repro": cdoc.get("escape_repro") if isinstance(cdoc.get("escape_repro"), dict) else None,
                 "unpaired_bucket_count": _opt_int(cdoc.get("unpaired_bucket_count")) or 0,
                 "extra_discovered_count": len(cdoc.get("extra_discovered_buckets") or []),
                 "high_residual_count": len(cdoc.get("high_residual_events") or []),
@@ -707,7 +708,8 @@ class SchedulerEngine:
             p_row.calibration = cal_summaries.get(p_row.title)
             if p_row.calibration and p_row.calibration.get("escape_lock"):
                 p_row.recommended_lane = "ESCAPE_LOCK (VERIFY_ESCAPE)"
-                p_row.recommended_action = "Verify the escaped submission before advancing a new candidate"
+                p_row.recommended_action = ((p_row.calibration.get("escape_repro") or {}).get("next_step")
+                                            or "Verify the escaped submission before advancing a new candidate")
 
         maes = [float(v["mae_pts"]) for v in cal_summaries.values() if isinstance(v.get("mae_pts"), (int, float))]
         mean_mae = round(sum(maes) / len(maes), 2) if maes else None
@@ -1743,7 +1745,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.command == "suite":
         return _suite_command(args)
-    if args.command in ("case-map", "receipts"):
+    if args.command in ("case-map", "receipts", "wa-repro"):
         return judge_align_cmd.run(args)
     engine = SchedulerEngine(
         workspace=args.workspace,

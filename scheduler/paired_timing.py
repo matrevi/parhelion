@@ -20,6 +20,8 @@ import random
 import statistics
 from typing import Any
 
+from . import pairing
+
 #: Two-sided 95% Student t quantiles by degrees of freedom; 1.96 beyond the table.
 T95 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262,
        10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110,
@@ -104,7 +106,7 @@ def case_pairs(row: dict[str, Any]) -> tuple[str, list[float], list[float]] | No
 
 def load(workspace: pathlib.Path, title: str, cand_sha: str, base_sha: str, version: Any = None,
          as_of: Any = None) -> dict[str, Any] | None:
-    """Newest verified paired report of ``cand_sha`` against ``base_sha`` (same suite version)."""
+    """Newest verified paired report of ``cand_sha`` against ``base_sha`` (``version``: a pairing key)."""
     best = None
     for path in (pathlib.Path(workspace) / "results" / title / cand_sha / "bench-runs").glob("*/report.json"):
         try:
@@ -113,7 +115,7 @@ def load(workspace: pathlib.Path, title: str, cand_sha: str, base_sha: str, vers
             continue
         compare = doc.get("compare") if isinstance(doc, dict) else None
         if not (isinstance(compare, dict) and compare.get("base_sha") == base_sha and doc.get("sha") == cand_sha
-                and doc.get("exit_code") == 0 and (version is None or doc.get("suite_version") == version)):
+                and doc.get("exit_code") == 0 and (version is None or pairing.pairing_key(doc) == version)):
             continue
         finished = str(doc.get("finished_at") or "")
         if as_of is not None and (not finished or finished >= as_of.isoformat()):

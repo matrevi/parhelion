@@ -12,11 +12,13 @@ struct AgentOrchestratorHot: Codable, Equatable {
     let nativeSubagents: Int
     let squadCount: Int
     let status: String
+    let cache: AgentCacheUsage?
 
     init(
         driver: String, displayName: String, protocolName: String, guiAppPath: String = "",
         deepLink: String = "", sessionTitle: String = "",
-        workspaceName: String, activeWorkers: Int, nativeSubagents: Int, squadCount: Int = 0, status: String
+        workspaceName: String, activeWorkers: Int, nativeSubagents: Int, squadCount: Int = 0, status: String,
+        cache: AgentCacheUsage? = nil
     ) {
         self.driver = driver
         self.displayName = displayName
@@ -29,6 +31,7 @@ struct AgentOrchestratorHot: Codable, Equatable {
         self.nativeSubagents = nativeSubagents
         self.squadCount = squadCount
         self.status = status
+        self.cache = cache
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,6 +60,50 @@ struct AgentOrchestratorHot: Codable, Equatable {
         nativeSubagents = try c.decodeIfPresent(Int.self, forKey: .nativeSubagents) ?? 0
         squadCount = try c.decodeIfPresent(Int.self, forKey: .squadCount) ?? 0
         status = try c.decodeIfPresent(String.self, forKey: .status) ?? "standby"
+        cache = try AgentCacheUsage.decodeIfPresent(from: decoder)
+    }
+}
+
+/// Optional prompt-cache fields of a hot-mesh worker or orchestrator row (4.2 metering).
+/// Absent until the daemon's background parser has read the agent's native session log.
+struct AgentCacheUsage: Codable, Equatable, Hashable {
+    let hitPct: Double
+    let inputMissTokens: Int
+    let cacheReadTokens: Int
+    let lastMissReason: String
+
+    enum CodingKeys: String, CodingKey {
+        case hitPct = "cache_hit_pct"
+        case inputMissTokens = "input_miss_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case lastMissReason = "last_miss_reason"
+    }
+
+    init(hitPct: Double, inputMissTokens: Int, cacheReadTokens: Int, lastMissReason: String) {
+        self.hitPct = hitPct
+        self.inputMissTokens = inputMissTokens
+        self.cacheReadTokens = cacheReadTokens
+        self.lastMissReason = lastMissReason
+    }
+
+    /// Reads the flat optional fields from the enclosing row; nil when no hit rate is present.
+    static func decodeIfPresent(from decoder: Decoder) throws -> AgentCacheUsage? {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard let pct = try c.decodeIfPresent(Double.self, forKey: .hitPct) else { return nil }
+        return AgentCacheUsage(
+            hitPct: pct,
+            inputMissTokens: try c.decodeIfPresent(Int.self, forKey: .inputMissTokens) ?? 0,
+            cacheReadTokens: try c.decodeIfPresent(Int.self, forKey: .cacheReadTokens) ?? 0,
+            lastMissReason: try c.decodeIfPresent(String.self, forKey: .lastMissReason) ?? ""
+        )
+    }
+
+    var hitLabel: String { String(format: "%.0f%%", hitPct) }
+
+    static func compactTokens(_ n: Int) -> String {
+        if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
+        if n >= 1_000 { return String(format: "%.0fK", Double(n) / 1_000) }
+        return "\(n)"
     }
 }
 
@@ -211,6 +258,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
     let elapsedSec: Int
     let lastMsgEpoch: Double
     let lastMsgDir: String
+    let cache: AgentCacheUsage?
 
     var isLive: Bool { status == "working" || status == "spawning" || status == "waiting_input" }
     var isActive: Bool { status != "stopped" && status != "error" }
@@ -267,6 +315,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         elapsedSec = try c.decodeIfPresent(Int.self, forKey: .elapsedSec) ?? 0
         lastMsgEpoch = try c.decodeIfPresent(Double.self, forKey: .lastMsgEpoch) ?? 0
         lastMsgDir = try c.decodeIfPresent(String.self, forKey: .lastMsgDir) ?? ""
+        cache = try AgentCacheUsage.decodeIfPresent(from: decoder)
     }
 }
 

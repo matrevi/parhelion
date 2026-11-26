@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import IO, Any
@@ -11,6 +12,7 @@ from typing import IO, Any
 from .. import __version__ as OPSB_VERSION
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
+from ..metrics import mcp_meter
 from ..worker_access import forward_worker_request
 from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool_schemas, normalize_role
 
@@ -97,19 +99,16 @@ def handle_jsonrpc_message(
             return _jsonrpc_error(req_id, -32602, "Invalid params: arguments must be an object")
 
         ws = _resolve_workspace(workspace)
+        started = time.monotonic()
         try:
             payload = call_tool(tool_name, raw_args or {}, ws, role=norm_role, agent_id=agent_id)
-            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-            return _jsonrpc_result(
-                req_id,
-                {"content": [{"type": "text", "text": text}], "isError": False},
-            )
+            text, is_error = json.dumps(payload, ensure_ascii=False, separators=(",", ":")), False
         except Exception as exc:
-            err_text = json.dumps({"ok": False, "tool": tool_name, "error": str(exc)}, ensure_ascii=False)
-            return _jsonrpc_result(
-                req_id,
-                {"content": [{"type": "text", "text": err_text}], "isError": True},
-            )
+            text = json.dumps({"ok": False, "tool": tool_name, "error": str(exc)}, ensure_ascii=False)
+            is_error = True
+        mcp_meter.record_call(ws, agent_id=agent_id, role=norm_role, tool=tool_name, args=raw_args,
+                              result_text=text, ms=(time.monotonic() - started) * 1000.0, is_error=is_error)
+        return _jsonrpc_result(req_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
 
     if req_id is None:
         return None

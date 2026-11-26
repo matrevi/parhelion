@@ -16,6 +16,10 @@
 
 总量上限按字节截断（UTF-8），超出时按 5、3、4 的顺序截短。`compose_session_brief` 的 1.5KB 上限只约束契约部分。新增启动包的大小进入 P03 的测量。
 
+### 调研 R11：启动包逐段验证
+
+`docs/v4.2/research/agent-optimization-practice.md` R11 发现，自动生成的仓库概览会让成本上升 20–23%，且没有显著收益。所以启动包每一段都要用 P03 的回放口径对比有无该段：比较「起步到第一个实验」的 token 数。仓库地图只在确有收益时默认开启，否则只保留不可发现的约束，即判题怪癖、禁用模式和平台陷阱。
+
 ## G. 主控查看 worker 的工作
 
 MCP 新工具 `parhelion_agent_peek(agent_id, what=files|file|log_tail|diff_stat, path?, lines?)`，仅 orchestrator 可用：

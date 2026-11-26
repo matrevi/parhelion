@@ -83,6 +83,9 @@ struct AgentMeshInspectorView: View {
                 Text("\(mesh.squads.count) squads · \(mesh.orchestrator.activeWorkers) workers · #\(mesh.latestSeq)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+                if let cache = mesh.orchestrator.cache {
+                    cacheLine(cache)
+                }
             }
             Spacer()
             Button(action: onJumpOrchestrator) {
@@ -94,6 +97,17 @@ struct AgentMeshInspectorView: View {
             .help(lang.tr("跳转至 \(mesh.orchestrator.displayName) 主控对话上下文", "Open \(mesh.orchestrator.displayName) conversation"))
         }
         .padding(12)
+    }
+
+    private func cacheLine(_ cache: AgentCacheUsage) -> some View {
+        let miss = cache.lastMissReason.isEmpty ? "-" : cache.lastMissReason
+        return Text(lang.tr(
+            "缓存命中 \(cache.hitLabel) · 命中 \(AgentCacheUsage.compactTokens(cache.cacheReadTokens)) · 未命中 \(AgentCacheUsage.compactTokens(cache.inputMissTokens)) · 最近未命中 \(miss)",
+            "Cache hit \(cache.hitLabel) · read \(AgentCacheUsage.compactTokens(cache.cacheReadTokens)) · missed \(AgentCacheUsage.compactTokens(cache.inputMissTokens)) · last miss \(miss)"
+        ))
+        .font(.system(size: 9.5, design: .monospaced))
+        .foregroundStyle(cache.hitPct >= 80 ? Color.secondary : Color.orange)
+        .lineLimit(1)
     }
 
     private func squadHeader(_ squad: AgentSquadHot) -> some View {
@@ -180,6 +194,9 @@ struct AgentMeshInspectorView: View {
                             Text(lang.tr("上下文 \(percent)%", "Context \(percent)%"))
                                 .font(.caption2.monospacedDigit())
                         }
+                    }
+                    if let cache = w.cache {
+                        cacheLine(cache)
                     }
                 }
                 Spacer()

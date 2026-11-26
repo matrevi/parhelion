@@ -17,7 +17,8 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
-from .judge_score_fetch import extract_case_results, normalize_receipt, resolve_score_and_times, scan_ranking_pages
+from .judge_score_fetch import (extract_case_results, ingest_failed_receipt, normalize_receipt,
+                               resolve_score_and_times, scan_ranking_pages)
 from .sync_reconciler import collapse_reconciled_outcomes
 
 RESULT_TERMINAL = {"Pass", "Wrong Answer", "Runtime Error", "Compile Error", "Time Limit Exceeded"}
@@ -247,6 +248,7 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
         ev.mkdir(parents=True, exist_ok=True)
         outcome_path = results / "submit-queue-outcome.jsonl"
         added = 0
+        appended: list[dict[str, Any]] = []
         with (results / ".submit-queue-io.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             journal = _read_jsonl(outcome_path)
@@ -284,11 +286,14 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                         record = normalize_receipt(record)
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                         added += 1
+                        appended.append(record)
             report["history_backfilled"] = added
             from scheduler.parhelion_paths import atomic_write_json
             atomic_write_json(ev / "board-reconciled.json", report)
         from ..knowledge.bugs import sync_bugs
         sync_bugs(workspace)
+        for record in appended:
+            ingest_failed_receipt(workspace, record)
     return report
 
 

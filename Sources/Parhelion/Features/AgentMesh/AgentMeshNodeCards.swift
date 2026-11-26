@@ -72,6 +72,9 @@ struct AgentOrchestratorCrownCard: View {
                     .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                     .foregroundStyle(style.accent)
                 Spacer()
+                if let cache = orchestrator.cache {
+                    AgentCacheHitBadge(cache: cache, lang: lang)
+                }
                 Text("\(orchestrator.nativeSubagents) native")
                     .font(.system(size: 9.5, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -217,6 +220,9 @@ struct AgentExternalWorkerCard: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 2)
+                    if let cache = worker.cache {
+                        AgentCacheHitBadge(cache: cache, lang: lang)
+                    }
                     Text(worker.lastTool.isEmpty ? "t\(worker.turnCount) · \(worker.elapsedSec)s" : worker.lastTool)
                         .font(.system(size: 9.5, design: .monospaced))
                         .foregroundStyle(worker.lastTool.isEmpty ? Color.secondary.opacity(0.75) : style.accent)
@@ -243,6 +249,23 @@ struct AgentExternalWorkerCard: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
         .onHover(perform: onHoverChange)
+    }
+}
+
+/// Compact prompt-cache hit rate; the 4.2 target is at least 80% for workers and the orchestrator.
+struct AgentCacheHitBadge: View {
+    let cache: AgentCacheUsage
+    let lang: AppLanguage
+
+    var body: some View {
+        Text(lang.tr("缓存 \(cache.hitLabel)", "cache \(cache.hitLabel)"))
+            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+            .foregroundStyle(cache.hitPct >= 80 ? Color.green : Color.orange)
+            .lineLimit(1)
+            .help(lang.tr(
+                "提示缓存命中 \(cache.hitLabel)：命中 \(AgentCacheUsage.compactTokens(cache.cacheReadTokens))，未命中 \(AgentCacheUsage.compactTokens(cache.inputMissTokens))，最近未命中原因 \(cache.lastMissReason.isEmpty ? "-" : cache.lastMissReason)",
+                "Prompt cache hit \(cache.hitLabel): read \(AgentCacheUsage.compactTokens(cache.cacheReadTokens)), missed \(AgentCacheUsage.compactTokens(cache.inputMissTokens)), last miss \(cache.lastMissReason.isEmpty ? "-" : cache.lastMissReason)"
+            ))
     }
 }
 

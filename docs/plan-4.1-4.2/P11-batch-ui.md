@@ -15,6 +15,10 @@
    - 两题并发提交 standard，对比合并前后的总持锁时长、会话建立次数和两题各自的端到端时长；
    - 结果写入 `docs/plan-4.1-4.2/reports/P11-batch.md`。
 
+### 调研 R9：standard 级早停
+
+standard 运行中，前若干用例已明显慢于基线时（超出噪声带若干倍，阈值可配置），提前结束剩余用例的计时并释放设备，报告标 `aborted_early`。final 级别始终完整运行，见 AGENTS.md §5。依据 `docs/v4.2/research/agent-optimization-practice.md` R9。
+
 ## #4 Swift UI 显示测试登记表、digest 与驱动暂停
 
 1. 测试登记表：`services/test_runs.py` 的登记记录，含题、SHA、级别、状态、用例进度与重复进度、排队、持锁和端到端时长。

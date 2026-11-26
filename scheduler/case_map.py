@@ -30,7 +30,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
-from . import judge_cases, receipts, timing
+from . import judge_cases, pairing, receipts, timing
 from .parhelion_paths import atomic_write_json
 
 MAP_FILE = ".case-map.json"
@@ -68,17 +68,20 @@ def _reports(workspace: pathlib.Path, title: str, sha: str = "*"):
 
 
 def local_catalog(workspace: pathlib.Path, title: str) -> tuple[Any, list[str]]:
-    """``(suite_version, sorted official IDs)`` of the newest formal run of any SHA."""
+    """``(pairing key, sorted official IDs)`` of the newest formal run of any SHA (scheduler.pairing)."""
     newest = max(_reports(workspace, title), key=lambda d: d.get("finished_at") or "", default=None)
     if newest is None:
         return None, []
     ids = sorted({c["id"] for c in newest.get("cases") or [] if c.get("source") == "official" and c.get("id")})
-    return newest.get("suite_version"), ids
+    return pairing.pairing_key(newest), ids
 
 
 def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *, strict: bool = False,
                  as_of: datetime.datetime | None = None, source: str = "event") -> tuple[dict[str, float], int]:
-    """Best warm minimum per official case in one timing source over formal runs of one suite version.
+    """Best warm minimum per official case in one timing source over formal runs with one
+    official-input identity.
+
+    ``version`` is a pairing key (scheduler.pairing); None accepts every run.
 
     ``strict`` keeps only verified, timing-eligible runs (the estimator's rule); otherwise any
     formal run counts for the cases it timed and passed. ``source`` is ``event`` (every run has
@@ -87,7 +90,7 @@ def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *,
     minima: dict[str, float] = {}
     runs = 0
     for doc in _reports(workspace, title, sha):
-        if doc.get("suite_version") != version:
+        if version is not None and pairing.pairing_key(doc) != version:
             continue
         if strict and not (doc.get("verified") is True and doc.get("exit_code") == 0
                            and doc.get("timing_score_eligible") is True):
@@ -203,7 +206,7 @@ def build(workspace: pathlib.Path, title: str, as_of: datetime.datetime | None =
         if o["sha"] not in minima:
             minima[o["sha"]] = local_minima(workspace, title, o["sha"], version, as_of=as_of)[0]
     doc: dict[str, Any] = {
-        "title": title, "suite_version": version, "judge_ids": order["keys"], "judge_id_kind": order["kind"],
+        "title": title, "pairing_key": version, "judge_ids": order["keys"], "judge_id_kind": order["kind"],
         "judge_count": order["count"], "judge_untimed": order["untimed"], "local_ids": local_ids,
         "method": "unmapped", "confidence": "none", "pairs": [],
         "evidence": [{"submission_id": o["submission_id"], "sha": o["sha"], "source": o["source"],
