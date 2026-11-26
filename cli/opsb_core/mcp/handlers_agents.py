@@ -88,6 +88,11 @@ def tool_parhelion_sprint_start(args: dict[str, Any], workspace: Path) -> dict[s
         raise ValueError(f"mode must be one of: {', '.join(MODES)}")
     body = {"driver": args.get("driver") or "", "preview": args.get("preview") is True,
             "enable_auto_submit": args.get("enable_auto_submit") is True, "mode": mode}
+    problems = args.get("problems")
+    if problems is not None:
+        if not isinstance(problems, list) or not all(isinstance(p, str) and p.strip() for p in problems):
+            raise ValueError("problems must be a list of problem titles")
+        body["problems"] = problems
     if _ACTIVE_DAEMON_MANAGER is not None:
         return start_sprint(_ACTIVE_DAEMON_MANAGER, workspace, **body)
     result = _proxy_daemon("POST", "/v1/agents/sprint", workspace, body, timeout=180)

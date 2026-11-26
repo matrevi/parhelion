@@ -44,15 +44,25 @@ def sprint_seats(workers):
 
 
 def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = False,
-                 enable_auto_submit: bool = False, mode: str = "solo") -> dict:
+                 enable_auto_submit: bool = False, mode: str = "solo",
+                 problems: list[str] | None = None) -> dict:
     ws = workspace.expanduser().resolve()
     mode = str(mode or "solo").strip().lower()
     if mode not in MODES:
         raise ValueError(f"Unknown sprint mode '{mode}'. Choose one of: {', '.join(MODES)}")
     driver = driver or get_active_driver_kind()
+    selected = [str(p).strip() for p in (problems or []) if str(p).strip()]
     problems = resolve_workspace_meta(ws)["problems"]
     if not problems:
         raise ValueError("No problems discovered in the selected contest")
+    if selected:
+        # A partial sprint keeps the manifest order and rejects names it cannot match.
+        by_name = {p["title"].lower(): p for p in problems}
+        unknown = [name for name in selected if name.lower() not in by_name]
+        if unknown:
+            raise ValueError(f"Unknown problems {unknown}; choose from: {', '.join(p['title'] for p in problems)}")
+        wanted = {name.lower() for name in selected}
+        problems = [p for p in problems if p["title"].lower() in wanted]
     diagnostics = manager._cached_doctor()["diagnostics"]
     ready = any(d.get("kind") == driver and d.get("installed") and d.get("binary_path")
                 and d.get("auth_ok") for d in diagnostics)

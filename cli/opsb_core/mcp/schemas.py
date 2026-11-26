@@ -204,6 +204,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {"type": "object", "properties": {
             "driver": {"type": "string"}, "preview": {"type": "boolean"},
             "mode": {"type": "string", "enum": ["solo", "dual", "full"], "description": "solo (default): 1 worker per problem; dual adds algorithm/dataflow tracks; full also adds bench-author"},
+            "problems": {"type": "array", "items": {"type": "string"}, "description": "Optional problem titles to staff; omit for every problem in the contest"},
             "enable_auto_submit": {"type": "boolean", "description": "Enable the existing queue consumer for the active contest when the user requests automatic submission. Defaults to preserving the switch."}
         }},
     },

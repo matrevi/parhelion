@@ -44,7 +44,8 @@ def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: An
             return 200, start_sprint(runtime.agent_mesh, ws, driver=body_obj.get("driver") or "",
                                      preview=body_obj.get("preview") is True,
                                      enable_auto_submit=body_obj.get("enable_auto_submit") is True,
-                                     mode=str(body_obj.get("mode") or "solo"))
+                                     mode=str(body_obj.get("mode") or "solo"),
+                                     problems=body_obj.get("problems") if isinstance(body_obj.get("problems"), list) else None)
 
         if path == "/v1/agents/spawn":
             res = runtime.agent_mesh.spawn_agent(

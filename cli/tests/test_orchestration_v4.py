@@ -103,6 +103,20 @@ def _make_contest(ws: Path, count: int) -> list[str]:
 
 # 1. sprint modes ---------------------------------------------------------------------------
 
+def test_sprint_can_staff_a_chosen_subset_of_problems(env):
+    from opsb_core.agents.sprint import start_sprint
+    from opsb_core.mcp.handlers_agents import tool_parhelion_sprint_start
+    ws, mgr = env
+    titles = _make_contest(ws, 5)
+    picked = start_sprint(mgr, ws, driver="deepseek", preview=True, problems=[titles[2], titles[0].lower()])
+    # Manifest order is kept and names match case-insensitively.
+    assert [s["problem"] for s in picked["assignments"]] == [titles[0], titles[2]]
+    with pytest.raises(ValueError, match="Unknown problems"):
+        start_sprint(mgr, ws, driver="deepseek", preview=True, problems=["Nope"])
+    with pytest.raises(ValueError, match="list of problem titles"):
+        tool_parhelion_sprint_start({"problems": "Op0"}, ws)
+
+
 def test_sprint_modes_open_one_two_or_three_seats_per_problem(env):
     from opsb_core.agents.sprint import start_sprint
     from opsb_core.mcp.handlers_agents import bind_daemon_agent_manager
