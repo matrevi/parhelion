@@ -942,6 +942,8 @@ class BenchmarkCalibrator:
             "escape_account_id": escape_row.get("account_id"),
             "escaped_commits": escaped_commits,
         }
+        from .wa_repro import lock_view
+        esc_out["escape_repro"] = lock_view(self.workspace, title, esc_out, as_of=as_of)
         self._esc_cache[e_key] = esc_out
         return esc_out
 
@@ -1437,6 +1439,7 @@ class BenchmarkCalibrator:
             "escape_full_sha": esc_info["escape_sha"],
             "escape_status": esc_info["escape_status"],
             "escaped_commits": esc_info["escaped_commits"],
+            "escape_repro": esc_info.get("escape_repro"),
             "spec_bucket_count": len(spec_buckets),
             "effective_bucket_count": len(effective_buckets),
             "extra_discovered_buckets": extra_ids,
@@ -1498,6 +1501,7 @@ class BenchmarkCalibrator:
                 doc["escape_full_sha"] = esc["escape_sha"]
                 doc["escape_status"] = esc["escape_status"]
                 doc["escaped_commits"] = esc["escaped_commits"]
+                doc["escape_repro"] = esc.get("escape_repro")
                 self._cal_cache[c_key] = doc
                 return doc
         doc = self.calibrate_problem(title, persist=True)
@@ -1837,6 +1841,7 @@ class BenchmarkCalibrator:
             "calibration_trust": cal.get("calibration_trust"),
             "escape_lock": cal["escape_lock"],
             "escape_sha": cal["escape_sha"],
+            "escape_repro": cal.get("escape_repro"),
             "spec_bucket_count": cal.get("spec_bucket_count"),
             "effective_bucket_count": cal.get("effective_bucket_count"),
             "extra_discovered_buckets": cal.get("extra_discovered_buckets", []),

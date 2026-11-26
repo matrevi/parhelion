@@ -548,9 +548,19 @@ class SubmissionGate:
                 bad = state.get("escape_sha") or ""
                 trial = read_doc(trial_path(val_dir.parent / bad, sid)) if sid and re.fullmatch(r"[a-f0-9]{40}", bad) and as_of is None else {}
                 if trial.get("good_sha") != sha or trial.get("good_run") != report["run_id"]:
+                    # WA reproducers (4.1 #6): a fix passing every variant the bad SHA fails clears S1.
+                    from . import wa_repro
+                    repro = wa_repro.status(self.workspace, title, sid, bad, cand_sha=sha, as_of=as_of)
+                    if repro["state"] == "fixed":
+                        return StageResult(stage="SAFETY", passed=True, code="ESCAPE_REPRO_FIXED",
+                                           reason="ESCAPE LOCK " + wa_repro.next_step(repro),
+                                           metrics={"submission_id": sid, "bad_sha": bad, "run_id": repro["fixed_run"],
+                                                    "reproduced_run": repro["reproduced_run"]})
+                    step = wa_repro.next_step(repro)
                     return StageResult(stage="SAFETY", passed=False, code="ESCAPE_LOCK_ACTIVE",
-                                       reason="ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial",
-                                       metrics={"submission_id": sid, "bad_sha": bad})
+                                       reason=("ESCAPE_LOCK " + step if step else
+                                               "ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial"),
+                                       metrics={"submission_id": sid, "bad_sha": bad, "repro_state": repro["state"]})
             return StageResult(stage="SAFETY",passed=True,code="PASS",
                                reason=f"Full reference suite passed ({len(report['cases'])} cases)",
                                metrics={"run_id":report["run_id"],"extended_cases":len(report["cases"])})

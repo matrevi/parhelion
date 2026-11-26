@@ -333,9 +333,12 @@ def test_reconciled_wrong_answer_records_the_failing_case(iso_home: Path, tmp_pa
             return detail
         raise AssertionError(path)
 
-    with mock.patch("opsb_core.services.sync_reconciler._fetch_json", side_effect=_fake_fetch):
+    with mock.patch("opsb_core.services.sync_reconciler._fetch_json", side_effect=_fake_fetch), \
+            mock.patch("scheduler.wa_repro.ingest", return_value=None) as ingest:
         reconciled = reconcile_sync_errors(ws, force=True)
     assert len(reconciled) == 1
+    # 4.1 #6: the appended WA verdict is handed to the reproducer planner once.
+    assert ingest.call_count == 1 and ingest.call_args.args[1]["submission_id"] == "sid-wa-1"
     rows = [json.loads(line) for line in (ws / "results" / "submit-queue-outcome.jsonl").read_text().splitlines()]
     row = collapse_reconciled_outcomes(rows)[0]
     assert row["status"] == "Wrong Answer" and row["score"] == 0 and row["official_score"] == 0.0

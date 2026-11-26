@@ -115,6 +115,9 @@ def _escape_line(ws: Path, title: str) -> str:
     cal = _cfg.read_json(ws / "results" / title / "calibration.json", {})
     if not (isinstance(cal, dict) and cal.get("escape_lock")):
         return ""
+    step = (cal.get("escape_repro") or {}).get("next_step") if isinstance(cal.get("escape_repro"), dict) else ""
+    if step:
+        return f"ESCAPE_LOCK on {str(cal.get('escape_sha') or '?')[:12]}: {step}."
     return (f"ESCAPE_LOCK on {str(cal.get('escape_sha') or '?')[:12]}: reproduce the failure, run level=final on "
             "the fix, then `opsb bench verify-escape`.")
 

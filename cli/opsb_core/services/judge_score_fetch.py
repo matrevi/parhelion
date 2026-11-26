@@ -280,6 +280,22 @@ def normalize_receipt(row: dict[str, Any]) -> dict[str, Any]:
     return receipts_module().normalize(row)
 
 
+def ingest_failed_receipt(workspace: Path, row: dict[str, Any]) -> dict[str, Any] | None:
+    """After a WA/RE verdict is appended, plan its local reproducers (``scheduler.wa_repro``; CPU only).
+
+    Never raises: a reproducer problem must not lose or delay the receipt itself.
+    """
+    if row.get("status") not in ("Wrong Answer", "Runtime Error"):
+        return None
+    try:
+        receipts_module()
+        from scheduler import wa_repro
+
+        return wa_repro.ingest(workspace, row)
+    except Exception as exc:  # noqa: BLE001
+        return {"applied": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+
 def extract_public_times(sub_detail: Any, rank_row: Any = None) -> tuple[list[float], list[float]]:
     """Extract first 5 public testcase times & tbest from submission detail / ranking row."""
     sub_res = (sub_detail.get("result") or []) if isinstance(sub_detail, dict) else []

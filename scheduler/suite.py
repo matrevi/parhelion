@@ -28,7 +28,9 @@ SUITE_FIELDS = {
     "case_timeout", "reuse_session", "variants", "buckets", "timed", "weights", "timing_scope",
 }
 TIMING_SCOPES = ("official", "perf")
-VARIANT_FIELDS = {"id", "base", "params", "seed", "name", "perf", "tier"}
+# Provenance of platform-generated variants (scheduler.wa_repro); never part of the input digest.
+VARIANT_ORIGIN_FIELDS = {"origin", "receipt", "judge_testcase_id", "mapped"}
+VARIANT_FIELDS = {"id", "base", "params", "seed", "name", "perf", "tier"} | VARIANT_ORIGIN_FIELDS
 PROFILE_FIELDS = ("version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32", "reuse_session")
 DEFAULTS = {"warmup": 2, "repeats": 5, "case_timeout": 15, "reuse_session": True}
 RANGES = {"warmup": (0, 10), "repeats": (1, 50), "case_timeout": (1, 600)}
@@ -97,6 +99,13 @@ def normalize_variant(variant, index=0) -> dict:
         raise ValueError(f"{where}.name must be a string")
     if "perf" in variant and not isinstance(variant["perf"], bool):
         raise ValueError(f"{where}.perf must be true or false")
+    for field in ("origin", "receipt"):
+        if field in variant and not isinstance(variant[field], str):
+            raise ValueError(f"{where}.{field} must be a string")
+    if variant.get("judge_testcase_id") is not None and not isinstance(variant["judge_testcase_id"], str):
+        raise ValueError(f"{where}.judge_testcase_id must be a string or null")
+    if "mapped" in variant and not isinstance(variant["mapped"], bool):
+        raise ValueError(f"{where}.mapped must be true or false")
     tier = variant.get("tier", "final")
     if tier not in VARIANT_TIERS:
         raise ValueError(f"{where}.tier must be standard or final")
@@ -340,11 +349,19 @@ def migrate(ws, title) -> dict:
 
 def add_variant(ws, title, variant, repo=None, rev="HEAD") -> dict:
     """Append one validated local variant and bump the suite version."""
+    return add_variants(ws, title, [variant], repo, rev)
+
+
+def add_variants(ws, title, variants, repo=None, rev="HEAD") -> dict:
+    """Append validated local variants in one write: one suite version bump for the batch."""
     suite = load_suite(ws, title)
-    entry = normalize_variant(variant, len(suite["variants"]))
-    if any(v["id"] == entry["id"] for v in suite["variants"]):
-        raise ValueError(f"Variant {entry['id']} already exists")
-    trial = {**suite, "variants": [*suite["variants"], entry]}
+    entries = [normalize_variant(v, len(suite["variants"]) + i) for i, v in enumerate(variants)]
+    known = {v["id"] for v in suite["variants"]}
+    for entry in entries:
+        if entry["id"] in known:
+            raise ValueError(f"Variant {entry['id']} already exists")
+        known.add(entry["id"])
+    trial = {**suite, "variants": [*suite["variants"], *entries]}
     if repo is not None:
         from .case_bench import catalog, committed
 

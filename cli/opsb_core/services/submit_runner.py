@@ -29,7 +29,7 @@ from .inflight_io import (
     reap_inflight_if_stale,
     write_inflight_atomic,
 )
-from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, normalize_receipt
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, ingest_failed_receipt, normalize_receipt
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
@@ -933,6 +933,7 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
     if out_rec.get("status") in TERMINAL_JUDGE_STATUSES:
         from ..knowledge.bugs import sync_bugs
         sync_bugs(workspace)
+        ingest_failed_receipt(workspace, out_rec)
     if out_rec.get("status") not in ("rejected", "skipped", "duplicate", "sync_error"):
         try:
             from ..config import SUPERVISOR_ROOT
