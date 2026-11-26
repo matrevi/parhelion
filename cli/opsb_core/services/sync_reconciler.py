@@ -27,6 +27,7 @@ from .judge_score_fetch import (
     extract_public_times,
     fetch_json_with_cookie,
     fetch_ranking_sid_and_team_with_retry,
+    ingest_failed_receipt,
     reconstruct_timing_score,
     resolve_problem_id,
     normalize_receipt,
@@ -416,6 +417,7 @@ def reconcile_sync_errors(
         )
         if fixed is not None:
             reconciled.append(fixed)
+            ingest_failed_receipt(workspace, fixed)
     if reconciled:
         invalidate_ttl_cache("scheduler_bridge")
         invalidate_ttl_cache("remote_judge")

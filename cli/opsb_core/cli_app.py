@@ -39,6 +39,9 @@ def run_bench_judge_align(args: argparse.Namespace) -> int:
     ws = ConfigRepository.resolve_workspace(args.workspace, ConfigRepository.load())
     if args.bench_cmd == "case-map":
         cmd = ["case-map", "--title", args.problem] + (["--rebuild"] if args.rebuild else [])
+    elif args.bench_cmd == "wa-repro":
+        cmd = ["wa-repro", "--title", args.problem, *(["--receipt", args.receipt] if args.receipt else []),
+               *(["--like", args.like] if args.like else []), *(["--apply"] if args.apply else [])]
     else:
         cmd = ["receipts", args.receipts_action] + (["--apply"] if args.apply else [])
     full = [resolve_python_exe(ws), "-m", "scheduler.cli_bridge", *cmd, "--workspace", str(ws)]
@@ -51,7 +54,11 @@ def run_bench_judge_align(args: argparse.Namespace) -> int:
     import json as _json
 
     doc = _json.loads(proc.stdout)
-    if args.bench_cmd == "case-map":
+    if args.bench_cmd == "wa-repro":
+        for item in doc["receipts"]:
+            print(f"{item['sha']} {item['status']} {item['submission_id']}: {item['state']} · "
+                  f"{len(item.get('variants') or [])} variants · {item.get('next_step') or item.get('reason') or ''}")
+    elif args.bench_cmd == "case-map":
         for item in doc["maps"]:
             pairs = item.get("pairs") or []
             mapped = sum(1 for p in pairs if p.get("judge_mapped"))
@@ -281,6 +288,15 @@ def build_parser() -> argparse.ArgumentParser:
     bn_cm.add_argument("--json", action="store_true")
     bn_cm.add_argument("--workspace", "-w")
     bn_cm.set_defaults(func=run_bench_judge_align)
+
+    bn_wa = bn_sub.add_parser("wa-repro", help="Multi-seed, tie-rich local reproducers for WA/RE receipts")
+    bn_wa.add_argument("problem")
+    bn_wa.add_argument("--receipt", help="One submission ID (default: every WA/RE receipt of the problem)")
+    bn_wa.add_argument("--like", help='Failure shape when the receipt names no case, e.g. {"shape":[2048,2048],"mode":0}')
+    bn_wa.add_argument("--apply", action="store_true", help="Write the variants into the suite (default: list)")
+    bn_wa.add_argument("--json", action="store_true")
+    bn_wa.add_argument("--workspace", "-w")
+    bn_wa.set_defaults(func=run_bench_judge_align)
 
     bn_rc = bn_sub.add_parser("receipts", help="Normalize judge receipt rows from data on disk")
     bn_rc.add_argument("receipts_action", choices=["backfill"])
