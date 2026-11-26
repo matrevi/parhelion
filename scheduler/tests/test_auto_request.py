@@ -16,6 +16,8 @@ from scheduler.cli_bridge import SchedulerEngine  # noqa: E402
 
 SHA = "a" * 40
 CONFIG = {"auto_consumer_enabled": True, "auto_request_grace_sec": 120}
+CLEAN = [{"stage": "SAFETY", "code": "SAFETY_OK"}, {"stage": "NOISE_FLOOR", "code": "ABOVE_NOISE_FLOOR"},
+         {"stage": "CIRCUIT_BREAKER", "code": "CIRCUIT_CLOSED"}]
 
 
 def _ago(seconds: float) -> str:
@@ -39,8 +41,9 @@ class AutoRequestTest(unittest.TestCase):
     def _validated(self, seconds_ago: float) -> None:
         (self.ws / "results" / "Op" / SHA / "result.json").write_text(json.dumps({"finished_at": _ago(seconds_ago)}))
 
-    def _run(self, approved=True, config=CONFIG):
+    def _run(self, approved=True, config=CONFIG, stages=None):
         cand = {"title": "Op", "sha": SHA, "approved": approved, "status_tag": "READY", "gate_reason": "ok",
+                "stages": stages if stages is not None else CLEAN,
                 "estimate": {"expected_improvement": 8.9, "estimation_method": "case_bench_paired"}}
         with mock.patch.object(cli_bridge, "read_parhelion_scheduler_config", return_value=dict(config)):
             self.engine._auto_request([cand])
@@ -51,6 +54,21 @@ class AutoRequestTest(unittest.TestCase):
         held = self._run()
         self.assertEqual(held["requested_by"], "platform")
         self.assertEqual(self.saved, 1)
+
+    def test_never_requests_an_explore_approval_on_the_workers_behalf(self) -> None:
+        """4.3.2: below-floor EXPLORE approvals are the worker's bet; in the first 4.3 sprint the
+        platform requested 13 of them (E +0.03..+0.94, P 0.50-0.65) for 4 weighted points."""
+        self._validated(300)
+        low_gain = [dict(s) for s in CLEAN]
+        low_gain[1]["code"] = "LOW_GAIN_POSITIVE"
+        self.assertIsNone(self._run(stages=low_gain))
+        upside = [dict(s) for s in CLEAN]
+        upside[1]["code"] = "EXPLORE_HIGH_UPSIDE"
+        self.assertIsNone(self._run(stages=upside))
+        advisory = [dict(s) for s in CLEAN]
+        advisory[2]["code"] = "CIRCUIT_OPEN_ADVISORY"
+        self.assertIsNone(self._run(stages=advisory))
+        self.assertEqual(self._run()["requested_by"], "platform")
 
     def test_waits_while_the_worker_may_still_act(self) -> None:
         self._validated(30)
@@ -72,7 +90,7 @@ class AutoRequestTest(unittest.TestCase):
         self.assertIsNone(self._run())
 
     def _run_with_view(self, queue):
-        cand = {"title": "Op", "sha": SHA, "approved": True, "status_tag": "READY", "gate_reason": "ok",
+        cand = {"title": "Op", "sha": SHA, "approved": True, "status_tag": "READY", "gate_reason": "ok", "stages": CLEAN,
                 "estimate": {"expected_improvement": 8.9, "estimation_method": "case_bench_paired"}}
         with mock.patch.object(cli_bridge, "read_parhelion_scheduler_config", return_value=dict(CONFIG)):
             self.engine._auto_request([cand], queue)

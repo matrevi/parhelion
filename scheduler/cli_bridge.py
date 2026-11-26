@@ -161,6 +161,21 @@ def _valid_coverage_grid(raw: Any) -> dict[str, Any] | None:
     return raw
 
 
+#: Stage codes of an approval that cleared every threshold on its own (4.3.2). The platform requests
+#: only these on a worker's behalf: an EXPLORE approval (below the noise floor, UCB upside, an
+#: advisory breaker or a released escape lock) is a bet its worker may take, not the platform. In
+#: the first 4.3 sprint the platform requested 13 such coin flips (E[gain] +0.03..+0.94 at
+#: P(gain>0) 0.50-0.65) and they raised the weighted total by 4 points in all.
+CLEAN_S2_CODES = frozenset({"ABOVE_NOISE_FLOOR", "EXPECTED_IMPROVEMENT"})
+
+
+def _clean_pass(cand: dict[str, Any]) -> bool:
+    codes = {str(s.get("stage") or ""): str(s.get("code") or "") for s in cand.get("stages") or []
+             if isinstance(s, dict)}
+    return (codes.get("NOISE_FLOOR") in CLEAN_S2_CODES and codes.get("CIRCUIT_BREAKER", "CIRCUIT_CLOSED") == "CIRCUIT_CLOSED"
+            and codes.get("SAFETY") != "ESCAPE_UNREPRODUCED" and str(cand.get("intent") or "exploit") == "exploit")
+
+
 class SchedulerEngine:
     """Stateful orchestrator uniting ScoreEstimator, SubmissionGate, and NpuTaskScheduler."""
 
@@ -798,7 +813,8 @@ class SchedulerEngine:
         A worker normally hands its SHA to the platform; when it does not (it may be waiting on
         the orchestrator), an approved candidate sat READY indefinitely. With automatic
         submission on, a candidate that passed all four stages and whose validation finished at
-        least ``auto_request_grace_sec`` ago is held as a platform request; the daemon's existing
+        least ``auto_request_grace_sec`` ago, and whose approval cleared every threshold on its own
+        (``_clean_pass``), is held as a platform request; the daemon's existing
         promotion then re-gates and submits it. A problem with a queued or judging submission, or
         a receipt younger than a minute, is left alone so the board can catch up first.
 
@@ -831,6 +847,8 @@ class SchedulerEngine:
             key = f"{title}:{sha}"
             if not cand.get("approved") or cand.get("is_critical_restore") or title in busy or key in self.held_items:
                 continue
+            if not _clean_pass(cand):
+                continue  # 4.3.2: only its own worker may send a below-floor or advisory approval
             try:
                 validated = _parse_iso(json.loads((results / title / sha / "result.json").read_text()).get("finished_at"))
             except (OSError, ValueError, TypeError):
