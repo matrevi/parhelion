@@ -6,7 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import read_json, utc_now
-from .query import _normalize_entry
+from .query import (
+    DEFAULT_EVIDENCE_CLASS, DERIVED_ENTRY_KEYS, EVIDENCE_CLASSES, MECHANISM_CONFIRMED_VALUES,
+    VALID_CATEGORIES, _normalize_entry, has_strong_evidence,
+)
 from .seeding import ensure_triad_kb_seeded
 from .store import (
     DEMOTE_MIN_FAILS, PROMOTE_MIN_DELTA_RAW, PROMOTE_MIN_SPEEDUP, VALID_PILLARS,
@@ -57,6 +60,20 @@ def validate_evidence(evidence: Any, default_verdict: str | None = None) -> dict
         "workspace": str(evidence.get("workspace") or "").strip(), "problem": problem, "sha": sha,
         "verdict": verdict_raw, "recorded_at": str(evidence.get("recorded_at") or utc_now().isoformat()),
     }
+    ev_class = str(evidence.get("evidence_class") or "").strip().lower()
+    if ev_class and ev_class not in EVIDENCE_CLASSES:
+        raise ValueError(f"Evidence 'evidence_class' must be one of {EVIDENCE_CLASSES}, got {ev_class!r}.")
+    cleaned["evidence_class"] = ev_class or DEFAULT_EVIDENCE_CLASS
+    if evidence.get("n_draws") is not None:
+        if not _is_num(evidence.get("n_draws")) or int(evidence["n_draws"]) < 1:
+            raise ValueError("Evidence 'n_draws' must be a positive integer.")
+        cleaned["n_draws"] = int(evidence["n_draws"])
+    if evidence.get("sigma_pts") is not None:
+        if not _is_num(evidence.get("sigma_pts")) or float(evidence["sigma_pts"]) < 0.0:
+            raise ValueError("Evidence 'sigma_pts' must be a non-negative number.")
+        cleaned["sigma_pts"] = round(float(evidence["sigma_pts"]), 4)
+    if str(evidence.get("repro") or "").strip():
+        cleaned["repro"] = str(evidence["repro"]).strip()
     if has_delta_raw:
         cleaned["delta_raw"] = round(float(evidence["delta_raw"]), 4)
     if has_delta_us:
@@ -95,14 +112,25 @@ def _render_community_markdown(entry: dict[str, Any], body: str = "") -> str:
                 *([f"speedup={ev['speedup']:.2f}x"] if "speedup" in ev else []),
                 *([str(ev["note"])] if ev.get("note") else []),
             ]
-            rows.append(f"| `{ev.get('problem', '')}` | `{str(ev.get('sha', ''))[:7]}` | `{ev.get('verdict', '')}` | {'; '.join(bits)} |")
-        ev_rows = "\n## Evidence Ledger\n| Problem | SHA | Verdict | Detail |\n|---|---|---|---|\n" + "\n".join(rows) + "\n"
+            rows.append(
+                f"| `{ev.get('problem', '')}` | `{str(ev.get('sha', ''))[:7]}` | `{ev.get('verdict', '')}` | "
+                f"`{ev.get('evidence_class', DEFAULT_EVIDENCE_CLASS)}` | {'; '.join(bits)} |"
+            )
+        ev_rows = ("\n## Evidence Ledger\n| Problem | SHA | Verdict | Class | Detail |\n|---|---|---|---|---|\n"
+                   + "\n".join(rows) + "\n")
     body_txt = body.strip() or entry.get("summary", "")
     rel_block = f"\n## Related Snippets\n- {rel}\n" if rel else ""
     legacy_line = f"legacy_id: {entry['legacy_id']}\n" if entry.get("legacy_id") else ""
+    model_lines = "".join(
+        f"{key}: {entry[key]}\n" for key in ("mechanism_confirmed", "trigger", "cost", "failure_domain", "retracted_by")
+        if entry.get(key)
+    )
+    if entry.get("applicable_problems"):
+        model_lines += f"applicable_problems: [{', '.join(entry['applicable_problems'])}]\n"
     return (
         f"---\nid: {entry['id']}\n{legacy_line}pillar: {entry.get('pillar', 'community')}\nportability: {entry.get('portability', 'portable')}\n"
         f"status: {entry.get('status', 'unverified')}\nconfidence: {entry.get('confidence', 0.5)}\n"
+        f"{model_lines}"
         f"bottlenecks: [{b_tags}]\nregimes: [{r_tags}]\ndtypes: [{d_tags}]\n---\n\n"
         f"# {entry['title']}\n\n{body_txt}\n{rel_block}{ev_rows}"
     )
@@ -117,7 +145,10 @@ def _extract_evidence_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
     if isinstance(raw_ev, dict):
         return [validate_evidence(raw_ev)]
     if any(k in payload for k in ("problem", "sha", "verdict")):
-        return [validate_evidence({k: payload.get(k) for k in ("workspace", "problem", "sha", "verdict", "delta_raw", "delta_us", "speedup", "note")})]
+        return [validate_evidence({k: payload.get(k) for k in (
+            "workspace", "problem", "sha", "verdict", "delta_raw", "delta_us", "speedup", "note",
+            "evidence_class", "n_draws", "sigma_pts", "repro",
+        )})]
     raise ValueError("Unbacked KB write rejected: 'evidence' dict/list (with problem, sha, verdict, metric) is required.")
 
 
@@ -126,6 +157,24 @@ def _meets_promote(ev: dict[str, Any]) -> bool:
         (ev.get("delta_raw") is not None and float(ev["delta_raw"]) >= PROMOTE_MIN_DELTA_RAW)
         or (ev.get("speedup") is not None and float(ev["speedup"]) >= PROMOTE_MIN_SPEEDUP)
     )
+
+
+def _entry_model_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate and collect the optional 4.3 entry-level knowledge fields (P28 scope 1)."""
+    out: dict[str, Any] = {}
+    mech = str(payload.get("mechanism_confirmed") or "").strip().lower()
+    if mech:
+        if mech not in MECHANISM_CONFIRMED_VALUES:
+            raise ValueError(f"mechanism_confirmed must be one of {MECHANISM_CONFIRMED_VALUES}, got {mech!r}.")
+        out["mechanism_confirmed"] = mech
+    for key in ("trigger", "cost", "failure_domain", "retracted_by"):
+        val = str(payload.get(key) or "").strip()
+        if val:
+            out[key] = val
+    problems = [str(p).strip() for p in (payload.get("applicable_problems") or []) if str(p).strip()]
+    if problems:
+        out["applicable_problems"] = problems
+    return out
 
 
 def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path | None = None) -> dict[str, Any]:
@@ -149,6 +198,9 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
     req_status = str(payload.get("status") or "").strip().lower()
     if req_status and req_status not in VALID_STATUSES:
         raise ValueError(f"Invalid status {req_status!r}; expected one of {VALID_STATUSES}")
+    category = str(payload.get("category") or "").strip()
+    if category and category not in VALID_CATEGORIES:
+        raise ValueError(f"Invalid category {category!r}; expected one of {VALID_CATEGORIES}")
 
     is_anti = any(e["verdict"] == "anti-pattern" for e in ev_list) or port_req == "anti-pattern" or req_status == "anti-pattern" or (fails >= DEMOTE_MIN_FAILS and wins == 0)
     if is_anti:
@@ -161,6 +213,12 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
             status = "verified" if wins > 0 else "unverified"
         else:
             status = "verified" if any(e["verdict"] == "win" and _meets_promote(e) for e in ev_list) else "unverified"
+
+    # Hardware laws need paired or online-receipt evidence; local-only wins stay candidates (P28 scope 3).
+    promotion_blocked: str | None = None
+    if p_norm == "hardware" and status == "verified" and not has_strong_evidence(ev_list):
+        status = "unverified"
+        promotion_blocked = "hardware promotion requires paired or online_receipt evidence"
 
     prior_alpha = 2.0 if (portability == "native-accel" or (p_norm in ("snippets", "hardware") and status == "verified")) else 1.0
     prior_beta = 1.0
@@ -179,7 +237,7 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
     default_cat = "tiling-regime" if p_norm == "snippets" else ("hardware-law" if p_norm == "hardware" else "vectorization")
     entry_record: dict[str, Any] = {
         "id": entry_id, "pillar": p_norm, "title": title, "summary": summary,
-        "category": str(payload.get("category") or default_cat).strip(),
+        "category": category or default_cat,
         "tags": [str(t).strip() for t in (payload.get("tags") or []) if str(t).strip()],
         "bottlenecks": bottlenecks,
         "regimes": [str(r).strip().upper() for r in (payload.get("regimes") or []) if str(r).strip()] or ["M_MID_UB"],
@@ -189,6 +247,7 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
         "related_snippets": [str(s).strip() for s in (payload.get("related_snippets") or []) if str(s).strip()],
         "doc_path": f"code/{entry_id}.h" if p_norm == "snippets" else f"entries/{entry_id}.md",
     }
+    entry_record.update(_entry_model_fields(payload))
 
     def _insert(cur: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         entries = list(cur.get("entries") or [])
@@ -217,7 +276,8 @@ def record_kb_entry(pillar: str, payload: dict[str, Any], parhelion_home: Path |
         "evidence": ev_list[-1], "created_snippet_id": saved["id"] if p_norm == "snippets" else None,
     }
     _append_evolution_event(dirs["home"] / ".kb-evolution.lock", dirs["evolution_log"], event)
-    return {"ok": True, "entry": _normalize_entry(saved, p_norm, p_dir), "event": event}
+    return {"ok": True, "entry": _normalize_entry(saved, p_norm, p_dir), "event": event,
+            "promotion_blocked": promotion_blocked}
 
 
 def _refresh_markdown_doc(p_dir: Path, entry: dict[str, Any], pillar: str) -> None:
@@ -269,7 +329,7 @@ def record_kb_feedback(
 
         raw_entry = dict(entries[target_idx])
         before_snap = _snapshot_for_audit(raw_entry)
-        merged = {k: v for k, v in _normalize_entry(raw_entry, pillar, p_dir).items() if k != "abs_doc_path"}
+        merged = {k: v for k, v in _normalize_entry(raw_entry, pillar, p_dir).items() if k not in DERIVED_ENTRY_KEYS}
         for k, v in raw_entry.items():
             merged.setdefault(k, v)
 
@@ -277,12 +337,17 @@ def record_kb_feedback(
         wins = int(merged.get("wins", 0)) + (1 if v_norm == "win" else 0)
         fails = int(merged.get("fails", 0)) + (0 if v_norm == "win" else 1)
         new_status, new_port, action, transition = old_status, merged["portability"], "feedback", "unchanged"
+        promotion_blocked: str | None = None
         if v_norm == "anti-pattern" or (fails >= DEMOTE_MIN_FAILS and wins == 0):
             new_status, new_port = "anti-pattern", "anti-pattern"
             if old_status != "anti-pattern":
                 action, transition = "demote", f"{old_status}->anti-pattern"
         elif pillar in ("community", "hardware") and old_status == "unverified" and v_norm == "win" and _meets_promote(ev):
-            new_status, action, transition = "verified", "promote", "unverified->verified"
+            if pillar == "hardware" and not has_strong_evidence([*list(merged.get("evidence") or []), ev]):
+                promotion_blocked = "hardware promotion requires paired or online_receipt evidence"
+                transition = "held-local-evidence"
+            else:
+                new_status, action, transition = "verified", "promote", "unverified->verified"
 
         merged.update({
             "wins": wins, "fails": fails, "evidence": [*list(merged.get("evidence") or []), ev],
@@ -294,7 +359,8 @@ def record_kb_feedback(
         })
         entries[target_idx] = merged
         cur["entries"] = entries
-        return cur, {"before": before_snap, "after_raw": merged, "action": action, "transition": transition}
+        return cur, {"before": before_snap, "after_raw": merged, "action": action, "transition": transition,
+                     "promotion_blocked": promotion_blocked}
 
     mut_res = _with_index_lock(idx_path, _mutate)
     updated_raw = mut_res["after_raw"]
@@ -335,11 +401,14 @@ def record_kb_feedback(
         "before": mut_res["before"], "after": _snapshot_for_audit(updated_raw),
         "evidence": ev, "created_snippet_id": created_snippet_id,
     }
+    if mut_res.get("promotion_blocked"):
+        event["promotion_blocked"] = mut_res["promotion_blocked"]
     _append_evolution_event(dirs["home"] / ".kb-evolution.lock", dirs["evolution_log"], event)
     return {
         "ok": True, "entry": _normalize_entry(updated_raw, pillar, p_dir),
         "action": mut_res["action"], "transition": mut_res["transition"],
         "created_snippet_id": created_snippet_id, "event": event,
+        "promotion_blocked": mut_res.get("promotion_blocked"),
     }
 
 

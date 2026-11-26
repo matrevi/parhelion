@@ -64,12 +64,35 @@ struct TriadKBEvidence: Codable, Identifiable, Hashable {
     let verdict: String
     let note: String?
     let recordedAt: String?
+    // 4.3 (P28) evidence level: `local` (default) / `paired` / `online_receipt`.
+    let evidenceClass: String
+    let nDraws: Int
+    let sigmaPts: Double
+    let repro: String
 
     enum CodingKeys: String, CodingKey {
-        case workspace, problem, sha, speedup, verdict, note
+        case workspace, problem, sha, speedup, verdict, note, repro
         case deltaRaw = "delta_raw"
         case deltaUs = "delta_us"
         case recordedAt = "recorded_at"
+        case evidenceClass = "evidence_class", nDraws = "n_draws", sigmaPts = "sigma_pts"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        problem = try c.decode(String.self, forKey: .problem)
+        sha = try c.decode(String.self, forKey: .sha)
+        verdict = try c.decode(String.self, forKey: .verdict)
+        workspace = try c.decodeIfPresent(String.self, forKey: .workspace)
+        deltaRaw = try c.decodeIfPresent(Double.self, forKey: .deltaRaw)
+        deltaUs = try c.decodeIfPresent(Double.self, forKey: .deltaUs)
+        speedup = try c.decodeIfPresent(Double.self, forKey: .speedup)
+        note = try c.decodeIfPresent(String.self, forKey: .note)
+        recordedAt = try c.decodeIfPresent(String.self, forKey: .recordedAt)
+        evidenceClass = try c.decodeIfPresent(String.self, forKey: .evidenceClass) ?? "local"
+        nDraws = try c.decodeIfPresent(Int.self, forKey: .nDraws) ?? 1
+        sigmaPts = try c.decodeIfPresent(Double.self, forKey: .sigmaPts) ?? 0
+        repro = try c.decodeIfPresent(String.self, forKey: .repro) ?? ""
     }
 }
 
@@ -113,6 +136,18 @@ struct TriadKBEntry: Codable, Identifiable, Hashable {
     let overlapScore: Double?
     let matchedReasons: [String]?
 
+    // 4.3 (P28) knowledge v2: mechanism confirmation and failure domain.
+    let mechanismConfirmed: String
+    let trigger: String
+    let cost: String
+    let failureDomain: String
+    let applicableProblems: [String]
+    let retractedBy: String?
+
+    var evidenceClassChips: [String] {
+        ["local", "paired", "online_receipt"].map { cls in "\(cls)×\(evidence.filter { $0.evidenceClass == cls }.count)" }
+    }
+
     var shortSha: String? {
         guard let sha, !sha.isEmpty else { return nil }
         return String(sha.prefix(7))
@@ -144,6 +179,8 @@ struct TriadKBEntry: Codable, Identifiable, Hashable {
         case queryScore = "query_score"
         case overlapScore = "overlap_score"
         case matchedReasons = "matched_reasons"
+        case mechanismConfirmed = "mechanism_confirmed", trigger, cost
+        case failureDomain = "failure_domain", applicableProblems = "applicable_problems", retractedBy = "retracted_by"
     }
 
     init(from decoder: Decoder) throws {
@@ -182,6 +219,12 @@ struct TriadKBEntry: Codable, Identifiable, Hashable {
         queryScore = try c.decodeIfPresent(Double.self, forKey: .queryScore)
         overlapScore = try c.decodeIfPresent(Double.self, forKey: .overlapScore)
         matchedReasons = try c.decodeIfPresent([String].self, forKey: .matchedReasons)
+        mechanismConfirmed = try c.decodeIfPresent(String.self, forKey: .mechanismConfirmed) ?? "no"
+        trigger = try c.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+        cost = try c.decodeIfPresent(String.self, forKey: .cost) ?? ""
+        failureDomain = try c.decodeIfPresent(String.self, forKey: .failureDomain) ?? ""
+        applicableProblems = try c.decodeIfPresent([String].self, forKey: .applicableProblems) ?? []
+        retractedBy = try c.decodeIfPresent(String.self, forKey: .retractedBy)
     }
 }
 
