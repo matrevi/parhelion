@@ -774,7 +774,8 @@ class SchedulerEngine:
             },
             "npu_queue": npu_live.get("tasks", []),
             "submit_queue": (submit_queue := self.build_submit_queue_view(limit_history=limit_history)),
-            "unsubmitted_candidates": (unsubmitted := self._auto_request(self._discover_unsubmitted_candidates())),
+            "unsubmitted_candidates": (unsubmitted := self._auto_request(self._discover_unsubmitted_candidates(),
+                                                                     submit_queue)),
             "candidate_archive": self._candidate_archive(unsubmitted, submit_queue),
             "quota": {
                 **quota.to_dict(),
@@ -790,7 +791,8 @@ class SchedulerEngine:
             "config": self.config.to_dict(),
         })
 
-    def _auto_request(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _auto_request(self, candidates: list[dict[str, Any]],
+                      queue: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         """Request approved candidates that no worker requested, so they do not wait forever.
 
         A worker normally hands its SHA to the platform; when it does not (it may be waiting on
@@ -799,6 +801,11 @@ class SchedulerEngine:
         least ``auto_request_grace_sec`` ago is held as a platform request; the daemon's existing
         promotion then re-gates and submits it. A problem with a queued or judging submission, or
         a receipt younger than a minute, is left alone so the board can catch up first.
+
+        ``queue`` is the submit-queue view built in the same status call. Its ``pending`` items are
+        what is really in flight: the view also retires a row whose SHA already has a judged
+        receipt, so an old queue row whose outcome carries a differently formatted ``queued_at``
+        no longer marks its problem busy forever (4.3.1; before, 11 of 14 problems were stuck).
         """
         sched = read_parhelion_scheduler_config() or {}
         if not sched.get("auto_consumer_enabled") or sched.get("auto_request_candidates") is False:
@@ -807,9 +814,12 @@ class SchedulerEngine:
         now = datetime.datetime.now(datetime.timezone.utc)
         results = self.workspace / "results"
         outcomes = _read_jsonl(results / "submit-queue-outcome.jsonl")
-        finished_claims = {(o.get("title"), o.get("sha"), o.get("queued_at")) for o in outcomes}
-        busy = {q.get("title") for q in _read_jsonl(results / "submit-queue.jsonl")
-                if (q.get("title"), q.get("sha"), q.get("queued_at")) not in finished_claims}
+        if queue is not None:
+            busy = {item.get("title") for item in queue if item.get("kind") == "pending"}
+        else:
+            finished_claims = {(o.get("title"), o.get("sha"), o.get("queued_at")) for o in outcomes}
+            busy = {q.get("title") for q in _read_jsonl(results / "submit-queue.jsonl")
+                    if (q.get("title"), q.get("sha"), q.get("queued_at")) not in finished_claims}
         for o in outcomes:
             done = _parse_iso(o.get("finished_at"))
             if o.get("status") in ("Running", "Queued", "Pending", "judging") or (

@@ -71,6 +71,29 @@ class AutoRequestTest(unittest.TestCase):
             json.dumps({"title": "Op", "sha": "b" * 40, "queued_at": _ago(10)}) + "\n")
         self.assertIsNone(self._run())
 
+    def _run_with_view(self, queue):
+        cand = {"title": "Op", "sha": SHA, "approved": True, "status_tag": "READY", "gate_reason": "ok",
+                "estimate": {"expected_improvement": 8.9, "estimation_method": "case_bench_paired"}}
+        with mock.patch.object(cli_bridge, "read_parhelion_scheduler_config", return_value=dict(CONFIG)):
+            self.engine._auto_request([cand], queue)
+        return self.engine.held_items.get(f"Op:{SHA}")
+
+    def test_a_stale_queue_row_the_view_retired_does_not_block_the_problem(self) -> None:
+        """4.3.1: a row queued days ago whose receipt carries another ``queued_at`` format kept the
+        problem "busy" forever, so an approved candidate sat READY and was never submitted."""
+        self._validated(300)
+        (self.ws / "results" / "submit-queue.jsonl").write_text(
+            json.dumps({"title": "Op", "sha": "b" * 40, "queued_at": "2026-11-24T17:00:32.569946+00:00"}) + "\n")
+        (self.ws / "results" / "submit-queue-outcome.jsonl").write_text(
+            json.dumps({"title": "Op", "sha": "b" * 40, "queued_at": "2026-11-24T17:30:46.875Z", "status": "Pass",
+                        "finished_at": "2026-11-24T17:40:00Z"}) + "\n")
+        view = [{"kind": "completed", "title": "Op", "sha": "b" * 40}]
+        self.assertEqual(self._run_with_view(view)["requested_by"], "platform")
+
+    def test_a_pending_item_in_the_view_still_blocks_the_problem(self) -> None:
+        self._validated(300)
+        self.assertIsNone(self._run_with_view([{"kind": "pending", "title": "Op", "sha": "b" * 40}]))
+
     def test_waits_for_a_fresh_receipt_to_reach_the_board(self) -> None:
         self._validated(300)
         (self.ws / "results" / "submit-queue-outcome.jsonl").write_text(
