@@ -160,21 +160,24 @@ def compose_session_brief(
     else:
         lines.append("Keep `bench/reference.py` frozen and `bench/cases_perf.json` append-only.")
     lines.extend(x for x in (_board_line(ws, title), _escape_line(ws, title)) if x)
+    # The rules come first: the body is cut at MAX_BRIEF_BYTES, and a long worktree path plus an
+    # escape-lock line must never push the data-channel rule out of the brief (4.3.0 fix).
     lines.extend([
-        "Loop: parhelion_test (level, explicit sha) -> parhelion_test_wait request_id=... -> compare the digest "
-        "with its baseline -> parhelion_submit_gate (preview, then enqueue=true). Verdicts: parhelion_agent_inbox.",
-        "Speculative shot: parhelion_submit_gate intent=probe; rollback: intent=restore.",
-        "Levels: smoke = quick self-check; standard = correctness plus warm timing; final = once per candidate.",
-        f"No ssh, flock or direct device access. CLI fallback: `opsb test {title} --sha <sha>`, "
+        "Loop: parhelion_test (level, sha) -> parhelion_test_wait -> compare with the baseline digest -> "
+        "parhelion_submit_gate (preview, then enqueue=true); verdicts: parhelion_agent_inbox; report every result, "
+        "negative too, via parhelion_agent_report.",
+        "No ssh or device access. Board, tbest, receipts, env: parhelion_report views only, never ~/.parhelion "
+        "files or opsb_core internals.",
+        "intent=probe: reversible speculative shot; intent=restore: roll back. Levels: smoke self-check, "
+        "standard correctness + warm timing, final once per candidate.",
+        "parhelion_squad to an agent_id, role or all: claim <=280 chars, refs, evidence{class, ref}; class "
+        "online_receipt = judge receipt, paired = same-batch per-case A/B, local = one local/profiler run. "
+        "Hardware laws need the first two.",
+        f"parhelion_kb_query when needed. CLI fallback: `opsb test {title} --sha <sha>`, "
         f"`opsb submit {title} <sha> --note \"<evidence>\"`.",
-        "parhelion_squad: teammate agent_id, role name (axis/role_label) or all; no args lists teammates. "
-        "Claim <=280 chars with refs (ledger ids) and evidence; a body over 1200 chars becomes a file path; "
-        "messages merge at the teammate's next turn boundary.",
-        "When needed, call parhelion_kb_query (3 summaries by default).",
-        "Report results, negative ones too, with parhelion_agent_report.",
-        "Platform data (board, tbest, receipts, env) comes from parhelion_report views board/history/per_case/env, "
-        "not from ~/.parhelion files, opsb_core imports or platform internals.",
     ])
+    if len("\n".join(lines).encode("utf-8")) > MAX_BRIEF_BYTES:
+        lines[-1] = "parhelion_kb_query when needed."  # the CLI fallback is the first thing to give way
     body = _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
     if include_startup_pack:
         from . import startup_pack

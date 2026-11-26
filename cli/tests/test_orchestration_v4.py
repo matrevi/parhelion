@@ -466,6 +466,10 @@ def test_session_and_bench_author_briefs_fit_budget(env):
                    "sprint-solo", "kernel.asc"):
         assert needle in body
     assert body.index("parhelion_test ") < body.index("parhelion_test_wait") < body.index("parhelion_submit_gate")
+    # 4.3.0: the data-channel rule and the evidence classes must survive the byte cap; before the
+    # fix a live worktree path plus an escape-lock line cut them off every worker brief.
+    assert "(truncated)" not in body
+    assert "parhelion_report views only" in body and "online_receipt" in body
     assert card.startswith("Demo @ ")
     bench = compose_bench_author_brief(ws, "Demo")
     assert len(bench.encode("utf-8")) <= MAX_BRIEF_BYTES

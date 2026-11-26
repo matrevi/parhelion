@@ -2,6 +2,74 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.3.0 — 试错更便宜、回滚更快、排序可度量
+
+主题来自上一场的回放调研（`docs/v4.3/research/antigravity/`）：让一次试错更便宜、让回滚更快、让排序是否变准有尺子可量，不新增门槛。九个包 P21–P29 由 DSH 实现、主会话审查合入，审查记录在 `docs/v4.3/reviews/`。每项行为改动都有 `GateConfig` 开关，`opsb queue config --gate 名称=值` 可退回 4.2.1；回放的 `421` 组就是全部 4.3 开关关闭。自动提交开关、额度与强制提交的规则都没有改。
+
+### 门禁回放与规则快照（P21、P22）
+- `opsb replay gate -w <比赛>`：在只读副本上按时间重放全部回执，比较开关组（`default`、`421`、`420`、`sigma`、`ranking`）的拦截数、拦下的新高、带下一步的比例与收官差额。`--intents` 加意图重判，`--ranking` 加排序质量指标。
+- 判题规则快照 `results/<题>/.judge-rule.json`：榜型、σ̂ 与公开/隐藏分解；`opsb workspace rules`、`parhelion_report(view=rules)` 与 `parhelion_status` 的 judge 行读它。
+
+### 提交意图（P23）
+- `intent=exploit|probe|restore`（`parhelion_submit_gate`、`opsb submit --intent`）。
+- `probe`：免噪声底线，只要求 P(gain>0) 的下限；每题 12 小时最多 2 发；`latest` 下必须有线上 Pass 过、分数不低于榜面的回滚目标。条件不满足时按 exploit 评估并写明原因，不拒稿。
+- `restore`：按该 SHA 自己的线上 Pass 回执折算到当前定价；榜面归零或上一发判题失败时直接放行。
+- 开局豁免改为「直到该题首次出分，最多 8 发」（D1）；逃逸锁与身份类拒绝不再豁免。
+- 每一种暂缓都给出下一步。force 与 override 回执不进校准样本。
+- 开关：`submit_intents`、`opening_until_first_score`、`opening_max_probes`、`probe_per_window`、`probe_window_hours`、`probe_min_prob`、`calibration_excludes_forced`。
+
+### 逃逸锁出口与 S1 体检（P24）
+- 坏 SHA 自己至少 2 次正式 final 运行全部通过复现变体时，锁降为提示（`ESCAPE_UNREPRODUCED`，按 EXPLORE、优先级减半）；坏 SHA 本身仍不能原样重投。
+- S1 体检读编译秒数、模板实例化数、内核目标文件大小与冷启动比，与在榜 SHA 比较增长；告警只降优先级。
+- 判题时限风险（D3）：编译加预计判题耗时达到时限的 80% 时，exploit 暂缓，可改用 `intent=probe` 发。**本版没有配置判题时限，这一条不生效**，见「已知限制」。
+- 开关：`escape_unreproduced_releases`、`unrepro_runs`、`health_checks`、`health_penalty`、`health_time_risk_holds`、`health_time_margin`、`judge_compile_factor`。
+
+### 收官对账与槽位可见性（P25）
+- `opsb close-sweep [--enqueue] [--json]` 与 `parhelion_report(view=close)`：按收盘重放的在榜分，逐题列出需要 restore、需要并入 main、需要刷新 `best/*` 的三张清单。`--enqueue` 把 restore 交给正常门禁，不 force、不 approve；只列分支，从不合并，也不打标签。
+- 收官窗口（`scheduler.closing.contest_end` / `window_min` / `restore_boost`）内，restore 的优先级乘 `restore_boost`，只改排序。
+- `QuotaStatus` 与 `opsb status` 给出每槽利用率与一行槽位提示，只用槽序号。认不出的账号 id 不再记到默认槽上。
+
+### 席位与冲刺 v2（P26）
+- 席位身份按（题，席位名）；新增 `mode=race`（N 个并行方向）与 `mode=pipeline`（侦察、K 个实现、集成与 harness）。一题可以单独指定 mode 与 seats；冲刺中可用 `adjust`、`stop`、`replace`。
+- 停滞消息附可执行的 `parhelion_sprint_start(replace=[题])`；自动换席开关 `agents.auto_replace_on_stagnation` 默认关（D4）。
+
+### 派活情报、全队广播与知识库证据等级（P27、P28）
+- 启动包第 5 段加情报：榜首与加权空间、最近三发的机制与结果、尝试预算与停手条件、规则摘要。
+- `parhelion_squad(to="all")` 全员广播，worker 每 10 分钟至多 1 条；消息必须带 `evidence{class, ref}`，等级为 `local`、`paired`、`online_receipt`，非线上回执标「待验证」。`parhelion_report(view=sweep)` 供主控做跨题横扫。
+- 知识库条目带证据等级与机制字段；hardware 规律要 `paired` 或 `online_receipt` 证据才能晋升。新增 6 张过程卡；门禁回复附至多 2 条相关知识提示，只作提示。`opsb kb migrate-evidence` 显式迁移旧条目。
+
+### 估分排序校准（P29）
+- 估分器的同源抖动改用实测判题噪声（`jitter_sigma_from_judge_noise`，默认开）；两场回放里没有翻转任何一次放行或暂缓。
+- 跨代两档预测（`ranking_v2`）在两场回放上都没达到启用标准，默认关，只合入了测量部分。
+
+### 发布时的修正
+- **worker brief 被截断。** 契约上限是 1500 B，但在当前比赛的真实工作树路径与逃逸锁行下，每一份 brief 都超了；被截掉的正是末尾的数据通道规则（board、tbest、回执只从 `parhelion_report` 读）。现在规则排在前面；超长时先让出 CLI 备用命令，测试钉住了规则必须保留。
+- brief 补上证据等级的写法。
+- `AGENTS.md` 按 D1、D4 改写第 3、6 条与末段的席位模式。
+
+### 回放基准（发布前在 main 上从真实入口重跑）
+| 比赛 | 组 | 拦截 | 拦下的新高 | 带下一步 | 收官差额 | 排序 Spearman / top-1 |
+|---|---|---:|---:|---:|---:|---|
+| ops-bench（latest） | default（4.3） | 50/233 | 18 | 50/50 | 10.19 | 0.481 / 0.688 |
+| ops-bench | 420 | 132/233 | 39 | 132 | — | 0.323 / 0.273 |
+| mat-chem-sim-pred（best） | default（4.3） | 66/78 | 35 | 66/66 | 0.00 | 0.476 / 0.333 |
+| mat-chem-sim-pred | 420 | 70/78 | 37 | 70 | 0.00 | 0.524 / 0.500 |
+
+- mat-chem 的 66 发拦截里有 42 发是证据格式漂移（旧回执早于参考套件取证），不是当天的门禁判定。
+- 4.2.1 只有 6/50 发带下一步；4.3 是全部。
+
+### 已知限制
+- **判题时限未配置，D3 不生效。** 两场的规则快照都没有时限。ops-bench 的 TLE 回执集中在 420 s，mat-chem 有一条 TLE 跑了 600 s，口径对不上，所以没有写默认值。确认后写进部署配置 `judge.time_limit_sec`（不进仓库）。
+- `close-sweep` 依赖部署前缀找题目仓库与清单；缺前缀时清单会静默变空。
+- 收官窗口消息只在有人跑 `opsb close-sweep` 时发，守护进程不会自动发。
+- 每槽利用率还没有在 Swift 调度条上显示（数据已由 CLI 与 MCP 提供），留到 4.4。
+- `judge_noise` 没有 as_of，回放里的 σ 用到了 as_of 之后的回执。
+
+### 升级
+1. 重启守护进程，重新安装应用（build 35）。
+2. 在当前工作区执行 `opsb workspace rules --refresh`。
+3. 总线与知识库的新列在 4.3 进程第一次打开时自动补上；旧条目的证据等级迁移需显式执行 `opsb kb migrate-evidence`。
+
 ## 4.2.1 — 门禁修复：榜型、TLE、熔断与噪声底线
 
 按上一场比赛的回放（`docs/v4.3/research/antigravity/00-SUMMARY.md` §4.1、§4.3、§4.4、§4.9），修了四条会拦错提交的门禁规则。每一项都有 `GateConfig` 开关，`opsb queue config --gate 名称=值` 可退回 4.2.0 的行为。自动提交开关、额度与强制提交的规则都没有改。
