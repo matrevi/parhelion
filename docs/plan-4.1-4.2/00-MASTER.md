@@ -1,6 +1,6 @@
 # Parhelion 4.1 + 4.2 实施总计划
 
-主会话负责本计划、审查与合并；每个子计划由一个子代理在独立 git 工作树里实现。模型优先用 Sonnet：Opus 额度消耗大，只在某个包的 Sonnet 代理被安全过滤中止后，才对该包改用 Opus。简报不写设备厂商相关字眼；会话日志只做聚合统计，不把原文读进上下文，提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
+主会话负责本计划、审查与合并；每个子计划由一个子代理在独立 git 工作树里实现。4.1.0 发布后，4.2 剩余的包（P08、P12–P16、P18）改由 DSH 在工作树里开原生子代理实现，执行计划见 [20-REMAINING-4.2.md](20-REMAINING-4.2.md)；下文关于 Sonnet/Opus 的约定只适用于此前由主会话派出的子代理。模型优先用 Sonnet：Opus 额度消耗大，只在某个包的 Sonnet 代理被安全过滤中止后，才对该包改用 Opus。简报不写设备厂商相关字眼；会话日志只做聚合统计，不把原文读进上下文，提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
 
 需求来源：
 
@@ -31,7 +31,8 @@
 | 14 | [P14 同伴消息协议](P14-peer-protocol.md) | 4.2 F | `agents/manager.py`(squad) `mcp/handlers_agents.py` `ledger/` | P06 |
 | 15 | [P15 worker 边界](P15-worker-boundary.md) | 4.2 K | `agents/adapters.py` `worker_access.py` `drivers/*` | P12（board 视图） |
 | 15a | [P17 本地验证可信度、逐例校准表、噪声感知判定](P17-verify-calibrate.md) | 调研 R1 R2 R3 | `runtime/npu_runtime/*` `scheduler/{gate,case_bench,suite}.py` 新模块 | P01、P02、P07 |
-| 16 | P16 H/I/J 决策 | 4.2 H I J | 由主会话根据 P03 的测量与回放结果决定，届时补写子计划；调研 R10（按代码相似度注入知识、按驱动 A/B）并入 J | P03–P15 |
+| 16 | P16 H/I/J 测量与决策 | 4.2 H I J | DSH 先按 20-REMAINING §3.7 出测量报告，主会话据此决定并补写子计划；调研 R10（按代码相似度注入知识、按驱动 A/B）并入 J | P12、P13 |
+| 17 | P18 收尾小修 | 4.1 遗留 | 可用额度显示不扣收尾预留、设备代理测试加固、（可选）用例缓存目录可配置，见 20-REMAINING §3.6 | — |
 
 ### 1.1 执行分组
 
@@ -77,7 +78,7 @@
   ```bash
   PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
   ```
-  基线（2026-11-26）：前者 424 passed / 18 skipped，后者 253 passed。改了 Swift 还要 `swift build` 通过。
+  基线（4.1.0）：前者 686 passed / 19 skipped，后者 442 passed。改了 Swift 还要 `swift build` 通过。
 - 子计划里标「真机验收」的步骤，在单测全绿后执行，并把命令、耗时与输出摘要写进报告。
 
 ### 2.4 交付报告（子代理最终回复）
@@ -97,7 +98,7 @@
 
 ## 4. 进度
 
-无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。
+无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。截至 P17 的各包已随 **4.1.0**（tag `v4.1.0`）发布。
 
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
@@ -106,16 +107,16 @@
 | P03 | impl/P03-metering-replay | 已合入 | 见 git log | 缓存命中已达 99.3–99.6%，成本杠杆在上下文大小；回放基线 current 覆盖 0.642 [0.568,0.716]；主控轮询实测 136/h（计划写约 560/h，日志无法复原） |
 | P04 | impl/P04-change-driven-wait | 已合入 | 见 git log | parhelion_wait 事件到返回 p50 262ms；主控投影 91–67 次/h（实测基线 136/h），单次返回从中位 6.7KB 降到约 200B；另修复两条日期相关测试 |
 | P05 | impl/P05-ledger-core | 已合入 | 见 git log | 回放 ledger_core 0.649 对 current 0.642，配对差 +0.007 [−0.015,+0.032] 不显著；只有平台写入时账本内容太少 |
-
 | P06 | impl/P06-ledger-seed | 已合入 | a72ac6d | DSH 会话写完；审查后修近似重复比较的 +/- 号缺陷；回放 ledger_full 与 current 打平，默认仍 ledger_core |
 | P07 | impl/P07-gate-queue | 已合入 | 0a6aea0 | 队列灯读门禁判定；approve 输出如实；拒绝卡只显示判题消息；逃逸锁 MCP；前 3 名候选 |
-| P08 | impl/P08-startup-pack | 待开工（组 4b） | | |
+| P08 | impl/P08-startup-pack | 待 DSH 开工；`agent_peek` 等 P13 | | |
 | P09 | impl/P09-host-daemon | 已合入 | 7c279f9 | 判题版本的工具链主机上没有，编译检查默认跳过 |
 | P10 | impl/P10-profiler-ab | 已合入（随 P11） | bf8c08e | profiler 计时 CV 61%→0.9% |
 | P11 | impl/P11-batch-ui | 已合入 | bf8c08e | 合并批次无可测节省；R9 早停仅单测；界面截图待 daemon 重启后补 |
-| P12 | impl/P12-report-views | 待开工（组 4a），脚本聚类已完成 | 2ef788a | |
-| P13 | impl/P13-bound-output | 待开工（组 4a） | | |
-| P14 | impl/P14-peer-protocol | 待开工（组 4b） | | |
-| P15 | impl/P15-worker-boundary | 待开工（组 4b，等 P12） | | |
+| P12 | impl/P12-report-views | 待 DSH 开工，脚本聚类已完成（2ef788a） | | |
+| P13 | impl/P13-bound-output | 待 DSH 开工，等 P12 合入 | | |
+| P14 | impl/P14-peer-protocol | 待 DSH 开工 | | |
+| P15 | impl/P15-worker-boundary | 待 DSH 开工，等 P12 合入 | | |
 | P17 | impl/P17-v2-calibrate | 已合入 | 746e928 | 真机：已知通过 SHA 无误报；a2717b5 仍只在平局变体上失败 |
-| P16 | — | 待测量 | | 组 4 完成后决定 H/I/J |
+| P16 | impl/P16-measure | 待 DSH 测量，等 P12、P13 合入 | | 主会话据报告决定 H/I/J |
+| P18 | impl/P18-cleanup | 待 DSH 开工 | | |

@@ -2,6 +2,57 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.1.0 — 判题一致性、可信的本地测量与上下文经济（第一部分）
+
+本版完成 4.1 路线 1–4 与「4.1 待办」#5–#14、#16–#20，并提前带上 4.2 的工作包 A、B、C（计量、变化驱动的等待、实验账本）。#15 随 4.2 的 P08 交付。各包的计划、报告与合入提交见 `docs/plan-4.1-4.2/00-MASTER.md` §4 与 `reports/`。
+
+### 判题一致性（#5–#8，P01、P02）
+- **回执归一。** `scheduler/receipts.py` 是回执的唯一读口：规范化官方分（未刷新最高分的 `timing_score.score` 也读得到），按 `submission_id` 去重，并给出判题计分公式。`opsb bench receipts backfill` 只用磁盘已有数据补写历史行。
+- **用例映射。** `scheduler/case_map.py` 把本地 official 用例对应到判题用例，并标出规模不同的用例（如 FFT 05，是不同的工作量，标 `scale_mismatch`）。`opsb bench case-map` 查看或重建。
+- **按回执逐例预测。** `scheduler/receipt_predict.py` 用已判 SHA 的官方逐例时间和本地配对比，按判题公式与最新 tbest 逐例计分。留一回测 MAE 从 2.75 降到 1.32。
+- **WA 复现。** WA/RE 回执到达时，`scheduler/wa_repro.py` 为失败用例生成多 seed 变体和精确舍入平局变体，作为逃逸锁的复现入口（`opsb bench wa-repro`）。真机上 QuantScaleCalib a2717b5 在平局变体上复现 WA（24/8320 个元素错），榜上 SHA 全部通过。配对改按 official 输入的 `pairing_key`，追加 final 变体不再让旧证据失配。
+
+### 本地测量可信度（路线 1–2，P10、P17）
+- **profiler 任务时长。** `standard` 与 `final` 默认在 profiler 下计时（`device.profiler_levels`）；持锁期间只采集，导出和解析在锁外完成。同一 SHA 重复运行的计时 CV 从 61% 降到 0.9%。
+- **A/B 交替配对。** `opsb test --compare <base|board>` 与 `parhelion_test(compare=…)` 在同一个设备作业里交替运行候选和基线，S2 优先使用配对证据。
+- **计时归属与未公开变体。** 改动模板主程序、`sample.py` 或 `reference.py` 的运行只供诊断，不算正式证据；每次 `final` 运行派生只存在于本次运行的 seed、scale、shape 变体，不写入 `suite.json`。
+- **物理合理性。** 低于带宽下限（`device.peak_bandwidth_gbps`）、比同输入此前最好快 3 倍以上，或超过历史最大跃升 2 倍的读数标为 implausible，在冷会话复测确认前不进入门禁证据。
+- **校准表与三态判定。** 逐例记录本地预测与判题变化，给出 trusted / noisy / divergent 标签；门禁估分带区间，divergent 用例按未知处理。逐例判定为 improved / indistinguishable / regressed，CV 超过 3% 的用例只供查看，不作增益结论。
+
+### 门禁与队列（#9–#12，P07、P07b）
+- 队列灯、badge、理由和下一步只从门禁判定读取，不再本地重算；没有判定时显示 NOT EVALUATED。
+- S4 只决定派发时机（账号槽与冷却），不再拒绝或暂缓候选；收尾预留只用于显示。
+- `opsb queue approve` 如实报告入队结果；拒绝卡只显示判题返回的消息，完整堆栈写到 `logs/submit-errors/`。
+- 新 MCP 工具 `parhelion_escape_status`、`parhelion_escape_rebind`、`parhelion_escape_reproducer`；每题保留前 3 名不同思路的候选档案。
+
+### 编排与上下文（#13 #14，4.2 A B C；P03–P06）
+- **计量与回放。** 按驱动解析提示缓存命中与未命中原因，记录每次 MCP 工具调用的字节与耗时；`opsb replay metrics` 与 `opsb replay bench` 只读地重算冲刺指标、跑压缩回放基准。本场缓存命中率已是 99.3–99.6%，成本杠杆在上下文大小。
+- **变化驱动的等待。** `parhelion_wait` 阻塞到可见事件再返回，事件到返回 p50 262ms；`parhelion_status` 支持 `if_rev`，未变化时返回 `not_modified`。按本场回放，主控调用从每小时 136 次降到 67–91 次，单次返回中位数从 6.7KB 降到约 200B。
+- **实验账本。** 测试终态、门禁请求和判题回执由平台自动写入只追加账本；worker 用 `parhelion_note`、`parhelion_ledger`、`parhelion_recall` 记录与查询。重测同 SHA 同级别、或与近期实验近似重复的改动，会先返回已有结果和账本 id，`force_rerun` 加书面理由才重测。同一失败指纹或瓶颈类达 3 次、或连续 5 次实验没有改进时给出警告（不阻断）。
+- **压缩。** 交接叙述按五个固定标题校验，失败时回退到只用账本的种子；低于硬上限时只在测试终态、判题回执或阶段报告等边界上压缩，工具调用进行中不压缩。代码拼装的种子 `agents.seed_scheme=ledger_full` 已实现，但回放中与现方案打平，默认仍为 `ledger_core`。
+- **扩展状态卡。** `parhelion_status(detail=true)` 返回逐例同代加速比与置信度、与 tbest 的差距、最近回执和期望收益最大的目标，与门禁读同一套数据。
+
+### 设备主机、守护进程与界面（#16–#20，路线 3–4；P09、P11）
+- 用例缓存加全局 LRU 上限（默认 24GiB，`device.case_cache_bytes`）和 7 天过期；`opsb doctor --cases [--remote]` 显示占用与命中率，`opsb doctor clean --purge-cases` 清除。
+- `standard` 运行在前几个计时用例都明显慢于基线时提前停止，`final` 始终完整运行。不同题已就绪的作业可合并在一次持锁内（`device.merge_batches`）。
+- 守护进程在派发间隙热加载 `ipc_bridge` 与 `daemon.dispatch`，也可手动 `opsb daemon reload`，不必重启、不中断 worker。总线清空后消息序号从 1 重新开始。
+- 上传前可用判题版本的工具链做一次只编译检查（`device.judge_toolchain_root` 等），失败时 S1 以编译器错误行拒绝。
+- 界面：测试登记表（可展开 digest）、驱动暂停横幅与解除、队列卡的门禁 badge 与下一步、协作页缓存命中率、菜单项「New Contest Chat」（⌘⇧N）。
+
+### 升级
+1. 重启守护进程并重新安装应用；新的设备代理、profiler 采集与用例缓存模块会在第一次测试时自动部署到设备主机。
+2. 新增配置项都有中性默认值：`device` 段的 `profiler_levels`、`merge_batches`、`case_cache_bytes`、`judge_toolchain_root` / `judge_toolchain_env` / `judge_compile_flags`、`peak_bandwidth_gbps`；`agents` 段的 `seed_scheme`、`seed_budget_chars`、`compact_floor_percent`。
+3. 历史回执需要规范字段时，先运行 `opsb bench receipts backfill` 查看，再加 `--apply` 补写。
+
+### 已知限制
+- 设备主机上没有判题版本的工具链，只编译检查默认跳过。本场线上失败都发生在编译通过之后（RE、WA、TLE），这项检查拦不住它们。
+- 跨题合批在这台主机上没有可测的节省，`standard` 早停只有单测。
+- 校准数据很薄：14 题中只有 4 题有可配对回执，两题达到 trusted。
+- 设备主机是容器，重启会清空 `/tmp` 里的用例缓存，首轮准备会变慢。
+- 显示用的 `available_normal_shots` 仍扣除收尾预留，数字偏低（不影响门禁）。
+- `runtime/tests/test_device_broker.py` 两条基于 sleep 的预算测试在机器高负载时偶发失败，单独运行通过。
+- 4.2 的 D（平台视图）、E（统一输出上限）、F（同伴消息协议）、G（启动包，含 #15）、K（worker 边界）尚未完成，H、I、J 待测量后决定。
+
 ## 4.0.4 — 修复 NPU 遥测断流
 
 4.0.1–4.0.3 之后 `opsb npu status` 正常，但 daemon 的常驻遥测流一直连不上，界面显示 NPU 离线（`"error": "SSH stream closed (rc=None)"`）。两个缺陷叠加：
@@ -147,6 +198,8 @@
 | 门禁全部通过的候选若没有 worker 发起提交请求，就一直停在「待提交 · READY」；worker 又在等主控决定，主控忙于调度没有回复（Sgemm 10f21fd 预计 +8.88，空等约 6 分钟） | 自动提交开启时，平台对全部四关通过、且验证完成超过宽限期（默认 120s）仍无人请求的候选代为请求，再由守护进程照常复核门禁后提交；同题有排队或判题中的提交、或回执不到 1 分钟时不代为请求 |
 
 ### 4.1 待办
+
+> 状态（4.1.0）：#5–#14、#16–#20 已完成，见本文件顶部「4.1.0」；#15 随 4.2 的 P08 交付。
 
 **判题一致性（影响最大）**
 
