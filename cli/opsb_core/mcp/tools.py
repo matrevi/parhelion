@@ -33,6 +33,11 @@ from .handlers_ledger import (
     tool_parhelion_note,
     tool_parhelion_recall,
 )
+from .handlers_escape import (
+    tool_parhelion_escape_rebind,
+    tool_parhelion_escape_reproducer,
+    tool_parhelion_escape_status,
+)
 from .handlers_kb import (
     tool_parhelion_kb_feedback,
     tool_parhelion_kb_query,
@@ -46,6 +51,8 @@ WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_
 # Tools whose handler needs to know whether a worker or the orchestrator is calling.
 ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait", "parhelion_note", "parhelion_ledger",
                                                "parhelion_recall")
+# Escape-lock tools check that a worker acts on the problem its bus record names.
+WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebind", "parhelion_escape_reproducer")
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
@@ -63,6 +70,9 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_note": tool_parhelion_note,
     "parhelion_ledger": tool_parhelion_ledger,
     "parhelion_recall": tool_parhelion_recall,
+    "parhelion_escape_status": tool_parhelion_escape_status,
+    "parhelion_escape_rebind": tool_parhelion_escape_rebind,
+    "parhelion_escape_reproducer": tool_parhelion_escape_reproducer,
     "parhelion_harness_pool": tool_parhelion_harness_pool,
     "parhelion_sprint_start": tool_parhelion_sprint_start,
     "parhelion_agent_spawn": tool_parhelion_agent_spawn,
@@ -122,7 +132,7 @@ def call_tool(
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
     call_args.pop("_caller_agent_id", None)
-    if name in ROLE_AWARE_TOOLS:
+    if name in ROLE_AWARE_TOOLS or name in WORKER_SCOPED_PROBLEM_TOOLS:
         call_args["_worker_request"] = norm_role == "worker"
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")

@@ -53,6 +53,9 @@ struct CandidateSubmissionCardView: View {
                             compact: true
                         )
                     }
+                    if let rank = item.archiveRank {
+                        SemanticPill(text: lang.tr("候选第\(rank)名", "TOP \(rank)/3"), compact: true)
+                    }
                     SemanticPill(text: readableCandidateBadge(item, cdRem: cdRem))
                 }
 
@@ -84,8 +87,8 @@ struct CandidateSubmissionCardView: View {
                 .padding(.horizontal, 10)
                 .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.035)))
 
-                if !item.note.isEmpty {
-                    Text(cleanNote(item.note))
+                if !item.displayNote.isEmpty {
+                    Text(cleanNote(item.displayNote))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -167,9 +170,8 @@ struct CandidateSubmissionCardView: View {
         if !item.gates.safetyOk { return lang.tr("缺少精度记录 · HELD", "SAFETY HELD") }
         if u.contains("REJECTED") { return lang.tr("门禁拒绝 · REJECTED", "REJECTED") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
-        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk {
-            return lang.tr("今日配额已满 · QUOTA", "QUOTA EXHAUSTED")
-        }
+        if u.contains("NOT EVALUATED") || item.gates.evaluated == false { return lang.tr("未评估", "NOT EVALUATED") }
+        if u.contains("WAITING") { return lang.tr("等待提交槽位", "WAITING FOR SLOT") }
         if u.contains("CIRCUIT") || !item.gates.circuitOk { return lang.tr("连6发无突破", "CIRCUIT OPEN") }
         if u.contains("HOLD") || u.contains("LOW") || !item.gates.noiseOk { return lang.tr("提分较小 · 可插队", "HOLD · LOW GAIN") }
         if !item.gates.allPass { return lang.tr("门禁未通过 · HELD", "GATE HELD") }
@@ -183,18 +185,23 @@ struct CandidateSubmissionCardView: View {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") || u.contains("REJECTED") || !item.gates.safetyOk { return .red }
         if u.contains("CRITICAL") { return Color(red: 0.12, green: 0.70, blue: 0.42) }
-        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk { return .red }
-        if !item.gates.allPass || (cdRem > 0 && u.contains("RATE")) { return .orange }
+        if !item.gates.allPass || u.contains("WAITING") || (cdRem > 0 && u.contains("RATE")) { return .orange }
         return Color(red: 0.12, green: 0.70, blue: 0.42)
     }
 
     private func gateSummaryText(_ item: SubmissionQueueItem, cdRem: Int) -> String {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") {
+            if let step = item.nextStep, !step.isEmpty {
+                return lang.tr("🔒 逃逸硬锁 · 下一步：\(step)", "🔒 ESCAPE LOCK · next: \(step)")
+            }
             return lang.tr(
                 "🔒 逃逸硬锁激活：需先复现线上 WA/TLE 并通过 verify-escape 解锁",
                 "🔒 ESCAPE LOCK: add reproducer & pass verify-escape before submitting"
             )
+        }
+        if u.contains("NOT EVALUATED") || item.gates.evaluated == false {
+            return lang.tr("… 提交门禁尚未评估", "… Not evaluated by the submission gate yet")
         }
         if u.contains("TEST FAILED") {
             return lang.tr("⚠ 本地用例未通过：修复失败用例后重测", "⚠ Local cases failed: fix them and re-test")
@@ -202,10 +209,7 @@ struct CandidateSubmissionCardView: View {
         if !item.gates.safetyOk { return lang.tr("⚠ 缺少完整服务端精度测试记录", "⚠ Missing NPU extended validation") }
         if u.contains("CRITICAL") { return lang.tr("✓ 历史高分验证通过，可立即恢复", "✓ Validated best SHA ready to restore") }
         if u.contains("REJECTED") {
-            return lang.tr("⛔ 门禁拒绝提交（收益/熔断/配额未通过）", "⛔ Rejected by submission gate")
-        }
-        if u.contains("QUOTA") || u.contains("EXHAUSTED") || !item.gates.quotaOk {
-            return lang.tr("⚠ 今日常规额度已用尽（保留收官恢复配额）", "⚠ Daily normal quota exhausted (reserve protected)")
+            return lang.tr("⛔ 门禁拒绝提交", "⛔ Rejected by submission gate")
         }
         if !item.gates.circuitOk {
             return lang.tr("⚠ 12h 连续未突破（熔断开启 · 请切换基线或插队覆盖）", "⚠ Circuit breaker open (switch baseline or override)")
@@ -216,10 +220,13 @@ struct CandidateSubmissionCardView: View {
         if !item.gates.allPass {
             return lang.tr("⚠ 未通过全部提交门禁", "⚠ Not all gate stages passed")
         }
-        if cdRem > 0 && u.contains("RATE") {
-            return lang.tr("⏳ 4项门禁通过 · 等待冷却剩余 \(cdRem)s", "⏳ All 4 gates passed · Cooldown \(cdRem)s left")
+        if u.contains("WAITING") {
+            return lang.tr("⏳ 门禁通过 · 等待空闲的提交槽位", "⏳ Gates passed · Waiting for a free submission slot")
         }
-        return lang.tr("✓ 本地精度与防抖门禁全部通过", "✓ All 4 gate stages passed")
+        if cdRem > 0 && u.contains("RATE") {
+            return lang.tr("⏳ 门禁通过 · 等待冷却剩余 \(cdRem)s", "⏳ Gates passed · Cooldown \(cdRem)s left")
+        }
+        return lang.tr("✓ 本地精度与防抖门禁全部通过", "✓ All gate stages passed")
     }
 }
 
@@ -284,7 +291,7 @@ struct CompletedSubmissionCardView: View {
                 .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.035)))
 
                 HStack(spacing: 8) {
-                    Text(cleanNote(item.note))
+                    Text(cleanNote(item.displayNote))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

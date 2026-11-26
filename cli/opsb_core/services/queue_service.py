@@ -12,6 +12,7 @@ from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read
 from ..device_env import device_text
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, displayed_score_bound, index_submission_history, latest_score_evidence, resolve_workspace_meta
+from . import failure_text, gate_view
 from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATUSES, receipts_module
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
@@ -194,38 +195,6 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         team_remaining = max(0, daily_limit - hist_idx["used_24h"])
         avail_shots = max(0, team_remaining - eff_closing_reserve)
 
-    def eval_gates(
-        title: str,
-        est_sc: float | None,
-        is_restore_zero: bool,
-        safety_ok: bool = True,
-        forced: bool = False,
-        sha: str = "",
-    ) -> dict[str, Any]:
-        p_obj = prob_map.get(title, {})
-        cur_sc = float(p_obj.get("current_score", 0.0))
-        best_sc = float(p_obj.get("best_score") or p_obj.get("raw_best_score") or 0.0)
-        best_sha = str(p_obj.get("best_sha") or "")
-        diff = int(p_obj.get("difficulty", 2))
-        delta_exp = (est_sc - cur_sc) if est_sc is not None else 3.0
-        is_restore_regime = (not is_restore_zero) and cur_sc > 0.0 and bool(best_sha) and ((best_sc - cur_sc) >= 1.5)
-        is_restoring_best = bool(best_sha and sha and sha.lower().startswith(best_sha.lower()[:7]))
-        if is_restore_regime and not is_restoring_best and not forced:
-            noise_ok = (est_sc is not None) and ((est_sc - best_sc) >= noise_floor)
-        else:
-            noise_ok = is_restore_zero or forced or cur_sc == 0.0 or (delta_exp >= noise_floor)
-        quota_ok = is_restore_zero or (avail_shots > 0)
-        circuit_ok = is_restore_zero or forced or not bool(p_obj.get("circuit_open", False))
-        return {
-            "safety_ok": safety_ok,
-            "noise_ok": noise_ok,
-            "circuit_ok": circuit_ok,
-            "quota_ok": quota_ok,
-            "all_pass": safety_ok and noise_ok and circuit_ok and quota_ok,
-            "delta_expected": round(delta_exp, 2),
-            "wspt_score": round(diff * max(0.0, delta_exp), 2),
-        }
-
     advisory_items: list[dict[str, Any]] = []
     queued_pairs = {
         (str(q.get("title", "")), str(q.get("sha", "")).lower())
@@ -244,7 +213,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             ):
                 priors = sha_pass_scores.get((t, b_sha), [p_obj["best_score"]])
                 est = round(sum(priors) / len(priors), 2)
-                gates = eval_gates(t, est, is_restore_zero=True)
+                # Advisory only: the gate verdict merged from the bridge replaces these dark lamps.
+                gates = gate_view.not_evaluated(delta_expected=est, wspt_score=round(int(p_obj["difficulty"]) * est, 2))
                 advisory_items.append(
                     {
                         "id": f"live-{t}-{b_sha[:7].lower()}",
@@ -276,59 +246,6 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                         "can_restore": True,
                     }
                 )
-
-    from ..config import workspace_state_dir
-
-    # Compute per-operator ESCAPE_LOCK state (prefer calibration.json single source of truth; fallback to outcome scan)
-    verified_escapes: dict[str, Any] = {}
-    for ve_cand in (
-        results_dir / "verified-escapes.json",
-        results_dir / "escape-verifications.json",
-        workspace_state_dir(workspace) / "verified_escapes.json",
-    ):
-        if ve_cand.is_file():
-            ve_doc = read_json(ve_cand, {})
-            if isinstance(ve_doc, dict):
-                sub = ve_doc.get("verified") if isinstance(ve_doc.get("verified"), dict) else ve_doc
-                verified_escapes.update(sub)
-    escape_lock_info: dict[str, tuple[str, str]] = {}
-    for t_name in prob_map:
-        cal_p = results_dir / t_name / "calibration.json"
-        if cal_p.is_file():
-            cd = read_json(cal_p, {})
-            if cd.get("escape_lock"):
-                escape_lock_info[t_name] = (str(cd.get("escape_sha") or "")[:7], str(cd.get("escape_status") or "Escape"))
-            else:
-                # Explicitly unlocked (e.g. verified via `opsb bench verify-escape`)
-                continue
-        else:
-            outcomes_by_title_rows = [
-                o for o in outcome_rows
-                if o.get("title") == t_name and str(o.get("status", "")) not in ("rejected", "skipped", "duplicate")
-            ]
-            prior_passes: list[set[str]] = []
-            acc_p: set[str] = set()
-            for r in outcomes_by_title_rows:
-                prior_passes.append(set(acc_p))
-                r_sha = str(r.get("sha") or "")
-                if r.get("status") == "Pass" and r_sha and (receipts_module().official_score(r) or 0.0) > 0:
-                    acc_p.add(r_sha[:7])
-            for idx_r in range(len(outcomes_by_title_rows) - 1, -1, -1):
-                r = outcomes_by_title_rows[idx_r]
-                st_r = str(r.get("status", ""))
-                r_sha = str(r.get("sha") or "")
-                n_low = str(r.get("note") or "").strip().lower()
-                is_rest_r = (r_sha[:7] in prior_passes[idx_r]) or any(
-                    n_low.startswith(pfx) for pfx in ("restore", "rollback", "board is 0", "closing restore")
-                )
-                if st_r == "Pass":
-                    if is_rest_r:
-                        continue
-                    break
-                if st_r in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
-                    if not (verified_escapes.get(f"{t_name}:{r_sha}") or verified_escapes.get(f"{t_name}:{r_sha[:7]}")):
-                        escape_lock_info[t_name] = (r_sha[:7], st_r)
-                    break
 
     prior_board: dict[str, float] = {}
     last_pass_score: dict[str, float] = {}
@@ -408,8 +325,8 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 "difficulty": int(p_obj.get("difficulty", 2)),
                 "sha": sha,
                 "short_sha": sha[:7],
-                "note": raw_detail if st in ("blocked_compliance", "rejected") else effective_note,
-                "detail": out.get("detail", ""),
+                "note": failure_text.display(out) if st in ("blocked_compliance", "rejected") else effective_note,
+                "detail": failure_text.display(out) if st in ("blocked_compliance", "rejected") else out.get("detail", ""),
                 "submission_id": out.get("submission_id"),
                 "queued_at": q_at,
                 "finished_at": out.get("finished_at") or out.get("submitted_at"),
@@ -427,15 +344,11 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                 "experience_id": exp_map.get((t, sha[:7])),
                 "baseline_pass_sha": base_p_sha,
                 "wspt_priority": round(int(p_obj.get("difficulty", 2)) * max(0.0, (est or 0) - prior_sc), 2),
-                "gates": {
-                    "safety_ok": st not in ("rejected", "Compile Error", "Runtime Error", "Wrong Answer"),
-                    "noise_ok": st != "skipped",
-                    "circuit_ok": True,
-                    "quota_ok": True,
-                    "all_pass": st == "Pass",
-                    "delta_expected": round((est or 0) - prior_sc, 2),
-                    "wspt_score": round(int(p_obj.get("difficulty", 2)) * max(0.0, (est or 0) - prior_sc), 2),
-                },
+                # A judged attempt is history: no gate lamps are drawn for it.
+                "gates": gate_view.not_evaluated(
+                    delta_expected=round((est or 0) - prior_sc, 2),
+                    wspt_score=round(int(p_obj.get("difficulty", 2)) * max(0.0, (est or 0) - prior_sc), 2)),
+                **failure_text.card_text(out),
                 "can_approve": False,
                 "can_skip": False,
                 "can_restore": False,
@@ -482,31 +395,14 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             is_known_pass = bool(sha_pass_scores.get((t, sha))) or (t, sha[:7]) in seen_pass_shas
             is_rest = is_known_pass and (prob_map.get(t, {}).get("critical_restore") or
                                          (cur_sc > 0 and "restore" in note.lower()))
-            esc_hit = escape_lock_info.get(t)
-            esc_blocked = bool(esc_hit and not is_known_pass)
-            gates = eval_gates(t, est, is_restore_zero=is_rest, safety_ok=not esc_blocked, forced=forced, sha=sha)
-            if esc_blocked:
-                badge = "ESCAPE LOCK"
-                esc_s7, esc_st = esc_hit  # type: ignore[misc]
-                esc_detail = f"ESCAPE_LOCK active ({esc_s7} {esc_st}); add reproducer & verify-escape before submitting new SHA"
-            elif is_rest and cur_sc == 0.0:
-                badge = "CRITICAL RESTORE"
-                esc_detail = ""
-            elif not gates["quota_ok"]:
-                badge = "QUOTA EXHAUSTED" if team_remaining <= 0 else "HOLD: RESERVE"
-                esc_detail = ""
-            elif not gates["circuit_ok"] and not forced:
-                badge = "CIRCUIT OPEN"
-                esc_detail = ""
-            elif not gates["noise_ok"] and not forced:
-                badge = "HOLD: NOISE"
-                esc_detail = ""
-            else:
-                badge = "READY"
-                esc_detail = ""
+            # The bridge merges the gate's verdict over these (ipc_bridge.merge_bridge_enrichment);
+            # until then the card is NOT EVALUATED rather than a local guess (4.1 #9).
+            gates = gate_view.not_evaluated(delta_expected=round((est or cur_sc) - cur_sc, 2))
+            badge = "CRITICAL RESTORE" if (is_rest and cur_sc == 0.0) else gate_view.NOT_EVALUATED
+            esc_detail = "" if badge == "CRITICAL RESTORE" else "Not evaluated by the submission gate yet"
             cand_bt_delta = (
                 round((est or cur_sc) - cur_sc, 2)
-                if (est is not None and cur_sc > 0 and not is_rest and not esc_blocked and not is_known_pass and "restore" not in note.lower())
+                if (est is not None and cur_sc > 0 and not is_rest and not is_known_pass and "restore" not in note.lower())
                 else None
             )
             chron_items.append(
@@ -534,9 +430,9 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
                     "experience_id": exp_map.get((t, sha[:7])),
                     "baseline_pass_sha": last_pass_sha.get(t),
                     "forced": forced,
-                    "wspt_priority": 0.0 if esc_blocked else gates["wspt_score"],
+                    "wspt_priority": gates["wspt_score"],
                     "gates": gates,
-                    "can_approve": badge in ("HOLD: NOISE", "CIRCUIT OPEN"),
+                    "can_approve": False,
                     "can_skip": True,
                     "can_restore": False,
                 }

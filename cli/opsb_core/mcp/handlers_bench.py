@@ -10,7 +10,7 @@ from typing import Any
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
-from ..services import test_runs
+from ..services import gate_view, test_runs
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
 from ..services.test_runs import _find_problem, _problem_commit
@@ -438,18 +438,19 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     anchored = estimate.get("estimation_method") == "anchor_fallback" or "no perf telemetry" in str(estimate.get("detail", "")).lower()
     if anchored:
         estimate = {**estimate, "estimated_score": None, "delta_expected": None}
-    stages = {s["stage"]: s["passed"] for s in verdict["stages"]}
-    gates = {key: stages.get(stage, False) for key, stage in (
-        ("safety_ok", "SAFETY"), ("noise_ok", "NOISE_FLOOR"),
-        ("circuit_ok", "CIRCUIT_BREAKER"), ("quota_ok", "QUOTA_RESERVE"))}
-    result = {**verdict, "estimate": estimate, "gates": {**gates, "all_pass": verdict["approved"]},
+    # Lamps and reasons come from the verdict through the same view as the queue card (4.1 #9):
+    # the dispatch stage (submission slots) is reported as dispatch_ok, never as a gate reason.
+    view = gate_view.card_fields(verdict)
+    gates = {k: view["gates"][k] for k in ("safety_ok", "noise_ok", "circuit_ok", "all_pass", "dispatch_ok")}
+    reasons = [s["reason"] for s in verdict["stages"] if not s["passed"] and s["stage"] != gate_view.DISPATCH_STAGE]
+    result = {**verdict, "estimate": estimate, "gates": gates, "badge": view["badge"], "next_step": view["next_step"],
               "estimated_score": estimate.get("estimated_score"), "current_score": estimate.get("current_score"),
               "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
-              "reasons": [s["reason"] for s in verdict["stages"] if not s["passed"]],
+              "reasons": reasons or ([view["detail"]] if view["badge"] == gate_view.WAITING else []),
               "enqueued": bool(reply.get("enqueued")), "dry_run": not enqueue}
     # A request, not a preview: it names its hypothesis, or the platform generates the one P05 wrote from
     # the submission note and says which id it created (4.2 C #3). A ledger fault never fails a submission.
-    from ..ledger import auto, budget
+    from ..ledger import auto
     link = auto.guard(auto.on_gate_link, workspace, title, sha, args.get("_caller_agent_id"), note=note,
                       estimate=estimate, enqueued=result["enqueued"], write=enqueue,
                       hypothesis_id=str(args.get("hypothesis_id") or "").strip(),

@@ -234,53 +234,47 @@ def test_forced_pending_queue_item_all_pass_respects_safety_and_quota(iso_ph: Pa
     snap = compute_workspace_snapshot(ws, cfg)
     pending = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
     assert len(pending) == 1
-    assert pending[0]["badge"] == "READY"
-    assert pending[0]["gates"]["noise_ok"] is True
-    assert pending[0]["gates"]["circuit_ok"] is True
-    assert pending[0]["gates"]["safety_ok"] is True
-    assert pending[0]["gates"]["quota_ok"] is True
-    assert pending[0]["gates"]["all_pass"] is True
+    # 4.1 #9: the queue no longer judges a row itself; the gate verdict decides.
+    assert pending[0]["badge"] == "NOT EVALUATED" and pending[0]["gates"]["evaluated"] is False
 
-    # Even after merge_bridge_enrichment with an un-forced unsubmitted_candidate, forced pending stays all_pass=True
-    bridge = {
-        "quota": {"daily_limit": 100, "used_today": 1, "reserved_for_closing": 10, "discretionary_remaining": 89},
-        "config": {"noise_floor_pts": 1.9, "daily_limit": 50},
-        "unsubmitted_candidates": [{
-            "title": "ConcatD",
-            "sha": sha,
-            "approved": False,
-            "status_tag": "HOLD_NOISE",
-            "priority_score": 1.62,
-            "gate_reason": "below noise floor",
-            "stages": [
-                {"stage": "SAFETY", "passed": True},
-                {"stage": "NOISE_FLOOR", "passed": False},
-                {"stage": "CIRCUIT_BREAKER", "passed": True},
-                {"stage": "QUOTA_RESERVE", "passed": True},
-            ],
-            "estimate": {"estimated_score": 78.50, "current_score": 77.96, "delta_expected": 0.54, "ucb_delta": 4.2, "explore_eligible": False, "calibration_trust": 0.6},
-        }],
-    }
+    def stages(safety=True, noise=True, circuit=True, dispatch=True, code="PASS"):
+        return [{"stage": "SAFETY", "passed": safety, "code": code, "reason": "s1",
+                 "metrics": {"next_step": "awaiting reproduction"} if not safety else {}},
+                {"stage": "NOISE_FLOOR", "passed": noise, "reason": "s2"},
+                {"stage": "CIRCUIT_BREAKER", "passed": circuit, "reason": "s3"},
+                {"stage": "QUOTA_RESERVE", "passed": dispatch, "reason": "slots"}]
+
+    unforced = {"title": "ConcatD", "sha": sha, "approved": False, "status_tag": "HOLD_LOW_GAIN",
+                "priority_score": 1.62, "gate_reason": "below noise floor", "stages": stages(noise=False),
+                "estimate": {"estimated_score": 78.50, "current_score": 77.96, "delta_expected": 0.54,
+                             "ucb_delta": 4.2, "explore_eligible": False, "calibration_trust": 0.6}}
+    forced = {"queue_state": "PENDING", "title": "ConcatD", "sha": sha, "status_tag": "READY", "priority_score": 1.62,
+              "stages": stages(), "delta_expected": 0.54, "ucb_delta": 4.2, "calibration_trust": 0.6}
+    bridge = {"quota": {"daily_limit": 100, "used_today": 1, "reserved_for_closing": 10, "discretionary_remaining": 89},
+              "config": {"noise_floor_pts": 1.9, "daily_limit": 50}, "unsubmitted_candidates": [unforced]}
     merge_bridge_enrichment(snap, bridge)
     pending_after = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
-    assert pending_after[0]["gates"]["all_pass"] is True
+    # An unforced candidate verdict never applies to a forced queue row.
+    assert pending_after[0]["gates"]["evaluated"] is False
+
+    snap = compute_workspace_snapshot(ws, cfg)
+    merge_bridge_enrichment(snap, {**bridge, "submit_queue": [forced]})
+    pending_after = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_after[0]["gates"]["all_pass"] is True and pending_after[0]["badge"] == "READY"
     assert pending_after[0]["gates"]["ucb_delta"] == 4.2
 
-    # ESCAPE_LOCK must NEVER be bypassed even when force=True!
-    (ws / "results" / "ConcatD" / "calibration.json").write_text(
-        json.dumps({"escape_lock": True, "escape_sha": sha[:7], "escape_status": "Wrong Answer"}),
-        encoding="utf-8",
-    )
-    snap_esc = compute_workspace_snapshot(ws, cfg)
-    pending_esc = [it for it in snap_esc["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
-    assert pending_esc[0]["badge"] == "ESCAPE LOCK"
-    assert pending_esc[0]["gates"]["safety_ok"] is False
-    assert pending_esc[0]["gates"]["all_pass"] is False
+    # ESCAPE_LOCK is never bypassed even when force=True: the gate's S1 says so.
+    snap = compute_workspace_snapshot(ws, cfg)
+    merge_bridge_enrichment(snap, {**bridge, "submit_queue": [
+        {**forced, "status_tag": "REJECTED_GATE", "stages": stages(safety=False, code="ESCAPE_LOCK_ACTIVE")}]})
+    pending_esc = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_esc[0]["badge"] == "ESCAPE LOCK" and pending_esc[0]["next_step"] == "awaiting reproduction"
+    assert pending_esc[0]["gates"]["safety_ok"] is False and pending_esc[0]["gates"]["all_pass"] is False
 
-    # Clear escape lock and exhaust daily normal quota -> quota_ok=False & all_pass=False even when force=True
-    (ws / "results" / "ConcatD" / "calibration.json").unlink()
-    cfg["scheduler"]["closing_reserve"] = 100
-    snap_quota = compute_workspace_snapshot(ws, cfg)
-    pending_q = [it for it in snap_quota["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
-    assert pending_q[0]["gates"]["quota_ok"] is False
-    assert pending_q[0]["gates"]["all_pass"] is False
+    # No free submission slot: S1-S3 still pass, the card waits, and no quota wording appears.
+    snap = compute_workspace_snapshot(ws, cfg)
+    merge_bridge_enrichment(snap, {**bridge, "submit_queue": [
+        {**forced, "status_tag": "QUOTA_EXHAUSTED", "stages": stages(dispatch=False)}]})
+    pending_q = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
+    assert pending_q[0]["badge"] == "WAITING FOR SLOT" and pending_q[0]["gates"]["dispatch_ok"] is False
+    assert pending_q[0]["gates"]["all_pass"] is True and "quota_ok" not in pending_q[0]["gates"]

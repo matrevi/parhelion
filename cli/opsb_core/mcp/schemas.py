@@ -198,6 +198,47 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "parhelion_escape_status",
+        "description": "Escape locks of a problem: per WA/RE receipt the reproducer state (pending, reproduced, fixed), "
+                       "the reviewed-trial binding and whether it was used, and the next step. Workers: own problem only.",
+        "roles": ("orchestrator", "worker"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"problem": {"type": "string", "description": "Operator problem title"}},
+            "required": ["problem"],
+        },
+    },
+    {
+        "name": "parhelion_escape_rebind",
+        "description": "Bind the active escape lock's one reviewed trial to another repair SHA; allowed only while the "
+                       "bound repair was neither submitted nor queued. Refusals return the reason and change nothing.",
+        "roles": ("orchestrator", "worker"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "problem": {"type": "string", "description": "Operator problem title"},
+                "receipt": {"type": "string", "description": "Submission ID of the active escape lock"},
+                "sha": {"type": "string", "description": "Repair commit with a formal run of the current suite"},
+                "review": {"type": "string", "description": "Why this repair addresses the online failure"},
+            },
+            "required": ["problem", "receipt", "sha"],
+        },
+    },
+    {
+        "name": "parhelion_escape_reproducer",
+        "description": "The local reproducer variants generated for a WA/RE receipt and the exact parhelion_test calls "
+                       "that confirm the reproduction on the bad SHA and verify a repair.",
+        "roles": ("orchestrator", "worker"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "problem": {"type": "string", "description": "Operator problem title"},
+                "receipt": {"type": "string", "description": "Submission ID of the WA/RE receipt"},
+            },
+            "required": ["problem", "receipt"],
+        },
+    },
+    {
         "name": "parhelion_note",
         "description": "Write one experiment-ledger entry and get its id back (L-nnnn). Types: hypothesis, experiment, insight, failure, decision, constraint. Platform fields (outcome, per-case times, measured confidence) are rejected; a status change is a new row and needs supersedes or id.",
         "roles": ("orchestrator", "worker"),

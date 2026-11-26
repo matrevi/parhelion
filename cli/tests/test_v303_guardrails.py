@@ -167,12 +167,9 @@ def test_restore_regime_eval_gates_and_run_submit_block_inferior_candidate(iso_p
     snap = compute_workspace_snapshot(ws, cfg)
     pending = [it for it in snap["submission_queue"] if it["kind"] == "pending"]
     by_q = {it["queued_at"]: it for it in pending}
-    assert by_q["2026-11-23T10:57:00+00:00"]["gates"]["noise_ok"] is False
-    assert by_q["2026-11-23T10:57:00+00:00"]["badge"] == "HOLD: NOISE"
-    assert by_q["2026-11-23T10:58:00+00:00"]["gates"]["noise_ok"] is True
-    assert by_q["2026-11-23T10:58:00+00:00"]["badge"] == "READY"
-    assert by_q["2026-11-23T10:59:00+00:00"]["gates"]["noise_ok"] is True
-    assert by_q["2026-11-23T10:59:00+00:00"]["badge"] == "READY"
+    # 4.1 #9: without a gate verdict the queue does not judge the restore regime itself.
+    for q_at in ("2026-11-23T10:57:00+00:00", "2026-11-23T10:58:00+00:00", "2026-11-23T10:59:00+00:00"):
+        assert by_q[q_at]["badge"] == "NOT EVALUATED" and by_q[q_at]["gates"]["evaluated"] is False
 
     # Non-forced `opsb submit` with est=70.40 must ALSO be held (rc=3) in [RESTORE] regime
     ns = argparse.Namespace(

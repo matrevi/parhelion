@@ -560,7 +560,9 @@ class SubmissionGate:
                     return StageResult(stage="SAFETY", passed=False, code="ESCAPE_LOCK_ACTIVE",
                                        reason=("ESCAPE_LOCK " + step if step else
                                                "ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial"),
-                                       metrics={"submission_id": sid, "bad_sha": bad, "repro_state": repro["state"]})
+                                       metrics={"submission_id": sid, "bad_sha": bad, "repro_state": repro["state"],
+                                                "next_step": step or "reproduce the failure locally or request an "
+                                                                     "exact-SHA reviewed trial"})
             return StageResult(stage="SAFETY",passed=True,code="PASS",
                                reason=f"Full reference suite passed ({len(report['cases'])} cases)",
                                metrics={"run_id":report["run_id"],"extended_cases":len(report["cases"])})
@@ -664,7 +666,8 @@ class SubmissionGate:
                     f"add regression case & run `verify-escape --title {title} --bad-sha {esc_s7} --good-sha {sha[:7]}` "
                     f"(or restore a previously proven Pass SHA)"
                 ),
-                metrics={"escape_sha": esc_state.get("escape_sha"), "escape_status": esc_st},
+                metrics={"escape_sha": esc_state.get("escape_sha"), "escape_status": esc_st,
+                         "next_step": f"add a regression case, then verify-escape --bad-sha {esc_s7} --good-sha {sha[:7]}"},
             )
 
         return StageResult(

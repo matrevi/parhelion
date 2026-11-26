@@ -243,7 +243,7 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
     assert init_resp["result"]["capabilities"] == {"tools": {}}
 
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 23
+    assert len(tools) == 26  # +3 ledger (P06), +3 escape (P07)
     assert {t["name"] for t in tools} == {t["name"] for t in list_tool_schemas()}
 
     assert status_resp["result"]["isError"] is False
@@ -463,7 +463,7 @@ def test_mcp_cli_subcommands(isolated_mcp_env: Path, tmp_path: Path, capsys: pyt
     args = parser.parse_args(["mcp", "list-tools", "--json"])
     assert args.func(args) == 0
     tools_out = json.loads(capsys.readouterr().out)
-    assert len(tools_out["tools"]) == 23
+    assert len(tools_out["tools"]) == 26  # +3 ledger (P06), +3 escape (P07)
 
     args = parser.parse_args(["mcp", "call", "parhelion_status", "--args-json", '{"include_npu":false}', "--workspace", str(ws)])
     assert args.func(args) == 0

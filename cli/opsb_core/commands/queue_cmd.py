@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
 from ..device_env import device_text
@@ -90,14 +91,14 @@ def run_submit(args: argparse.Namespace) -> int:
     else:
         noise_ok = is_restore_zero or prob["current_score"] == 0.0 or delta_exp >= noise_floor or explore_ok
     circuit_ok = is_restore_zero or not prob["circuit_open"]
-    quota_ok = is_restore_zero or snap["scheduler"]["available_normal_shots"] > 0
+    # Submission slots order dispatch; they are not a gate and never hold a candidate (4.1 #9).
+    dispatch_ok = bool(bridge_stages.get("QUOTA_RESERVE", {}).get("passed", True)) if bridge_stages else None
 
     if bridge_stages:
-        safety_ok, noise_ok, circuit_ok, quota_ok = (bool(bridge_stages.get(stage, {}).get("passed")) for stage in
-            ("SAFETY", "NOISE_FLOOR", "CIRCUIT_BREAKER", "QUOTA_RESERVE"))
+        safety_ok, noise_ok, circuit_ok = (bool(bridge_stages.get(stage, {}).get("passed")) for stage in
+            ("SAFETY", "NOISE_FLOOR", "CIRCUIT_BREAKER"))
     if bridge_tag == "PROBE":
         safety_ok = noise_ok = circuit_ok = True
-        quota_ok = snap["scheduler"]["used_today_24h"] < snap["scheduler"]["daily_quota_limit"]
 
     verdict = {
         "title": title,
@@ -108,7 +109,8 @@ def run_submit(args: argparse.Namespace) -> int:
         "explore_eligible": explore_ok,
         "explore_reason": str(bridge_est.get("explore_reason") or ((matched_cand or {}).get("detail") if explore_ok else "")),
         "wspt_priority": round(prob["difficulty"] * max(0.0, delta_exp), 2),
-        "gates": {"safety_ok": safety_ok, "noise_ok": noise_ok, "circuit_ok": circuit_ok, "quota_ok": quota_ok, "explore_ok": explore_ok},
+        "gates": {"safety_ok": safety_ok, "noise_ok": noise_ok, "circuit_ok": circuit_ok, "dispatch_ok": dispatch_ok,
+                  "explore_ok": explore_ok},
     }
 
     if not safety_ok and not args.force:
@@ -116,7 +118,7 @@ def run_submit(args: argparse.Namespace) -> int:
         print(json.dumps(verdict, ensure_ascii=False) if args.json else f"BLOCKED [G1 Safety]: {verdict['reason']}")
         return 2
 
-    if not (noise_ok and circuit_ok and quota_ok) and not args.force:
+    if not (noise_ok and circuit_ok) and not args.force:
         reasons = []
         if not noise_ok:
             if bridge_tag == "SKIPPED":
@@ -127,8 +129,6 @@ def run_submit(args: argparse.Namespace) -> int:
                 reasons.append(f"G2 Noise Floor (Δexpected={delta_exp:+.2f} < {noise_floor})")
         if not circuit_ok:
             reasons.append(f"G3 Circuit Open (pressure={prob['pressure_12h']})")
-        if not quota_ok:
-            reasons.append("G4 Daily Normal Quota Exhausted (closing reserve protected)")
         verdict.update(enqueued=False, reason="; ".join(reasons))
         print(json.dumps(verdict, ensure_ascii=False) if args.json else f"HELD BY GATE: {verdict['reason']} (pass --force to override)")
         return 3
@@ -193,6 +193,36 @@ def run_submit(args: argparse.Namespace) -> int:
 
     print(json.dumps(verdict, ensure_ascii=False) if args.json else f"Enqueued {title} {sha[:7]} (est={est:.2f}, WSPT={verdict['wspt_priority']:.1f})")
     return 0
+
+
+def approve_report(ws: Path, title: str, res: dict[str, Any]) -> dict[str, Any]:
+    """What `opsb queue approve` did (4.1 #10): override written, newly queued, or the row already waiting.
+
+    Approve keeps its meaning: S2/S3 are overridden and the row is forced; S1 (including the escape
+    lock, which needs a reviewed trial) is never bypassed.
+    """
+    verdict = res.get("verdict") or {}
+    out: dict[str, Any] = {"action": "approve", "title": title, "sha": verdict.get("sha"),
+                           "override_written": bool(res.get("override_written")), "enqueued": bool(res.get("enqueued"))}
+    if res.get("error"):
+        out.update(override_written=False, enqueued=False, reason=res["error"])
+        return out
+    existing = res.get("already_queued")
+    if existing:
+        try:
+            from ..services.submit_runner import find_active_inflight_for_title
+
+            active = find_active_inflight_for_title(ws, title)
+        except Exception:  # noqa: BLE001 - the report still states the queue row
+            active = None
+        if active and str(active.get("sha") or "")[:7] == str(verdict.get("sha") or "")[:7]:
+            existing = {**existing, "status": f"being submitted ({active.get('phase') or 'in flight'})"}
+        out["already_queued"] = existing
+        out["reason"] = f"already queued since {existing.get('queued_at')}; the approve override applies to that row"
+    else:
+        out["reason"] = "override written and queued (forced)"
+    out["status_tag"] = verdict.get("status_tag")
+    return out
 
 
 def run_queue(args: argparse.Namespace) -> int:
@@ -275,8 +305,14 @@ def run_queue(args: argparse.Namespace) -> int:
         return 0
 
     if args.q_cmd == "approve":
-        invoke_bridge(ws, "override", ["--title", args.problem, "--sha", args.sha, "--action", "approve", "--reason", args.note or "approved"])
-        return run_submit(argparse.Namespace(problem=args.problem, sha=args.sha, note=args.note or "approved via Supervisor", force=True, workspace=str(ws), json=True))
+        res = invoke_bridge(ws, "override", ["--title", args.problem, "--sha", args.sha, "--action", "approve",
+                                             "--reason", args.note or "approved"])
+        if not isinstance(res, dict):  # no scheduler bridge: the plain forced enqueue path
+            return run_submit(argparse.Namespace(problem=args.problem, sha=args.sha, note=args.note or "approved via Supervisor",
+                                                 force=True, workspace=str(ws), json=True))
+        print(json.dumps(approve_report(ws, args.problem, res), ensure_ascii=False))
+        invalidate_ttl_cache("scheduler_bridge")
+        return 0 if res.get("override_written") else 2
 
     if args.q_cmd == "restore":
         snap = compute_workspace_snapshot(ws, cfg)
