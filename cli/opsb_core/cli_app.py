@@ -156,6 +156,13 @@ def build_parser() -> argparse.ArgumentParser:
     w_ga.add_argument("target_dir")
     w_ga.add_argument("--json", action="store_true")
     w_ga.set_defaults(func=run_workspace)
+    w_rules = ws_sub.add_parser("rules", help="Show each problem's judge rule snapshot, or re-read it from Judge")
+    w_rules.add_argument("target_dir", nargs="?", default="")
+    w_rules.add_argument("--workspace", "-w", default="")
+    w_rules.add_argument("--refresh", action="store_true",
+                         help="Read the rule endpoint now with the platform's own login state")
+    w_rules.add_argument("--json", action="store_true")
+    w_rules.set_defaults(func=run_workspace)
 
     s_co = sub.add_parser("collab", help="Batch repository collaborator invite")
     co_sub = s_co.add_subparsers(dest="co_cmd", required=True)

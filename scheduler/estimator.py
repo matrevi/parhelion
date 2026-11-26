@@ -769,6 +769,16 @@ class ScoreEstimator:
                 continue
             out[title] = dict(item)
             out[title].setdefault("difficulty", PROBLEM_DIFFICULTY.get(title, 2))
+        # 4.3 P22: `results/<title>/.judge-rule.json` is the freshest statement of the board mode,
+        # because the reconciler refreshes it whenever it reads a receipt. The scraped evidence and
+        # the manifest are only fallbacks, so a `latest` contest no longer waits for a new crawl.
+        snapshot_modes: dict[str, str] = {}
+        for entry in sorted((self.workspace / "results").glob("*/.judge-rule.json")):
+            try:
+                mode = str(json.loads(entry.read_text(encoding="utf-8"))["ranking_submission_mode"]).strip().lower()
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            snapshot_modes[entry.parent.name] = mode
         ev_file = self.workspace / "results" / "scoring-evidence" / "problems-all.json"
         if ev_file.is_file():
             try:
@@ -781,13 +791,17 @@ class ScoreEstimator:
                         out[v["title"]]["difficulty"] = int(v["difficulty"])
                     # 4.2.1: "best" keeps a problem's best score on the board, "latest" shows the
                     # last submission; the gate reads this per problem.
-                    if v.get("ranking_submission_mode"):
+                    if v.get("ranking_submission_mode") and v["title"] not in snapshot_modes:
                         out[v["title"]]["ranking_submission_mode"] = str(v["ranking_submission_mode"])
             except Exception:
                 pass
         if not out:
             for title, diff in PROBLEM_DIFFICULTY.items():
                 out[title] = {"title": title, "difficulty": diff, "path": f"{_dev('work_prefix')}/{title}"}
+        # The snapshot wins over both fallbacks; a workspace with no manifest still carries one.
+        for title, mode in snapshot_modes.items():
+            out.setdefault(title, {"title": title, "difficulty": PROBLEM_DIFFICULTY.get(title, 2)})
+            out[title]["ranking_submission_mode"] = mode
         return out
 
     def _load_public_tbest(self) -> dict[str, list[float]]:

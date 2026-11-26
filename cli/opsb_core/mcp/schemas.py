@@ -31,13 +31,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_report",
         "description": "Read one report view instead of ad-hoc scripts over report.json or submit-queue-outcome.jsonl. Views: per_case, "
-                       "diff, history, queue, board, bottleneck, env, help (what each column means). Data channel: board, tbest, receipts "
+                       "diff, history, queue, board, bottleneck, rules, env, help (what each column means). Data channel: board, tbest, receipts "
                        "and environment facts come from these views, never from ~/.parhelion or ~/.judge files or from platform internals.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "view": {"type": "string", "enum": ["per_case", "diff", "history", "queue", "board", "bottleneck", "env", "help"]},
+                "view": {"type": "string", "enum": ["per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "env", "help"]},
                 "problem": {"type": "string", "description": "a worker may name only its own problem"},
                 "sha": {"type": "string"},
                 "base": {"type": "string"},

@@ -164,11 +164,30 @@ def extract_numeric_score(obj: Any) -> float | None:
     return val if math.isfinite(val) else None
 
 
+def _latest_replay_allowed() -> bool:
+    """4.3 P22 ``judge.reconstruct_latest``: the per-case formula does not depend on the board mode.
+
+    Under ``latest`` the board shows the last submission, so another submission's score cannot bound
+    this one, but the replay itself still only needs this submission's own times and the ranking's
+    tbest. The switch keeps 4.2.1's best-only rule for a deployment that wants it.
+    """
+    try:
+        from .judge_rules import reconstruct_latest_enabled
+
+        return reconstruct_latest_enabled()
+    except Exception:  # noqa: BLE001 - a broken config must not disable the reconstructor
+        return True
+
+
 def reconstruct_timing_score(detail: dict, rule: dict, ranking: dict) -> dict | None:
-    """Replay Judge's ordinary log-time scoring against one ranking snapshot."""
+    """Replay Judge's ordinary log-time scoring against one ranking snapshot.
+
+    Any board mode is replayed (4.3 P22); ``judge.reconstruct_latest=false`` restores the 4.2.1
+    best-only gate.
+    """
     tests = ranking.get("testcases")
     if (rule.get("_id") != detail.get("problem_id") or rule.get("score_mode") != 1
-            or rule.get("ranking_submission_mode") != "best"
+            or (rule.get("ranking_submission_mode") != "best" and not _latest_replay_allowed())
             or rule.get("use_baseline") is not False or detail.get("status") != "Pass"
             or detail.get("valid") is not True or detail.get("public_only") or detail.get("judge_missing_cases")
             or "judge_revision" not in detail or rule.get("judge_revision") != detail["judge_revision"]

@@ -20,6 +20,7 @@ from ..services.auth_service import (
 )
 from ..services.contest_service import resolve_workspace_meta
 from ..services.contest_scrape_service import ContestScrapeError, fetch_contest_problems
+from ..services import judge_rules
 from ..services.problem_repo_service import bootstrap_workspace_repos
 from ..services.scaffold_service import scaffold_workspace, write_agent_guides
 from ..services.skills_service import get_skills_status, install_skills
@@ -38,8 +39,57 @@ def _parse_problem_spec(spec: str) -> list[dict]:
     return out
 
 
+def _workspace_rules(args: argparse.Namespace, cfg: dict) -> int:
+    """`opsb workspace rules`: show, or with `--refresh` re-read, each problem's rule snapshot.
+
+    The refresh resolves the platform's own Judge session files, so a worker never handles a
+    credential; without a logged-in account the problems that were skipped are reported and the
+    command still exits 0 (4.3 P22).
+    """
+    target = Path(args.target_dir or args.workspace or cfg.get("active_workspace") or "").expanduser()
+    if not target.is_dir():
+        raise SystemExit(f"workspace not found: {target}")
+    if not args.refresh:
+        stored = judge_rules.snapshots(target)
+        titles = [str(p.get("title")) for p in resolve_workspace_meta(target).get("problems") or []
+                  if p.get("title")]
+        rows = [{"title": title, "mode": doc.get("ranking_submission_mode"),
+                 "score_mode": doc.get("score_mode"), "cases": (doc.get("testcases") or {}).get("total"),
+                 "fetched_at": doc.get("fetched_at")} for title, doc in sorted(stored.items())]
+        missing = [t for t in titles if t not in stored]
+        if args.json:
+            print(json.dumps({"ok": True, "workspace": str(target), "refreshed": False,
+                              "snapshots": rows, "missing": missing}, ensure_ascii=False))
+            return 0
+        print(f"Rule snapshots: {len(rows)} of {len(titles)} problems recorded (pass --refresh to read Judge)")
+        for row in rows:
+            print(f"  {row['title']:<28} {row['mode'] or '-':<7} score_mode={row['score_mode']} cases={row['cases']}")
+        if missing:
+            print(f"  not recorded: {', '.join(missing)}")
+        return 0
+    res = judge_rules.refresh(target)
+    if args.json:
+        print(json.dumps({**res, "refreshed": True}, ensure_ascii=False))
+        return 0
+    if not res["logged_in"]:
+        print(f"No logged-in Judge account; {len(res['missing'])} problem(s) not read"
+              + (f": {', '.join(res['missing'])}" if res["missing"] else ""))
+        return 0
+    changed = sum(1 for row in res["snapshots"] if row["saved"])
+    print(f"Rules read: {len(res['snapshots'])} problem(s), {changed} snapshot(s) changed")
+    for row in res["snapshots"]:
+        print(f"  {row['title']:<28} {row['mode'] or '-':<7} score_mode={row['score_mode']} cases={row['cases']}")
+    if res["missing"]:
+        print(f"  no problem id: {', '.join(res['missing'])}")
+    for row in res["errors"]:
+        print(f"  [{row['error']}] {row['title']}")
+    return 0
+
+
 def run_workspace(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
+    if args.ws_cmd == "rules":
+        return _workspace_rules(args, cfg)
     if args.ws_cmd == "list":
         items = []
         for p_str in cfg.get("workspaces", []):
@@ -177,6 +227,16 @@ def run_workspace(args: argparse.Namespace) -> int:
             "problem_dirs": res["problem_dirs"],
             "repos": res.get("repos"),
         }
+        # 4.3 P22: the refreshed problem list is the natural moment to record each rule; a missing
+        # login only reports the problem titles, it never fails the sync.
+        rules = None
+        try:
+            rules = judge_rules.refresh(target)
+            payload["rules"] = {"logged_in": rules["logged_in"], "read": len(rules["snapshots"]),
+                                "changed": sum(1 for r in rules["snapshots"] if r["saved"]),
+                                "missing": rules["missing"], "errors": rules["errors"]}
+        except Exception as exc:  # noqa: BLE001 - the scrape already succeeded
+            payload["rules"] = {"error": type(exc).__name__}
         if args.json:
             print(json.dumps(payload, ensure_ascii=False))
         else:
@@ -185,6 +245,12 @@ def run_workspace(args: argparse.Namespace) -> int:
                 print(f"  added: {', '.join(added)}")
             if removed:
                 print(f"  stale (dirs kept): {', '.join(removed)}")
+            if rules is not None:
+                if rules["logged_in"]:
+                    print(f"  rules: {len(rules['snapshots'])} read, "
+                          f"{payload['rules']['changed']} changed")
+                else:
+                    print("  rules: no logged-in Judge account, snapshots unchanged")
         return 0
 
     if args.ws_cmd == "gen-agents":
