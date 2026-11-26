@@ -163,7 +163,9 @@ def device_lane(cfg):
     session.parent.mkdir(parents=True, exist_ok=True)
     fast = bool(cfg.get("fast"))
     created = time.time()
-    with Path(cfg["lock"]).open("a") as handle:
+    lock = Path(cfg["lock"])
+    lock.parent.mkdir(parents=True, exist_ok=True)  # a newly added device host has no work root yet
+    with lock.open("a") as handle:
         try:
             while True:
                 reap_dead_tickets(directory)

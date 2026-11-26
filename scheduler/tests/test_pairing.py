@@ -85,3 +85,26 @@ def test_best_known_minima_spans_a_variant_bump(tmp_path):
     assert case_bench.best_known_minima(ws, current) == {"01": 9.0, "02": 40.0}
     changed = {**current, "pairing_key": pairing.official_key(_catalog({"01": "k1", "02": "other"}))}
     assert case_bench.best_known_minima(ws, changed) == {}
+
+
+def _on_host(ws, sha, run, host):
+    path = ws / "results" / "Op" / sha / "bench-runs" / run / "report.json"
+    doc = json.loads(path.read_text())
+    doc["host"] = host
+    path.write_text(json.dumps(doc))
+
+
+def test_runs_pair_only_on_the_same_device_host(tmp_path):
+    """4.3.2: two device hosts are two instruments; a candidate measured on npu2 never pairs
+    with a board run measured on npu, so the gate falls back instead of mixing devices."""
+    ws = tmp_path
+    _report(ws, BASE, "r1", {"01": 10.0, "02": 100.0}, "2026-11-26T01:00:00+00:00", version=0)
+    _on_host(ws, BASE, "r1", "npu")
+    _report(ws, CAND, "r2", {"01": 10.0, "02": 50.0}, "2026-11-26T02:00:00+00:00", version=0)
+    _on_host(ws, CAND, "r2", "npu2")
+    est = _estimator(ws)
+    assert est._case_bench_pair("Op", CAND, BASE) is None
+    _report(ws, BASE, "r3", {"01": 10.0, "02": 80.0}, "2026-11-26T03:00:00+00:00", version=0)
+    _on_host(ws, BASE, "r3", "npu2")
+    pair = est._case_bench_pair("Op", CAND, BASE)
+    assert pair is not None and pair["runs_base"] == 1 and abs(pair["geo"] - (80 / 50) ** 0.5) < 1e-9

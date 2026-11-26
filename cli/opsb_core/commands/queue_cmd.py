@@ -396,7 +396,9 @@ def _remote_problem_dir(workspace: Path, title: str) -> str:
 def run_test(args: argparse.Namespace) -> int:
     cfg = ConfigRepository.load()
     ws = ConfigRepository.resolve_workspace(args.workspace, cfg)
-    host = cfg.get("npu_ssh_host") or "npu"
+    from ..device_hosts import host_for
+
+    host = host_for(cfg, ws, args.problem)  # 4.3.2: each problem is pinned to one device host
     py_exe = resolve_python_exe(ws)
     bridge_py = CLI_DIR.parent / "scheduler" / "cli_bridge.py"
 

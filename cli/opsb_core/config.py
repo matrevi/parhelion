@@ -130,6 +130,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "active_workspace": "",
     "workspaces": [],
     "npu_ssh_host": "npu",
+    "npu_ssh_hosts": [],  # 4.3.2: extra device hosts; see opsb_core.device_hosts
     "custom_ssh_hosts": [],
     "scheduler": {
         "auto_consumer_enabled": False,

@@ -1203,9 +1203,13 @@ class ScoreEstimator:
 
     def _case_bench_groups(self, title: str, sha: str | None,
                            as_of: datetime.datetime | None = None) -> dict[str, list[dict[str, Any]]]:
-        """This SHA's formal, timing-eligible runs grouped by official-input identity (scheduler.pairing).
+        """This SHA's formal, timing-eligible runs grouped by official-input identity (scheduler.pairing)
+        and device host.
 
-        Suite edits that leave the official cases alone (final-only variants) keep one group.
+        Suite edits that leave the official cases alone (final-only variants) keep one group. Two
+        device hosts are two instruments (4.3.2), so a group is ``<pairing key>@<host>`` and a
+        candidate pairs with the board SHA only on a host both were measured on; a report that
+        predates the host field keeps the bare key.
         """
         if not sha:
             return {}
@@ -1220,7 +1224,9 @@ class ScoreEstimator:
                 done = _parse_iso(doc.get("finished_at"))
                 if done is None or done >= as_of:
                     continue
-            by_version.setdefault(pairing.pairing_key(doc), []).append(doc)
+            host = str(doc.get("host") or "")
+            key = pairing.pairing_key(doc)
+            by_version.setdefault(f"{key}@{host}" if host else key, []).append(doc)
         return by_version
 
     @staticmethod

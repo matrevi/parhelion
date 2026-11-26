@@ -515,3 +515,10 @@ def test_job_priority_ages_and_starved_jobs_become_fast(env):
     assert fresh.key(now) == (1, 1.0, -now)
     tier, prio, _ = starved.key(now)
     assert tier == 2 and prio == pytest.approx(1.0 + 1900 / 600)
+
+
+def test_device_lane_creates_the_work_root_of_a_new_host(env):
+    """4.3.2: a newly added device host has no work root; the first run must not die on the lock."""
+    fresh = env.lock.parent / "new-host-work" / "device0.lock"
+    with lanes.device_lane({**base_cfg(env), "lock": str(fresh)}):
+        assert fresh.exists()
