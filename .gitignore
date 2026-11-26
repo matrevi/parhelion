@@ -25,3 +25,6 @@ scheduler/.state/
 .codex/config.toml.backup.*
 .agents/plugins/aoci/
 .claude/worktrees/
+
+# AOCI-managed-file backups (machine-local, never committed)
+*.backup.*
