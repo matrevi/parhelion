@@ -1529,8 +1529,13 @@ class BenchmarkCalibrator:
         as_of: datetime.datetime | None = None,
         fast_cached_cal: bool = False,
         noise_floor_pts: float = 2.5,
+        jitter_sigma: float = SIGMA_HIDDEN_JITTER,
     ) -> dict[str, Any] | None:
-        """Predict candidate score, uncertainty sigma, and `EXPLORE` upside using dual-anchor Pairwise v2.0."""
+        """Predict candidate score, uncertainty sigma, and `EXPLORE` upside using dual-anchor Pairwise v2.0.
+
+        ``jitter_sigma`` is the same-source judge jitter folded into the reported sigma: 4.2.1's
+        constant by default, the problem's measured value when the estimator passes one (4.3 P29).
+        """
         if not cand_sha or not (base_sha or ledger.historical_best_sha):
             return None
 
@@ -1566,6 +1571,7 @@ class BenchmarkCalibrator:
                 cal=cal,
                 spec_ids=spec_ids,
                 noise_floor_pts=noise_floor_pts,
+                jitter_sigma=jitter_sigma,
             )
 
         best_pred: dict[str, Any] | None = None
@@ -1589,6 +1595,7 @@ class BenchmarkCalibrator:
                 cal=cal,
                 spec_ids=spec_ids,
                 noise_floor_pts=noise_floor_pts,
+                jitter_sigma=jitter_sigma,
             )
 
         return select_dual_anchor_prediction(latest_pred, best_pred, ledger.current_score, best_sc)

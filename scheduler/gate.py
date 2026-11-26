@@ -212,6 +212,13 @@ class GateConfig:
     health_time_margin: float = 0.8
     # The judge compiles on its own machine; the device host's seconds are scaled by this factor.
     judge_compile_factor: float = 1.0
+    # 4.3 P29 prediction tiers. `jitter_sigma_from_judge_noise` (on) replaces the estimator's
+    # constant same-source jitter with the problem's measured judge noise; off restores 2.70.
+    # `ranking_v2` (off) additionally puts a cross-generation change through the saturation
+    # transform and the shrink fitted on the problem's receipts. Both move only the predicted gain
+    # and the priority it feeds, never a hold reason.
+    jitter_sigma_from_judge_noise: bool = True
+    ranking_v2: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -269,6 +276,9 @@ GATE_SWITCHES: dict[str, type] = {
     "health_time_risk_holds": bool,
     "health_time_margin": float,
     "judge_compile_factor": float,
+    # 4.3 P29
+    "jitter_sigma_from_judge_noise": bool,
+    "ranking_v2": bool,
 }
 
 #: Clamp per switch; a float not listed here keeps the 4.2.1 ``[0, 1]`` clamp (a probability).
@@ -1392,6 +1402,9 @@ class SubmissionGate:
             as_of=as_of,
             override_board_score=override_board_score,
             override_board_status=override_board_status,
+            # 4.3 P29: measured judge jitter (on) and the two-tier cross-generation prediction (off).
+            jitter_from_noise=self.config.jitter_sigma_from_judge_noise,
+            ranking_v2=self.config.ranking_v2,
         )
         ledger = self.estimator.get_problem_ledger(
             title,

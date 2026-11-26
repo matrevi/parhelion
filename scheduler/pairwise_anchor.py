@@ -27,8 +27,13 @@ def evaluate_pairwise_anchor(
     cal: dict[str, Any],
     spec_ids: list[str],
     noise_floor_pts: float = 2.5,
+    jitter_sigma: float = SIGMA_HIDDEN_JITTER,
 ) -> dict[str, Any] | None:
-    """Evaluate a candidate commit against one baseline anchor (`latest` or `best`)."""
+    """Evaluate a candidate commit against one baseline anchor (`latest` or `best`).
+
+    ``jitter_sigma`` is the same-source judge jitter used in ``total_sigma``: 4.2.1's constant by
+    default, the problem's measured noise when the caller has one (4.3 P29).
+    """
     cand_rob: dict[str, float] = cand_tel.get("robust_cases") or {}
     base_rob: dict[str, float] = anchor_tel.get("robust_cases") or {}
     if not cand_rob or not base_rob or anchor_tel.get("modality") != "profiler" or anchor_sc <= 0:
@@ -141,11 +146,11 @@ def evaluate_pairwise_anchor(
         elif ratio < 0.95:
             regressed.append(f"{bid}({ratio:.2f}x)")
 
-    loocv_extra = max(0.0, (float(loocv_mae) if isinstance(loocv_mae, (int, float)) else 4.8) - SIGMA_HIDDEN_JITTER) * 1.15
+    loocv_extra = max(0.0, (float(loocv_mae) if isinstance(loocv_mae, (int, float)) else 4.8) - jitter_sigma) * 1.15
     unpaired_sigma = 2.4 * unpaired_spec_frac if len(common_all) < max(12, len(spec_ids)) else 0.0
     regime_sigma = 4.5 if regime_mismatch else 0.0
     total_sigma = round(
-        math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + epistemic_var + loocv_extra ** 2 + unpaired_sigma ** 2 + regime_sigma ** 2),
+        math.sqrt(jitter_sigma ** 2 + epistemic_var + loocv_extra ** 2 + unpaired_sigma ** 2 + regime_sigma ** 2),
         2,
     )
 

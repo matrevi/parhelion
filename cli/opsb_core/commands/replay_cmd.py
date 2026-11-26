@@ -151,7 +151,7 @@ def run_replay_gate(args: argparse.Namespace) -> int:
                                  gate_switches=args.gate, since=args.since, until=args.until,
                                  groups=[g.strip() for g in str(args.groups or "").split(",") if g.strip()],
                                  jobs=args.jobs, keep_copy=args.keep_copy, detail=args.detail,
-                                 intents=args.intents)
+                                 intents=args.intents, ranking=args.ranking)
     except (ValueError, KeyError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if args.json else f"Error: {exc}")
         return 2
@@ -190,6 +190,8 @@ def _print_gate(r: dict[str, Any]) -> None:
               f"evidence ({cred['s2_paired_rate'] * 100:.1f}%)")
         if group.get("intents"):
             _print_intents(group["intents"])
+        if group.get("ranking"):
+            _print_ranking(group["ranking"])
     print(f"\ntotal {r['elapsed_sec']}s")
 
 
@@ -209,6 +211,32 @@ def _print_intents(block: dict[str, Any]) -> None:
           + (f"; never scored within the window: {', '.join(unscored)}" if unscored else ""))
 
 
+def _interval(cell: dict[str, Any]) -> str:
+    """``value [lo, hi]``; a metric with no data prints as such rather than as zero."""
+    if cell.get("value") is None:
+        return "n/a"
+    lo, hi = cell.get("ci95") or [None, None]
+    mark = " unstable" if cell.get("unstable") else ""
+    return f"{cell['value']:+.3f}" + (f" [{lo:+.3f}, {hi:+.3f}]" if lo is not None else "") + mark
+
+
+def _print_ranking(block: dict[str, Any]) -> None:
+    """4.3 P29: does priority order match the gain the judge actually paid?"""
+    shots, err = block["shots"], block["error"]
+    print(f"  ranking  {shots['ranked']}/{shots['total']} shots ranked ({shots['blocked']} blocked, "
+          f"{shots['unpriced']} unscored, {shots['hard_failures']} hard failures, {shots['problems']} problems)")
+    print(f"           spearman priority {_interval(block['spearman'])}, predicted "
+          f"{_interval(block['spearman_predicted'])}; per moment {_interval(block['spearman_moment'])} "
+          f"({block['spearman_moment']['moments']} moments)")
+    print(f"           top-1 hit {_interval(block['top1'])} ({block['top1']['hits']}/{block['top1']['n']})")
+    print(f"           gain error median {err['median']} mean {err['mean']} over {err['n']}: "
+          + ", ".join(f"{b['band']} {b['mean']:+.2f} (n={b['n']})" for b in err["bands"]))
+    every = block["counterfactual"]
+    print(f"           counterfactual (every judged shot) spearman {_interval(every['spearman'])}, "
+          f"per moment {_interval(every['spearman_moment'])}, top-1 {_interval(every['top1'])} "
+          f"(n={every['spearman']['n']}, {every['top1']['n']} moments)")
+
+
 def register_replay_subcommands(sub: Any) -> None:
     s_rp = sub.add_parser("replay", help="Replay session logs: sprint metrics and the compaction benchmark")
     rp_sub = s_rp.add_subparsers(dest="replay_cmd", required=True)
@@ -222,12 +250,14 @@ def register_replay_subcommands(sub: Any) -> None:
     g.add_argument("--until", help="ISO-8601 upper bound on submitted_at")
     g.add_argument("--manifest", help="Problem roster JSON when the workspace has no opsb.workspace.json")
     g.add_argument("--groups", default="default,420",
-                   help="Switch groups to compare: default (4.2.1) and 420 (4.2.0 behaviour)")
+                   help="Switch groups to compare: default (4.2.1), 420 (4.2.0), sigma (constant jitter), ranking (P29 v2)")
     g.add_argument("--detail", action="store_true", help="Include every replayed shot in the JSON output")
     g.add_argument("--jobs", type=int, default=6, help="Problems replayed in parallel (default 6)")
     g.add_argument("--keep-copy", action="store_true", help="Keep the temporary copy and print its path")
     g.add_argument("--intents", action="store_true",
                    help="4.3 P23 block: re-judge as intent=probe/restore and report G4, probe and opening window")
+    g.add_argument("--ranking", action="store_true",
+                   help="4.3 P29 block: Spearman, top-1 hit rate and the gain error, with bootstrap CIs")
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=run_replay_gate)
     for name, func, help_text in (

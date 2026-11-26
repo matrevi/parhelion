@@ -309,3 +309,28 @@ def test_intents_block_prices_the_probe_and_restore_hypotheses(workspace: Path) 
     assert all(value["opening_length"] <= 8 for value in opening.values())
     # the intent pass is an extra judgement only: it must not move the 4.2.1 gate block
     assert group["gate"] == plain["gate"]
+
+
+def test_ranking_groups_measure_the_two_prediction_tiers(workspace: Path) -> None:
+    """4.3 P29: the sigma and ranking groups, and the three ranking metrics, all in one run."""
+    plain = gate_replay.run(workspace, jobs=1)["groups"]["default"]
+    assert "ranking" not in plain  # the block is opt-in
+    result = gate_replay.run(workspace, jobs=1, groups=["default", "sigma", "ranking"], ranking=True,
+                             detail=True)
+    assert set(result["groups"]) == {"default", "sigma", "ranking"}
+    assert result["groups"]["default"]["switches"]["ranking_v2"] is False  # still the 4.2.1 behaviour
+    assert result["groups"]["default"]["switches"]["jitter_sigma_from_judge_noise"] is True
+    assert result["groups"]["ranking"]["switches"]["ranking_v2"] is True
+    assert result["groups"]["sigma"]["switches"]["jitter_sigma_from_judge_noise"] is False
+    block = result["groups"]["ranking"]["ranking"]
+    assert block["shots"]["total"] == 18
+    assert block["shots"]["blocked"] + block["shots"]["ranked"] <= 18
+    for key in ("spearman", "spearman_predicted", "spearman_moment", "top1"):
+        assert set(block[key]) >= {"value", "ci95", "n"}, key
+    assert set(block["error"]) >= {"n", "median", "mean", "bands"}
+    # every ranked shot carries the tier its prediction came from
+    tiers = {s["tier"] for s in result["groups"]["ranking"]["shots_detail"]}
+    assert tiers <= {"", "same_gen", "cross_gen"} and tiers
+    # this fixture has no problem repositories and no per-case times, so the tier cannot be
+    # transformed and the two groups must judge the same history identically
+    assert result["groups"]["ranking"]["gate"] == result["groups"]["default"]["gate"]

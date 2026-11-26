@@ -193,6 +193,9 @@ class ScoreEstimate:
     calibration_bias: float = 0.0
     # Score interval with divergent cases treated as unknown (scheduler.predict_interval).
     prediction_interval: dict[str, Any] = dataclasses.field(default_factory=dict)
+    # 4.3 P29: the prediction tier (`same_gen`/`cross_gen`), the measured jitter and, for a
+    # cross-generation change, the saturated and shrunk gain. Empty when `ranking_v2` is off.
+    ranking: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -298,7 +301,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from . import paired_timing, pairing, plausibility, predict_interval, receipt_predict, receipts, timing
+from . import paired_timing, pairing, plausibility, predict_interval, ranking, receipt_predict, receipts, timing
 from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
@@ -1545,8 +1548,15 @@ class ScoreEstimator:
         override_board_score: float | None = None,
         override_board_status: str | None = None,
         fast_cached_cal: bool = False,
+        ranking_v2: bool = False,
+        jitter_from_noise: bool = True,
     ) -> ScoreEstimate:
-        """Estimate contemporary online score, expected delta, and uncertainty sigma."""
+        """Estimate contemporary online score, expected delta, and uncertainty sigma.
+
+        ``jitter_from_noise`` (4.3 P29, on by default) replaces the constant same-source jitter with
+        the problem's measured judge noise; ``ranking_v2`` (off by default) additionally puts a
+        cross-generation change through the saturation transform and the fitted shrink.
+        """
         canonical_sha = resolve_sha(self.workspace, title, sha)
         short_sha = canonical_sha[:7] if canonical_sha else "unknown"
         ledger = self.get_problem_ledger(
@@ -1559,6 +1569,11 @@ class ScoreEstimator:
         anchor_ts = _parse_iso(ledger.active_judged_at) if ledger.current_score > 0 else ref_now
         if anchor_ts is None:
             anchor_ts = ref_now
+        # 4.3 P29: the same-source jitter is measured per problem (contest-pooled when a problem has
+        # too few repeated judgments, the 4.2.1 constant when nothing is measured).
+        jitter_info = ranking.jitter_sigma(self.workspace, title) if jitter_from_noise else {
+            "sigma": SIGMA_HIDDEN_JITTER, "df": 0, "source": "constant"}
+        jitter = float(jitter_info["sigma"])
 
         rows = self._filtered_outcomes(title, as_of=as_of)
         prior_same_sha_scores: list[tuple[datetime.datetime | None, float]] = []
@@ -1656,7 +1671,7 @@ class ScoreEstimator:
             estimated_score = _project_score_from_speedup(
                 anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
             )
-            sigma = math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 2.0 ** 2)
+            sigma = math.sqrt(jitter ** 2 + 2.0 ** 2)
             method = "explicit_speedup"
             detail = f"explicit speedup={effective_speedup:.3f}x over anchor={anchor_score:.2f}"
 
@@ -1680,7 +1695,7 @@ class ScoreEstimator:
             estimated_score = ledger.current_score
             effective_speedup = 1.0
             m = max(1, len(prior_same_sha_scores))
-            sigma = round(SIGMA_HIDDEN_JITTER * math.sqrt(1.0 + 1.0 / m), 2)
+            sigma = round(jitter * math.sqrt(1.0 + 1.0 / m), 2)
             method = "active_board_identity"
             same_lbl = (
                 f"SHA {short_sha} is already active on board"
@@ -1702,7 +1717,7 @@ class ScoreEstimator:
             # In live mode use median (robust to single -2sigma outlier); in 2-draw replay median == mean
             estimated_score = round(float(statistics.median(contemp_draws)), 2)
             effective_speedup = round(estimated_score / anchor_score, 4) if anchor_score > 0 else 1.0
-            sigma = round(SIGMA_HIDDEN_JITTER * math.sqrt(1.0 + 1.0 / m), 2)
+            sigma = round(jitter * math.sqrt(1.0 + 1.0 / m), 2)
             method = "historical_sha_decay_adjusted"
             raw_str = "/".join(f"{s:.2f}" for _, s in prior_same_sha_scores)
             cnt_str = "/".join(f"{c:.2f}" for c in contemp_draws)
@@ -1720,7 +1735,7 @@ class ScoreEstimator:
             regressed_cases = list(rp["regressed"])
             effective_speedup = rp["geo"]
             local_quality = rp["coverage"] * (1.0 if min(rp["runs"]) >= 2 else 0.75)
-            prior_var = SIGMA_HIDDEN_JITTER ** 2 + (1.0 + 3.0 * (1.0 - local_quality)) ** 2
+            prior_var = jitter ** 2 + (1.0 + 3.0 * (1.0 - local_quality)) ** 2
             conf = self.prediction_confidence(title, as_of, receipt_predict.METHOD)
             n_eff, k0 = conf["n_eff"], CONFIDENCE_PRIOR_WEIGHT
             calibration_samples = n_eff
@@ -1750,7 +1765,7 @@ class ScoreEstimator:
             regressed_cases = cb_pair["regressed"]
             effective_speedup = cb["effective_speedup"]
             local_quality = cb["local_quality"]
-            prior_var = SIGMA_HIDDEN_JITTER ** 2 + (1.8 + 2.2 * (1.0 - local_quality)) ** 2
+            prior_var = jitter ** 2 + (1.8 + 2.2 * (1.0 - local_quality)) ** 2
             conf = self.prediction_confidence(title, as_of)
             n_eff, k0 = conf["n_eff"], CONFIDENCE_PRIOR_WEIGHT
             calibration_samples = n_eff
@@ -1777,6 +1792,7 @@ class ScoreEstimator:
                 ledger=ledger,
                 as_of=as_of,
                 fast_cached_cal=fast_cached_cal,
+                jitter_sigma=jitter,  # 4.3 P29: the measured noise inside the calibrator's sigma
             )
             common = sorted(set(pair_cand_cases).intersection(pair_base_cases))
             if cal_pred is not None:
@@ -1820,7 +1836,7 @@ class ScoreEstimator:
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
                 model_err = 1.8 if (cand_perf["is_profiler"] and (matched_cases >= 10 or pair_kind == "prof_summary")) else 2.8
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + model_err ** 2), 2)
+                sigma = round(math.sqrt(jitter ** 2 + model_err ** 2), 2)
                 method = f"paired_{pair_kind}"
                 soc_tag = f" [{cand_perf.get('runtime_soc')}]" if cand_perf.get("runtime_soc") else ""
                 detail = (
@@ -1838,7 +1854,7 @@ class ScoreEstimator:
                 if matched_cases:
                     # Clamp unverified note-heuristic delta conservatively
                     estimated_score = round(max(anchor_score - 5.0, min(anchor_score + 6.0, estimated_score)), 2)
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 5.0 ** 2), 2)
+                sigma = round(math.sqrt(jitter ** 2 + 5.0 ** 2), 2)
                 cal_trust = 0.25
                 method = "note_heuristic" if matched_cases else "unmatched_neutral"
 
@@ -1852,7 +1868,7 @@ class ScoreEstimator:
                     anchor_score, anchor_pub, anchor_hid, effective_speedup, ledger.frontier_top1
                 )
                 estimated_score = round(max(anchor_score - 5.0, min(anchor_score + 6.0, estimated_score)), 2)
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 5.0 ** 2), 2)
+                sigma = round(math.sqrt(jitter ** 2 + 5.0 ** 2), 2)
                 cal_trust = 0.25
                 method = "note_heuristic"
                 detail = note_det
@@ -1872,19 +1888,32 @@ class ScoreEstimator:
                         estimated_score = round(0.65 * anchor_score + 0.35 * implied_sc, 2)
                     effective_speedup = round(estimated_score / anchor_score, 4) if anchor_score > 0 else 1.0
                     matched_cases = len(common_t)
-                    sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 3.8 ** 2), 2)
+                    sigma = round(math.sqrt(jitter ** 2 + 3.8 ** 2), 2)
                     method = "torch_ref_ratio"
                     detail = f"{len(common_t)} cases vs torch built-in (geo={geo_t:.2f}x)"
                 else:
                     estimated_score = round(anchor_score, 2)
-                    sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 4.0 ** 2), 2)
+                    sigma = round(math.sqrt(jitter ** 2 + 4.0 ** 2), 2)
                     method = "anchor_fallback"
                     detail = f"no paired baseline perf; anchored at {anchor_score:.2f}"
             else:
                 estimated_score = round(anchor_score, 2)
-                sigma = round(math.sqrt(SIGMA_HIDDEN_JITTER ** 2 + 4.0 ** 2), 2)
+                sigma = round(math.sqrt(jitter ** 2 + 4.0 ** 2), 2)
                 method = "anchor_fallback"
                 detail = f"no perf telemetry found; anchored at {anchor_score:.2f}"
+
+        # 4.3 P29: a cross-generation change is re-scored with the judge's own formula and shrunk by
+        # the coefficient fitted on this problem's earlier receipts (`scheduler.ranking`).
+        ranking_info: dict[str, Any] = {"jitter": jitter_info}
+        if ranking_v2 and canonical_sha:
+            repo = self.workspace / str(self.problems_meta.get(title, {}).get("path")
+                                        or f"{_dev('work_prefix')}/{title}")
+            tiered = ranking.adjust(
+                self.workspace, title, repo, canonical_sha, base_sha or raw_base_sha, anchor_score,
+                effective_speedup, estimated_score - anchor_score, as_of=as_of)
+            ranking_info.update(tiered)
+            if tiered.get("applied") and tiered.get("tier") == ranking.CROSS_GEN:
+                estimated_score = float(tiered["estimated_score"])
 
         delta_expected = round(estimated_score - ledger.current_score, 2)
         weighted_delta = round(ledger.difficulty * delta_expected, 2)
@@ -1932,4 +1961,5 @@ class ScoreEstimator:
             calibration_samples=round(calibration_samples, 2),
             calibration_bias=calibration_bias,
             prediction_interval=interval,
+            ranking=ranking_info,
         )

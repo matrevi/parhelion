@@ -626,6 +626,9 @@ class SchedulerEngine:
                 override_board_score=prev_b,
                 override_board_status="Pass" if prev_b > 0 else "no-submission",
                 fast_cached_cal=True,
+                # 4.3 P29: the history must show the same prediction the gate would have made.
+                jitter_from_noise=self.gate.config.jitter_sigma_from_judge_noise,
+                ranking_v2=self.gate.config.ranking_v2,
             )
 
             raw_detail = str(rec.get("detail") or "")
