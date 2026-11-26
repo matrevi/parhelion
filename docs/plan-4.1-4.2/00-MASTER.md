@@ -97,6 +97,8 @@
 
 ## 4. 进度
 
+无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。
+
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
 | P01 | impl/P01-judge-alignment | 已合入 | a4a3eda | 留一回测 MAE 2.75→1.32；按位置配对的身份是对的，FFT 05 等是不同工作量（标 judge_mapped=false）；回填 19 行 |
