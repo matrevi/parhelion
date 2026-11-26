@@ -50,7 +50,8 @@ def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: An
             if not request_id:
                 raise ValueError("'request_id' is required")
             hub = runtime.agent_mesh.event_hub(ws)
-            return 200, test_runs.wait(ws, request_id, body_obj.get("wait_sec", 30), block=hub.test_blocker(request_id))
+            return 200, test_runs.wait(ws, request_id, body_obj.get("wait_sec", 30),
+                                       block=hub.test_blocker(request_id), full=body_obj.get("full") is True)
 
         if path == "/v1/agents/sprint":
             from ..agents.sprint import start_sprint

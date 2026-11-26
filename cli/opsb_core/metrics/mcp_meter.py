@@ -1,8 +1,10 @@
 """MCP tool-call metering: one JSONL row per ``tools/call`` and hourly per-tool aggregates.
 
 Rows go to ``<workspace state>/metrics/mcp-calls.jsonl``:
-``{ts, agent_id, role, tool, args_bytes, result_bytes, ms, is_error}``. The live file rotates to
-``mcp-calls.1.jsonl`` above ``ROTATE_BYTES``. Recording never raises into the tool call.
+``{ts, agent_id, role, tool, args_bytes, result_bytes, ms, is_error, spilled, bound_bytes}``.
+``result_bytes`` is what the caller received after ``mcp.bound_output``; ``bound_bytes`` is the
+complete pre-bound reply, so the two together measure what the output cap removed. The live file
+rotates to ``mcp-calls.1.jsonl`` above ``ROTATE_BYTES``. Recording never raises into the tool call.
 """
 from __future__ import annotations
 
@@ -53,15 +55,18 @@ def utf8_len(value: Any) -> int:
 
 
 def record_call(workspace: Path | str, *, agent_id: str | None, role: str, tool: str, args: Any,
-                result_text: str, ms: float, is_error: bool, limit: int = ROTATE_BYTES) -> bool:
+                result_text: str, ms: float, is_error: bool, spilled: bool = False,
+                bound_bytes: int | None = None, limit: int = ROTATE_BYTES) -> bool:
     """Append one metering row; returns False (never raises) when it could not be written."""
     try:
         path = log_path(workspace)
+        served = utf8_len(result_text)
         row = {
             "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "agent_id": agent_id or "", "role": role, "tool": tool,
-            "args_bytes": utf8_len(args or {}), "result_bytes": utf8_len(result_text),
+            "args_bytes": utf8_len(args or {}), "result_bytes": served,
             "ms": round(float(ms), 1), "is_error": bool(is_error),
+            "spilled": bool(spilled), "bound_bytes": served if bound_bytes is None else int(bound_bytes),
         }
         _rotate_if_needed(path, limit)
         _cfg.append_jsonl_locked(_lock_path(path), path, row)

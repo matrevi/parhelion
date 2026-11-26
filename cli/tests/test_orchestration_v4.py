@@ -334,6 +334,7 @@ def _fake_test_runs(monkeypatch, *, mark=True):
 
     module = types.ModuleType(TEST_RUNS_MOD)
     module.list_undelivered, module.mark_delivered, module.compact_line = list_undelivered, mark_delivered, compact_line
+    module.result_message = lambda record, workspace: compact_line(record)  # P13: delivered result text
     monkeypatch.setitem(sys.modules, TEST_RUNS_MOD, module)
     return calls
 

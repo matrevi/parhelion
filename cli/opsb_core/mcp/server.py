@@ -14,6 +14,7 @@ from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
 from ..metrics import mcp_meter
 from ..worker_access import forward_worker_request
+from .bound import bound_output
 from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool_schemas, normalize_role
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
@@ -102,12 +103,16 @@ def handle_jsonrpc_message(
         started = time.monotonic()
         try:
             payload = call_tool(tool_name, raw_args or {}, ws, role=norm_role, agent_id=agent_id)
-            text, is_error = json.dumps(payload, ensure_ascii=False, separators=(",", ":")), False
+            is_error = False
         except Exception as exc:
-            text = json.dumps({"ok": False, "tool": tool_name, "error": str(exc)}, ensure_ascii=False)
+            payload = {"ok": False, "tool": tool_name, "error": str(exc)}
             is_error = True
+        # 4.2 E: every reply leaves through one bound (page first, then a spill file). The meter keeps
+        # the pre-bound size, so result_bytes vs bound_bytes shows what the cap removed.
+        text, bound = bound_output(tool_name, payload, ws, agent_id=agent_id)
         mcp_meter.record_call(ws, agent_id=agent_id, role=norm_role, tool=tool_name, args=raw_args,
-                              result_text=text, ms=(time.monotonic() - started) * 1000.0, is_error=is_error)
+                              result_text=text, ms=(time.monotonic() - started) * 1000.0, is_error=is_error,
+                              spilled=bound["spilled"], bound_bytes=bound["bound_bytes"])
         return _jsonrpc_result(req_id, {"content": [{"type": "text", "text": text}], "isError": is_error})
 
     if req_id is None:

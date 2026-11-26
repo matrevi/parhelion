@@ -140,6 +140,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "rate_limit_gap_sec": 190,
         "circuit_breaker_limit": 6,
     },
+    # 4.2 E: the MCP output bound. The cap is the largest reply returned whole; a bigger result is
+    # paged or spilled under <workspace state>/spill and reaped by age and total size.
+    "mcp": {
+        "output_cap_bytes": 5000,
+        "spill_keep_days": 7,
+        "spill_max_mb": 200,
+    },
 }
 
 

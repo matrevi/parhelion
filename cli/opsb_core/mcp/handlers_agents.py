@@ -11,6 +11,7 @@ from typing import Any
 
 from ..agents.event_hub import MAX_BLOCK_SEC, EventHub, normalize_sources
 from ..agents.manager import DEFAULT_WAIT_SEC, MAX_WAIT_SEC, AgentMeshManager
+from .paging import finish_page, page_window
 
 _LOCAL_MANAGER: AgentMeshManager | None = None
 _ACTIVE_DAEMON_MANAGER: AgentMeshManager | None = None
@@ -190,20 +191,34 @@ def tool_parhelion_wait(args: dict[str, Any], workspace: Path) -> dict[str, Any]
 
 
 def tool_parhelion_agent_messages(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    """Message history, one page at a time; offset/cursor walk the same result set."""
     agent_id = str(args.get("agent_id") or "").strip() or None
     problem = str(args.get("problem") or "").strip() or None
     since_seq = int(args.get("since_seq") or 0)
-    limit = int(args.get("limit") or 60)
-    ack = bool(args.get("ack", True))
-    q_dict: dict[str, Any] = {"since_seq": since_seq, "limit": limit, "ack": "1" if ack else "0", "audience": "orchestrator"}
+    offset, limit = page_window(args, default=60, maximum=500)
+    # A later page must not acknowledge rows it does not show; the first page keeps the old rule.
+    ack = bool(args.get("ack", True)) and offset == 0
+    fetch = offset + limit + 1  # one row beyond the page tells us whether another page exists
+    q_dict: dict[str, Any] = {"since_seq": since_seq, "limit": fetch, "ack": "1" if ack else "0",
+                              "audience": "orchestrator"}
     if problem:
         q_dict["problem"] = problem
     q = urllib.parse.urlencode(q_dict)
     path = f"/v1/agents/{urllib.parse.quote(agent_id, safe='')}/messages?{q}" if agent_id else f"/v1/agents/messages?{q}"
     if proxied := _proxy_daemon("GET", path, workspace):
-        return proxied
-    return _mgr().read_messages(workspace, agent_id=agent_id, problem=problem, since_seq=since_seq, limit=limit, ack=ack,
-                                include_squad=False)
+        return _page_messages(proxied, offset, limit)
+    reply = _mgr().read_messages(workspace, agent_id=agent_id, problem=problem, since_seq=since_seq, limit=fetch,
+                                 ack=ack, include_squad=False)
+    return _page_messages(reply, offset, limit)
+
+
+def _page_messages(payload: dict[str, Any], offset: int, limit: int) -> dict[str, Any]:
+    """Cut one page out of ``payload['messages']`` and let the caller continue with ``next_cursor``."""
+    if not isinstance(payload, dict):
+        return payload
+    rows = payload.get("messages") if isinstance(payload.get("messages"), list) else []
+    payload["messages"] = rows[offset:offset + limit]
+    return finish_page(payload, "messages", offset, offset + len(rows))
 
 
 def tool_parhelion_agent_stop(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

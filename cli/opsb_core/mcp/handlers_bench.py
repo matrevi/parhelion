@@ -62,9 +62,29 @@ def status_rev(out: dict[str, Any], args: dict[str, Any]) -> str:
     return "s1:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
+def _format(args: dict[str, Any]) -> str:
+    """``brief`` (default) or ``full``; an absent ``format`` keeps the older arguments in charge."""
+    raw = args.get("format")
+    if raw is None:
+        return "brief"
+    mode = str(raw).strip().lower()
+    if mode not in ("brief", "full"):
+        raise ValueError("format must be brief or full")
+    return mode
+
+
+def _status_args(args: dict[str, Any]) -> dict[str, Any]:
+    """``format`` is the preferred spelling of ``verbose``; the rev scope sees the normalised call."""
+    call = dict(args)
+    if args.get("format") is not None:
+        call["verbose"] = _format(args) == "full"
+    return call
+
+
 def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    out = _status_payload(args, workspace)
-    rev = status_rev(out, args)
+    call = _status_args(args)
+    out = _status_payload(call, workspace)
+    rev = status_rev(out, call)
     if str(args.get("if_rev") or "") == rev:
         return {"not_modified": True, "rev": rev}
     out["rev"] = rev
@@ -309,6 +329,7 @@ def tool_parhelion_test(args: dict[str, Any], workspace: Path) -> dict[str, Any]
         raise ValueError("'problem' is required for parhelion_test")
     role, agent_id = _caller(args)
     level = str(args.get("level") or "standard")
+    result_format = _format(args)  # brief (default) or the full delivered result message
     title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
     reused = _retest_reply(workspace, title, sha, level, args, agent_id)
     if reused is not None:
@@ -318,6 +339,7 @@ def tool_parhelion_test(args: dict[str, Any], workspace: Path) -> dict[str, Any]
         cases=args.get("cases") or [], remeasure=bool(args.get("remeasure", False)),
         build_only=bool(args.get("build_only", False)), agent_id=agent_id, role=role,
         compare=str(args.get("compare") or "").strip() or None,
+        result_format=result_format,
     )
     warnings = _ledger_warnings(workspace, title, agent_id)
     return {**view, "warnings": warnings} if warnings else view
@@ -328,17 +350,19 @@ def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str,
     if not request_id:
         raise ValueError("'request_id' is required for parhelion_test_wait")
     wait_sec = 30 if args.get("wait_sec") is None else args.get("wait_sec")
+    full = _format(args) == "full"
     from .handlers_agents import _proxy_daemon, daemon_hub
     hub = daemon_hub(workspace)
     if hub is not None:  # inside the daemon: sleep on the run's state changes
-        return test_runs.wait(workspace, request_id, wait_sec, block=hub.test_blocker(request_id))
+        return test_runs.wait(workspace, request_id, wait_sec, block=hub.test_blocker(request_id), full=full)
     try:
         budget = min(float(test_runs.WAIT_MAX_SEC), max(1.0, float(wait_sec)))
     except (TypeError, ValueError):
         budget = 30.0
-    proxied = _proxy_daemon("POST", "/v1/events/test_wait", workspace, {"request_id": request_id, "wait_sec": budget},
+    proxied = _proxy_daemon("POST", "/v1/events/test_wait", workspace,
+                            {"request_id": request_id, "wait_sec": budget, "full": full},
                             timeout=budget + 6.0, missing_ok=True)
-    return proxied if proxied is not None else test_runs.wait(workspace, request_id, wait_sec)
+    return proxied if proxied is not None else test_runs.wait(workspace, request_id, wait_sec, full=full)
 
 
 def tool_parhelion_test_cancel(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
