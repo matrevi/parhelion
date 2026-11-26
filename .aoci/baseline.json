@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T04:59:46Z",
+  "updated_at": "2026-11-26T05:06:41Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c534eccad0b084278f92b6cb736f79a2c7fe8964c1b253bfa85eb18f67d0834f",
-      "size": 78453,
-      "normalized_sha256": "c534eccad0b084278f92b6cb736f79a2c7fe8964c1b253bfa85eb18f67d0834f"
+      "sha256": "7a816d21f08887954d6f48f585d45741576ec8bfbdf0dec8bbcd3adb3551e3d1",
+      "size": 78702,
+      "normalized_sha256": "7a816d21f08887954d6f48f585d45741576ec8bfbdf0dec8bbcd3adb3551e3d1"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1361,9 +1361,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "0c78413ab7a1e3e6a4ea37f5cd709f4b3f1f7174e2eeb180bb852c0fea505237",
-      "size": 17279,
-      "normalized_sha256": "0c78413ab7a1e3e6a4ea37f5cd709f4b3f1f7174e2eeb180bb852c0fea505237"
+      "sha256": "09e282b7bd2ee640b2a6ec2170968f031eb5fb5b5189c02058dbd9eeb14c3bee",
+      "size": 18368,
+      "normalized_sha256": "09e282b7bd2ee640b2a6ec2170968f031eb5fb5b5189c02058dbd9eeb14c3bee"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
@@ -1511,9 +1511,9 @@
     },
     "scheduler/cli_bridge.py": {
       "role": "index",
-      "sha256": "5774070225d2044ff7315d3b34377130d9af815eeb7e13060ae2cfa47b8e44ee",
-      "size": 85886,
-      "normalized_sha256": "5774070225d2044ff7315d3b34377130d9af815eeb7e13060ae2cfa47b8e44ee"
+      "sha256": "3410060a5f6d0a4f875c0b22649ead76c5a626c61ccb8ff20ce205d25315fbfe",
+      "size": 88958,
+      "normalized_sha256": "3410060a5f6d0a4f875c0b22649ead76c5a626c61ccb8ff20ce205d25315fbfe"
     },
     "scheduler/estimator.py": {
       "role": "index",
@@ -1562,6 +1562,12 @@
       "sha256": "cb16a1c40f37bb5104dbeb82821f2834dc1f2781fe1fed258000652e6f057d05",
       "size": 15667,
       "normalized_sha256": "cb16a1c40f37bb5104dbeb82821f2834dc1f2781fe1fed258000652e6f057d05"
+    },
+    "scheduler/tests/test_auto_request.py": {
+      "role": "observe",
+      "sha256": "5c7b14452df6a6986727d9cad575684f81a14ad582060ee96997fc0e9cda27f9",
+      "size": 3327,
+      "normalized_sha256": "5c7b14452df6a6986727d9cad575684f81a14ad582060ee96997fc0e9cda27f9"
     },
     "scheduler/tests/test_backfill.py": {
       "role": "observe",
