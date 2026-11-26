@@ -258,3 +258,23 @@ def test_metrics_fold_a_known_history() -> None:
     assert out["new_highs"] == 1
     assert out["points"] == 40.0 and out["hard_failures"] == 1 and out["regressions"] == 1
     assert out["recovery_median_min"] == 1.0  # zeroed at 120s, back at 180s
+
+
+def test_real_entry_point_runs_without_pythonpath(workspace: Path, tmp_path: Path) -> None:
+    """`cli/opsb replay gate` must work as installed: no PYTHONPATH, run from outside the repository.
+
+    The unit tests above import the engine with the repository root already on sys.path, which hid a
+    `ModuleNotFoundError: scheduler` from the real entry point (cli/opsb only adds cli/).
+    """
+    import os
+    import subprocess
+
+    repo = Path(__file__).resolve().parents[2]
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run(
+        [sys.executable, str(repo / "cli" / "opsb"), "replay", "gate", "--workspace", str(workspace),
+         "--groups", "default", "--jobs", "1", "--json"],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=300)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    result = json.loads(proc.stdout)
+    assert result["groups"]["default"]["gate"]["shots"] > 0

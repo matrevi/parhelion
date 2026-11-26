@@ -255,7 +255,11 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
         since: str | None = None, until: str | None = None, groups: list[str] | None = None,
         jobs: int = DEFAULT_JOBS, keep_copy: bool = False, detail: bool = False) -> dict[str, Any]:
     """Replay every judged receipt of ``workspace`` through the gate, once per switch group."""
+    from ..config import ensure_scheduler_path
     from . import gate_metrics
+    # `cli/opsb` only puts cli/ on sys.path; every helper below imports `scheduler.*`, so the
+    # repository root must be added before the first one runs (forked workers inherit it).
+    ensure_scheduler_path()
     started = time.time()
     source = pathlib.Path(workspace).expanduser().resolve()
     if not (source / "results" / "submit-queue-outcome.jsonl").is_file():

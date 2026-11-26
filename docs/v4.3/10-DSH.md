@@ -131,6 +131,10 @@ git -C /Users/winbeau/Developer/personal/parhelion worktree add /Users/winbeau/D
   - 用 `PYTHONPATH=cli:. ~/.parhelion/venv/bin/python` 直接调 handler；
   - 或在工作树内运行 `cli/opsb …`。
 - **真机步骤**只做子计划写明的那些：只测不提交；设备不通时标为待补。
+- **新命令与新工具要从真实入口跑一遍。** `cli/opsb` 只把 `cli/` 放进 `sys.path`，测试却带着仓库根，所以测试通过不代表命令能用。
+  - 在仓库外的目录、去掉 `PYTHONPATH`，用 `cli/opsb <命令>` 或 `cli/opsb mcp call <工具>` 跑一遍新增的每条命令与工具；
+  - 在 `cli/opsb_core` 里导入 `scheduler.*` 之前，先调 `config.ensure_scheduler_path()`；
+  - 报告里贴出这些调用与退出码。P21 合入后正是这一步漏掉，导致 `opsb replay gate` 从正式入口直接崩溃。
 
 ### 测试基线（4.2.1；新包以开工时的 main 为准，P21/P22/P26 合入后为 850/19 与 589）
 
@@ -162,7 +166,8 @@ PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider c
 - 新参数或新工具三处登记，角色正确；工具表字节在上限内；
 - 有回退开关；门禁包附了回放结果；
 - 没有设备值，也没有账号或凭据字段；
-- 新模块不超过 350 行；报告完整；两条全量测试全绿。
+- 新模块不超过 350 行；报告完整；两条全量测试全绿；
+- 主会话自己从真实入口（仓库外、去掉 `PYTHONPATH`）跑一遍包新增的命令与工具；门禁包在合入后的 main 上重跑 `opsb replay gate`，结果与报告对照。
 
 ### 合入流程
 

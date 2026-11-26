@@ -50,7 +50,7 @@
 - 返工意见写进 `main` 上的 `docs/v4.3/reviews/Pxx.md` 并推送，不在 DSH 的分支上提交。
 
 **每合入一个包**
-1. 跑两条全量测试，涉及 Swift 时加 `swift build`；
+1. 跑两条全量测试，涉及 Swift 时加 `swift build`；再在仓库外、去掉 `PYTHONPATH`，用 `cli/opsb` 跑一遍包新增的命令与工具；门禁包在合入后的 main 上重跑 `opsb replay gate`。测试只证明代码对，真实入口才证明命令能用；
 2. 更新本文件 §2；
 3. 有新测试文件时，执行 `/Users/winbeau/.local/bin/aoci scope acknowledge --reviewed-by claude --json`；
 4. `aoci_maintain` 直至 aligned，提交索引；
@@ -58,6 +58,7 @@
 
 **发布**
 - 中途不重启守护进程。全部合入后统一重启一次，见 §4。
+- **合入到 4.3.0 之间是混合版本。** 新起的 `opsb mcp serve` 已经用新代码，工具表里有 race、pipeline、replace 等参数；但守护进程仍是旧代码，会拒绝它们（例如 `Unknown sprint mode 'race'`）。这段时间不要开冲刺；确需开冲刺，先重启守护进程。
 - aoci 只由主会话维护。
 
 ## 2. 状态表
