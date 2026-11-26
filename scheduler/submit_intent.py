@@ -162,10 +162,14 @@ def forced(row: dict[str, Any], workspace: pathlib.Path | None = None) -> bool:
     return bool(matched) and all_forced
 
 
+#: GateConfig.calibration_excludes_forced, set by the gate before each evaluation (4.2.1 when False).
+EXCLUDE_FORCED: bool = True
+
+
 def calibration_marks(workspace: pathlib.Path, row: dict[str, Any]) -> dict[str, Any]:
     """``{excluded, intent}`` for one receipt row: forced shots leave the calibration samples."""
     intent = receipt_intent(workspace, row)
-    return {"excluded": forced(row, workspace), "intent": intent}
+    return {"excluded": bool(EXCLUDE_FORCED) and forced(row, workspace), "intent": intent}
 
 
 def has_scored_pass(outcomes: list[dict[str, Any]], title: str,

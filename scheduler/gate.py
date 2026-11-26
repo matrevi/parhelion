@@ -192,6 +192,9 @@ class GateConfig:
     probe_per_window: int = 2
     probe_window_hours: float = 12.0
     probe_min_prob: float = 0.3
+    # Forced and overridden receipts stay out of the estimator residuals and the per-case calibration
+    # table (R5 §7). Off: they count again, as in 4.2.1.
+    calibration_excludes_forced: bool = True
     # 4.3 P24 (docs/v4.3/P24-escape-health.md). Each switch restores the 4.2.1 behaviour when flipped.
     # A WA/RE whose reproducer variants pass on the bad SHA's own formal final runs releases the lock
     # for every other SHA (EXPLORE, half priority) and only keeps the bad SHA itself out.
@@ -256,6 +259,7 @@ GATE_SWITCHES: dict[str, type] = {
     "probe_per_window": int,
     "probe_window_hours": float,
     "probe_min_prob": float,
+    "calibration_excludes_forced": bool,
     # 4.3 P24
     "escape_unreproduced_releases": bool,
     "unrepro_runs": int,
@@ -1341,6 +1345,8 @@ class SubmissionGate:
         ``intent`` (4.3 P23) is ``exploit`` (the 4.2.1 gate), ``probe`` or ``restore``;
         ``probe_used`` lets the replay price a hypothetical probe series against the budget.
         """
+        # The estimator and the calibration table read this through submit_intent, below the gate.
+        submit_intent.EXCLUDE_FORCED = bool(self.config.calibration_excludes_forced)
         canonical_sha = resolve_sha(self.workspace, title, sha)
         ov = self._find_override(title, canonical_sha)
         ov_action = ov.get("action")

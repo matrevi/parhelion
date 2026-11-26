@@ -33,12 +33,19 @@ import tempfile
 import time
 from typing import Any
 
-#: 4.2.0 behaviour (docs/v4.3/00-PLAN.md §1): every switch the 4.2.1 gate added, flipped back.
+#: 4.2.1 behaviour: every switch the 4.3 packages added, flipped back (P23 intents and the opening
+#: window, P24 escape exit and health check). Without it a "4.2.0" group silently picks up 4.3 rules.
+GROUP_421: dict[str, Any] = {
+    "submit_intents": False, "opening_until_first_score": False,
+    "escape_unreproduced_releases": False, "health_checks": False, "calibration_excludes_forced": False,
+}
+#: 4.2.0 behaviour (docs/v4.3/00-PLAN.md §1): the 4.3 switches and every switch 4.2.1 added, flipped back.
 GROUP_420: dict[str, Any] = {
+    **GROUP_421,
     "board_mode_from_rules": False, "tle_arms_escape_lock": True, "circuit_blocks": True,
     "noise_floor_from_judge_sigma": False, "approve_low_gain_positive": False,
 }
-GROUPS: dict[str, dict[str, Any]] = {"default": {}, "420": GROUP_420}
+GROUPS: dict[str, dict[str, Any]] = {"default": {}, "421": GROUP_421, "420": GROUP_420}
 DEFAULT_JOBS = 6
 
 

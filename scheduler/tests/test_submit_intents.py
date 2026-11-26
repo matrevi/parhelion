@@ -17,7 +17,7 @@ from cli.opsb_core.device_env import device_text  # noqa: E402
 from scheduler import submit_intent  # noqa: E402
 from scheduler.estimator import ScoreEstimate, ScoreEstimator, _normal_cdf  # noqa: E402
 from scheduler.gate import (  # noqa: E402
-    GateConfig, STAGE_NEXT_STEPS, StageResult, SubmissionGate, with_next_step,
+    GATE_SWITCHES, GateConfig, STAGE_NEXT_STEPS, StageResult, SubmissionGate, with_next_step,
 )
 
 WORK_PREFIX = device_text("work_prefix")
@@ -432,6 +432,24 @@ class CalibrationExclusionTest(unittest.TestCase):
                 rows = estimator._receipt_residuals()
             self.assertEqual([r["residual"] for r in rows], [14.0])  # only the gated receipt
             self.assertEqual(rows[0]["intent"], "exploit")
+
+    def test_the_switch_puts_forced_receipts_back(self) -> None:
+        # calibration_excludes_forced=false is the 4.2.1 sample: forced receipts count again.
+        with tempfile.TemporaryDirectory() as td:
+            forced = _pass_row(BASE, 55.0, when="2026-11-20T00:00:00Z", force=True)
+            normal = _pass_row(OTHER, 54.0, when="2026-11-21T00:00:00Z")
+            ws, title, sha = _make_workspace(pathlib.Path(td), receipts=[forced, normal])
+            for one in (BASE, OTHER):
+                (ws / "results" / title / one / "bench-runs").mkdir(parents=True)
+            estimator = ScoreEstimator(ws)
+            try:
+                submit_intent.EXCLUDE_FORCED = False
+                with mock.patch.object(estimator, "_replay_projection", return_value={"projected": 40.0}):
+                    rows = estimator._receipt_residuals()
+            finally:
+                submit_intent.EXCLUDE_FORCED = True
+            self.assertEqual(sorted(r["residual"] for r in rows), [14.0, 15.0])
+            self.assertIn("calibration_excludes_forced", GATE_SWITCHES)
 
     def test_probe_receipts_stay_and_are_marked(self) -> None:
         with tempfile.TemporaryDirectory() as td:
