@@ -147,6 +147,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "spill_keep_days": 7,
         "spill_max_mb": 200,
     },
+    # 4.2 G worker start-up pack. ``tokens`` caps the whole pack (~6K tokens by default) and
+    # ``repo_map`` stays off until a replay shows the generated map pays for itself (research R11).
+    "startup_pack": {"tokens": 6000, "repo_map": False},
 }
 
 

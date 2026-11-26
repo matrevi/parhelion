@@ -190,6 +190,13 @@ def tool_parhelion_wait(args: dict[str, Any], workspace: Path) -> dict[str, Any]
     return _mgr().event_hub(workspace).wait(role="orchestrator", **body)
 
 
+def tool_parhelion_agent_peek(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    """4.2 G: bounded read of one worker's worktree, session tail or diff stat (orchestrator only)."""
+    from .peek import peek
+
+    return peek(args, workspace)
+
+
 def tool_parhelion_agent_messages(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     """Message history, one page at a time; offset/cursor walk the same result set."""
     agent_id = str(args.get("agent_id") or "").strip() or None

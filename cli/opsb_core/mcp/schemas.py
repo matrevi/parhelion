@@ -451,6 +451,25 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "parhelion_agent_peek",
+        "description": "Orchestrator only: look inside one worker without shelling out. Use it instead of `cat`/`tail`/`ls`/`git diff --stat` against a worker's worktree, which need a `cd` and re-send whole files. "
+                       "what=files lists the worker's worktree two levels deep; what=file reads one file by path **relative to that worktree** (absolute paths and `..` escapes are refused) with an optional `lines` range such as `40-120` or `200`; "
+                       "what=log_tail returns the last lines of the worker's session log (read-only, credential-shaped fields redacted); what=diff_stat returns `git diff --stat` plus `--shortstat`. "
+                       "The answer is capped at 8 KB and one file at 256 KB; call it again with a narrower `lines` range instead of asking for a whole large file.",
+        "roles": ("orchestrator",),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "agent_id": {"type": "string", "description": "Worker agent id as shown on the collaboration page"},
+                "what": {"type": "string", "enum": ["files", "file", "log_tail", "diff_stat"],
+                         "description": "Which view to read (default files)"},
+                "path": {"type": "string", "description": "what=file: path relative to the worker's worktree"},
+                "lines": {"type": "string", "description": "what=file/log_tail: line range `40-120` or a start line; default 200 lines from the start"},
+            },
+            "required": ["agent_id"],
+        },
+    },
+    {
         "name": "parhelion_agent_messages",
         "description": "Read message history (per-worker or aggregated by Problem Squad), worktree git diff --stat, and commit SHA.",
         "roles": ("orchestrator",),

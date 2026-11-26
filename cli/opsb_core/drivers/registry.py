@@ -136,7 +136,9 @@ def launch_problem_session(
     else:
         title, _, _ = resolve_problem_repo(ws, prob_key)
         worktree = prepare_session_worktree(ws, title, track_name=track_name, use_main=use_main)
-        brief = compose_session_brief(ws, title, goal=goal)
+        brief = compose_session_brief(ws, title, goal=goal, worktree=worktree,
+                                      branch=track_name or worktree.name, include_startup_pack=True,
+                                      driver=drv.kind)
     record: SessionRecord = drv.launch_session(
         workspace=ws, problem=title, worktree=worktree, brief=brief,
         mode=mode, resume_id=resume_id, dry_run=dry_run, preseed_thread=preseed,
