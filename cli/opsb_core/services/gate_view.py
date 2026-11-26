@@ -66,8 +66,10 @@ def lamps(verdict: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def safety_badge(code: str) -> str:
-    if code == "ESCAPE_LOCK_ACTIVE":
+    if code in ("ESCAPE_LOCK_ACTIVE", "ESCAPE_SHA_REPEAT"):
         return "ESCAPE LOCK"
+    if code == "JUDGE_TIME_RISK":  # 4.3 P24: held because the judge would likely time out
+        return "HOLD: JUDGE TIME"
     if code == "JUDGE_COMPILE_FAILED":  # P09: the judge-toolchain compile check failed
         return "COMPILE FAILED"
     if code in NOT_TESTED:
@@ -146,6 +148,15 @@ def next_step(verdict: dict[str, Any] | None) -> str:
     return ""
 
 
+def health_of(verdict: dict[str, Any] | None) -> dict[str, Any] | None:
+    """S1's mechanical health view (4.3 P24, ``scheduler.health``), or None when it did not run."""
+    s1 = _stages(verdict or {}).get("SAFETY") or {}
+    metrics = s1.get("metrics") if isinstance(s1.get("metrics"), dict) else {}
+    health = metrics.get("health")
+    return health if isinstance(health, dict) else None
+
+
 def card_fields(verdict: dict[str, Any] | None) -> dict[str, Any]:
-    """``gates``, ``badge``, ``detail`` and ``next_step`` of one queue card."""
-    return {"gates": lamps(verdict), "badge": badge(verdict), "detail": reason(verdict), "next_step": next_step(verdict)}
+    """``gates``, ``badge``, ``detail``, ``next_step`` and the health view of one queue card."""
+    return {"gates": lamps(verdict), "badge": badge(verdict), "detail": reason(verdict),
+            "next_step": next_step(verdict), "health": health_of(verdict)}

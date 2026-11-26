@@ -6,7 +6,8 @@ code (``source=platform``, ``confidence=measured``, ``diff_hash``, outcomes, per
 teammate's claim (``source=peer``) that this worker has not measured itself. Types and their own
 fields:
 
-``measurement`` platform only: key, value, unit, n_repeats, noise_band, env_id, test_level
+``measurement`` platform only: key, value, unit, n_repeats, noise_band, env_id, test_level,
+                judge_noise (the 4.3 P24 marker of a judge-noise row)
 ``hypothesis``  status, predicted_effect, test_plan, priority (1 = most urgent .. 5), resolved_by, resolution_note
 ``experiment``  hypothesis_id, change_summary, diff_hash, test_run_id, per_case_us, baseline_sha, delta_vs_baseline,
                 outcome, lesson, receipt_id, submitted; prediction and result: expected_outcome (model),
@@ -41,11 +42,11 @@ REF_RE = re.compile(r"^(?:([A-Za-z0-9._-]+)/)?(L-\d+)$")
 COMMON = ("claim", "why", "scope", "base_sha", "sha", "evidence", "confidence", "links", "supersedes", "revisit_if")
 PLATFORM_ONLY = ("source", "diff_hash", "actual_outcome", "per_case_us", "delta_vs_baseline", "outcome", "receipt_id",
                  "n_repeats", "noise_band", "env_id", "test_level", "test_run_id", "key", "value", "unit", "ekey", "median_us",
-                 "tbest_us", "suite_version", "baseline_sha",
+                 "tbest_us", "suite_version", "baseline_sha", "judge_noise",
                  "resolved_by", "submitted", "exploited_by", "worker", "problem", "ts", "id", "truncated")
 BY_TYPE: dict[str, tuple[str, ...]] = {
     "measurement": ("key", "value", "unit", "n_repeats", "noise_band", "env_id", "test_level", "test_run_id",
-                    "receipt_id", "per_case_us", "median_us", "tbest_us", "suite_version"),
+                    "receipt_id", "per_case_us", "median_us", "tbest_us", "suite_version", "judge_noise"),
     "hypothesis": ("status", "predicted_effect", "test_plan", "priority", "resolved_by", "resolution_note"),
     "experiment": ("hypothesis_id", "change_summary", "diff_hash", "test_run_id", "per_case_us", "baseline_sha",
                    "delta_vs_baseline", "outcome", "lesson", "receipt_id", "submitted", "expected_outcome",

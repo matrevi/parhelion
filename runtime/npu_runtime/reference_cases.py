@@ -13,6 +13,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 GROUP = re.compile(
@@ -350,6 +351,47 @@ def prepare_case(root, item, groups, attrs):
     (root / "parts.json").write_text(json.dumps(manifest))
 
 
+KERNEL_SUFFIXES = (".h", ".hpp", ".cpp", ".cc", ".cxx", ".c", ".asc")
+_TILING_KEY = re.compile(r"\b(?:TILING_KEY_IS|REGISTER_TILING_KEY)\s*\(\s*([^)]+)\)")
+_KERNEL_MACRO = re.compile(r"\b(?:EXEC_KERNEL|DISPATCH_KERNEL|IMPL_OP|INSTANTIATE_KERNEL)\s*\(")
+_TEMPLATE_DECL = re.compile(r"(?m)^\s*template\s+(?:class|struct|void|__global__|__aicore__)\b")
+_TEMPLATE_DEF = re.compile(r"\btemplate\s*<")
+
+
+def template_instantiations(tree):
+    """Tiling-key branches and template instantiations in a tree's kernel sources (standard library only).
+
+    Same count as ``runtime/npu-test.py`` and ``fast_feedback/elf_guard.py`` use for the older path:
+    distinct tiling keys and macro calls, plus explicit instantiations, else the template definitions.
+    """
+    keys, macros, explicit, defs = set(), 0, 0, 0
+    for path in sorted(Path(tree).rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in KERNEL_SUFFIXES:
+            continue
+        if any(part.startswith("build") for part in path.parts):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+        text = re.sub(r"//.*?$", "", text, flags=re.M)
+        for match in _TILING_KEY.finditer(text):
+            keys.add(re.sub(r"\s+", "", match.group(1)))
+            macros += 1
+        macros += len(_KERNEL_MACRO.findall(text))
+        explicit += len(_TEMPLATE_DECL.findall(text))
+        defs += len(_TEMPLATE_DEF.findall(text))
+    return (max(len(keys), macros) + explicit) if (keys or macros or explicit) else defs
+
+
+def object_bytes(tree):
+    """Kernel object files of a build tree: count, total and largest size in bytes."""
+    sizes = [path.stat().st_size for path in Path(tree).rglob("*.o") if path.is_file()]
+    return {"kernel_o_count": len(sizes), "kernel_o_sum_bytes": sum(sizes),
+            "kernel_o_max_bytes": max(sizes, default=0)}
+
+
 def emit(event, **values):
     print(
         "OPSB_CASE " + json.dumps(dict(event=event, **values), allow_nan=False),
@@ -422,7 +464,8 @@ def main():
         (base / "main.asc").write_text(generated)
         trees.append(base)
     from lanes import compilation_units, compile_lane
-    for tree in trees:
+    for index, tree in enumerate(trees):
+        started = time.monotonic()
         with compile_lane(cfg, units=1):
             subprocess.run(
                 ["cmake", "-S", ".", "-B", "build-casebench", "-DCMAKE_ASC_RUN_MODE=npu",
@@ -435,6 +478,12 @@ def main():
             subprocess.run(
                 ["cmake", "--build", "build-casebench", "--parallel", str(jobs)], check=True, timeout=900, cwd=tree,
             )
+        # 4.3 P24: record the build cost, template count and kernel object size next to the run, so
+        # Stage 1 can show them and scheduler.health can compare them with the board SHA.
+        emit("build_metrics", tree=tree.name, candidate=index == 0,
+             compile_sec=round(time.monotonic() - started, 3),
+             template_instantiations=template_instantiations(tree), template_source="source_scan",
+             **object_bytes(tree))
     emit("built")
     from case_batch import run_series
     run_series(repo, cfg, compare_output, emit)

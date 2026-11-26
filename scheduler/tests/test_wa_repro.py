@@ -206,3 +206,130 @@ def test_tie_values_are_exact_float32_midpoints():
             scale = wa_ties.f32(max(abs(v) for v in col) / 127)  # the oracle's mode-0 scale
             ties += sum(1 for v in col if wa_ties.quotient(v, scale) % 1 == 0.5)
         assert ties == int(body["name"].split(", ")[1].split(" ")[0]) > 0
+
+
+# ---- 4.3 P24: the unreproduced exit ----------------------------------------------------------------
+
+def _run(ws, sha, run, statuses, finished, *, formal=True, level="final", reuse=None):
+    """A bench-run report of the bad SHA with the run-format fields P24 reads."""
+    _report(ws, sha, run, statuses, finished)
+    path = ws / "results" / "Op" / sha / "bench-runs" / run / "report.json"
+    doc = json.loads(path.read_text())
+    doc.update(formal=formal, level=level)
+    if reuse is not None:
+        doc["settings"] = {"reuse_session": reuse}
+    path.write_text(json.dumps(doc))
+
+
+def _plan(ws):
+    wa_repro.apply(ws, "Op", _receipt(), like=LIKE)
+    return wa_repro.load_manifest(ws, "Op")["receipts"][SID]["variants"]
+
+
+def test_one_passing_run_is_not_enough(ws):
+    ids = _plan(ws)
+    _run(ws, BAD, "r1", {i: "PASS" for i in ids}, "2026-11-26T03:00:00+00:00")
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    assert view["state"] == "pending" and view["pass_runs"] == 1 and view["required_runs"] == 2
+    assert "1/2 formal final runs passed every variant" in wa_repro.next_step(view)
+    _run(ws, BAD, "r2", {i: "PASS" for i in ids}, "2026-11-26T04:00:00+00:00")
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    assert view["state"] == "unreproduced" and view["unreproduced_runs"] == 2
+    assert view["unreproduced_run_ids"] == ["r1", "r2"]
+    step = wa_repro.next_step(view)
+    assert "not reproduced in 2 formal final run(s)" in step and "judge-side noise" in step
+    assert "downgraded to a hint" in step
+
+
+def test_a_partial_run_does_not_count_and_a_failure_wins(ws):
+    ids = _plan(ws)
+    _run(ws, BAD, "r1", {i: "PASS" for i in ids[:2]}, "2026-11-26T03:00:00+00:00")  # 2 of 12 rows
+    _run(ws, BAD, "r2", {i: "PASS" for i in ids}, "2026-11-26T04:00:00+00:00")
+    assert wa_repro.status(ws, "Op", SID, BAD)["pass_runs"] == 1
+    _run(ws, BAD, "r3", {i: ("WA" if n == 3 else "PASS") for n, i in enumerate(ids)},
+         "2026-11-26T05:00:00+00:00")
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    assert view["state"] == "reproduced" and view["failing_variants"] == [ids[3]]
+
+
+def test_only_formal_final_runs_count(ws):
+    ids = _plan(ws)
+    _run(ws, BAD, "r1", {i: "PASS" for i in ids}, "2026-11-26T03:00:00+00:00", formal=False)
+    _run(ws, BAD, "r2", {i: "PASS" for i in ids}, "2026-11-26T04:00:00+00:00", level="standard")
+    assert wa_repro.status(ws, "Op", SID, BAD)["state"] == "pending"
+    assert wa_repro.status(ws, "Op", SID, BAD)["pass_runs"] == 0
+
+
+def test_session_reuse_must_be_off_once_when_recorded(ws):
+    ids = _plan(ws)
+    _run(ws, BAD, "r1", {i: "PASS" for i in ids}, "2026-11-26T03:00:00+00:00", reuse=True)
+    _run(ws, BAD, "r2", {i: "PASS" for i in ids}, "2026-11-26T04:00:00+00:00", reuse=True)
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    assert view["state"] == "pending" and view["session_reuse_recorded"] and not view["session_reuse_off"]
+    _run(ws, BAD, "r3", {i: "PASS" for i in ids}, "2026-11-26T05:00:00+00:00", reuse=False)
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    assert view["state"] == "unreproduced" and view["session_reuse_off"] is True
+    # A run format without the setting cannot be distinguished: the count alone decides.
+    _run(ws, BAD, "r4", {i: "PASS" for i in ids}, "2026-11-26T06:00:00+00:00")
+    assert wa_repro.status(ws, "Op", SID, BAD, unrepro_runs=4)["state"] == "unreproduced"
+
+
+def test_escalation_releases_other_shas_and_refuses_the_bad_sha(ws):
+    ids = _plan(ws)
+    _run(ws, BAD, "r1", {i: "PASS" for i in ids}, "2026-11-26T03:00:00+00:00")
+    _run(ws, BAD, "r2", {i: "PASS" for i in ids}, "2026-11-26T04:00:00+00:00")
+    view = wa_repro.status(ws, "Op", SID, BAD)
+    released = wa_repro.escalation(view, OTHER, online_status="Runtime Error")
+    assert released["action"] == "release" and released["code"] == "ESCAPE_UNREPRODUCED"
+    assert "bbbbbbb" in released["reason"] and SID in released["reason"]
+    repeated = wa_repro.escalation(view, BAD, online_status="Runtime Error")
+    assert repeated["action"] == "repeat" and repeated["code"] == "ESCAPE_SHA_REPEAT"
+    assert "never passed online" in repeated["reason"]
+    held = wa_repro.escalation(view, OTHER, release=False)
+    assert held["action"] == "hold" and held["code"] == "ESCAPE_LOCK_ACTIVE"
+    assert "not reproduced" in held["reason"]  # the next step still says what the lock is waiting on
+
+
+def test_escalation_keeps_the_four_states(ws):
+    wa_repro.apply(ws, "Op", _receipt(), like=LIKE)
+    pending = wa_repro.status(ws, "Op", SID, BAD)
+    held = wa_repro.escalation(pending, OTHER)
+    assert held["action"] == "hold" and "awaiting reproduction" in held["reason"]
+    repaired = {"state": "fixed", "bad_sha": BAD, "variants": ["v"], "fixed_sha": OTHER, "fixed_run": "r9",
+                "failing_variants": ["v"], "submission_id": SID}
+    passed = wa_repro.escalation(repaired, OTHER)
+    assert passed["action"] == "pass" and passed["code"] == "ESCAPE_REPRO_FIXED"
+    assert wa_repro.escalation(repaired, OTHER, fix_releases=False)["action"] == "hold"
+
+
+def test_stage_one_releases_an_unreproduced_lock(ws):
+    from scheduler.gate import SubmissionGate
+
+    for sha in (FIX, BAD):
+        folder = ws / "results" / "Op" / sha
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "result.json").write_text(json.dumps({"exit_code": 0, "sha": sha, "scheme": "reference", "run_id": "9" * 32}))
+        (folder / "validation.log").write_text("ok\n")
+    ids = _plan(ws)
+    for run, finished in (("r1", "2026-11-26T03:00:00+00:00"), ("r2", "2026-11-26T04:00:00+00:00")):
+        _run(ws, BAD, run, {i: "PASS" for i in ids}, finished, reuse=run == "r2")
+    gate = SubmissionGate(ws)
+    lock = {"escape_lock": True, "escape_submission_id": SID, "escape_sha": BAD, "escape_status": "Wrong Answer"}
+    calibrator = types.SimpleNamespace(inspect_escape_state=lambda title, as_of=None: lock)
+    with mock.patch.object(gate, "_verify_git_commit_exists", return_value=(True, "")), \
+            mock.patch("scheduler.case_bench.formal_evidence", return_value={"run_id": "9" * 32, "cases": []}), \
+            mock.patch.object(gate.estimator, "get_calibrator", return_value=calibrator):
+        other = gate.evaluate_safety("Op", FIX)
+        same = gate.evaluate_safety("Op", BAD)
+        gate.config.escape_unreproduced_releases = False
+        held_other = gate.evaluate_safety("Op", FIX)
+        held_same = gate.evaluate_safety("Op", BAD)
+    assert (other.code, other.passed) == ("ESCAPE_UNREPRODUCED", True)
+    assert "bbbbbbb failed online" in other.reason and SID in other.reason
+    assert other.metrics["repro_state"] == "unreproduced" and other.metrics["escape_released"] is True
+    assert other.metrics["next_step"] and "judge-side noise" in other.metrics["next_step"]
+    assert (same.code, same.passed) == ("ESCAPE_SHA_REPEAT", False)
+    assert "cannot be resubmitted unchanged" in same.reason
+    assert "restore a proven Pass SHA" in same.metrics["next_step"]
+    assert (held_other.code, held_other.passed) == ("ESCAPE_LOCK_ACTIVE", False)  # the 4.2.1 switch
+    assert (held_same.code, held_same.passed) == ("ESCAPE_LOCK_ACTIVE", False)

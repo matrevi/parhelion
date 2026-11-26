@@ -396,6 +396,7 @@ def _rules(workspace: Path | str, problem: str | None, args: dict[str, Any], rol
         "rule": {key: doc[key] for key in ("score_mode", "use_baseline", "ranking_submission_mode",
                                            "iterations", "judge_revision", "ranking_testcase_count",
                                            "testcases", "time_limit", "fetched_at") if key in doc},
+        "flips": judge_noise.flip_count(rows, title),  # 4.3 P24: same-source verdict changes
         "tbest": _tbest_change(rows, receipts),
         "noise": ({"sigma_hat": _round(noise.get("sigma"), 2), "df": noise.get("df"),
                    "scope": noise.get("scope")} if noise else {}),
@@ -404,7 +405,7 @@ def _rules(workspace: Path | str, problem: str | None, args: dict[str, Any], rol
     if not doc:
         out["reason"] = "no rule snapshot yet: run `opsb workspace rules --refresh`"
     out = {key: value for key, value in out.items() if value not in ({}, None)}
-    return _fit(out, RULES_BYTES, ("split", "tbest", "noise", "formula"))
+    return _fit(out, RULES_BYTES, ("split", "tbest", "noise", "flips", "formula"))
 
 
 def _env(workspace: Path | str) -> dict[str, Any]:
