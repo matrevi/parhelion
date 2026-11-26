@@ -222,7 +222,10 @@ def load_profile(ws, title, path=None):
 BOOTSTRAP = """
 import json, pathlib, subprocess, sys, tarfile, tempfile
 cfg = json.loads(sys.stdin.buffer.readline())
-with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
+tmp_parent = cfg.get('case_tmp_dir') or None
+if tmp_parent:
+    pathlib.Path(tmp_parent).mkdir(parents=True, exist_ok=True)
+with tempfile.TemporaryDirectory(prefix='opsb-case-', dir=tmp_parent) as temp:
     root = pathlib.Path(temp).resolve()
     repo = root/'repo'
     repo.mkdir()
@@ -484,6 +487,10 @@ def run(
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
         "case_cache_bytes": _dev("case_cache_bytes") or None,  # global LRU budget on the device host
+        # Device-host directories for the case cache and its scratch; empty keeps the runtime
+        # defaults. They must share a filesystem for hard links (case_cache copies otherwise).
+        "case_cache_dir": _dev("case_cache_dir") or None,
+        "case_tmp_dir": _dev("case_tmp_dir") or None,
         "profiler": profiler_settings(base),
         "merge_batches": _dev("merge_batches") != "off",  # share one lock hold with other problems
     }

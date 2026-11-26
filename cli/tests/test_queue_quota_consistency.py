@@ -148,7 +148,8 @@ def test_multi_account_quota_reserve_noise_floor_consistency(iso_ph: Path, tmp_p
     merge_bridge_enrichment(snap, bridge)
     assert snap["scheduler"]["daily_quota_limit"] == 100
     assert snap["scheduler"]["closing_reserve"] == 10
-    assert snap["scheduler"]["available_normal_shots"] == 89
+    # 4.2 P18: the shown free quota is the accounts' remaining quota; the reserve is not deducted.
+    assert snap["scheduler"]["available_normal_shots"] == 99 == quota.remaining_today
     assert snap["scheduler"]["noise_floor_delta"] == 1.9
     assert snap["scheduler"]["cooldown_remaining_sec"] == 0
 
@@ -156,8 +157,17 @@ def test_multi_account_quota_reserve_noise_floor_consistency(iso_ph: Path, tmp_p
         mcp_st = tool_parhelion_status({"include_npu": False}, ws)
     assert mcp_st["scheduler"]["daily_quota_limit"] == 100
     assert mcp_st["scheduler"]["closing_reserve"] == 10
-    assert mcp_st["scheduler"]["available_normal_shots"] == 89
+    assert mcp_st["scheduler"]["available_normal_shots"] == 99
     assert mcp_st["scheduler"]["noise_floor_delta"] == 1.9
+
+    # The daemon hot frame follows the same display rule as the cold snapshot.
+    from opsb_core.daemon.state_cache import WorkspaceStateCache
+
+    ent = WorkspaceStateCache(ws)._entry(ws)
+    ent.ensure_cold_fresh(synchronous=True)
+    _, hot_sched = ent.build_hot_pipeline_and_scheduler()
+    assert hot_sched["closing_reserve"] == 10
+    assert hot_sched["available_normal_shots"] == 99
 
     buf = io.StringIO()
     args_cfg = argparse.Namespace(
@@ -278,3 +288,34 @@ def test_forced_pending_queue_item_all_pass_respects_safety_and_quota(iso_ph: Pa
     pending_q = [it for it in snap["submission_queue"] if it["title"] == "ConcatD" and it["kind"] == "pending"]
     assert pending_q[0]["badge"] == "WAITING FOR SLOT" and pending_q[0]["gates"]["dispatch_ok"] is False
     assert pending_q[0]["gates"]["all_pass"] is True and "quota_ok" not in pending_q[0]["gates"]
+
+
+def test_shown_free_shots_keep_the_closing_reserve_separate() -> None:
+    """4.2 P18: `available_normal_shots` is free quota; the reserve is its own display field."""
+    slots = [
+        {"enabled": True, "logged_in": True, "daily_limit": 50, "used_today": 10},
+        {"enabled": True, "logged_in": True, "daily_limit": 50, "used_today": 20},
+    ]
+    bridge = {
+        "quota": {"daily_limit": 100, "used_today": 30, "remaining_today": 70,
+                  "reserved_for_closing": 10, "discretionary_remaining": 60},
+        "config": {"daily_limit": 50, "noise_floor_pts": 1.9},
+    }
+    payload = {"scheduler": {"pipeline": {"account_slots": slots}}, "problems": [], "contest": {},
+               "submission_queue": []}
+    merge_bridge_enrichment(payload, bridge)
+    assert payload["scheduler"]["available_normal_shots"] == 70
+    assert payload["scheduler"]["closing_reserve"] == 10
+
+    # No live account slots: the bridge's own remaining quota wins over its reserve-adjusted number.
+    payload = {"scheduler": {}, "problems": [], "contest": {}, "submission_queue": []}
+    merge_bridge_enrichment(payload, bridge)
+    assert payload["scheduler"]["available_normal_shots"] == 70
+    assert payload["scheduler"]["closing_reserve"] == 10
+
+    # A bridge that only reports the reserve-adjusted number still renders the full free quota.
+    payload = {"scheduler": {}, "problems": [], "contest": {}, "submission_queue": []}
+    merge_bridge_enrichment(payload, {"quota": {"discretionary_remaining": 60, "reserved_for_closing": 10},
+                                      "config": {}})
+    assert payload["scheduler"]["available_normal_shots"] == 70
+    assert payload["scheduler"]["closing_reserve"] == 10

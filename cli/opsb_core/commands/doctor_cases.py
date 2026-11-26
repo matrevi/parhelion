@@ -23,7 +23,7 @@ DEFAULT_RECENT = 20
 CASES_TIMEOUT_SEC = 120
 
 _FOOTER = r'''
-_TOP = find_root()
+_TOP = find_root(CONFIGURED_DIR)
 _BUDGET = total_budget({"case_cache_bytes": CONFIGURED_BYTES})
 _PURGED = None
 if PURGE:
@@ -34,15 +34,19 @@ print(OUTPUT_PREFIX + json.dumps(dict(report(_TOP, _BUDGET, RECENT), purged=_PUR
 '''
 
 
-def cases_script(*, purge: bool = False, recent: int = DEFAULT_RECENT, configured_bytes: str | None = None) -> str:
+def cases_script(*, purge: bool = False, recent: int = DEFAULT_RECENT, configured_bytes: str | None = None,
+                 configured_dir: str | None = None) -> str:
     """The cache module's source plus a footer; its purge branch runs only when `purge` is set."""
     configured = device_text("case_cache_bytes") if configured_bytes is None else configured_bytes
-    head = (f"CONFIGURED_BYTES = {(configured or None)!r}\nPURGE = {bool(purge)!r}\n"
+    head = (f"CONFIGURED_BYTES = {(configured or None)!r}\n"
+            f"CONFIGURED_DIR = {(configured_dir or None)!r}\n"
+            f"PURGE = {bool(purge)!r}\n"
             f"RECENT = {max(0, int(recent))}\nOUTPUT_PREFIX = {CASES_PREFIX!r}\n")
     return CASE_CACHE_PY.read_text(encoding="utf-8") + "\n" + head + _FOOTER
 
 
 def scan_cases(host: str | None, *, purge: bool = False, recent: int = DEFAULT_RECENT,
+               configured_dir: str | None = None,
                env: dict[str, str] | None = None) -> tuple[dict[str, Any] | None, str | None]:
     """Run the cache report on `host` (None: this machine); return (report, error)."""
     from .doctor_cmd import remote_command
@@ -50,8 +54,8 @@ def scan_cases(host: str | None, *, purge: bool = False, recent: int = DEFAULT_R
     cmd = remote_command(host) if host else [sys.executable, "-"]
     where = f"ssh {host}" if host else "local"
     try:
-        proc = subprocess.run(cmd, input=cases_script(purge=purge, recent=recent), capture_output=True,
-                              text=True, timeout=CASES_TIMEOUT_SEC, env=env)
+        proc = subprocess.run(cmd, input=cases_script(purge=purge, recent=recent, configured_dir=configured_dir),
+                              capture_output=True, text=True, timeout=CASES_TIMEOUT_SEC, env=env)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, f"{where}: {exc}"
     for line in reversed((proc.stdout or "").splitlines()):
@@ -108,10 +112,18 @@ def _host(cfg: dict[str, Any], remote: bool) -> str | None:
     return str(cfg.get("npu_ssh_host") or "npu") if remote else None
 
 
+def _configured_dir(host: str | None) -> str | None:
+    """`device.case_cache_dir` describes the device host, so only --remote can use it."""
+    if not host:
+        return None
+    return device_text("case_cache_dir") or None
+
+
 def run_cases(args: Any, cfg: dict[str, Any]) -> int:
     """`opsb doctor --cases`: read-only report."""
-    doc, error = scan_cases(_host(cfg, bool(getattr(args, "remote", False))),
-                            recent=int(getattr(args, "recent", None) or DEFAULT_RECENT))
+    host = _host(cfg, bool(getattr(args, "remote", False)))
+    doc, error = scan_cases(host, recent=int(getattr(args, "recent", None) or DEFAULT_RECENT),
+                            configured_dir=_configured_dir(host))
     if getattr(args, "json", False):
         print(json.dumps({"cases": doc, "error": error}, ensure_ascii=False, indent=2))
     elif doc is not None:
@@ -123,7 +135,8 @@ def run_cases(args: Any, cfg: dict[str, Any]) -> int:
 
 def purge_section(cfg: dict[str, Any], remote: bool, apply: bool) -> dict[str, Any]:
     """`doctor clean --purge-cases`: the report, and with `apply` the purge itself."""
-    doc, error = scan_cases(_host(cfg, remote), purge=apply)
+    host = _host(cfg, remote)
+    doc, error = scan_cases(host, purge=apply, configured_dir=_configured_dir(host))
     section: dict[str, Any] = {"report": doc, "applied": bool(apply and doc and doc.get("purged") is not None)}
     if error:
         section["error"] = error

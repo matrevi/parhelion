@@ -830,15 +830,17 @@ class _WorkspaceStateEntry:
             if self.problems_by_title
             else closing_reserve
         )
+        # The closing reserve is a separate display field (`closing_reserve`), never deducted
+        # from the shown free quota: quota is not a gate threshold (4.2 P18).
         if eligible_slots:
             team_daily_limit = sum(int(s.get("daily_limit") or daily_limit) for s in eligible_slots)
             team_used_today = sum(int(s.get("used_today") or 0) for s in eligible_slots)
             team_remaining = sum(max(0, int(s.get("daily_limit") or daily_limit) - int(s.get("used_today") or 0)) for s in eligible_slots)
-            avail_shots = max(0, team_remaining - eff_closing_reserve)
+            avail_shots = max(0, team_remaining)
         else:
             team_daily_limit = daily_limit
             team_used_today = used_24h_fallback
-            avail_shots = max(0, daily_limit - used_24h_fallback - eff_closing_reserve)
+            avail_shots = max(0, daily_limit - used_24h_fallback)
 
         base_common = {
             "local_busy": local_busy,

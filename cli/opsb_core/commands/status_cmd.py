@@ -92,7 +92,8 @@ def run_status(args: argparse.Namespace) -> int:
 
     print(
         f"Gate & Quota: Cooldown {s['cooldown_remaining_sec']}s/{s['rate_limit_gap_sec']}s | "
-        f"24h Used {s['used_today_24h']}/{s['daily_quota_limit']} (Reserve {s['closing_reserve']}, Avail {s['available_normal_shots']}) | "
+        f"24h Used {s['used_today_24h']}/{s['daily_quota_limit']} (Avail {s['available_normal_shots']}, "
+        f"Reserve {s['closing_reserve']} shown only) | "
         f"Noise Floor Δ>={s['noise_floor_delta']}"
     )
     print("\nProblems:")

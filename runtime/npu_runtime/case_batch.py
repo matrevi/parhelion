@@ -9,7 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
-from case_cache import CaseCache
+from case_cache import CaseCache, same_filesystem
 from profiler_capture import timing_fields  # noqa: F401  (verify and case_pairs use it)
 from device_broker import SampleProcess, ensure_broker
 from lanes import case_series, device_lane
@@ -323,6 +323,16 @@ def verify(plan, cfg, compare):
 
 
 def run_series(repo, cfg, compare, emit):
+    cache_top = Path(os.environ.get("OPSB_CASE_CACHE_DIR") or cfg.get("case_cache_dir")
+                     or repo.parent.parent / "opsb-case-cache")
+    if (cfg.get("case_cache", True) and os.environ.get("OPSB_CASE_CACHE", "1") != "0"
+            and (cfg.get("case_cache_dir") or cfg.get("case_tmp_dir"))
+            and not same_filesystem(repo.parent, cache_top)):
+        # Hard links need one filesystem; case_cache falls back to copying, which is slow and
+        # silent, so name the mismatch once per run.
+        print(f"case cache {cache_top} is not on the case scratch filesystem "
+              f"({repo.parent}); prepared cases will be copied instead of hard-linked",
+              file=sys.stderr, flush=True)
     with case_series(cfg) as update, tempfile.TemporaryDirectory(dir=repo.parent) as tmp:
         started = time.monotonic()
         plans = prepare(repo, cfg, Path(tmp), update)
