@@ -27,6 +27,11 @@ from .handlers_bench import (
     tool_parhelion_test_plan,
     tool_parhelion_test_wait,
 )
+from .handlers_escape import (
+    tool_parhelion_escape_rebind,
+    tool_parhelion_escape_reproducer,
+    tool_parhelion_escape_status,
+)
 from .handlers_kb import (
     tool_parhelion_kb_feedback,
     tool_parhelion_kb_query,
@@ -37,6 +42,8 @@ from .schemas import TOOL_SCHEMAS
 ToolHandler = Callable[[dict[str, Any], Path], dict[str, Any]]
 VALID_ROLES = ("orchestrator", "worker")
 WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
+# Escape-lock tools check that a worker acts on the problem its bus record names.
+WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebind", "parhelion_escape_reproducer")
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
@@ -51,6 +58,9 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_test_cancel": tool_parhelion_test_cancel,
     "parhelion_test_plan": tool_parhelion_test_plan,
     "parhelion_submit_gate": tool_parhelion_submit_gate,
+    "parhelion_escape_status": tool_parhelion_escape_status,
+    "parhelion_escape_rebind": tool_parhelion_escape_rebind,
+    "parhelion_escape_reproducer": tool_parhelion_escape_reproducer,
     "parhelion_harness_pool": tool_parhelion_harness_pool,
     "parhelion_sprint_start": tool_parhelion_sprint_start,
     "parhelion_agent_spawn": tool_parhelion_agent_spawn,
@@ -109,7 +119,7 @@ def call_tool(
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
     call_args.pop("_caller_agent_id", None)
-    if name in WORKER_SCOPED_TEST_TOOLS:
+    if name in WORKER_SCOPED_TEST_TOOLS or name in WORKER_SCOPED_PROBLEM_TOOLS:
         call_args["_worker_request"] = norm_role == "worker"
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")

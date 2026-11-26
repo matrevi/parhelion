@@ -315,17 +315,18 @@ def test_quota_exhausted_badge_bridge_sync_and_deterministic_sort(iso_env: Path,
         },
     )
     c_item = next(it for it in snap["submission_queue"] if it["title"] == "ConcatD")
-    assert c_item["badge"] == "QUOTA EXHAUSTED"
-    assert c_item["gates"]["quota_ok"] is False
-    assert c_item["gates"]["all_pass"] is False
+    # 4.1 #9: the dispatch stage is not a gate lamp; the card waits for a slot without quota wording.
+    assert c_item["badge"] == "WAITING FOR SLOT" and "quota" not in c_item["detail"].lower()
+    assert c_item["gates"]["dispatch_ok"] is False and "quota_ok" not in c_item["gates"]
+    assert c_item["gates"]["all_pass"] is True
 
-    # Closing reserve exhaustion in queue_service (without bridge) -> HOLD: RESERVE, never READY
+    # Without a bridge verdict the queue never guesses a hold reason.
     cfg["scheduler"]["closing_reserve"] = 200
     snap_res = compute_workspace_snapshot(ws, cfg)
     for it in snap_res["submission_queue"]:
         if it["kind"] == "pending":
-            assert it["badge"] == "HOLD: RESERVE"
-            assert it["gates"]["quota_ok"] is False
+            assert it["badge"] == "NOT EVALUATED"
+            assert it["gates"]["evaluated"] is False
 
     # Full daily quota exhaustion across all accounts -> judge_sync idle `can_submit` MUST be False (hot-cold parity)
     fake_slots = [

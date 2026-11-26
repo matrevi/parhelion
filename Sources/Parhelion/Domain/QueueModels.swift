@@ -229,7 +229,12 @@ struct GateBreakdown: Codable, Hashable {
     let safetyOk: Bool
     let noiseOk: Bool
     let circuitOk: Bool
-    let quotaOk: Bool
+    /// Legacy lamp; the gate's dispatch stage is not a lamp any more (4.1 #9). Kept optional so old payloads decode.
+    let quotaOk: Bool?
+    /// False when no gate verdict exists for the card yet ("NOT EVALUATED").
+    let evaluated: Bool?
+    /// Whether a submission slot is free; dispatch order only, never a hold reason.
+    let dispatchOk: Bool?
     let allPass: Bool
     let deltaExpected: Double
     let wsptScore: Double
@@ -242,6 +247,8 @@ struct GateBreakdown: Codable, Hashable {
         case noiseOk = "noise_ok"
         case circuitOk = "circuit_ok"
         case quotaOk = "quota_ok"
+        case evaluated
+        case dispatchOk = "dispatch_ok"
         case allPass = "all_pass"
         case deltaExpected = "delta_expected"
         case wsptScore = "wspt_score"
@@ -280,6 +287,20 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
     let canApprove: Bool
     let canSkip: Bool
     let canRestore: Bool
+    /// Rejected uploads: the judge's own message, and the last line of the local error (4.1 #11).
+    let judgeMessage: String?
+    let localError: String?
+    /// Escape-lock next step from the gate (4.1 #12).
+    let nextStep: String?
+    /// Rank in the problem's top-3 candidate archive (R12), when the SHA is in it.
+    let archiveRank: Int?
+
+    /// What a card shows: the judge's message, else the local error's last line, else the note.
+    var displayNote: String {
+        if let msg = judgeMessage, !msg.isEmpty { return msg }
+        if let err = localError, !err.isEmpty { return err }
+        return note
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, kind, title, difficulty, sha, note, detail, badge, gates
@@ -302,6 +323,10 @@ struct SubmissionQueueItem: Codable, Identifiable, Hashable {
         case canApprove = "can_approve"
         case canSkip = "can_skip"
         case canRestore = "can_restore"
+        case judgeMessage = "judge_message"
+        case localError = "local_error"
+        case nextStep = "next_step"
+        case archiveRank = "archive_rank"
     }
 }
 

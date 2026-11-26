@@ -16,23 +16,17 @@ from .config import (
     workspace_state_dir,
     write_ttl_cache,
 )
+from .services import gate_view
 from .services.sync_reconciler import recent_unreconciled_receipt_pairs
 from .services.contest_service import escape_advice
 
+APPROVABLE = ("HOLD: LOW GAIN", "CIRCUIT OPEN")
 
 
 def _safety_badge(stages: list[dict[str, Any]], default: str) -> str:
     """Name the Stage 1 block so a held card says what to do next, not just "rejected"."""
     code = next((str(s.get("code") or "") for s in stages if s.get("stage") == "SAFETY" and not s.get("passed")), "")
-    if code == "ESCAPE_LOCK_ACTIVE":
-        return "ESCAPE LOCK"
-    if code in ("NO_VALIDATION_RECORD", "VALIDATION_INCOMPLETE", "REFERENCE_SUITE_REQUIRED", "MISSING_LOG",
-                "MISSING_EXTENDED_PASSED", "MISSING_CROSS_CORE_STRESS", "FAST_LANE_ONLY"):
-        return "NOT TESTED"
-    if code.startswith("EXIT_CODE_") or code in ("NONZERO_MISMATCH", "LOG_FAILURE_MARKER", "STRESS_FAILURES",
-                                                 "NON_DETERMINISTIC_GATE", "GATE_BAD_LANES"):
-        return "TEST FAILED"
-    return default
+    return gate_view.safety_badge(code) if code else default
 
 def _queue_fingerprint(workspace: Path) -> str:
     parts = [str(workspace)]
@@ -139,15 +133,6 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
 
     existing = {(it["title"], it["sha"]) for it in payload["submission_queue"]}
     prob_diff = {p["title"]: p["difficulty"] for p in payload["problems"]}
-    badge_norm = {
-        "EXPLORE": "EXPLORE",
-        "HOLD_NOISE": "HOLD: NOISE",
-        "HOLD_LOW_GAIN": "HOLD: RESERVE",
-        "QUOTA_EXHAUSTED": "QUOTA EXHAUSTED",
-        "CIRCUIT_OPEN": "CIRCUIT OPEN",
-        "RATE_WAIT": "RATE WAIT",
-        "CRITICAL_RESTORE": "CRITICAL RESTORE",
-    }
 
     pipeline = sched.get("pipeline") or {}
     inflight_title = pipeline.get("active_title")
@@ -228,23 +213,10 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         if est_sc is not None:
             est_by_pair[(t, sha)] = est_sc
 
-        st_map = {s.get("stage"): bool(s.get("passed")) for s in (uc.get("stages") or [])}
-        gates = {
-            "safety_ok": st_map.get("SAFETY", True),
-            "noise_ok": st_map.get("NOISE_FLOOR", True),
-            "circuit_ok": st_map.get("CIRCUIT_BREAKER", True),
-            "quota_ok": st_map.get("QUOTA_RESERVE", True),
-            "all_pass": bool(uc.get("approved", False)),
-            "delta_expected": round(float(est_obj.get("delta_expected") or 0.0), 2),
-            "ucb_delta": round(float(est_obj.get("ucb_delta") or 0.0), 2),
-            "calibration_trust": round(float(est_obj.get("calibration_trust") or 0.5), 3),
-            "explore_eligible": bool(est_obj.get("explore_eligible", False)),
-            "wspt_score": round(float(uc.get("priority_score") or 0.0), 2),
-        }
-        badge = badge_norm.get(raw_tag, raw_tag.replace("_", " "))
-        if raw_tag == "REJECTED_GATE":
-            badge = _safety_badge(uc.get("stages") or [], badge)
-        note = " · ".join(x for x in (est_obj.get("detail"), uc.get("gate_reason")) if x)
+        # Lamps, badge and reason come only from the gate verdict (4.1 #9, services.gate_view).
+        fields = gate_view.card_fields(uc)
+        gates, badge = fields["gates"], fields["badge"]
+        note = " · ".join(x for x in (est_obj.get("detail"), fields["detail"]) if x)
         is_crit_rest = bool(uc.get("is_critical_restore", False))
         cand_bt = round(est_sc - cur_sc, 2) if (est_sc is not None and cur_sc > 0 and not is_crit_rest) else None
 
@@ -255,25 +227,13 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                         item["estimated_score"] = est_sc
                     item["breakthrough_delta"] = cand_bt
                     item["is_breakthrough"] = bool(cand_bt is not None and cand_bt >= bt_thresh)
-                    if item.get("forced"):
-                        fg = dict(gates)
-                        fg["noise_ok"] = True
-                        fg["circuit_ok"] = True
-                        fg["all_pass"] = bool(fg.get("safety_ok", True) and fg.get("quota_ok", True))
-                        item["gates"] = fg
-                        if not fg.get("safety_ok", True):
-                            item["badge"] = "ESCAPE LOCK" if "ESCAPE" in badge else item.get("badge", "ESCAPE LOCK")
-                        elif not fg.get("quota_ok", True):
-                            item["badge"] = "QUOTA EXHAUSTED" if raw_tag == "QUOTA_EXHAUSTED" else "HOLD: RESERVE"
-                    else:
-                        item["gates"] = gates
-                        # Synchronize badge with bridge's 4-stage gates so badge never contradicts `gates`.
-                        if raw_tag == "PROBE" or item.get("badge") not in ("ESCAPE LOCK", "CRITICAL RESTORE"):
-                            item["badge"] = badge
-                            item["can_approve"] = badge in ("HOLD: NOISE", "CIRCUIT OPEN", "HOLD: RESERVE", "HOLD LOW GAIN")
-                    item["wspt_priority"] = gates["wspt_score"]
-                    if note and not item.get("forced"):
-                        item["note"] = note
+                    # A forced queue row takes only its own (forced) verdict from `submit_queue`
+                    # below; an unforced candidate verdict for the same SHA does not apply to it.
+                    if not item.get("forced"):
+                        item.update(gates=gates, badge=badge, detail=fields["detail"], next_step=fields["next_step"],
+                                    can_approve=badge in APPROVABLE, wspt_priority=gates["wspt_score"])
+                        if note:
+                            item["note"] = note
         else:
             existing.add((t, sha))
             extra_cands.append(
@@ -289,7 +249,8 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     "sha": sha,
                     "short_sha": sha[:7],
                     "note": note or "Validated candidate",
-                    "detail": uc.get("gate_reason", ""),
+                    "detail": fields["detail"],
+                    "next_step": fields["next_step"],
                     "submission_id": None,
                     "queued_at": bridge.get("generated_at", payload["sampled_at"]),
                     "finished_at": None,
@@ -324,15 +285,11 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             sq_m = sq_meta_by_pair.get(pair)
             if sq_m and isinstance(item.get("gates"), dict):
                 if item["kind"] == "pending" and sq_m.get("stages"):
-                    stages = {s["stage"]: bool(s["passed"]) for s in sq_m["stages"]}
-                    for key, stage in (("safety_ok", "SAFETY"), ("noise_ok", "NOISE_FLOOR"),
-                                       ("circuit_ok", "CIRCUIT_BREAKER"), ("quota_ok", "QUOTA_RESERVE")):
-                        item["gates"][key] = stages.get(stage, False)
-                    item["gates"]["all_pass"] = all(stages.values())
-                    tag = str(sq_m["status_tag"])
-                    item["badge"] = badge_norm.get(tag, tag.replace("_", " "))
-                    item["detail"] = sq_m.get("gate_reason") or ""
-                    if tag == "PROBE":
+                    fields = gate_view.card_fields(sq_m)
+                    item.update(gates=fields["gates"], badge=fields["badge"], detail=fields["detail"],
+                                next_step=fields["next_step"], can_approve=fields["badge"] in APPROVABLE,
+                                wspt_priority=fields["gates"]["wspt_score"])
+                    if str(sq_m.get("status_tag")) == "PROBE":
                         item["note"] = item["detail"]
                 if item["gates"].get("ucb_delta") is None and sq_m.get("ucb_delta") is not None:
                     item["gates"]["ucb_delta"] = round(float(sq_m["ucb_delta"]), 2)
@@ -340,6 +297,16 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
                     item["gates"]["explore_eligible"] = bool(sq_m["explore_eligible"])
                 if item["gates"].get("calibration_trust") is None and sq_m.get("calibration_trust") is not None:
                     item["gates"]["calibration_trust"] = round(float(sq_m["calibration_trust"]), 3)
+
+    # Top-K candidate archive per problem (R12): on the problem rows, and its rank on matching cards.
+    archive = bridge.get("candidate_archive") if isinstance(bridge.get("candidate_archive"), dict) else {}
+    for p_item in payload["problems"]:
+        p_item["candidate_archive"] = archive.get(p_item["title"], [])
+    ranks = {(t, str(c.get("sha") or "").lower()[:7]): c.get("rank") for t, rows in archive.items() for c in rows}
+    for item in payload["submission_queue"] + extra_cands:
+        rank = ranks.get((item.get("title"), str(item.get("sha") or "").lower()[:7]))
+        if rank is not None and item.get("kind") not in ("completed", "inflight"):
+            item["archive_rank"] = rank
 
     inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]
     active = [x for x in payload["submission_queue"] if x["kind"] not in ("completed", "inflight")] + extra_cands

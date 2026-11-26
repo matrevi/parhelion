@@ -29,8 +29,6 @@ struct SubmissionQueueView: View {
             || u.contains("CIRCUIT")
             || u.contains("ESCAPE")
             || u.contains("REJECTED")
-            || u.contains("QUOTA")
-            || u.contains("EXHAUSTED")
             || !item.gates.allPass
     }
 

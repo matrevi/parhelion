@@ -30,6 +30,7 @@ from .inflight_io import (
     write_inflight_atomic,
 )
 from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, ingest_failed_receipt, normalize_receipt
+from . import failure_text
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
@@ -849,7 +850,9 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
                 "status": "blocked_compliance" if "不合规内容" in msg else "rejected",
                 "account_id": aid,
                 "account_label": acc_label,
-                "detail": (msg + trace_tail)[:2000],
+                # Judge message for people, the local error's last line for the record; the full
+                # stack and submit trace go to logs/submit-errors/ (4.1 #11).
+                **failure_text.record_fields(title, sha, msg + trace_tail),
             }
             try:
                 from scheduler.feedback_log import log_feedback  # type: ignore

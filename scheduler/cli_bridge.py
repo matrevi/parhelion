@@ -30,7 +30,7 @@ from .bench_evolution import compute_spearman
 from .calibration import BenchmarkCalibrator
 from .estimator import ScoreEstimator, _parse_iso, resolve_sha
 from .gate import GateConfig, SubmissionGate
-from . import judge_align_cmd, receipts
+from . import candidate_archive, judge_align_cmd, receipts
 from .npu_scheduler import NpuTaskScheduler
 from .parhelion_paths import (
     atomic_write_json,
@@ -93,6 +93,21 @@ def _read_jsonl(path: pathlib.Path) -> list[dict[str, Any]]:
             except ValueError:
                 continue
     return out
+
+
+def _pending_queue_row(workspace: pathlib.Path, title: str, sha: str) -> dict[str, Any] | None:
+    """The queue row of (title, sha) still waiting for a verdict, if any: when queued and how."""
+    results = workspace / "results"
+    finished = {(o.get("title"), (o.get("sha") or "")[:7], o.get("queued_at"))
+                for o in _read_jsonl(results / "submit-queue-outcome.jsonl")}
+    rows = [q for q in _read_jsonl(results / "submit-queue.jsonl")
+            if q.get("title") == title and (q.get("sha") or "")[:7] == sha[:7]
+            and (title, sha[:7], q.get("queued_at")) not in finished]
+    if not rows:
+        return None
+    row = rows[-1]
+    return {"queued_at": row.get("queued_at"), "forced": bool(row.get("force")), "note": row.get("note", ""),
+            "status": "waiting in the submit queue"}
 
 
 def _append_jsonl(path: pathlib.Path, record: dict[str, Any]) -> bool:
@@ -342,6 +357,20 @@ class SchedulerEngine:
                     if k not in out or ts >= out[k]:
                         out[k] = ts
         return out
+
+    def _candidate_archive(self, unsubmitted: list[dict[str, Any]], queue: list[dict[str, Any]]) -> dict[str, Any]:
+        """Offer every gate verdict seen in this status pass to the top-K archive (R12)."""
+        offered = list(unsubmitted)
+        for item in queue:
+            if item.get("queue_state") in ("PENDING", "HELD") and item.get("stages"):
+                offered.append({"sha": item.get("sha"), "stages": item["stages"], "title": item.get("title"),
+                                "estimate": {"estimated_score": item.get("estimated_score")}})
+        for verdict in offered:
+            try:
+                candidate_archive.offer(self.workspace, str(verdict.get("title") or ""), verdict)
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return candidate_archive.summary(self.workspace, sorted(self.estimator.problems_meta))
 
     def _discover_unsubmitted_candidates(self) -> list[dict[str, Any]]:
         """Find newest validated green SHA per problem not yet submitted, and gate-evaluate it."""
@@ -740,8 +769,9 @@ class SchedulerEngine:
                 "starvation_warnings": npu_live.get("starvation_warnings", []),
             },
             "npu_queue": npu_live.get("tasks", []),
-            "submit_queue": self.build_submit_queue_view(limit_history=limit_history),
-            "unsubmitted_candidates": self._auto_request(self._discover_unsubmitted_candidates()),
+            "submit_queue": (submit_queue := self.build_submit_queue_view(limit_history=limit_history)),
+            "unsubmitted_candidates": (unsubmitted := self._auto_request(self._discover_unsubmitted_candidates())),
+            "candidate_archive": self._candidate_archive(unsubmitted, submit_queue),
             "quota": {
                 **quota.to_dict(),
                 "used": int(quota.used_today),
@@ -942,10 +972,13 @@ class SchedulerEngine:
                     "error": f"Cannot approve unsafe commit — Stage 1 SAFETY failed: {s1.reason}",
                     "safety": s1.to_dict(),
                 }
+            enqueued, existing = False, None
             if not dry_run:
                 held = dict(self.held_items.get(ov_key) or {})
                 # Append to submit-queue.jsonl BEFORE updating scheduler_state.json (no disappear window).
-                _append_jsonl(
+                # A row still waiting for the same SHA is kept: the override written below applies to it.
+                existing = _pending_queue_row(self.workspace, title, canonical_sha)
+                enqueued = _append_jsonl(
                     self.workspace / "results" / "submit-queue.jsonl",
                     {
                         "title": title,
@@ -965,7 +998,9 @@ class SchedulerEngine:
             else:
                 self.gate.overrides[ov_key] = {"action": "approve", "reason": reason or "operator approve"}
             verdict = self.gate.evaluate(title=title, sha=canonical_sha, note=reason, force=True)
-            return {"action": "approve", "dry_run": dry_run, "enqueued": True, "verdict": verdict.to_dict()}
+            return {"action": "approve", "dry_run": dry_run, "override_written": not dry_run,
+                    "enqueued": bool(enqueued), "already_queued": None if enqueued else existing,
+                    "verdict": verdict.to_dict()}
 
         # action == "skip"
         if not dry_run:
