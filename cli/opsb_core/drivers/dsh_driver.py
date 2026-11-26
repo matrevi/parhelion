@@ -250,9 +250,12 @@ def ensure_parhelion_mcp_plugin(
 
     DSH Desktop conversations only see MCP servers that the profile mounts; registering a
     contest folder as a DSH workspace does not give its conversations the `parhelion_*`
-    tools. The plugin mounts the orchestrator server for any Agent whose cwd is inside a
-    contest workspace. Like ensure_subagent_capacity, the profile is read at load time, so
-    a change only takes effect on the next DSH start; callers must not restart DSH.
+    tools. The plugin mounts one server per Agent whose cwd is inside a contest workspace,
+    scoped by Agent type (4.1 #15): the contest root is the orchestrator, `.worktrees/*` and
+    native subagents are workers, and an unclassified Agent defaults to worker. The block is
+    delimited by PARHELION_MCP_BEGIN/END and rewritten whole on every launch. Like
+    ensure_subagent_capacity, the profile is read at load time, so a change only takes effect
+    on the next DSH start; callers must not restart DSH.
     """
     home = _resolve_dsh_home(dsh_home)
     profile_dir = home / "profiles" / profile
@@ -270,6 +273,8 @@ def ensure_parhelion_mcp_plugin(
     block = [
         PARHELION_MCP_BEGIN,
         "# Parhelion contest tools for Agents whose folder holds opsb.workspace.json.",
+        "# One server per Agent, scoped by type: contest root = orchestrator,",
+        "# .worktrees/* and native subagents = worker, unclassified = worker.",
         "- insert:",
         f"    - id: {PARHELION_MCP_PLUGIN_ID}",
         f"      name: ./{PARHELION_MCP_PLUGIN_ID}.mjs",

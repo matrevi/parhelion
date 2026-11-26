@@ -7,6 +7,7 @@ from typing import Any, Callable
 from .handlers_agents import (
     tool_parhelion_agent_inbox,
     tool_parhelion_agent_messages,
+    tool_parhelion_agent_peek,
     tool_parhelion_agent_report,
     tool_parhelion_agent_send,
     tool_parhelion_agent_spawn,
@@ -84,6 +85,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_agent_messages": tool_parhelion_agent_messages,
     "parhelion_agent_stop": tool_parhelion_agent_stop,
     "parhelion_agent_report": tool_parhelion_agent_report,
+    "parhelion_agent_peek": tool_parhelion_agent_peek,
     "parhelion_agent_inbox": tool_parhelion_agent_inbox,
     "parhelion_squad": tool_parhelion_squad,
     "parhelion_wait": tool_parhelion_wait,
@@ -156,6 +158,7 @@ __all__ = [
     "normalize_role",
     "tool_parhelion_agent_inbox",
     "tool_parhelion_agent_messages",
+    "tool_parhelion_agent_peek",
     "tool_parhelion_agent_report",
     "tool_parhelion_agent_send",
     "tool_parhelion_agent_spawn",
