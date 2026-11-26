@@ -581,6 +581,19 @@ def announce(run_id, folder, level, selected):
         flush=True)
 
 
+#: Build fields a reference run records (4.3 P24) and Stage 1 / scheduler.health read back.
+BUILD_RECORD = (("phase_a_cpu_sec", "compile_sec"), ("template_instantiations", "template_instantiations"),
+                ("kernel_o_count", "kernel_o_count"), ("kernel_o_sum_bytes", "kernel_o_sum_bytes"),
+                ("kernel_o_max_bytes", "kernel_o_max_bytes"))
+
+
+def build_record(report):
+    """The candidate arm's build fields of a run report (empty when the runner recorded none)."""
+    entries = [entry for entry in report.get("build_metrics") or [] if isinstance(entry, dict)]
+    candidate = next((entry for entry in entries if entry.get("candidate")), entries[0] if entries else {})
+    return {name: candidate[source] for name, source in BUILD_RECORD if candidate.get(source) is not None}
+
+
 def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
     folder = dest.parent.parent
     run_id, sha, host = report["run_id"], report["sha"], report["host"]
@@ -685,6 +698,8 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
                             report["device_batch"] = msg
                         elif kind == "built":
                             built = True
+                        elif kind == "build_metrics":
+                            report.setdefault("build_metrics", []).append(dict(msg))
                     rc = proc.wait()
         except (
             OSError,
@@ -782,6 +797,7 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
                     "layout": "template",
                     "scheme": "reference",
                     "fast_lane": False,
+                    **build_record(report),
                 },
             )
     return {**report, "report": str(dest / "report.json")}

@@ -4,7 +4,14 @@
 ``on_gate_request``  a submission request with no hypothesis for its SHA -> a platform ``hypothesis``;
 ``on_receipt``       a judged receipt -> a ``measurement`` and the verdict on the SHA's hypothesis.
 
-All three are idempotent on their evidence keys (request id, SHA, submission id), so a replayed run
+``on_judge_noise`` (4.3 P24) adds the platform's judge-noise rows: one ``measurement`` per judged
+receipt whose commit changed verdict class (same source, different verdict) and one per online
+WA/RE whose local reproducer variants passed in enough formal final runs (``scheduler.wa_repro``
+state ``unreproduced``). It runs from ``on_test_settled`` (a new formal run can prove "did not
+reproduce") and from ``on_receipt`` (a new verdict can flip), and is idempotent per submission id
+and kind.
+
+All four are idempotent on their evidence keys (request id, SHA, submission id), so a replayed run
 result or receipt batch writes nothing twice. Entries go to the ledger of the requesting worker, or to
 the ``platform`` ledger when no worker owns the event. Callers wrap these in ``guard``: a ledger fault
 must never lose a test result or a receipt.
@@ -141,6 +148,59 @@ def apply_receipt(led: Any, canon: dict[str, Any], *, gain: float | None = None,
     return result
 
 
+def apply_judge_noise(led: Any, ws: Path, problem: str,
+                      rows: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Write the judge-noise rows of one problem once each (4.3 P24): flips and unreproduced verdicts."""
+    from ..services.judge_score_fetch import receipts_module
+
+    receipts = receipts_module()
+    from scheduler import judge_noise, wa_repro
+
+    if rows is None:
+        rows = receipts.load(ws, problem)
+    written: list[dict[str, Any]] = []
+    for flip in judge_noise.verdict_flips(rows, problem):
+        sid = flip.get("submission_id") or ""
+        if not sid:
+            continue
+        written.append(led.append("measurement", {
+            "key": "judge.noise.flip", "value": 1, "unit": "count", "receipt_id": sid,
+            "sha": flip.get("sha"), "claim": (f"{str(flip.get('sha'))[:7]} {flip.get('previous_status')} -> "
+                                              f"{flip.get('status')}: same-source verdict flip (judge noise)"),
+            "why": (f"submission {sid} changed the verdict class of the commit after "
+                    f"submission {flip.get('previous_submission_id')}"),
+            "evidence": [f"receipt:{sid}", f"receipt:{flip.get('previous_submission_id')}"],
+            "judge_noise": {"kind": "flip", "from": flip.get("previous_status"), "to": flip.get("status"),
+                            "previous_submission_id": flip.get("previous_submission_id")},
+        }, ekey=f"judge-noise:{sid}:flip"))
+    manifest = wa_repro.load_manifest(ws, problem)
+    for sid, entry in sorted((manifest.get("receipts") or {}).items()):
+        if entry.get("status") not in wa_repro.FAILED or not entry.get("variants"):
+            continue
+        view = wa_repro.status(ws, problem, sid, entry.get("sha"))
+        if view.get("state") != "unreproduced":
+            continue
+        written.append(led.append("measurement", {
+            "key": "judge.noise.unreproduced", "value": int(view.get("unreproduced_runs") or 0), "unit": "count",
+            "receipt_id": sid, "sha": entry.get("sha"),
+            "claim": (f"{str(entry.get('sha'))[:7]} {entry.get('status')}: not reproduced in "
+                      f"{view.get('unreproduced_runs')} formal final run(s) (judge noise)"),
+            "why": wa_repro.next_step(view),
+            "evidence": [f"receipt:{sid}"],
+            "judge_noise": {"kind": "unreproduced", "runs": view.get("unreproduced_runs"),
+                            "variants": len(entry.get("variants") or []),
+                            "session_reuse_off": bool(view.get("session_reuse_off"))},
+        }, ekey=f"judge-noise:{sid}:unreproduced"))
+    return written
+
+
+def on_judge_noise(ws: Path, problem: str) -> list[dict[str, Any]]:
+    """Platform entry point: judge-noise rows of one problem (idempotent, never raises to the caller)."""
+    if not problem:
+        return []
+    return apply_judge_noise(store.Ledger(ws, problem, PLATFORM_WORKER), ws, problem)
+
+
 # ---- platform entry points -------------------------------------------------------------------------
 
 def on_test_settled(ws: Path, record: dict[str, Any], *, hash_fn: Callable[[Path | str, str], str] = gitref.diff_hash,
@@ -149,6 +209,7 @@ def on_test_settled(ws: Path, record: dict[str, Any], *, hash_fn: Callable[[Path
     problem, rid = str(record.get("problem") or ""), str(record.get("request_id") or "")
     if not problem or not rid or record.get("status") not in ("finished", "failed"):
         return []
+    guard(on_judge_noise, ws, problem)  # 4.3 P24: a formal run can prove a verdict did not reproduce
     led = _ledger(ws, problem, record.get("agent_id"))
     if led.find(f"test:{rid}:experiment") and (led.find(f"test:{rid}:measurement") or not _timed(record)):
         return []
@@ -198,6 +259,9 @@ def on_receipt(ws: Path, problem: str, row: dict[str, Any], agent_id: Any = None
     from ..services.judge_score_fetch import receipts_module
     receipts = receipts_module()
     canon = receipts.normalize(row)
-    if not problem or not receipts.judged(canon) or canon.get("official_score") is None:
+    if not problem or not receipts.judged(canon):
+        return None
+    guard(on_judge_noise, ws, problem)  # 4.3 P24: a new verdict can flip the commit's verdict class
+    if canon.get("official_score") is None:
         return None
     return apply_receipt(_ledger(ws, problem, agent_id), canon, gain=gain, prior=prior)

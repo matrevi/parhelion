@@ -109,7 +109,8 @@ HELP: dict[str, dict[str, Any]] = {
                  "and time_limit (only when Judge publishes one) plus fetched_at; formula is how a case and then "
                  "the problem are scored; tbest.cases/changed_at/changed_cases/observed_at say when the times "
                  "being scored against last moved; noise.sigma_hat/df/scope is this problem's judge noise or the "
-                 "contest-wide estimate; split gives public and hidden points of the best and the board receipt "
+                 "contest-wide estimate; flips counts same-source verdict changes (Pass<->WA/TLE) as judge noise; "
+                 "split gives public and hidden points of the best and the board receipt "
                  "with verified{rows, public_cases, max_err}, and is absent when no receipt reproduces its own "
                  "judge score. Name a problem (a worker reads only its own) or omit it for the table "
                  "(columns: title, mode, cases, sigma_hat, fetched_at); <=2KB",

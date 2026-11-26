@@ -123,6 +123,22 @@ class GateConfig:
     # Below the floor but more likely to gain than lose: approve at low priority instead of holding.
     approve_low_gain_positive: bool = True
     low_gain_min_prob: float = 0.5
+    # 4.3 P24 (docs/v4.3/P24-escape-health.md). Each switch restores the 4.2.1 behaviour when flipped.
+    # A WA/RE whose reproducer variants pass on the bad SHA's own formal final runs releases the lock
+    # for every other SHA (EXPLORE, half priority) and only keeps the bad SHA itself out.
+    escape_unreproduced_releases: bool = True
+    # Formal final runs that must pass every variant before the failure counts as unreproduced.
+    unrepro_runs: int = 2
+    # S1 mechanical health: compile seconds, template instantiations, kernel object bytes, cold ratio.
+    health_checks: bool = True
+    # An approved candidate with health warnings ranks at this factor (hint only, never a hold).
+    health_penalty: float = 0.8
+    # Judge time risk holds an exploit submission; false reports it as a hint and lets it through.
+    health_time_risk_holds: bool = True
+    # Share of the judge's time limit at which compile + predicted run counts as risky (00-PLAN D3).
+    health_time_margin: float = 0.8
+    # The judge compiles on its own machine; the device host's seconds are scaled by this factor.
+    judge_compile_factor: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -139,7 +155,10 @@ class GateConfig:
                 raise ValueError(f"{name} takes true or false, not {raw!r}")
             value: Any = raw in ("1", "true", "on", "yes")
         else:
-            value = min(1.0, max(0.0, float(raw)))
+            # Floats are shares (0..1) except the judge's compile-time scale, which may exceed 1 when
+            # the judge's build machine is slower than the device host.
+            low, high = (0.1, 4.0) if name == "judge_compile_factor" else (0.0, 1.0)
+            value = min(high, max(low, float(raw)))
         setattr(self, name, value)
         return name, value
 
@@ -158,6 +177,13 @@ GATE_SWITCHES: dict[str, type] = {
     "noise_floor_from_judge_sigma": bool,
     "approve_low_gain_positive": bool,
     "low_gain_min_prob": float,
+    # 4.3 P24
+    "escape_unreproduced_releases": bool,
+    "health_checks": bool,
+    "health_penalty": float,
+    "health_time_risk_holds": bool,
+    "health_time_margin": float,
+    "judge_compile_factor": float,
 }
 
 
@@ -515,6 +541,28 @@ class SubmissionGate:
             metrics={"tle_sha": tle_sha, "tle_submission_id": state.get("tle_submission_id"),
                      "next_step": "commit a faster or different kernel, or restore a proven Pass SHA"})
 
+    def _escape_lock_stage(self, title: str, sha: str, state: dict[str, Any],
+                           as_of: datetime.datetime | None, *, fix_releases: bool) -> StageResult:
+        """4.3 P24: the escape lock's S1 decision — hold, release, refuse the bad SHA, or pass a fix.
+
+        The reproducer state decides (``scheduler.wa_repro``): ``fixed`` clears the lock when the
+        caller accepts it (the reference-scheme branch always did), ``unreproduced`` releases every
+        other SHA and keeps the bad SHA out unchanged, and everything else holds as 4.2.1 did.
+        """
+        from . import wa_repro
+
+        repro = wa_repro.status(self.workspace, title, state.get("escape_submission_id"),
+                                state.get("escape_sha") or "", cand_sha=sha, as_of=as_of,
+                                unrepro_runs=int(self.config.unrepro_runs))
+        esc = wa_repro.escalation(repro, sha, release=bool(self.config.escape_unreproduced_releases),
+                                  fix_releases=fix_releases,
+                                  online_status=str(state.get("escape_status") or ""))
+        metrics = dict(esc["metrics"])
+        if esc["action"] == "pass":
+            metrics.update(run_id=repro.get("fixed_run"), reproduced_run=repro.get("reproduced_run"))
+        return StageResult(stage="SAFETY", passed=esc["action"] in ("pass", "release"), code=esc["code"],
+                           reason=esc["reason"], metrics=metrics)
+
     def evaluate_safety(
         self,
         title: str,
@@ -619,21 +667,8 @@ class SubmissionGate:
                 bad = state.get("escape_sha") or ""
                 trial = read_doc(trial_path(val_dir.parent / bad, sid)) if sid and re.fullmatch(r"[a-f0-9]{40}", bad) and as_of is None else {}
                 if trial.get("good_sha") != sha or trial.get("good_run") != report["run_id"]:
-                    # WA reproducers (4.1 #6): a fix passing every variant the bad SHA fails clears S1.
-                    from . import wa_repro
-                    repro = wa_repro.status(self.workspace, title, sid, bad, cand_sha=sha, as_of=as_of)
-                    if repro["state"] == "fixed":
-                        return StageResult(stage="SAFETY", passed=True, code="ESCAPE_REPRO_FIXED",
-                                           reason="ESCAPE LOCK " + wa_repro.next_step(repro),
-                                           metrics={"submission_id": sid, "bad_sha": bad, "run_id": repro["fixed_run"],
-                                                    "reproduced_run": repro["reproduced_run"]})
-                    step = wa_repro.next_step(repro)
-                    return StageResult(stage="SAFETY", passed=False, code="ESCAPE_LOCK_ACTIVE",
-                                       reason=("ESCAPE_LOCK " + step if step else
-                                               "ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial"),
-                                       metrics={"submission_id": sid, "bad_sha": bad, "repro_state": repro["state"],
-                                                "next_step": step or "reproduce the failure locally or request an "
-                                                                     "exact-SHA reviewed trial"})
+                    # WA reproducers (4.1 #6) clear a proven fix; 4.3 P24 releases an unreproduced lock.
+                    return self._escape_lock_stage(title, sha, state, as_of, fix_releases=True)
             repeat = self._tle_repeat(sha, state, bool(prior and (as_of is None or prior < as_of)))
             if repeat is not None:
                 return repeat
@@ -730,23 +765,11 @@ class SubmissionGate:
             )
 
         # Closed-Loop Escape Lock: if the latest online submission escaped local S1 (`WA`/`TLE`/`RE`),
-        # block unproven new commits until `verify-escape` confirms a separating regression test!
+        # block unproven new commits until `verify-escape` confirms a separating regression test. 4.3 P24
+        # releases the lock when the failure did not reproduce (an unreproduced verdict is judge noise).
         esc_state = self._escape_state(title, as_of=as_of)
         if esc_state.get("escape_lock") and not proven_prior:
-            esc_s7 = esc_state.get("escape_short_sha") or "unknown"
-            esc_st = esc_state.get("escape_status") or "Online Failure"
-            return StageResult(
-                stage="SAFETY",
-                passed=False,
-                code="ESCAPE_LOCK_ACTIVE",
-                reason=(
-                    f"ESCAPE_LOCK active after {esc_s7} failed online ({esc_st}) despite passing local S1; "
-                    f"add regression case & run `verify-escape --title {title} --bad-sha {esc_s7} --good-sha {sha[:7]}` "
-                    f"(or restore a previously proven Pass SHA)"
-                ),
-                metrics={"escape_sha": esc_state.get("escape_sha"), "escape_status": esc_st,
-                         "next_step": f"add a regression case, then verify-escape --bad-sha {esc_s7} --good-sha {sha[:7]}"},
-            )
+            return self._escape_lock_stage(title, sha, esc_state, as_of, fix_releases=False)
 
         repeat = self._tle_repeat(sha, esc_state, proven_prior)
         if repeat is not None:
@@ -1063,6 +1086,37 @@ class SubmissionGate:
             pass
         return verdict
 
+    def _apply_health(self, title: str, sha: str, board_sha: str, s1: StageResult) -> StageResult:
+        """4.3 P24: attach the S1 mechanical health and hold an exploit whose judge time is at risk.
+
+        Warnings never hold: they only scale the priority (``health_penalty``). The judge time risk is
+        the one new hold of 4.3 (00-PLAN D3); ``health_time_risk_holds`` turns it back into a hint.
+        P23's intents are not in this base, so every submission that reaches S1 is an exploit and the
+        hold applies; the opening probe lane bypasses S1 entirely.
+        """
+        if not self.config.health_checks:
+            return s1
+        from . import health
+
+        try:
+            view = health.check(self.workspace, title, sha, board_sha,
+                                compile_factor=float(self.config.judge_compile_factor),
+                                time_margin=float(self.config.health_time_margin))
+        except Exception as exc:  # noqa: BLE001 - a health fault never decides a submission
+            view = {"checked": False, "skipped": f"{type(exc).__name__}: {exc}"}
+        s1.metrics["health"] = view
+        risk = view.get("time_risk") or {}
+        if not (s1.passed and risk.get("risk")):
+            return s1
+        step = health.next_step(view)
+        if not self.config.health_time_risk_holds:  # a hint only, never a hold
+            s1.reason = f"{s1.reason}; judge time risk: {step}"
+            return s1
+        return StageResult(stage="SAFETY", passed=False, code="JUDGE_TIME_RISK",
+                           reason=f"Judge time risk: {step}",
+                           metrics={**s1.metrics, "health": view, "judge_time_risk": risk,
+                                    "next_step": step})
+
     def _slot_stage(self, quota: QuotaStatus) -> StageResult:
         """Stage 4: whether an account slot is free right now.
 
@@ -1249,8 +1303,12 @@ class SubmissionGate:
                 quota=quota,
             )
 
-        # Stage 1: SAFETY
-        s1 = self.evaluate_safety(title, canonical_sha, as_of=as_of)
+        # Stage 1: SAFETY (4.3 P24: plus the mechanical health and the judge time-risk hold)
+        board_sha = str(getattr(ledger, "active_board_sha", "") or "")
+        s1 = self._apply_health(title, canonical_sha, board_sha,
+                                self.evaluate_safety(title, canonical_sha, as_of=as_of))
+        escape_released = s1.code == "ESCAPE_UNREPRODUCED"
+        health_warnings = bool(((s1.metrics or {}).get("health") or {}).get("warnings"))
 
         # Stage 2: NOISE_FLOOR (Uncertainty-Aware with `EXPLORE` Anti-Burial Channel)
         is_explore_pass = False
@@ -1562,8 +1620,11 @@ class SubmissionGate:
             elif is_critical_restore:
                 status_tag = "CRITICAL_RESTORE"
                 gate_reason = f"CRITICAL_RESTORE approved: {s2.reason}"
-            elif is_explore_pass or is_low_gain_pass or circuit_advisory:
-                why = f"[S3 advisory] {s3.reason} | {s2.reason}" if circuit_advisory else s2.reason
+            elif is_explore_pass or is_low_gain_pass or circuit_advisory or escape_released:
+                why = " | ".join(
+                    ([f"[S1 escape released] {s1.reason}"] if escape_released else [])
+                    + ([f"[S3 advisory] {s3.reason}"] if circuit_advisory else [])
+                    + [s2.reason])
                 if quota.rate_wait_sec > 0 and as_of is None:
                     status_tag = "RATE_WAIT"
                     gate_reason = f"EXPLORE approved (pacing {quota.rate_wait_sec}s): {why}"
@@ -1590,6 +1651,12 @@ class SubmissionGate:
             priority_score = round(estimate.weighted_delta, 2)
         if approved and circuit_advisory and not is_critical_restore:
             priority_score = round(priority_score * 0.5, 2)
+        # 4.3 P24: a released escape lock is a hint, so it ranks at half priority; health warnings
+        # (elf_guard alerts and metric growth over the board SHA) scale it once more.
+        if approved and escape_released and not is_critical_restore:
+            priority_score = round(priority_score * 0.5, 2)
+        if approved and health_warnings:
+            priority_score = round(priority_score * float(self.config.health_penalty), 2)
 
         return GateVerdict(
             title=title,

@@ -16,8 +16,13 @@ of a judge object ID), carry ``origin="wa-repro"``, ``receipt``, ``judge_testcas
 records the plan in ``bench-specs/<title>/wa-repro.json``; replaying a receipt writes nothing.
 
 ``status`` derives the escape-lock state from immutable runs: ``pending`` until a formal run of
-the bad SHA fails a variant (``reproduced``, with the run ID), and ``fixed`` for a candidate whose
-formal run passes every variant of the receipt on the same inputs (same case keys).
+the bad SHA fails a variant (``reproduced``, with the run ID), ``fixed`` for a candidate whose
+formal run passes every variant of the receipt on the same inputs (same case keys), and
+``unreproduced`` when the bad SHA's own formal, final-level runs pass every variant often enough
+(``unrepro_runs``, default 2) that the online verdict is more likely judge-side noise than a defect
+(4.3 P24; when the run records distinguish session reuse, at least one of those runs must have it
+off). ``escalation`` turns that state into the S1 decision: hold, release, refuse the bad SHA
+unchanged, or pass a proven fix.
 """
 from __future__ import annotations
 
@@ -36,6 +41,8 @@ FAILED = ("Wrong Answer", "Runtime Error")
 LOCAL_FAILURES = ("WA", "RE")
 SEEDS = 12
 MANIFEST = "wa-repro.json"
+#: Formal, final-level runs of the bad SHA that must pass every variant before the lock is released.
+UNREPRO_RUNS = 2
 
 
 def manifest_path(ws, title):
@@ -205,19 +212,43 @@ def _before(doc: dict[str, Any], as_of) -> bool:
     return as_of is None or (done is not None and done < as_of)
 
 
-def status(ws, title, sid, bad_sha, cand_sha=None, as_of=None) -> dict[str, Any]:
-    """``none`` / ``pending`` / ``reproduced`` / ``fixed`` for one receipt, from formal runs on disk."""
+def _formal_final(doc: dict[str, Any]) -> bool:
+    """A formal run of the suite's final level; the variants only enter that level."""
+    if doc.get("formal") is not True:
+        return False
+    return doc.get("level") in (None, "", "final")
+
+
+def _reuse_session(doc: dict[str, Any]) -> bool | None:
+    """The run's ACL session-reuse setting, or None for a run format that does not record it."""
+    settings = doc.get("settings") if isinstance(doc.get("settings"), dict) else {}
+    value = settings.get("reuse_session")
+    return value if isinstance(value, bool) else None
+
+
+def _all_variants_pass(doc: dict[str, Any], ids: list[str]) -> bool:
+    rows = _rows(doc, set(ids))
+    return len(rows) == len(ids) and all(r.get("status") == "PASS" for r in rows.values())
+
+
+def status(ws, title, sid, bad_sha, cand_sha=None, as_of=None,
+           unrepro_runs: int = UNREPRO_RUNS) -> dict[str, Any]:
+    """``none`` / ``pending`` / ``reproduced`` / ``fixed`` / ``unreproduced`` for one receipt, from formal runs."""
     entry = load_manifest(ws, title)["receipts"].get(str(sid or "")) or {}
     ids = list(entry.get("variants") or [])
     if not ids or not bad_sha:
         return {"state": "none", "variants": [], "reason": entry.get("reason")}
-    out: dict[str, Any] = {"state": "pending", "variants": ids, "bad_sha": bad_sha}
+    out: dict[str, Any] = {"state": "pending", "variants": ids, "bad_sha": bad_sha,
+                           "submission_id": str(sid or "")}
     repro = None
+    passed: list[dict[str, Any]] = []
     for doc in case_map._reports(ws, title, bad_sha):
         rows = _rows(doc, set(ids))
         failed = sorted(i for i, r in rows.items() if r.get("status") in LOCAL_FAILURES)
         if failed and _before(doc, as_of) and (repro is None or doc.get("finished_at", "") < repro[0]):
             repro = (doc.get("finished_at", ""), doc, failed)
+        elif _before(doc, as_of) and _formal_final(doc) and _all_variants_pass(doc, ids):
+            passed.append(doc)
     if repro is not None:
         doc, failed = repro[1], repro[2]
         keys = {i: r.get("key") for i, r in _rows(doc, set(ids)).items()}
@@ -228,19 +259,73 @@ def status(ws, title, sid, bad_sha, cand_sha=None, as_of=None) -> dict[str, Any]
                     and all(keys.get(i) in (None, r.get("key")) for i, r in rows.items())):
                 out.update(state="fixed", fixed_sha=cand_sha, fixed_run=cand.get("run_id"))
                 break
+        return out
+    # 4.3 P24: the bad SHA's own formal final runs passed every variant — the lock's exit.
+    need = max(1, int(unrepro_runs))
+    recorded = [d for d in passed if _reuse_session(d) is not None]
+    reuse_off = [d for d in passed if _reuse_session(d) is False]
+    out.update(pass_runs=len(passed), required_runs=need,
+               session_reuse_recorded=bool(recorded), session_reuse_off=bool(reuse_off))
+    if len(passed) >= need and (not recorded or reuse_off):
+        out.update(state="unreproduced", unreproduced_runs=len(passed),
+                   unreproduced_run_ids=[d.get("run_id") for d in sorted(
+                       passed, key=lambda d: d.get("finished_at") or "")])
     return out
+
+
+def escalation(view: dict[str, Any], sha: str, *, release: bool = True, fix_releases: bool = True,
+               online_status: str = "") -> dict[str, Any]:
+    """What S1 should do about the escape lock for candidate ``sha`` (4.3 P24).
+
+    ``action`` is ``pass`` (a proven fix), ``release`` (the online verdict did not reproduce: S1
+    passes, tagged EXPLORE, hint only), ``repeat`` (the bad SHA itself, refused unchanged like a
+    TLE) or ``hold`` (the 4.2.1 behaviour). ``release=False`` restores the 4.2.1 hold everywhere.
+    """
+    bad = str(view.get("bad_sha") or "")
+    sid = view.get("submission_id")
+    state = str(view.get("state") or "none")
+    step = next_step(view) or "reproduce the failure locally or request an exact-SHA reviewed trial"
+    metrics = {"submission_id": sid, "bad_sha": bad, "repro_state": state, "next_step": step}
+    if state == "fixed" and fix_releases:
+        return {"action": "pass", "code": "ESCAPE_REPRO_FIXED", "reason": "ESCAPE LOCK " + step, "metrics": metrics}
+    same = bool(bad and sha and (bad.startswith(sha) or sha.startswith(bad)))
+    if release and state == "unreproduced":
+        runs = view.get("unreproduced_runs")
+        if same:
+            return {"action": "repeat", "code": "ESCAPE_SHA_REPEAT",
+                    "reason": (f"{sha[:7]} failed online ({online_status or 'WA/RE'}, submission {sid}) and the "
+                               f"failure did not reproduce in {runs} formal final run(s); it has never passed "
+                               "online, so it cannot be resubmitted unchanged. Change the kernel, or restore a "
+                               "commit that passed."),
+                    "metrics": {**metrics, "unreproduced_runs": runs,
+                                "next_step": "change the kernel, or restore a proven Pass SHA"}}
+        return {"action": "release", "code": "ESCAPE_UNREPRODUCED",
+                "reason": (f"ESCAPE LOCK released for {sha[:7]}: {bad[:7]} failed online "
+                           f"({online_status or 'WA/RE'}, submission {sid}) but the failure did not reproduce in "
+                           f"{runs} formal final run(s); treating the online verdict as judge-side noise, the "
+                           "lock is a hint only"),
+                "metrics": {**metrics, "unreproduced_runs": runs, "escape_released": True}}
+    reason = ("ESCAPE_LOCK: " if state == "none" else "ESCAPE_LOCK ") + step
+    return {"action": "hold", "code": "ESCAPE_LOCK_ACTIVE", "reason": reason, "metrics": metrics}
 
 
 def next_step(view: dict[str, Any]) -> str:
     bad = str(view.get("bad_sha") or "")[:7]
     n = len(view.get("variants") or [])
+    pending = f"awaiting reproduction: run `opsb test --level final` on {bad} ({n} wa-repro variants)"
+    if view.get("required_runs"):
+        pending += (f"; {int(view.get('pass_runs') or 0)}/{int(view.get('required_runs'))} formal final runs "
+                    "passed every variant")
     return {
-        "pending": f"awaiting reproduction: run `opsb test --level final` on {bad} ({n} wa-repro variants)",
+        "pending": pending,
         "reproduced": (f"reproduced, awaiting a fix: {bad} fails {len(view.get('failing_variants') or [])} of {n} "
                        f"wa-repro variants (run {str(view.get('reproduced_run'))[:8]}); the fix must pass all {n} "
                        "at level final"),
         "fixed": (f"fixed: {str(view.get('fixed_sha'))[:7]} passes all {n} wa-repro variants on the inputs "
                   f"{bad} fails {len(view.get('failing_variants') or [])} of (run {str(view.get('fixed_run'))[:8]})"),
+        "unreproduced": (f"not reproduced in {int(view.get('unreproduced_runs') or 0)} formal final run(s) on "
+                         f"{bad}: all {n} wa-repro variants passed each time; treat the online verdict as "
+                         "judge-side noise — the escape lock is downgraded to a hint"),
     }.get(view.get("state"), "")
 
 
@@ -252,7 +337,10 @@ def lock_view(ws, title, escape: dict[str, Any], as_of=None) -> dict[str, Any] |
     if view["state"] == "none":
         return {"state": "none", "next_step": view.get("reason") or "no wa-repro variants for this receipt"}
     return {"state": view["state"], "variant_ids": view["variants"], "reproduced_run": view.get("reproduced_run"),
-            "failing_variants": view.get("failing_variants"), "next_step": next_step(view)}
+            "failing_variants": view.get("failing_variants"),
+            "unreproduced_runs": view.get("unreproduced_runs"),
+            "pass_runs": view.get("pass_runs"), "required_runs": view.get("required_runs"),
+            "session_reuse_off": view.get("session_reuse_off"), "next_step": next_step(view)}
 
 
 def ingest(ws, row) -> dict[str, Any] | None:

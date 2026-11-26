@@ -18,6 +18,7 @@ as 4.2.1 did (``scheduler.estimator._load_problems``).
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Callable
@@ -207,6 +208,46 @@ def status_line(workspace: Path | str, problems: list[dict[str, Any]]) -> dict[s
     if noise:
         line.update({"sigma_hat": noise.get("sigma"), "scope": noise.get("scope"), "df": noise.get("df")})
     return line
+
+
+def _seconds(value: Any, field: str = "") -> float | None:
+    """A positive time in seconds from a scalar or a ``{"seconds"|"sec"|"ms"|...}`` mapping."""
+    if isinstance(value, dict):
+        for key in ("seconds", "sec", "s", "value", "time_limit_sec", "ms", "time_limit_ms"):
+            if key in value:
+                return _seconds(value[key], key)
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number <= 0:
+        return None
+    return number / 1000.0 if str(field).endswith("ms") else number
+
+
+def time_limit_sec(workspace: Path | str, title: str) -> float | None:
+    """The judge's own time limit in seconds when the snapshot records one (4.3 P24, scheduler.health).
+
+    The contests this platform has run do not publish per-case limits, so this is usually None and
+    the caller falls back to ``judge.time_limit_sec`` in ``config.json``.
+    """
+    doc = load(workspace, title) or {}
+    limit = doc.get("time_limit")
+    return _seconds(limit.get("value"), str(limit.get("field") or "")) if isinstance(limit, dict) else None
+
+
+def iterations(workspace: Path | str, title: str) -> int | None:
+    """The judge's iteration count from the snapshot (4.3 P24), or None when absent."""
+    doc = load(workspace, title) or {}
+    value = doc.get("iterations")
+    try:
+        count = int(float(value)) if not isinstance(value, bool) else 0
+    except (TypeError, ValueError):
+        return None
+    return count if count >= 1 else None
 
 
 def reconstruct_latest_enabled(cfg: dict[str, Any] | None = None) -> bool:

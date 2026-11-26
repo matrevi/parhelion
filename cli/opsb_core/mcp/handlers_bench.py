@@ -476,6 +476,7 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     result = {**verdict, "estimate": estimate, "gates": gates, "badge": view["badge"], "next_step": view["next_step"],
               "estimated_score": estimate.get("estimated_score"), "current_score": estimate.get("current_score"),
               "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
+              "health": view["health"],  # 4.3 P24: the S1 mechanical health of this SHA
               "reasons": reasons or ([view["detail"]] if view["badge"] == gate_view.WAITING else []),
               "enqueued": bool(reply.get("enqueued")), "dry_run": not enqueue}
     # A request, not a preview: it names its hypothesis, or the platform generates the one P05 wrote from

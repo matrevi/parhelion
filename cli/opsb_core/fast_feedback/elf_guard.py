@@ -253,11 +253,18 @@ def evaluate_elf_guard(
     title: str,
     sha: str | None = None,
     thresholds: dict[str, Any] | None = None,
+    build_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Detect bloated `.o`/`.text` (>32KB I-cache tax), slow compile times, and template explosion."""
+    """Detect bloated `.o`/`.text` (>32KB I-cache tax), slow compile times, and template explosion.
+
+    ``build_metrics`` supplies the build fields when the run recorded them outside ``result.json``
+    (a reference-scheme bench run keeps them in its run report; scheduler.health passes them here).
+    """
     ws = Path(workspace).expanduser().resolve()
     art = _load_run_artifacts(ws, title, sha=sha, require_passing=False, allow_build_logs=True)
     rj, log_text, repo_dir = art["result_json"], art["log_text"], art["repo_dir"]
+    if build_metrics:
+        rj = {**rj, **{k: v for k, v in build_metrics.items() if v is not None}}
 
     eff_thresh: dict[str, float | int] = dict(DEFAULT_ELF_THRESHOLDS)
     cfg_ft = _load_fast_tools_settings()
