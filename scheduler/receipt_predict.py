@@ -28,7 +28,7 @@ import pathlib
 import statistics
 from typing import Any
 
-from . import case_map, judge_cases, receipts
+from . import case_map, judge_cases, paired_timing, receipts, timing
 
 METHOD = "receipt_per_case"
 RATIO_CLAMP = (0.1, 10.0)  # a per-case change beyond 10x either way is treated as measurement noise
@@ -118,29 +118,47 @@ def predict(workspace: pathlib.Path, title: str, cand_sha: str, base_shas: list[
     if set(tbest) != set(keys):
         return None
     version = doc.get("pairing_key")
-    cand, cand_runs = case_map.local_minima(workspace, title, cand_sha, version, strict=True, as_of=as_of)
-    if not cand:
-        return None
+    mapped = [p["local"] for p in pairs]
+
+    def minima(sha):
+        found = {s: case_map.local_minima(workspace, title, sha, version, strict=True, as_of=as_of, source=s)
+                 for s in timing.SOURCES}
+        return {s: m for s, (m, _) in found.items()}, max(n for _, n in found.values())
+
+    cand_by, cand_runs = minima(cand_sha)
     obs = judge_cases.observations(workspace, title, rows, order, as_of)
     for base_sha, base_obs, role in _bases(workspace, title, base_shas, obs, timed):
         if base_sha == cand_sha or (role == "other" and not allow_other):
             continue
-        base, base_runs = case_map.local_minima(workspace, title, base_sha, version, strict=True, as_of=as_of)
-        usable_pairs = [p for p in pairs if p["local"] in base and p["local"] in cand]
+        # An A/B paired run of exactly these SHAs beats minima from separate runs (4.1 route #2).
+        paired_doc = paired_timing.load(workspace, title, cand_sha, base_sha, version, as_of)
+        paired = paired_timing.ratios(paired_doc) if paired_doc else {}
+        base_by, base_runs = minima(base_sha)
+        chosen = timing.common_source(cand_by, base_by, keys=mapped)  # one timer for both sides
+        source, cand, base = chosen or ("event", {}, {})
+        if source == "profiler":
+            paired = {}  # complete profiler minima beat event-timed pairs (estimator._case_bench_pair)
+        usable_pairs = [p for p in pairs if (p["local"] in base and p["local"] in cand) or p["local"] in paired]
         result = _score(doc, keys, tbest, base_obs, base, cand, usable_pairs, timed, {
             "base_sha": base_sha, "base_role": role, "base_submission_id": base_obs["submission_id"],
             "base_source": base_obs["source"], "runs": [cand_runs, base_runs],
-            "tbest_observed_at": seen_at, "tbest_source": tbest_source}) if usable_pairs else None
+            "tbest_observed_at": seen_at, "tbest_source": tbest_source, "timing_source": source,
+            "paired_run": paired_doc.get("run_id") if paired else None},
+            paired=paired, source=source) if usable_pairs else None
         if result is not None:
             return result
     return None
 
 
-def _score(doc, keys, tbest, base_obs, base, cand, pairs, timed, meta) -> dict[str, Any]:
+def _score(doc, keys, tbest, base_obs, base, cand, pairs, timed, meta, paired=None, source="event") -> dict[str, Any]:
     judged = base_obs["times"]
-    offset = doc.get("offset_us")
-    offset = calibrated_offset(pairs, base, judged) if offset is None else offset
-    base = despike(pairs, base, judged)
+    paired = paired or {}
+    if source == "profiler":
+        offset = 0.0  # kernel task time carries no launch overhead
+    else:
+        offset = doc.get("offset_us")
+        offset = calibrated_offset(pairs, base, judged) if offset is None else offset
+    base = despike([p for p in pairs if p["local"] in base], base, judged)
     proxy = {p["judge"]: p for p in pairs}
     predicted: dict[str, float | None] = {}
     ratios: dict[str, float] = {}
@@ -154,7 +172,10 @@ def _score(doc, keys, tbest, base_obs, base, cand, pairs, timed, meta) -> dict[s
             predicted[key] = t_b
             continue
         local_id = pair["local"]
-        ratio = case_map.kernel_us(base[local_id], offset) / case_map.kernel_us(cand[local_id], offset)
+        if local_id in paired:
+            ratio = paired[local_id]["ratio"]
+        else:
+            ratio = case_map.kernel_us(base[local_id], offset) / case_map.kernel_us(cand[local_id], offset)
         ratio = min(RATIO_CLAMP[1], max(RATIO_CLAMP[0], ratio)) ** (t_b / (t_b + NOISE_US))
         ratios[key] = ratio
         predicted[key] = t_b / ratio

@@ -131,6 +131,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "force_rerun": {"type": "boolean", "description": "Run again even though this SHA and level already have a formal run; requires reason"},
                 "reason": {"type": "string", "description": "Why a forced rerun or a near-duplicate candidate is worth the device time"},
                 "build_only": {"type": "boolean", "description": "Compile only, no device time"},
+                "compare": {"type": "string", "description": "A/B paired run against this baseline commit, or 'board': both builds alternate in one device job and the result reports per-case speedup intervals"},
             },
             "required": ["problem"],
         },

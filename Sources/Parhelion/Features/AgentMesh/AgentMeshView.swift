@@ -62,6 +62,9 @@ struct AgentMeshView: View {
     var body: some View {
         VStack(spacing: 0) {
             topControlBar
+            DriverSuspensionBanner()
+                .padding(.horizontal, 14)
+                .padding(.vertical, (hotStore.agentMesh?.suspensions.isEmpty ?? true) ? 0 : 6)
             Divider()
             HStack(spacing: 0) {
                 AgentMeshCanvasView(

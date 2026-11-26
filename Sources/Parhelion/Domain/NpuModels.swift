@@ -152,6 +152,8 @@ struct HotStreamFrame: Codable {
     let schedulerHot: SchedulerHotState
     let daemonStats: DaemonStats
     let agentMesh: AgentMeshHotState?
+    /// Newest `parhelion_test` registry rows (no digests); absent from older daemons.
+    let testRuns: [TestRunEntry]?
 
     enum CodingKeys: String, CodingKey {
         case ts, workspace, npu, pipeline
@@ -159,6 +161,7 @@ struct HotStreamFrame: Codable {
         case schedulerHot = "scheduler_hot"
         case daemonStats = "daemon_stats"
         case agentMesh = "agent_mesh"
+        case testRuns = "test_runs"
     }
 }
 

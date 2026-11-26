@@ -30,7 +30,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
-from . import judge_cases, pairing, receipts
+from . import judge_cases, pairing, receipts, timing
 from .parhelion_paths import atomic_write_json
 
 MAP_FILE = ".case-map.json"
@@ -77,13 +77,15 @@ def local_catalog(workspace: pathlib.Path, title: str) -> tuple[Any, list[str]]:
 
 
 def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *, strict: bool = False,
-                 as_of: datetime.datetime | None = None) -> tuple[dict[str, float], int]:
-    """Best warm minimum per official case over formal runs with one official-input identity.
+                 as_of: datetime.datetime | None = None, source: str = "event") -> tuple[dict[str, float], int]:
+    """Best warm minimum per official case in one timing source over formal runs with one
+    official-input identity.
 
     ``version`` is a pairing key (scheduler.pairing); None accepts every run.
 
     ``strict`` keeps only verified, timing-eligible runs (the estimator's rule); otherwise any
-    formal run counts for the cases it timed and passed.
+    formal run counts for the cases it timed and passed. ``source`` is ``event`` (every run has
+    it) or ``profiler`` (scheduler.timing); the two are never combined.
     """
     minima: dict[str, float] = {}
     runs = 0
@@ -98,11 +100,12 @@ def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *,
             if done is None or done >= as_of:
                 continue
         runs += 1
+        if source == "profiler" and not timing.profiler_trusted(doc):
+            continue
         for case in doc.get("cases") or []:
-            value = case.get("min_us")
-            if (case.get("source") == "official" and case.get("status") in ("PASS", None)
-                    and isinstance(value, (int, float)) and value > 0):
-                minima[case["id"]] = min(minima.get(case["id"], value), float(value))
+            value = timing.case_value(case, source)
+            if case.get("source") == "official" and case.get("status") in ("PASS", None) and value is not None:
+                minima[case["id"]] = min(minima.get(case["id"], value), value)
     return minima, runs
 
 

@@ -385,6 +385,16 @@ class AgentMeshManager:
     def driver_suspended(self, ws: Path, driver: str) -> bool:
         return str(driver or "").strip().lower() in self._read_suspensions(ws)
 
+    def suspension_rows(self, ws: Path, workers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Provider-fault suspensions with the workers they stopped, for the hot mesh."""
+        rows = []
+        for drv, entry in sorted(self._read_suspensions(ws).items()):
+            entry = entry if isinstance(entry, dict) else {}
+            rows.append({"driver": drv, "since": entry.get("since") or "", "reason": entry.get("reason") or "",
+                         "workers": [w["agent_id"] for w in workers if str(w.get("driver") or "").lower() == drv
+                                     and w.get("error") == SUSPENDED_ERROR][:12]})
+        return rows
+
     def clear_driver_suspension(self, ws: Path, driver: str) -> bool:
         drv = str(driver or "").strip().lower()
         with self._suspend_lock:
@@ -1372,6 +1382,7 @@ class AgentMeshManager:
             "strategic_alerts": strategic_alerts[:12],
             "workers": worker_rows,
             "pulses": pulses,
+            "suspensions": self.suspension_rows(ws, all_workers),
             "latest_seq": store.latest_seq(),
             "ts": now,
         }

@@ -407,6 +407,8 @@ def run_test(args: argparse.Namespace) -> int:
             b_cmd += ["--case", cid]
         if getattr(args, "remeasure", False):
             b_cmd.append("--remeasure")
+        if getattr(args, "compare", None):
+            b_cmd += ["--compare", args.compare]
         if getattr(args, "suite", None):
             b_cmd.extend(["--suite", args.suite])
         if getattr(args, "level", None):

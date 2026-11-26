@@ -327,11 +327,13 @@ struct AgentMeshHotState: Codable, Equatable {
     let strategicAlerts: [AgentStrategicAlertHot]
     let workers: [AgentWorkerHot]
     let pulses: [AgentPulseHot]
+    /// Drivers paused by a provider fault (balance, quota, auth); empty from older daemons.
+    let suspensions: [DriverSuspension]
     let latestSeq: Int
     let ts: Double
 
     enum CodingKeys: String, CodingKey {
-        case orchestrator, squads, workers, pulses, ts
+        case orchestrator, squads, workers, pulses, ts, suspensions
         case readyDrivers = "ready_drivers"
         case nativeSubagents = "native_subagents"
         case strategicAlerts = "strategic_alerts"
@@ -346,6 +348,7 @@ struct AgentMeshHotState: Codable, Equatable {
         strategicAlerts: [AgentStrategicAlertHot],
         workers: [AgentWorkerHot],
         pulses: [AgentPulseHot],
+        suspensions: [DriverSuspension] = [],
         latestSeq: Int,
         ts: Double
     ) {
@@ -356,6 +359,7 @@ struct AgentMeshHotState: Codable, Equatable {
         self.strategicAlerts = strategicAlerts
         self.workers = workers
         self.pulses = pulses
+        self.suspensions = suspensions
         self.latestSeq = latestSeq
         self.ts = ts
     }
@@ -369,6 +373,7 @@ struct AgentMeshHotState: Codable, Equatable {
         strategicAlerts = try c.decodeIfPresent([AgentStrategicAlertHot].self, forKey: .strategicAlerts) ?? []
         workers = try c.decodeIfPresent([AgentWorkerHot].self, forKey: .workers) ?? []
         pulses = try c.decodeIfPresent([AgentPulseHot].self, forKey: .pulses) ?? []
+        suspensions = try c.decodeIfPresent([DriverSuspension].self, forKey: .suspensions) ?? []
         latestSeq = try c.decodeIfPresent(Int.self, forKey: .latestSeq) ?? 0
         ts = try c.decodeIfPresent(Double.self, forKey: .ts) ?? 0
     }

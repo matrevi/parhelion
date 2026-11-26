@@ -71,6 +71,12 @@ def _problem_commit(workspace: Path, problem: str, revision: str) -> tuple[str, 
     return prob["title"], ref.stdout.strip()
 
 
+def _compare_ref(workspace: Path, problem: str, compare: str) -> str:
+    """Baseline of an A/B paired run: ``board`` (resolved by the run) or a commit of the problem."""
+    text = str(compare).strip()
+    return "board" if text.lower() == "board" else _problem_commit(workspace, problem, text)[1]
+
+
 # ---------------------------------------------------------------- registry storage
 
 def registry_dir(ws: Path | str) -> Path:
@@ -180,7 +186,7 @@ def _group_alive(pgid: int) -> bool:
 
 def _dedup_key(rec: dict[str, Any]) -> tuple[Any, ...]:
     return (rec.get("problem"), rec.get("sha"), rec.get("level"), tuple(sorted(rec.get("cases") or [])),
-            bool(rec.get("build_only")))
+            bool(rec.get("build_only")), rec.get("compare") or None)
 
 
 def _base_command(ws: Path) -> list[str]:
@@ -191,8 +197,10 @@ def _base_command(ws: Path) -> list[str]:
 
 
 def build_command(ws: Path, title: str, sha: str, level: str, cases: list[str], remeasure: bool,
-                  build_only: bool) -> list[str]:
+                  build_only: bool, compare: str | None = None) -> list[str]:
     cmd = [*_base_command(ws), "test", title, "--workspace", str(ws), "--sha", sha, "--level", level]
+    if compare:
+        cmd.extend(["--compare", compare])
     for case_id in cases:
         cmd.extend(["--case", case_id])
     if remeasure:
@@ -212,7 +220,7 @@ def _normalize_cases(cases: Any) -> list[str]:
 
 def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None = "standard",
            cases: list[str] | None = None, remeasure: bool = False, build_only: bool = False,
-           agent_id: str | None = None, role: str = "orchestrator") -> dict[str, Any]:
+           agent_id: str | None = None, role: str = "orchestrator", compare: str | None = None) -> dict[str, Any]:
     """Start (or join / reuse) a background `opsb test` run and return its public view immediately."""
     ws = Path(ws).expanduser().resolve()
     req_level = str(level or "standard").strip().lower()
@@ -223,7 +231,9 @@ def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None 
     rec_level = "build" if build_only else req_level
     gc(ws)
 
-    candidate = {"problem": title, "sha": full_sha, "level": rec_level, "cases": case_ids, "build_only": bool(build_only)}
+    compare = _compare_ref(ws, title, compare) if compare and not build_only else None
+    candidate = {"problem": title, "sha": full_sha, "level": rec_level, "cases": case_ids, "build_only": bool(build_only),
+                 "compare": compare}
     key = _dedup_key(candidate)
     with _flock(registry_dir(ws) / ".submit.lock"):
         for rec in reversed(_all_records(ws)):
@@ -245,7 +255,7 @@ def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None 
             "progress": None, "joined": None, "reused": None, "deferred": None, "reason": None, "error": None,
         }
         _write(ws, record)
-        cmd = build_command(ws, title, full_sha, req_level, case_ids, bool(remeasure), bool(build_only))
+        cmd = build_command(ws, title, full_sha, req_level, case_ids, bool(remeasure), bool(build_only), compare)
         env = dict(os.environ)
         if role == "worker":
             env["PARHELION_MCP_ROLE"] = "worker"
@@ -362,6 +372,8 @@ def _progress(record: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
             progress["cases_done"] += 1
         elif ev.get("event") == "device_batch" and ev.get("wait_sec") is not None:
             progress["wait_sec"] = ev.get("wait_sec")
+            if ev.get("hold_sec") is not None:
+                progress["hold_sec"] = ev.get("hold_sec")
     run_id = started.get("run_id")
     return progress, str(run_id) if run_id else None
 
@@ -388,6 +400,38 @@ def refresh(ws: Path | str, request_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- views
+
+REGISTRY_ROWS = 12
+
+
+def registry_view(ws: Path | str, limit: int = REGISTRY_ROWS) -> list[dict[str, Any]]:
+    """Newest runs for the app's test registry, without digests (fetched on demand by request ID).
+
+    Progress of a running record is read from its event log; queue, hold and end-to-end seconds
+    come from the run's device batch and its timestamps, so each problem keeps its own account.
+    """
+    rows = []
+    for rec in sorted(_all_records(ws), key=lambda r: str(r.get("created_at") or ""), reverse=True)[:limit]:
+        progress = rec.get("progress") or {}
+        if rec.get("status") == "running":
+            try:
+                progress, _ = _progress(rec)
+            except (OSError, ValueError):
+                pass
+        created = _age_sec(rec.get("created_at"))
+        finished = _age_sec(rec.get("finished_at"))
+        rows.append({
+            "request_id": rec.get("request_id"), "problem": rec.get("problem"),
+            "sha7": str(rec.get("sha") or "")[:7], "level": rec.get("level"), "status": rec.get("status"),
+            "run_id": rec.get("run_id"), "exit_code": rec.get("exit_code"), "agent_id": rec.get("agent_id"),
+            "compare": str(rec.get("compare") or "")[:7] or None,
+            "cases_done": progress.get("cases_done"), "cases": progress.get("selected"),
+            "phase": progress.get("phase"), "wait_sec": progress.get("wait_sec"), "hold_sec": progress.get("hold_sec"),
+            "e2e_sec": round(created - (finished or 0.0), 1) if created is not None else None,
+            "created_at": rec.get("created_at"), "has_digest": bool(rec.get("digest")),
+        })
+    return rows
+
 
 def _shrink_digest(digest: Any) -> Any:
     if not isinstance(digest, dict):

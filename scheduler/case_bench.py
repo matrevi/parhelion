@@ -23,6 +23,7 @@ from pathlib import Path
 
 from . import case_map, pairing, receipts
 from . import suite as suites
+from . import paired_timing, timing
 from .parhelion_paths import (
     atomic_write_json,
     atomic_write_text,
@@ -31,6 +32,7 @@ from .parhelion_paths import (
 )
 
 RUNNER = Path(__file__).resolve().parents[1] / "runtime/npu_runtime/reference_cases.py"
+TIMING_LISTS = ("event_us", "event_cold_us", "profiler_us", "profiler_cold_us")
 STATUSES = {"PASS", "WA", "RE", "TLE", "ERROR", "SKIP", "NOT_RUN"}
 
 
@@ -45,6 +47,14 @@ def _dev(key: str, default: str = "") -> str:
         return device_text(key) or default
     except Exception:
         return default
+
+
+def profiler_settings(level):
+    """Device-profiler task timing for this level (device.profiler_levels), else None."""
+    levels = {x.strip() for x in (_dev("profiler_levels") or "standard,final").split(",") if x.strip()}
+    if level not in levels:
+        return None
+    return {"bin": _dev("profiler_bin") or "profiler", "acl_flag": _dev("profiler_acl_flag") or "--acl"}
 
 
 def digest(value):
@@ -210,23 +220,31 @@ BOOTSTRAP = """
 import json, pathlib, subprocess, sys, tarfile, tempfile
 cfg = json.loads(sys.stdin.buffer.readline())
 with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
-    root = pathlib.Path(temp)
+    root = pathlib.Path(temp).resolve()
     repo = root/'repo'
     repo.mkdir()
+    # A paired run ships both commits, under cand/ (the candidate) and base/ (the baseline).
+    trees = {'cand/': repo, 'base/': root/'base'} if cfg.get('compare') else {'': repo}
     with tarfile.open(fileobj=sys.stdin.buffer,mode='r|gz') as archive:
         for member in archive:
-            dest = (repo/member.name).resolve()
-            if not dest.is_relative_to(repo) or not (member.isdir() or member.isfile()):
+            prefix = next((p for p in trees if member.name.startswith(p) or member.name == p.rstrip('/')), None)
+            if prefix is None:
                 raise ValueError('Unsupported archive member: '+member.name)
-            archive.extract(member,repo)
+            target = trees[prefix]
+            target.mkdir(exist_ok=True)
+            member.name = member.name[len(prefix):]
+            if not member.name:
+                continue  # the prefix directory itself
+            dest = (target/member.name).resolve()
+            if not dest.is_relative_to(target) or not (member.isdir() or member.isfile()):
+                raise ValueError('Unsupported archive member: '+member.name)
+            archive.extract(member,target)
     engine = root/'reference_cases.py'
     engine.write_text(cfg.pop('engine'))
-    (root/'lanes.py').write_text(cfg.pop('lanes'))
-    (root/'case_batch.py').write_text(cfg.pop('case_batch'))
-    (root/'case_cache.py').write_text(cfg.pop('case_cache'))
-    broker = cfg.pop('device_broker', None)
-    if broker is not None:
-        (root/'device_broker.py').write_text(broker)
+    for name in ('lanes','case_batch','case_cache','device_broker','profiler_capture','case_pairs','early_abort'):
+        source = cfg.pop(name, None)
+        if source is not None:
+            (root/(name+'.py')).write_text(source)
     (root/'config.json').write_text(json.dumps(cfg))
     sys.exit(subprocess.call([sys.executable,'-u',str(engine)],cwd=repo))
 """
@@ -363,8 +381,12 @@ def run(
     level=None,
     dry_run=False,
     stream=True,
+    compare=None,
 ):
     """Run one level of the platform suite (or a custom experiment) as one device job.
+
+    ``compare`` names a baseline commit: the run becomes an A/B paired experiment in which the
+    two builds alternate within the job (runtime/npu_runtime/case_pairs.py, scheduler.paired_timing).
 
     `level` is smoke, standard or final; None means standard, except that a custom
     experiment without a level keeps the legacy targeted probe. The deprecated `suite`
@@ -378,6 +400,16 @@ def run(
     spec = suites.load_suite(ws, title, profile_path)
     profile = suites.to_profile(spec)
     oracle, cases = catalog(repo, sha, profile)
+    if compare == "board":
+        from .receipt_predict import board_sha
+        compare = board_sha(ws, title)
+        if not compare:
+            raise ValueError("No judged board SHA to compare against yet")
+    base_sha = committed(repo, compare) if compare else None
+    if base_sha == sha:
+        raise ValueError("compare needs a baseline commit other than the candidate")
+    if base_sha and catalog(repo, base_sha, profile)[0] != oracle:
+        raise ValueError("A paired run needs the same frozen oracle in both commits")
     if ids and set(ids) - {r["id"] for r in cases}:
         raise ValueError("Unknown case ID for this commit")
     if bucket and not any(bucket in r["buckets"] for r in cases):
@@ -397,7 +429,7 @@ def run(
         selected, selection, formal = suites.select(cases, spec, base, folder=folder)
     if not selected:
         raise ValueError("Empty case selection")
-    formal = formal and not custom
+    formal = formal and not custom and not base_sha  # paired evidence is kept apart from formal runs
     probe = selection not in ("explicit", "standard", "final")
     # An explicit case list measures like standard; it keeps the requested level's device tier.
     proto = suites.protocol(spec, "standard" if selection == "explicit" else base)
@@ -437,17 +469,29 @@ def run(
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
         "case_cache_bytes": _dev("case_cache_bytes") or None,  # global LRU budget on the device host
+        "profiler": profiler_settings(base),
+        "merge_batches": _dev("merge_batches") != "off",  # share one lock hold with other problems
     }
+    if base == "standard" and not custom and not base_sha:
+        cfg["early_abort"] = early_abort_config(ws, title, sha, cases)
+    if base_sha:
+        cfg["compare"] = base_sha  # rounds = repeats; each round runs every case once per arm
+        # The device profiles one process at a time: with both arms' sessions alive only the
+        # first would be profiled (P10-timing.md), so a paired run compares event timings.
+        cfg["profiler"] = None
+        experiment = experiment or f"paired:{base_sha[:7]}"
     engine = (Path(runner) if runner else RUNNER).read_text()
-    modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch", "case_cache")}
-    broker = RUNNER.with_name("device_broker.py")
-    if broker.is_file():
-        modules["device_broker"] = broker.read_text()
+    modules = {name: RUNNER.with_name(name + ".py").read_text()
+               for name in ("lanes", "case_batch", "case_cache", "early_abort")}
+    for optional in ("device_broker", "profiler_capture", "case_pairs"):
+        if RUNNER.with_name(optional + ".py").is_file():
+            modules[optional] = RUNNER.with_name(optional + ".py").read_text()
     run_id = uuid.uuid4().hex
     cfg["run_id"] = run_id
     dest = folder / "bench-runs" / run_id
     report = {
-        "version": 1,
+        # 2: per-case timing_source with event_* and profiler_* samples and minima (4.1 route #1).
+        "version": 2,
         "scheme": "custom" if runner else "reference",
         "title": title,
         "sha": sha,
@@ -469,6 +513,8 @@ def run(
         "host": host,
         "settings": {k: v for k, v in cfg.items() if k != "selected"},
     }
+    if base_sha:
+        report["compare"] = {"base_sha": base_sha, "rounds": cfg["repeats"]}
     if dry_run:
         return {**report, "dry_run": True, "exit_code": 0}
     key = digest([host, engine, profile, formal, oracle,
@@ -484,6 +530,21 @@ def run(
     path = folder / "bench-runs" / shared["run_id"] / "report.json"
     announce(shared["run_id"], path.parent, shared.get("level", level_label), len(shared.get("selected", [])))
     return {**shared, "report": str(path)}
+
+
+def write_archive(out, repo, sha, base_sha=None):
+    """``git archive`` of ``sha``; a paired run also carries ``base_sha``, both under a prefix."""
+    if not base_sha:
+        subprocess.run(["git", "-C", repo, "archive", "--format=tar.gz", sha], stdout=out, check=True)
+        return
+    import tarfile
+    with tarfile.open(fileobj=out, mode="w|gz") as merged:
+        for prefix, rev in (("cand/", sha), ("base/", base_sha)):
+            tree = subprocess.run(["git", "-C", repo, "archive", "--format=tar", f"--prefix={prefix}", rev],
+                                  stdout=subprocess.PIPE, check=True).stdout
+            with tarfile.open(fileobj=__import__("io").BytesIO(tree), mode="r:") as part:
+                for member in part:
+                    merged.addfile(member, part.extractfile(member) if member.isfile() else None)
 
 
 def announce(run_id, folder, level, selected):
@@ -532,11 +593,7 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
             with tempfile.TemporaryFile() as payload:
                 payload.write((json.dumps({**cfg, "engine": engine, **modules}) + "\n").encode())
                 payload.flush()
-                subprocess.run(
-                    ["git", "-C", repo, "archive", "--format=tar.gz", sha],
-                    stdout=payload,
-                    check=True,
-                )
+                write_archive(payload, repo, sha, cfg.get("compare"))
                 payload.seek(0)
                 with subprocess.Popen(
                     [
@@ -575,7 +632,8 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
                                 raise ValueError("Unexpected case result")
                             # `device_us` holds warm samples only; `cold_us` holds the discarded warmups.
                             cold = msg.pop("cold_us", None) or []
-                            for samples in (msg.get("device_us", []), cold):
+                            for samples in (msg.get("device_us", []), cold,
+                                            *(msg.get(f) or [] for f in TIMING_LISTS)):
                                 if not isinstance(samples, list) or any(
                                     type(n) not in (int, float)
                                     or not math.isfinite(n)
@@ -627,7 +685,11 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         event("finish", exit_code=report["exit_code"], summary=summary)
         # Warmup executions absorb kernel load and session setup; only warm samples count.
         reasons = warm_timing(rows, report, cfg)
-        report["timing_source"] = "event_warm"
+        report["timing_source"] = timing.run_source(rows, report)
+        if (report.get("device_batch") or {}).get("aborted_early"):
+            report["aborted_early"] = report["device_batch"]["aborted_early"]
+        if report.get("compare"):
+            pair_statistics(folder.parents[2], report, rows)
         report["timing_score_eligible"] = not reasons
         report["digest"] = build_digest(folder.parents[2], report, rows, reasons)
         env = report.get("environment", {})
@@ -689,6 +751,38 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
     return {**report, "report": str(dest / "report.json")}
 
 
+def pair_statistics(ws, report, rows):
+    """Per-case paired ratio (baseline over candidate) and interval of a paired run.
+
+    Both arms read the same timer: the profiler when it covered every round of both arms,
+    else the event timer with the case map's launch overhead removed first.
+    """
+    try:
+        doc = case_map.current(ws, report["title"])
+        offset = float(doc.get("offset_us") or 0.0) if case_map.usable(doc) else 0.0
+    except (OSError, ValueError, KeyError, TypeError):
+        offset = 0.0
+    used = set()
+    for key in report["selected"]:
+        row = rows[key]
+        chosen = paired_timing.case_pairs(row)
+        if chosen is None:
+            continue
+        source, a, b = chosen
+        shift = 0.0 if source == "profiler" else offset
+        ci = paired_timing.interval(a, b, offset_us=shift)
+        if ci:
+            row["pair"] = dict(ci, source=source, offset_us=shift)
+            boot = paired_timing.bootstrap(a, b, offset_us=shift)
+            if boot:
+                row["pair_bootstrap"] = {k: boot[k] for k in ("lo", "hi")}
+            used.add(source)
+    report["compare"]["source"] = used.pop() if len(used) == 1 else ("mixed" if used else None)
+    ratios = [r["pair"]["ratio"] for r in rows.values() if r.get("pair") and r.get("source") == "official"]
+    report["compare"]["geomean_ratio"] = (round(math.exp(sum(math.log(x) for x in ratios) / len(ratios)), 4)
+                                          if ratios else None)
+
+
 def warm_timing(rows, report, cfg):
     """Write warm statistics on every timed case; return why the run is not score-eligible."""
     timed = set(report.get("timed", []))
@@ -711,7 +805,9 @@ def warm_timing(rows, report, cfg):
             median_us=statistics.median(samples) if samples else None,
             cold_us=cold[0] if cold else None,
             samples=len(samples),
+            timing_source=row.get("timing_source") or "event",
         )
+        timing.source_minima(row)
         if row["status"] != "PASS" or not samples:
             reasons.append(f"timed case {key} has no warm samples ({row['status']})")
     return reasons
@@ -769,11 +865,13 @@ def timing_offset(ledger, title, sha, rows, official, cache=None, doc=None):
             calibration = row
     if calibration is not None and doc is not None:
         judged = _judge_view(calibration, doc, "times")
-        gaps = [rows[lid]["min_us"] - judged[key] for lid, key in _timing_pairs(doc)
-                if lid in rows and key in judged and _positive(rows[lid].get("min_us"))]
+        # The overhead belongs to the event timer: profiler readings never calibrate it.
+        gaps = [timing.case_value(rows[lid], "event") - judged[key] for lid, key in _timing_pairs(doc)
+                if lid in rows and key in judged and timing.case_value(rows[lid], "event")]
     elif calibration is not None:
-        gaps = [rows[cid]["min_us"] - judged for cid, judged in zip(official, calibration["public_times_us"])
-                if _positive(judged) and _positive(rows[cid].get("min_us"))]
+        gaps = [timing.case_value(rows[cid], "event") - judged
+                for cid, judged in zip(official, calibration["public_times_us"])
+                if _positive(judged) and cid in rows and timing.case_value(rows[cid], "event")]
     if gaps:
         offset = round(max(0.0, statistics.median(gaps)), 3)
         if cache is not None:
@@ -818,7 +916,8 @@ def public_estimate(ledger, title, rows, sha=None, cache=None, doc=None):
         mine = rows[cid].get("min_us")
         if _positive(tbest) and _positive(mine):
             raw[cid] = round(min(tbest / mine, 1.5), 3)
-            kernel = max(mine - offset, 0.1 * mine) if offset is not None else mine
+            event = (rows[cid].get("timing_source") or "event") == "event"
+            kernel = max(mine - offset, 0.1 * mine) if offset is not None and event else mine
             ratios[cid] = round(min(tbest / kernel, 1.5), 3)
     mean = lambda values: round(sum(values) / len(values), 3) if values else None
     out = {
@@ -832,6 +931,48 @@ def public_estimate(ledger, title, rows, sha=None, cache=None, doc=None):
     if doc is not None:
         out["case_map"] = doc.get("method")
     return out
+
+
+EARLY_ABORT = {"enabled": True, "factor": 1.25, "cases": 3, "min_us": 200.0}
+
+
+def best_pass_sha(ledger, title, sha):
+    """The judged Pass SHA with the best official score, other than ``sha``."""
+    best = None
+    for row in ledger:
+        if row.get("title") != title or row.get("status") != "Pass" or _row_sha(row) in ("", sha):
+            continue
+        score = row.get("score")
+        if type(score) in (int, float) and (best is None or score > best[0]):
+            best = (score, _row_sha(row))
+    return best[1] if best else None
+
+
+def early_abort_config(ws, title, sha, cases):
+    """R9 thresholds for a standard run: event minima of the best Pass SHA on the same inputs.
+
+    ``scheduler.early_abort`` in config.json overrides the defaults; ``{"enabled": false}``
+    turns it off. None when there is no measured baseline.
+    """
+    from .parhelion_paths import read_parhelion_scheduler_config
+    if os.environ.get("OPSB_EARLY_ABORT") == "off":  # measurement runs that must time every case
+        return None
+    try:
+        settings = {**EARLY_ABORT, **(read_parhelion_scheduler_config().get("early_abort") or {})}
+        base_sha = best_pass_sha(_ledger(ws), title, sha) if settings.get("enabled") else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not base_sha:
+        return None
+    key = pairing.official_key(cases)
+    docs = [read_doc(path) for path in (ws / "results" / title / base_sha).glob("bench-runs/*/report.json")]
+    docs = [d for d in docs if d.get("timing_score_eligible") is True and d.get("formal") is True
+            and (key is None or pairing.pairing_key(d) == key)]
+    baseline = timing.best_minima(docs, "event")
+    if not baseline:
+        return None
+    return {"baseline_us": baseline, "base_sha": base_sha, "factor": float(settings["factor"]),
+            "cases": int(settings["cases"]), "min_us": float(settings["min_us"])}
 
 
 def baseline_comparison(ws, ledger, report, rows):
@@ -861,8 +1002,10 @@ def baseline_comparison(ws, ledger, report, rows):
     before = {}
     for doc in candidates:
         for c in doc.get("cases", []):
-            if _positive(c.get("min_us")):
-                before[c["id"]] = min(before.get(c["id"], c["min_us"]), c["min_us"])
+            row = rows.get(c.get("id")) or {}
+            value = timing.doc_value(doc, c, row.get("timing_source") or "event")  # same timer as this run
+            if value is not None:
+                before[c["id"]] = min(before.get(c["id"], value), value)
     speedups = {}
     for key, row in rows.items():
         if row.get("min_us") and before.get(key):
@@ -894,9 +1037,11 @@ def failure_detail(row):
 NOISY_RATIO = 1.5
 
 
-def best_known_minima(ws, report):
-    """Per-case best warm minimum over earlier eligible runs of the same SHA and official inputs."""
+def best_known_minima(ws, report, rows=None):
+    """Per-case best warm minimum over earlier eligible runs of the same SHA and official inputs,
+    read in the timing source each case used in this run."""
     best = {}
+    rows = rows or {}
     folder = ws / "results" / report["title"] / report["sha"] / "bench-runs"
     for path in folder.glob("*/report.json"):
         doc = read_doc(path)
@@ -904,8 +1049,9 @@ def best_known_minima(ws, report):
                 or not pairing.same_inputs(doc, report)):
             continue
         for c in doc.get("cases", []):
-            if _positive(c.get("min_us")):
-                best[c["id"]] = min(best.get(c["id"], c["min_us"]), c["min_us"])
+            value = timing.doc_value(doc, c, (rows.get(c.get("id")) or {}).get("timing_source") or "event")
+            if value is not None:
+                best[c["id"]] = min(best.get(c["id"], value), value)
     return best
 
 
@@ -927,7 +1073,7 @@ def build_digest(ws, report, rows, reasons=()):
     )[:5]
     timed = sorted((r for r in selected if r.get("min_us")), key=lambda r: -r["min_us"])[:20]
     ledger = _ledger(ws)
-    history = best_known_minima(ws, report)
+    history = best_known_minima(ws, report, rows)
     drift = timer_drift(rows, history)
     noisy = drift is not None and drift > NOISY_RATIO
     # Comparisons use the best warm minimum this SHA has shown, including this run.
@@ -942,6 +1088,9 @@ def build_digest(ws, report, rows, reasons=()):
                              doc=doc if case_map.usable(doc) else None)
     baseline, missing = baseline_comparison(ws, ledger, report, best_rows)
     hints = list(reasons[:2])
+    if report.get("aborted_early"):
+        hints.insert(0, "aborted early: slower than " + str(report["aborted_early"].get("base_sha", ""))[:7]
+                     + " on the first timed cases; the rest was not measured")
     if noisy:
         hints.append(f"timer read x{drift} slower than this SHA's best run; comparisons use the best run")
     if failures:
@@ -957,7 +1106,7 @@ def build_digest(ws, report, rows, reasons=()):
                       "detail": failure_detail(r)[:200]} for r in failures],
         "timing": {
             "eligible": not reasons,
-            "source": "event_warm",
+            "source": report.get("timing_source", "event_warm"),
             "drift": drift,
             "noisy": noisy,
             "warmup": report.get("settings", {}).get("warmup"),
@@ -971,7 +1120,20 @@ def build_digest(ws, report, rows, reasons=()):
         "baseline": baseline,
         "hint": "; ".join(hints)[:200],
     }
+    if report.get("compare"):
+        doc["paired"] = paired_digest(report, rows)
     return shrink_digest(doc)
+
+
+def paired_digest(report, rows):
+    """Paired-run summary: baseline, timer, geometric-mean ratio and the cases that moved most."""
+    compare = report.get("compare")
+    if not compare:
+        return None
+    moved = sorted((r for r in rows.values() if r.get("pair")), key=lambda r: -abs(math.log(r["pair"]["ratio"])))
+    return {"base": compare["base_sha"][:7], "source": compare.get("source"),
+            "geomean_ratio": compare.get("geomean_ratio"),
+            "cases": {r["id"]: [r["pair"]["ratio"], r["pair"]["lo"], r["pair"]["hi"]] for r in moved[:8]} or None}
 
 
 def _size(doc):
@@ -982,7 +1144,7 @@ def shrink_digest(doc, limit=DIGEST_LIMIT):
     """Drop the least informative detail first until the digest fits."""
     for failure in doc["failures"] if _size(doc) > limit else []:
         failure["detail"] = failure["detail"][:60]
-    for part in (("timing", "cases"), ("public", "cases"), ("baseline", "cases")):
+    for part in (("timing", "cases"), ("public", "cases"), ("baseline", "cases"), ("paired", "cases")):
         holder = doc.get(part[0])
         while _size(doc) > limit and holder and holder.get(part[1]):
             entries = holder[part[1]]
@@ -1011,11 +1173,14 @@ def result_line(result):
     return line
 
 
-def _warm_us(row):
-    """Warm minimum of a case; the median of its device samples for reports without one."""
-    if row.get("min_us"):
-        return row["min_us"]
-    return statistics.median(row["device_us"]) if row.get("device_us") else None
+def _warm_us(row, source="event"):
+    """Warm minimum of a case in one timer; the median of its device samples for old reports."""
+    value = timing.case_value(row, source)
+    if value is not None:
+        return value
+    if source == "event" and not row.get("min_us") and row.get("device_us"):
+        return statistics.median(row["device_us"])
+    return None
 
 
 def compare_runs(left, right):
@@ -1041,7 +1206,9 @@ def compare_runs(left, right):
             "after": b["status"],
             "buckets": b["buckets"],
         }
-        before_us, after_us = _warm_us(a), _warm_us(b)
+        source = "profiler" if _warm_us(a, "profiler") and _warm_us(b, "profiler") else "event"
+        before_us, after_us = _warm_us(a, source), _warm_us(b, source)
+        row["timing_source"] = source
         if same_env and a["status"] == b["status"] == "PASS" and before_us and after_us:
             row.update(before_us=before_us, after_us=after_us)
             row["speedup"] = row["before_us"] / row["after_us"]

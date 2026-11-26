@@ -27,6 +27,8 @@ STARVATION_SEC = 1800
 LONG_RUN_SEC = float(os.environ.get("OPSB_LONG_RUN_SEC") or 2.0)
 LONG_RUN_REPEATS = 2
 START_WAIT_SEC = 5.0
+#: Jobs of different problems that follow each other in WSPT order run under one lock hold.
+MERGE_LIMIT = 3
 
 
 def broker_dir():
@@ -39,6 +41,19 @@ def ticket_dir():
 
 def source_version(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def bundle_version(source_text, companions=None):
+    """Version of the broker script plus the companion modules shipped next to it."""
+    return source_version(source_text + "".join(companions[name] for name in sorted(companions or {})))
+
+
+def _companion(name):
+    """A companion module (``--lib``); None when this broker was started without it."""
+    try:
+        return __import__(name)
+    except ImportError:
+        return None
 
 
 def _write_json(path, data):
@@ -166,12 +181,16 @@ def _matches(info, version, lock):
                 and not info.get("draining"))
 
 
-def ensure_broker(cfg, source_text):
-    """Return the socket path of a broker running ``source_text``, starting one if needed, else None."""
+def ensure_broker(cfg, source_text, companions=None):
+    """Return the socket path of a broker running ``source_text``, starting one if needed, else None.
+
+    ``companions`` maps module names to sources the broker may import (written to
+    ``lib-<version>/``); they are part of the version, so a changed companion replaces the broker.
+    """
     try:
         directory = broker_dir()
         path = directory / "broker.sock"
-        version = source_version(source_text)
+        version = bundle_version(source_text, companions)
         info = _exchange(path, {"op": "hello"})
         if _matches(info, version, cfg["lock"]):
             return str(path)
@@ -191,10 +210,13 @@ def ensure_broker(cfg, source_text):
             if info is not None:
                 return str(path) if _matches(info, version, cfg["lock"]) else None
             script = directory / f"broker-{version}.py"
-            if not script.exists() or script.read_text(encoding="utf-8") != source_text:
-                temp = script.with_name(script.name + ".tmp")
-                temp.write_text(source_text, encoding="utf-8")
-                temp.replace(script)
+            lib = directory / f"lib-{version}"
+            for target, text in [(script, source_text)] + [(lib / f"{n}.py", t) for n, t in (companions or {}).items()]:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists() or target.read_text(encoding="utf-8") != text:
+                    temp = target.with_name(target.name + ".tmp")
+                    temp.write_text(text, encoding="utf-8")
+                    temp.replace(target)
             try:
                 path.unlink()
             except FileNotFoundError:
@@ -202,7 +224,8 @@ def ensure_broker(cfg, source_text):
             with (directory / "broker.log").open("ab") as log:
                 subprocess.Popen(
                     [sys.executable, "-u", str(script), "--dir", str(directory),
-                     "--lock", cfg["lock"], "--device", str(cfg["device"])],
+                     "--lock", cfg["lock"], "--device", str(cfg["device"])]
+                    + (["--lib", str(lib)] if companions else []),
                     start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                     cwd=str(directory),
                 )
@@ -233,6 +256,11 @@ class Job:
         self.reuse_session = bool(spec.get("reuse_session", True))
         self.executable = str(spec["executable"])
         self.device = str(spec.get("device", "0"))
+        # Profiler task timing (profiler_capture); needs a persistent session per executable.
+        self.profiler = spec.get("profiler") if self.reuse_session else None
+        self.collectors = []
+        self.merge = bool(spec.get("merge", True))
+        self.batch = None  # run IDs of the merged batch this job's current segment belongs to
         self.pending = deque(spec["cases"])
         for case in self.pending:
             int(case["index"]), str(case["id"]), list(case["parts"])
@@ -242,7 +270,7 @@ class Job:
         self.queued_at = time.monotonic()
         self.position = None
         self.cancelled = self.finished = False
-        self.sample = None
+        self.samples = {}
         self.send_lock = threading.Lock()
 
     def key(self, now=None):
@@ -271,12 +299,14 @@ class Job:
 
 
 class Broker:
-    def __init__(self, directory, lock, device, idle=IDLE_EXIT_SEC):
+    def __init__(self, directory, lock, device, idle=IDLE_EXIT_SEC, lib=None):
         self.dir, self.lock_path, self.device, self.idle = Path(directory), lock, device, idle
-        self.version = source_version(Path(__file__).read_text(encoding="utf-8"))
+        companions = {p.stem: p.read_text(encoding="utf-8") for p in Path(lib).glob("*.py")} if lib else {}
+        self.version = bundle_version(Path(__file__).read_text(encoding="utf-8"), companions)
         self.cond = threading.Condition(threading.RLock())
         self.queue = []
         self.running = None
+        self.collecting = 0
         self.draining = self.closing = False
         self.last_active = time.monotonic()
         self.tickets = ticket_dir()
@@ -372,9 +402,9 @@ class Broker:
                 self.queue.remove(job)
                 self._drop_ticket(job)
                 self._refresh()
-            sample = job.sample
+            samples = list(job.samples.values())
             self.cond.notify_all()
-        if sample is not None:
+        for sample in samples:
             sample.kill()
 
     # -- execution
@@ -410,11 +440,12 @@ class Broker:
         base = dict(index=case["index"], total=job.total, id=case["id"], phase="execute",
                     started_epoch=time.time(), timeout_sec=job.case_timeout)
         groups = {"warm": [], "run": []}
+        executed = {"warm": [], "run": []}
         long_case = False
         for number, part in enumerate(parts, 1):
             for phase in ("warm", "run"):
                 paths = part.get("warm" if phase == "warm" else "runs") or []
-                values = []
+                values, done = [], []
                 for repeat, path in enumerate(paths, 1):
                     # Seconds-long executions gain no timing precision from more repeats, and every
                     # repeat holds the only device: one warmup and two timed runs are enough.
@@ -434,11 +465,14 @@ class Broker:
                         return result
                     long_case = long_case or time.monotonic() - began >= LONG_RUN_SEC
                     values.append(result["us"])
+                    done.append(path)
                     if not job.reuse_session:
                         sample.close()
                 groups[phase].append(values)
+                executed[phase].append(done)
         return {"status": "PASS", "samples": [sum(g) for g in zip(*groups["run"])],
-                "cold": [sum(g) for g in zip(*groups["warm"])], "detail": ""}
+                "cold": [sum(g) for g in zip(*groups["warm"])], "detail": "",
+                "paths": list(zip(executed["warm"], executed["run"]))}
 
     def _close_rest(self, job, status, detail):
         while job.pending:
@@ -457,11 +491,24 @@ class Broker:
                       case_progress=dict(index=job.pending[0]["index"], total=job.total, id=job.pending[0]["id"],
                                          phase="execute") if job.pending else None,
                       holder_pid=os.getpid(), segment=job.segments)
+        if job.batch:
+            # Probe-visible: the lock holder names every member of the merged batch.
+            record["batch"] = job.batch
         self._write_session(record)
         job.send("started", wait_sec=round(waited, 3), segment=job.segments)
-        sample = SampleProcess(job.executable, {"device": job.device, "timeout": job.spec["case_timeout"]})
-        with self.cond:
-            job.sample = sample
+        capture = self._capture(job)
+        sample_cfg = {"device": job.device, "timeout": job.spec["case_timeout"]}
+
+        def sample_for(case):
+            # A paired job alternates two builds; each keeps its own persistent session.
+            executable = str(case.get("executable") or job.executable)
+            with self.cond:
+                if executable not in job.samples:
+                    job.samples[executable] = (capture.sample(SampleProcess, executable, sample_cfg) if capture
+                                               else SampleProcess(executable, sample_cfg))
+                return job.samples[executable]
+
+        profiled = {}
         requeue = False
         try:
             while job.pending and not job.cancelled:
@@ -471,9 +518,11 @@ class Broker:
                     break
                 case = job.pending.popleft()
                 job_deadline = time.monotonic() + budget
-                result = self._run_case(job, sample, case, record, job_deadline)
+                result = self._run_case(job, sample_for(case), case, record, job_deadline)
                 if result is None or job.cancelled:
                     break
+                if capture is not None and result["status"] == "PASS":
+                    profiled[case["index"]] = result["paths"]
                 by_job = result["status"] == "TLE" and time.monotonic() >= job_deadline - 0.05
                 if result["status"] == "TLE" and by_job:
                     result["detail"] = f"Job exceeded its {job.spec.get('job_timeout')}s device budget"
@@ -489,40 +538,128 @@ class Broker:
                     break
         finally:
             with self.cond:
-                job.sample = None
-            sample.close(kill=job.cancelled)
+                samples, job.samples = list(job.samples.values()), {}
+            for sample in samples:
+                # Under the profiler this returns once the device phase is over; export continues.
+                sample.close(kill=job.cancelled)
             self.session.unlink(missing_ok=True)
         record["hold_sec"] = round(time.monotonic() - started, 4)
         job.hold += time.monotonic() - started
-        return record, requeue and not job.cancelled
+        if capture is not None:
+            record["profiler_release_sec"] = capture.release_seconds()
+        return record, requeue and not job.cancelled, (capture, profiled) if capture is not None else None
+
+    def _capture(self, job):
+        """Profiler capture for this segment, or None (then the event timer is the only source)."""
+        if not job.profiler:
+            return None
+        module = _companion("profiler_capture")
+        capture = module.Capture(job.profiler, root=job.profiler.get("dir")) if module else None
+        if capture is None or not capture.available:
+            job.send("profiler", status="unavailable", segment=job.segments,
+                     detail="broker has no profiler_capture" if capture is None else "profiler not found")
+            return None
+        return capture
+
+    def _collect(self, job, capture, profiled, segment):
+        """Phase C, off the device lock: wait for the export, attribute tasks, report per case."""
+        began = time.monotonic()
+        try:
+            results, notes = capture.collect(profiled)
+        except Exception as exc:  # a parsing bug must not lose the event results already sent
+            results, notes = {i: {"error": f"profile collection failed: {exc!r}"} for i in profiled}, []
+        for index, value in sorted(results.items()):
+            job.send("profile", index=index, **value)
+        job.send("profiler", status="collected", segment=segment, release_sec=capture.release_seconds(),
+                 collect_sec=round(time.monotonic() - began, 3), cases=len(results),
+                 parsed=sum(1 for v in results.values() if "samples" in v), notes=notes[-4:])
+        with self.cond:
+            self.collecting -= 1
+            self.cond.notify_all()
 
     def _finish(self, job):
         with self.cond:
-            job.finished = True
             if self.running is job:
                 self.running = None
             self.last_active = time.monotonic()
-        job.send("done", wait_sec=round(job.wait, 3), hold_sec=round(job.hold, 3), segments=job.segments)
+        if any(t.is_alive() for t in job.collectors):
+            # The device is free for the next job; "done" waits for this job's profile export.
+            threading.Thread(target=self._finish_after_collect, args=(job,), daemon=True).start()
+            return
+        self._done(job)
+
+    def _finish_after_collect(self, job):
+        for thread in job.collectors:
+            thread.join()
+        self._done(job)
+
+    def _done(self, job):
+        with self.cond:
+            job.finished = True
+            self.last_active = time.monotonic()
+        job.send("done", wait_sec=round(job.wait, 3), hold_sec=round(job.hold, 3), segments=job.segments,
+                 batch=job.batch)
         try:
             job.conn.shutdown(socket.SHUT_WR)
         except OSError:
             pass
 
+    def _take_batch(self):
+        """The WSPT head plus up to MERGE_LIMIT - 1 directly following jobs of other problems.
+
+        Merging stops at the first job that cannot join (same problem, or merging switched off),
+        so the execution order stays the WSPT order.
+        """
+        head = self._take()
+        if head is None:
+            return []
+        batch = [head]
+        with self.cond:
+            while head.merge and len(batch) < MERGE_LIMIT and self.queue:
+                self._prune()
+                if not self.queue:
+                    break
+                now = time.time()
+                nxt = max(self.queue, key=lambda j: j.key(now))
+                if not nxt.merge or nxt.spec.get("title") in {j.spec.get("title") for j in batch}:
+                    break
+                self.queue.remove(nxt)
+                self._drop_ticket(nxt)
+                nxt.position = None
+                batch.append(nxt)
+            if len(batch) > 1:
+                self._refresh()
+        return batch
+
     def serve_one(self):
         with open(self.lock_path, "a") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
-                job = self._take()
-                if job is None:
-                    return
-                try:
-                    record, requeue = self._segment(job)
-                except Exception as exc:  # A broker bug must not strand the client or the lock.
-                    job.send("error", detail=f"Broker failure: {exc!r}")
-                    job.pending.clear()
-                    record, requeue = None, False
+                batch = self._take_batch()
+                members = [j.run_id for j in batch] if len(batch) > 1 else None
+                for job in batch:
+                    # Each member keeps its own segment, TLE/requeue and wait/hold accounting.
+                    job.batch = members
+                    with self.cond:
+                        self.running = job
+                    try:
+                        record, requeue, profile = self._segment(job)
+                    except Exception as exc:  # A broker bug must not strand the client or the lock.
+                        job.send("error", detail=f"Broker failure: {exc!r}")
+                        job.pending.clear()
+                        record, requeue, profile = None, False, None
+                    self._after_segment(job, record, requeue, profile)
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _after_segment(self, job, record, requeue, profile):
+        """Ledger, release report, profile collection and requeue or finish for one member."""
+        if profile is not None and profile[1]:
+            with self.cond:
+                self.collecting += 1
+            thread = threading.Thread(target=self._collect, args=(job, *profile, job.segments), daemon=True)
+            job.collectors.append(thread)
+            thread.start()
         if record is not None:
             record.update(ended_epoch=time.time())
             try:
@@ -531,7 +668,7 @@ class Broker:
             except OSError:
                 pass
             job.send("released", hold_sec=record["hold_sec"], segment=job.segments,
-                     requeued=len(job.pending) if requeue else 0)
+                     requeued=len(job.pending) if requeue else 0, batch=job.batch)
         if requeue:
             with self.cond:
                 self.running = None
@@ -578,6 +715,9 @@ class Broker:
                 with self.cond:
                     self._prune()
                     if not self.queue:
+                        if self.collecting:
+                            self.cond.wait(1.0)  # profile exports still owe their clients a result
+                            continue
                         if self.draining or time.monotonic() - self.last_active >= self.idle:
                             self.closing = True
                             break
@@ -600,9 +740,12 @@ def main(argv=None):
     parser.add_argument("--dir", required=True)
     parser.add_argument("--lock", required=True)
     parser.add_argument("--device", default="0")
+    parser.add_argument("--lib", help="Directory of companion modules (profiler_capture)")
     args = parser.parse_args(argv)
+    if args.lib:
+        sys.path.insert(0, args.lib)
     idle = float(os.environ.get("OPSB_BROKER_IDLE") or IDLE_EXIT_SEC)
-    Broker(args.dir, args.lock, args.device, idle=idle).serve()
+    Broker(args.dir, args.lock, args.device, idle=idle, lib=args.lib).serve()
 
 
 if __name__ == "__main__":
