@@ -311,6 +311,22 @@ def test_report_tool_is_registered_for_both_roles() -> None:
         assert view in orchestrator["parhelion_report"]["description"]
 
 
+def test_view_help_documents_every_column_without_spilling() -> None:
+    """The column docs moved out of the schema (4.2 J-2) must stay reachable from the tool itself."""
+    help_ = call_tool("parhelion_report", {"view": "help"}, Path("/tmp"))
+    text = json.dumps(help_, ensure_ascii=False, separators=(",", ":"))
+    assert len(text.encode("utf-8")) < 4096, "the help reply must stay under the output cap, never spill"
+    assert set(help_["columns"]) == {"per_case", "diff", "history"}
+    assert set(help_["views"]) | set(help_["columns"]) == set(handlers_report.VIEWS) - {"help"}
+    assert list(help_["columns"]["per_case"]) == list(handlers_report.PER_CASE_COLUMNS)
+    assert list(help_["columns"]["diff"]) == list(handlers_report.DIFF_COLUMNS)
+    for columns in help_["columns"].values():
+        assert all(isinstance(meaning, str) and meaning for meaning in columns.values())
+    # help needs no problem and no bound worker, so any caller can ask for it
+    assert call_tool("parhelion_report", {"view": "help"}, Path("/tmp"), role="worker",
+                     agent_id="worker-unbound")["view"] == "help"
+
+
 def test_trim_enforces_the_byte_budget() -> None:
     doc = {"cases": [["case-%02d" % i, i, i, i, i, i, i, False, "j", True, "l", "event", True, None, None, True,
                       None, "", "run"] for i in range(200)]}

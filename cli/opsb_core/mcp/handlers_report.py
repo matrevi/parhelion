@@ -6,6 +6,10 @@ and ``diff`` live here because they compare stored runs of one problem, while ``
 shaping helpers of ``report_views`` (byte budget, rounding, report documents). A worker reads its
 own problem only; ``board`` and ``env`` also serve workers. Hard budgets: ``per_case``/``diff`` 4KB,
 ``env`` 1KB; list views page with ``offset``/``limit`` or ``cursor``.
+
+``view="help"`` carries the per-column meanings that used to sit in the tool description (4.2 J-2):
+the schema of a tool travels in every model call, a reply travels only when asked for. The answer is
+about 2 KB, well inside ``mcp.output_cap_bytes``, so it never spills.
 """
 from __future__ import annotations
 
@@ -33,11 +37,79 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     _trim,
 )
 
-VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "env")
+VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "env", "help")
 PER_CASE_COLUMNS = ("case", "ours_us", "tbest_us", "gap_pct", "speedup", "band_pct", "verdict", "noisy",
                     "judge", "mapped", "local", "timer", "passed", "exit_code", "mismatch_n", "strict_fp32",
                     "cal", "wa", "run")
 DIFF_COLUMNS = ("case", "ratio", "lo", "hi", "n", "method", "timer", "bootstrap", "verdict")
+
+# What ``view="help"`` answers: the meaning of every row column and of the list views. It lives here
+# instead of in the MCP schema because the schema is sent with every model call (4.2 J-2).
+HELP: dict[str, dict[str, Any]] = {
+    "columns": {
+        "per_case": {
+            "case": "judge case id",
+            "ours_us": "our per-case time, us",
+            "tbest_us": "best known time on the same generation",
+            "gap_pct": "percent above tbest",
+            "speedup": "ratio against the base SHA from the state card, 4 decimals",
+            "band_pct": "noise band, percent",
+            "verdict": "paired verdict: improved, regressed or indistinguishable",
+            "noisy": "the verdict sits inside the noise band",
+            "judge": "judge case id the row is compared as",
+            "mapped": "a local case maps to the judge case",
+            "local": "local case id",
+            "timer": "event or profiler",
+            "passed": "local run passed",
+            "exit_code": "local run exit code",
+            "mismatch_n": "mismatched elements the local run reported",
+            "strict_fp32": "run setting",
+            "cal": "per-case calibration label",
+            "wa": "reproducer state of the newest WA/RE receipt",
+            "run": "short run id",
+        },
+        "diff": {
+            "case": "case id",
+            "ratio": "base time divided by candidate time",
+            "lo": "low end of the interval on ratio",
+            "hi": "high end of the interval on ratio",
+            "n": "samples per side",
+            "method": "interval method",
+            "timer": "event or profiler",
+            "bootstrap": "[lo, hi] of a stored paired bootstrap",
+            "verdict": "improved, regressed or indistinguishable",
+        },
+        "history": {
+            "sid": "submission id",
+            "sha": "submitted commit",
+            "status": "official status text",
+            "score": "official score",
+            "beat_board": "score above the board when it was submitted",
+            "at": "submission time",
+            "note": "receipt note",
+            "cases": "[case, ours_us, tbest_us, ratio], up to 20 rows",
+            "mean_ratio": "mean of the per-case ratios",
+        },
+    },
+    "views": {
+        "per_case": "one row per case, defaults sha=HEAD and base=the same-generation board SHA",
+        "diff": "cases above come from a stored paired report or from separate-run minima with a Welch interval",
+        "history": "problems[] carries the judged count, best judged score and the latest receipt",
+        "queue": "same source as `opsb queue list --json`; items carry id, kind, title, sha, badge, raw_status, "
+                 "current/estimated/actual/delta score, gate lamps, note/detail/next_step, can_approve/skip/restore; "
+                 "never an account field",
+        "board": "cached board score, rank, total_teams, frontier top1/top5, observed_at, per-case tbest when a "
+                 "problem is named, and the team ranking; reads the cache only, no network",
+        "bottleneck": "category and limited_resource_pct from the PMU card, top_metrics (3 buckets), fixes "
+                      "(KB ids and summaries), raw report/log/run_dir paths",
+        "env": "platform version and root, daemon liveness, workspace/results/state dirs and free disk, <=1KB; "
+               "no account, session or credential field",
+    },
+}
+
+
+def _help() -> dict[str, Any]:
+    return {"view": "help", **HELP}
 
 
 # ---------------------------------------------------------------- caller and documents
@@ -255,6 +327,8 @@ def tool_parhelion_report(args: dict[str, Any], workspace: Path) -> dict[str, An
     view = str(args.get("view") or "").strip().lower()
     if view not in VIEWS:
         raise ValueError("view must be one of " + ", ".join(VIEWS))
+    if view == "help":  # role- and problem-independent: it documents the other views
+        return _help()
     ws = Path(workspace).expanduser().resolve()
     role, problem = _caller(args, ws)
     if view == "env":
