@@ -5,6 +5,7 @@ import argparse
 
 from .commands.admin_cmd import run_auth, run_collab, run_skills, run_ssh, run_workspace
 from .commands.bench_cmd import run_bench
+from .commands.close_cmd import register_close_subcommands
 from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.driver_mcp_cmd import register_driver_and_mcp_subcommands
 from .commands.doctor_cmd import register_doctor_subcommands
@@ -526,6 +527,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     register_kb_subcommands(sub)
     register_replay_subcommands(sub)
+    register_close_subcommands(sub)
 
     register_doctor_subcommands(sub)
     register_driver_and_mcp_subcommands(sub)

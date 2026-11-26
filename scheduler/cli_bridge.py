@@ -927,6 +927,39 @@ class SchedulerEngine:
             "verdict": verdict.to_dict(),
         }
 
+    def close_sweep(self, enqueue: bool = False) -> dict[str, Any]:
+        """4.3 P25 closing reconciliation (`opsb close-sweep`).
+
+        The three lists come from `scheduler.close_sweep`; nothing is merged and no branch is touched.
+        With `enqueue`, each restore row is handed to the normal gate as `intent=restore`, so
+        approval, quota and the administrator's auto-submit switch still decide dispatch.
+        """
+        from . import close_sweep as closing
+
+        self.refresh_models()
+        doc = closing.sweep(self.workspace, self.estimator)
+        doc["window_notice"] = closing.window_notice(self.workspace, doc)
+        if not enqueue:
+            return doc
+        queued: list[dict[str, Any]] = []
+        for row in doc["restore"]:
+            try:
+                out = self.submit(title=row["title"], sha=row["best_sha"],
+                                  note=f"close sweep: restore {row['best_sha']} ({row['gap']:+.2f} pts)",
+                                  intent="restore")
+            except Exception as exc:  # one unpriced SHA never stops the sweep
+                queued.append({"title": row["title"], "sha": row["best_sha"], "enqueued": False,
+                               "error": str(exc)[:160]})
+                continue
+            verdict = out.get("verdict") or {}
+            queued.append({"title": row["title"], "sha": row["best_sha"],
+                           "enqueued": bool(out.get("enqueued")), "approved": bool(verdict.get("approved")),
+                           "status_tag": verdict.get("status_tag"), "intent_code": verdict.get("intent_code"),
+                           "priority_score": verdict.get("priority_score"),
+                           "gate_reason": str(verdict.get("gate_reason") or "")[:200]})
+        doc["enqueued"] = queued
+        return doc
+
     def override(
         self,
         title: str,
@@ -1674,6 +1707,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_dr.add_argument("--interval", type=int, default=180, help="Seconds between watch iterations")
     p_dr.add_argument("--dry-run", action="store_true", help="Preview WSPT drain plan without submitting")
 
+    p_cs = sub.add_parser("close-sweep", parents=[common],
+                          help="4.3 closing reconciliation: restore, merge and best/* lists")
+    p_cs.add_argument("--enqueue", action="store_true",
+                      help="Queue each restore row through the gate with intent=restore")
+
     p_ov = sub.add_parser("override", parents=[common], help="Approve, skip, or rollback a submission")
     p_ov.add_argument("--title", required=True, help="Operator problem title")
     p_ov.add_argument("--sha", default=None, help="Commit SHA (optional for --action rollback)")
@@ -1838,6 +1876,8 @@ def main(argv: list[str] | None = None) -> int:
                 interval_sec=args.interval,
                 dry_run=args.dry_run,
             )
+        elif args.command == "close-sweep":
+            payload = engine.close_sweep(enqueue=args.enqueue)
         elif args.command == "override":
             payload = engine.override(
                 title=args.title,
