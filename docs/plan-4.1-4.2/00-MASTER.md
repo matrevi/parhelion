@@ -118,6 +118,6 @@
 | P14 | impl/P14-peer-protocol | 已合入 | f92efeb | 回放：peer 字节 −69%、result −81%，219 条 peer 合并成 135 次投递；跟进见 reviews/P14.md |
 | P15 | impl/P15-worker-boundary | 已合入 | a419f41 | 回放扫描 11/13 个 worker 共 130 次越界，检出已知 `_all_team_sessions` 事件；Codex 权限块未在真机验证 |
 | P17 | impl/P17-v2-calibrate | 已合入 | 746e928 | 真机：已知通过 SHA 无误报；a2717b5 仍只在平局变体上失败 |
-| P16 | impl/P16-measure | 可开工（P12、P13 已合入） | | 主会话据报告决定 H/I/J |
+| P16 | impl/P16-measure | 已合入 | 302d58c | H 无驱动接口、I 无可挡对象，均不做；J 工具表占 worker 首次提示 86%，kb_query 重复键占 brief 48% |
 | P18 | impl/P18-cleanup | 已合入 | efe11d7 | 可用额度不再扣收尾预留（门禁不变）；两条预算测试改虚拟时钟，负载下 20/20；缓存目录可配置，未在真机验证 |
 | P19 | impl/P19-antigravity-mining | 已合入 | dfb51a4 | 4.3 调研：上一场 Antigravity 记录的涨分归因与 Top 10 改进；文中「4.3 现状」指当前 main |
