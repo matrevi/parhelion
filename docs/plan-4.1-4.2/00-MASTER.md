@@ -101,14 +101,14 @@
 |---|---|---|---|---|
 | P01 | impl/P01-judge-alignment | 已合入 | a4a3eda | 留一回测 MAE 2.75→1.32；按位置配对的身份是对的，FFT 05 等是不同工作量（标 judge_mapped=false）；回填 19 行 |
 | P02 | impl/P02-wa-reproducers | 已合入 | 见 git log | 真机复现 Quant a2717b5 的 WA（精确舍入平局变体 24/8320 错），榜上 SHA 全过；每次 WA 套件升版会使旧本地证据失配，修正并入 P07 |
-| P03 | impl/P03-metering-replay | 进行中 | | |
-| P04 | impl/P04-change-driven-wait | 待开始 | | |
+| P03 | impl/P03-metering-replay | 已合入 | 见 git log | 缓存命中已达 99.3–99.6%，成本杠杆在上下文大小；回放基线 current 覆盖 0.642 [0.568,0.716]；主控轮询实测 136/h（计划写约 560/h，日志无法复原） |
+| P04 | impl/P04-change-driven-wait | 进行中 | | |
 | P05 | impl/P05-ledger-core | 待开始 | | |
 | P06 | impl/P06-ledger-seed | 待开始 | | |
 | P07 | impl/P07-gate-queue | 待开始 | | |
 | P08 | impl/P08-startup-pack | 待开始 | | |
 | P09 | impl/P09-host-daemon | 已完成，待 P06 后按序合入 | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
-| P10 | impl/P10-profiler-ab | 进行中（叠在 P09 上） | | |
+| P10 | impl/P10-profiler-ab | 已完成，待按序合入（叠在 P09 上） | | profiler 计时 CV 61%→0.9%；Edge 基线复测待真机 |
 | P11 | impl/P11-batch-ui | 待开始 | | |
 | P12 | impl/P12-report-views | 待开始 | | |
 | P13 | impl/P13-bound-output | 待开始 | | |
