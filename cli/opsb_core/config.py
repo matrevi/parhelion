@@ -147,6 +147,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "spill_keep_days": 7,
         "spill_max_mb": 200,
     },
+    # 4.3 P26: replace a stagnant seat automatically after the six-attempt stagnation event. Off by
+    # default (00-PLAN D4): the platform prepares the handover and the orchestrator calls
+    # `parhelion_sprint_start(replace=[...])`; turning this on lets the platform run that call itself.
+    "agents": {"auto_replace_on_stagnation": False},
     # 4.2 G worker start-up pack. ``tokens`` caps the whole pack (~6K tokens by default) and
     # ``repo_map`` stays off until a replay shows the generated map pays for itself (research R11).
     "startup_pack": {"tokens": 6000, "repo_map": False},

@@ -102,6 +102,11 @@ def judge_feedback(rows, threshold, gamma):
         if row["status"] == "Pass" and score * gamma - prior > threshold:
             events.append(("breakthrough", "Review the measured gain and delegate a reusable KB entry with evidence."))
         if len(previous) - last_rotation >= 6 and peak(previous[-6:]) - peak(previous[:-6]) <= threshold:
-            events.append(("stagnation", "Summarize the last six paid attempts and assign a new worker an orthogonal direction."))
+            # 4.3 P26 item 6: the strategic message carries the call the orchestrator would otherwise have
+            # to assemble by hand. Auto-replacement (off by default, 00-PLAN D4) uses the same event.
+            title = str(row.get("title") or "").strip().replace('"', "")
+            call = f' Executable: parhelion_sprint_start(replace=["{title}"]).' if title else ""
+            events.append(("stagnation", "Summarize the last six paid attempts and assign a new worker an "
+                                         f"orthogonal direction.{call}"))
             last_rotation = len(previous)
         yield row, events

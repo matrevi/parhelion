@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS agents (
     problem TEXT NOT NULL DEFAULT '',
     collab_mode TEXT NOT NULL DEFAULT 'solo',
     axis TEXT NOT NULL DEFAULT '',
+    seat TEXT NOT NULL DEFAULT '',
     worktree TEXT NOT NULL DEFAULT '',
     worktree_mode TEXT NOT NULL DEFAULT 'isolated',
     branch TEXT NOT NULL DEFAULT '',
@@ -115,6 +116,7 @@ class AgentBusStore:
                 for col, ddl in (
                     ("collab_mode", "TEXT NOT NULL DEFAULT 'solo'"),
                     ("axis", "TEXT NOT NULL DEFAULT ''"),
+                    ("seat", "TEXT NOT NULL DEFAULT ''"),
                     ("no_gain_streak", "INTEGER NOT NULL DEFAULT 0"),
                     ("context_percent", "INTEGER"),
                     ("boundary_flags", "TEXT NOT NULL DEFAULT '[]'"),
@@ -145,6 +147,7 @@ class AgentBusStore:
             "problem": str(record.get("problem") or ""),
             "collab_mode": str(record.get("collab_mode") or "solo"),
             "axis": str(record.get("axis") or "")[:28],
+            "seat": str(record.get("seat") or "")[:28],
             "worktree": str(record.get("worktree") or ""),
             "worktree_mode": str(record.get("worktree_mode") or "isolated"),
             "branch": str(record.get("branch") or ""),
@@ -189,7 +192,7 @@ class AgentBusStore:
         if not fields:
             return self.get_agent(agent_id)
         allowed = {
-            "role_label", "problem", "collab_mode", "axis", "worktree", "branch", "native_session_id", "status",
+            "role_label", "problem", "collab_mode", "axis", "seat", "worktree", "branch", "native_session_id", "status",
             "pid", "pgid", "turn_count", "no_gain_streak", "unread_for_orch", "last_tool", "last_summary",
             "last_commit_sha", "error", "last_active_epoch", "last_msg_epoch", "last_msg_dir", "context_percent",
             "boundary_flags",
@@ -382,6 +385,29 @@ class AgentBusStore:
             conn = self._connect()
             try:
                 return conn.execute("SELECT 1 FROM messages WHERE event_key = ?", (event_key,)).fetchone() is not None
+            finally:
+                conn.close()
+
+    def message_by_event(self, event_key: str) -> dict[str, Any] | None:
+        """The row a unique ``event_key`` already wrote (``None`` when the key is still free)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT * FROM messages WHERE event_key = ?", (event_key,)).fetchone()
+                return _row_to_msg(row) if row else None
+            finally:
+                conn.close()
+
+    def latest_event_key(self, problem: str, kind: str) -> str:
+        """The ``event_key`` of the newest strategic message of one problem and kind ("" if none)."""
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(
+                    "SELECT event_key FROM messages WHERE LOWER(problem) = LOWER(?) AND kind = ? "
+                    "AND event_key IS NOT NULL ORDER BY seq DESC LIMIT 1", (str(problem), str(kind)),
+                ).fetchone()
+                return str(row["event_key"] or "") if row else ""
             finally:
                 conn.close()
 

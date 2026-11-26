@@ -74,6 +74,7 @@ _DEVICE_DEFAULTS: dict = {
     "judge_bot": "judge-bot",
     "work_root": "/srv/work",
     "work_prefix": "bench",
+    "contest_work_root": "",
     "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
     "contest_org": "",
     "contest_track": "",
@@ -1531,12 +1532,17 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth, (root / (title + '
 
 
 def _remote_root_for(workspace: Path, manifest: dict) -> str:
-    """Remote contest root: manifest override, else `<configured work root>/<contest>`."""
+    """Remote contest root: manifest override, else `<contest work root>/<contest>`.
+
+    ``device.contest_work_root`` names the directory that holds one checkout per contest and falls
+    back to ``device.work_root``; the deployment value lives in the device configuration, never here.
+    """
     override = str(manifest.get("npu_remote_root") or "").strip()
     if override:
         return override.rstrip("/")
     name = str(manifest.get("contest_id") or "").strip() or workspace.name
-    return (DEVICE.get("work_root") or "/srv/work").rstrip("/") + f"/{name}"
+    root = DEVICE.get("contest_work_root") or DEVICE.get("work_root") or "/srv/work"
+    return str(root).rstrip("/") + f"/{name}"
 
 
 def _stream_remote(script: str, cfg: dict, destination: Path, log_basename: str, stream_stdout: bool) -> tuple[int, dict]:

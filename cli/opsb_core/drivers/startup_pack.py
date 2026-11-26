@@ -39,10 +39,10 @@ BYTES_PER_TOKEN = 3.6  # a documented estimate, not a tokenizer: ~4 bytes/token 
 DEFAULT_TOKENS = 6000
 MIN_TOKENS = 1200
 MAX_TOKENS = 24000
-SECTION_ORDER = (1, 2, 3, 4, 5)
+SECTION_ORDER = (1, 2, 3, 4, 5, 6)
 TRUNCATE_ORDER = (5, 3, 4)  # spec order: ledger first, then the repo map, then the file list
 SECTION_NAMES = {1: "Task contract", 2: "Worktree", 3: "Repo map", 4: "Files to change",
-                 5: "Problem ledger"}
+                 5: "Problem ledger", 6: "Handover"}
 SHRINK_STEPS = (0.6, 0.35, 0.15, 0.0)  # fraction of the original section kept, 0 = dropped
 CONTRACT_MAX = 1500  # the existing brief cap; it constrains this section only
 DIGEST_CHARS = 2600
@@ -243,6 +243,7 @@ def build(
     tokens: int | None = None,
     repo_map_enabled: bool | None = None,
     best_sha: str = "",
+    handover: str = "",
 ) -> dict[str, Any]:
     """Assemble the pack and report its per-section byte cost (used by tests and the replay)."""
     ws = Path(workspace).expanduser().resolve()
@@ -258,6 +259,10 @@ def build(
     files = change_targets(wt, best_sha=best_sha) if wt.is_dir() else {"files": [], "base": "", "best": ""}
     sections[4] = section_files(files)
     sections[5] = section_ledger(ws, problem, agent_id)
+    # A replacement seat carries the failures view and the replaced worker's handoff; ``fit`` never
+    # truncates section 6 (it is not in TRUNCATE_ORDER), so the handover survives a full budget.
+    if str(handover or "").strip():
+        sections[6] = str(handover).strip()
     fitted, cuts = fit(sections, budget_bytes(token_budget))
     text = render(fitted, token_budget)
     sizes = _sizes(fitted)

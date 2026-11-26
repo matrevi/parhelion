@@ -15,11 +15,20 @@ from ..drivers.base import load_parhelion_config
 from ..metrics import mcp_meter
 from ..worker_access import forward_worker_request
 from .bound import bound_output
-from .tools import TOOL_HANDLERS, call_tool, is_tool_allowed_for_role, list_tool_schemas, normalize_role
+from .tools import (TOOL_HANDLERS, WORKER_ROLES, call_tool, is_tool_allowed_for_role, list_tool_schemas,
+                    normalize_role, worker_subrole)
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "parhelion-mcp", "version": OPSB_VERSION}
 STDIO_MAX_WORKERS = 8
+
+
+def _scoped_role(role: str, workspace: Path, agent_id: str | None) -> str:
+    """Narrow a worker call to its seat subrole (recon/knowledge) from the bus record, else keep it."""
+    norm = normalize_role(role)
+    if norm != "worker":
+        return norm
+    return worker_subrole(workspace, agent_id) or "worker"
 
 
 def _resolve_workspace(workspace: Path | str | None) -> Path:
@@ -162,7 +171,7 @@ def serve_stdio(
     out_stream = stdout or sys.stdout
     err_stream = stderr or sys.stderr
     ws = _resolve_workspace(workspace)
-    norm_role = normalize_role(role)
+    norm_role = _scoped_role(role, ws, agent_id)
     write_lock = threading.Lock()
 
     def write_reply(resp: Any) -> None:
@@ -178,7 +187,7 @@ def serve_stdio(
 
     def process(decoded: Any) -> None:
         try:
-            if norm_role == "worker" and agent_id:
+            if norm_role in WORKER_ROLES and agent_id:
                 resp = forward_worker_request(ws, agent_id, decoded)
             else:
                 resp = handle_mcp_payload(decoded, workspace=ws, role=norm_role, agent_id=agent_id)
@@ -223,7 +232,7 @@ def handle_mcp_http_request(
         return 400, _jsonrpc_error(None, -32700, f"Parse error: {exc}")
 
     ws = _resolve_workspace(workspace)
-    resp = handle_mcp_payload(decoded, workspace=ws, role=role, agent_id=agent_id)
+    resp = handle_mcp_payload(decoded, workspace=ws, role=_scoped_role(role, ws, agent_id), agent_id=agent_id)
     if resp is None:
         return 202, None
     return 200, resp
