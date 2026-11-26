@@ -9,7 +9,7 @@ own problem only; ``board`` and ``env`` also serve workers. Hard budgets: ``per_
 
 ``view="help"`` carries the per-column meanings that used to sit in the tool description (4.2 J-2):
 the schema of a tool travels in every model call, a reply travels only when asked for. The answer is
-about 2 KB, well inside ``mcp.output_cap_bytes``, so it never spills.
+about 3.5 KB, still inside ``mcp.output_cap_bytes`` (default 5 KB), so it never spills.
 """
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     BIG,
     ENV_BYTES,
     LIMIT_MAX,
+    RULES_BYTES,
     _board,
     _bottleneck,
     _bytes,
@@ -33,11 +34,12 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     _queue,
     _resolve,
     _round,
+    _rules,
     _sha7,
     _trim,
 )
 
-VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "env", "help")
+VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "env", "help")
 PER_CASE_COLUMNS = ("case", "ours_us", "tbest_us", "gap_pct", "speedup", "band_pct", "verdict", "noisy",
                     "judge", "mapped", "local", "timer", "passed", "exit_code", "mismatch_n", "strict_fp32",
                     "cal", "wa", "run")
@@ -102,6 +104,15 @@ HELP: dict[str, dict[str, Any]] = {
                  "problem is named, and the team ranking; reads the cache only, no network",
         "bottleneck": "category and limited_resource_pct from the PMU card, top_metrics (3 buckets), fixes "
                       "(KB ids and summaries), raw report/log/run_dir paths",
+        "rules": "the judge's own rule for one problem; rule carries score_mode, use_baseline, "
+                 "ranking_submission_mode, iterations, judge_revision, testcases{total, by_type, public, hidden} "
+                 "and time_limit (only when Judge publishes one) plus fetched_at; formula is how a case and then "
+                 "the problem are scored; tbest.cases/changed_at/changed_cases/observed_at say when the times "
+                 "being scored against last moved; noise.sigma_hat/df/scope is this problem's judge noise or the "
+                 "contest-wide estimate; split gives public and hidden points of the best and the board receipt "
+                 "with verified{rows, public_cases, max_err}, and is absent when no receipt reproduces its own "
+                 "judge score. Name a problem (a worker reads only its own) or omit it for the table "
+                 "(columns: title, mode, cases, sigma_hat, fetched_at); <=2KB",
         "env": "platform version and root, daemon liveness, workspace/results/state dirs and free disk, <=1KB; "
                "no account, session or credential field",
     },
@@ -333,8 +344,9 @@ def tool_parhelion_report(args: dict[str, Any], workspace: Path) -> dict[str, An
     role, problem = _caller(args, ws)
     if view == "env":
         return _env(ws)
-    if view in ("board", "history", "queue"):
-        return {"board": _board, "history": _history, "queue": _queue}[view](ws, problem, args, role)
+    if view in ("board", "history", "queue", "rules"):
+        return {"board": _board, "history": _history, "queue": _queue, "rules": _rules}[view](
+            ws, problem, args, role)
     if not problem:
         raise PermissionError("the problem of this call is unknown: pass problem or use a bound worker")
     return {"per_case": _per_case, "diff": _diff, "bottleneck": _bottleneck}[view](ws, problem, args)

@@ -52,9 +52,16 @@ def test_replay_uses_all_case_ids_and_checks_the_scoring_rule():
                     {"judge_revision": 1}, {"result": [times[0], {**times[1], "time": float("nan")}]},
                     {"status": "Judging"}):
         assert reconstruct_timing_score({**detail, **changes}, rule, ranking) is None
-    for changes in ({"score_mode": 2}, {"use_baseline": True}, {"ranking_testcase_count": 1},
-                    {"ranking_submission_mode": "latest"}, {"ranking_submission_mode": None}):
+    for changes in ({"score_mode": 2}, {"use_baseline": True}, {"ranking_testcase_count": 1}):
         assert reconstruct_timing_score(detail, {**rule, **changes}, ranking) is None
+    # 4.3 P22: the board mode no longer gates the replay, because the formula never depended on it.
+    # `judge.reconstruct_latest=false` restores the best-only rule and is pinned right here.
+    assert reconstruct_timing_score(detail, {**rule, "ranking_submission_mode": "latest"}, ranking)["score"] == 75
+    assert reconstruct_timing_score(detail, {**rule, "ranking_submission_mode": None}, ranking)["score"] == 75
+    with mock.patch("opsb_core.services.judge_rules.reconstruct_latest_enabled", lambda cfg=None: False):
+        for mode in ("latest", None):
+            assert reconstruct_timing_score(detail, {**rule, "ranking_submission_mode": mode}, ranking) is None
+        assert reconstruct_timing_score(detail, rule, ranking)["score"] == 75
     assert reconstruct_timing_score(detail, rule, {**ranking, "rows": [{**ranked, "score": 74}]}) is None
     assert reconstruct_timing_score(detail, rule, {**ranking, "testcases": cases[:1]}) is None
     assert reconstruct_timing_score(detail, rule, {**ranking, "testcases": [cases[0], {**cases[1], "hidden": True}]}) is None

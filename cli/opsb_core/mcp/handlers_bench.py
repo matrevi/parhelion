@@ -10,7 +10,7 @@ from typing import Any
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
-from ..services import gate_view, test_runs
+from ..services import gate_view, judge_rules, test_runs
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
 from ..services.test_runs import _find_problem, _problem_commit
@@ -175,6 +175,11 @@ def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
         row = {**p, "head_sha": str(p.get("head_sha") or "")[:7] or None, "best_sha": str(p.get("best_sha") or "")[:7] or None}
         rows.append([_round_score(row.get(col)) for col in STATUS_PROBLEM_COLUMNS])
     out["problems"] = {"columns": list(STATUS_PROBLEM_COLUMNS), "rows": rows}
+    # 4.3 P22: the board mode decides whether a new submission replaces the score, and sigma_hat is
+    # the noise the gate prices it against; both belong on the brief, in one line.
+    judge_line = judge_rules.status_line(workspace, problems)
+    if judge_line:
+        out["judge"] = judge_line
     if include_queue:
         out["queue_preview"] = [_compact_queue_item(q) for q in q_items[:5] if isinstance(q, dict)]
     if detail:  # 4.1 #14: the orchestrator gets the per-case table instead of computing the ratios itself

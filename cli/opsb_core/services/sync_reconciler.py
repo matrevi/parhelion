@@ -19,6 +19,7 @@ from ..config import (
     write_ttl_cache,
 )
 from .board_refresh_service import _resolve_team_name
+from . import judge_rules
 from .judge_score_fetch import (
     NON_TERMINAL_JUDGE_STATUSES,
     TERMINAL_JUDGE_STATUSES,
@@ -204,6 +205,14 @@ def _effective_ttl(orig: dict[str, Any], ttl_sec: float) -> float:
     return ttl_sec
 
 
+def _save_rule(workspace: Path, title: str, rule: Any) -> None:
+    """Persist the rule snapshot; a failed write must never disturb the reconciliation."""
+    try:
+        judge_rules.save(workspace, title, rule)
+    except Exception:  # noqa: BLE001 - the snapshot is evidence, not a precondition
+        pass
+
+
 def _best_score_bound(detail, sid, pid, board, rule):
     """A best-only ranking of the same participant bounds another eligible receipt."""
     if not board or detail.get("_id") != sid or detail.get("problem_id") != pid:
@@ -286,6 +295,9 @@ def _reconcile_one_candidate(
         except (OSError, ValueError):
             rule = None
         if isinstance(rule, dict):
+            # 4.3 P22: the rule is already in hand here; keep its public metadata on disk so the
+            # gate can read the board mode without a fresh crawl.
+            _save_rule(workspace, title, rule)
             bound = _best_score_bound(sub_detail, sid, pid, team_best_row, rule)
             if not replay:
                 replay = reconstruct_timing_score(sub_detail, rule, ranking)

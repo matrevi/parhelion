@@ -24,6 +24,8 @@ from .. import config as _cfg
 from .paging import paginate
 
 BIG, ENV_BYTES, LIMIT_MAX = 4096, 1024, 50
+RULES_BYTES = 2048
+RULES_FORMULA = "case = 100/(1+ln(t/tbest)/ln1.5); problem = mean over the roster"
 FORBIDDEN = ("account_id", "account_label", "user_id", "cookies", "cookie", "token", "session_file")
 
 
@@ -280,6 +282,129 @@ def _bottleneck(workspace: Path | str, problem: str, args: dict[str, Any]) -> di
             "limited_resource_pct": round(limited * 100, 1) if limited is not None else None,
             "pmu_available": bool(card.get("pmu_available")), "pmu": metrics, "top_metrics": top,
             "fix_columns": ["id", "title", "confidence", "summary"], "fixes": fixes, "raw": raw}
+
+
+# ---------------------------------------------------------------- rules (4.3 P22)
+
+def _board_sid(ws: Path, title: str) -> str:
+    """The submission the board currently shows for this problem, if any."""
+    live = (_doc(ws / "results" / "scoring-evidence" / "live-board-tbest.json").get("problems") or {})
+    sid = str((live.get(title) or {}).get("board_submission_id") or "")
+    return sid or str(((_doc(ws / "results" / "score-snapshot.json").get(title) or {})).get("submission_id") or "")
+
+
+def _tbest_change(rows: list[dict[str, Any]], receipts: Any) -> dict[str, Any]:
+    """When the tbest this problem is scored against last moved, from the receipt snapshots."""
+    seen: dict[str, Any] = {}
+    observed, changed_at, changed = None, None, 0
+    for row in sorted(rows, key=lambda r: str(receipts.tbest_observed_at(r) or "")):
+        best = receipts.case_tbest(row)
+        if not best:
+            continue
+        stamp = str(receipts.tbest_observed_at(row) or "")[:19] or None
+        if seen:
+            moved = sum(1 for key, value in best.items() if seen.get(key) != value)
+            if moved:
+                changed_at, changed = stamp, moved
+        seen, observed = best, stamp
+    return {"cases": len(seen), "observed_at": observed, "changed_at": changed_at, "changed_cases": changed}
+
+
+def _rule_split(rows: list[dict[str, Any]], receipts: Any, board_sid: str) -> dict[str, Any]:
+    """Public/hidden split of the best and the board receipt, only where the identity verifies."""
+    accepted: list[dict[str, Any]] = []
+    worst, public_n = 0.0, 0
+    for row in rows:
+        times, tbest = receipts.case_times(row), receipts.case_tbest(row)
+        score = receipts.official_score(row)
+        if not times or not tbest or not score or score <= 0:
+            continue
+        computed = receipts.judge_score(times, tbest)
+        if computed is None or abs(computed - score) > 0.01:
+            continue  # the stored tbest is not the one this score was judged against
+        public, _ = receipts.public_times(row)
+        # `public_times_us` lists the first timed cases in judge order, so the public slice is the
+        # timed prefix; the roster can hold untimed cases inside it and those score nothing.
+        timed = [key for key in times if times[key] is not None]
+        if not public or len(public) >= len(timed):
+            continue
+        head = timed[:len(public)]
+        if any(tbest.get(key) is None for key in head):
+            continue
+        if any(abs(times[key] - seen) > 1e-6 for key, seen in zip(head, public)):
+            continue  # the public slice is not this submission's timed prefix
+        visible = round(sum(receipts.case_points(times[key], tbest[key]) for key in head) / len(tbest), 2)
+        worst, public_n = max(worst, abs(computed - score)), len(public)
+        accepted.append({"sid": str(row.get("submission_id") or ""), "sha": _sha7(row.get("sha")),
+                         "score": round(float(score), 2), "public": visible,
+                         "hidden": round(float(score) - visible, 2)})
+    if not accepted:
+        return {}
+    doc: dict[str, Any] = {"verified": {"rows": len(accepted), "public_cases": public_n,
+                                        "max_err": round(worst, 4)}}
+    for name, item in (("best", max(accepted, key=lambda row: row["score"])),
+                       ("board", next((row for row in accepted if row["sid"] == board_sid), None))):
+        if item is not None:
+            doc[name] = {key: item[key] for key in ("sha", "score", "public", "hidden")}
+    return doc
+
+
+def _fit(doc: dict[str, Any], budget: int, optional: tuple[str, ...], rows: str = "") -> dict[str, Any]:
+    """Drop the optional parts, then trailing rows, until the reply fits ``budget`` bytes."""
+    for key in optional:
+        if _bytes(doc) <= budget:
+            return doc
+        if key in doc:
+            doc.pop(key)
+            doc["truncated"] = True
+    while rows and _bytes(doc) > budget and len(doc.get(rows) or []) > 1:
+        doc[rows].pop()
+        doc["truncated"] = True
+    return doc
+
+
+def _rules(workspace: Path | str, problem: str | None, args: dict[str, Any], role: str) -> dict[str, Any]:
+    _cfg.ensure_scheduler_path()
+    from ..services import judge_rules
+    from scheduler import judge_noise, receipts
+
+    ws = Path(workspace)
+    stored = judge_rules.snapshots(ws)
+    if not problem:
+        out: dict[str, Any] = {
+            "view": "rules", "formula": RULES_FORMULA,
+            "columns": ["title", "mode", "cases", "sigma_hat", "fetched_at"], "problems": [],
+        }
+        for title in sorted(set(_titles(ws, problem, role)) | set(stored)):
+            doc = stored.get(title) or {}
+            if not doc:
+                continue
+            out["problems"].append([
+                title, doc.get("ranking_submission_mode"), (doc.get("testcases") or {}).get("total"),
+                _round((judge_noise.sigma_for(ws, title) or {}).get("sigma"), 2),
+                str(doc.get("fetched_at") or "")[:10] or None,
+            ])
+        if not out["problems"]:
+            out["reason"] = "no rule snapshot yet: run `opsb workspace rules --refresh`"
+        return _fit(out, RULES_BYTES, ("formula",), rows="problems")
+    title = str(problem)
+    doc = stored.get(title) or {}
+    rows = receipts.load(ws, title)
+    noise = judge_noise.sigma_for(ws, title)
+    out: dict[str, Any] = {
+        "view": "rules", "problem": title, "formula": RULES_FORMULA,
+        "rule": {key: doc[key] for key in ("score_mode", "use_baseline", "ranking_submission_mode",
+                                           "iterations", "judge_revision", "ranking_testcase_count",
+                                           "testcases", "time_limit", "fetched_at") if key in doc},
+        "tbest": _tbest_change(rows, receipts),
+        "noise": ({"sigma_hat": _round(noise.get("sigma"), 2), "df": noise.get("df"),
+                   "scope": noise.get("scope")} if noise else {}),
+        "split": _rule_split(rows, receipts, _board_sid(ws, title)),
+    }
+    if not doc:
+        out["reason"] = "no rule snapshot yet: run `opsb workspace rules --refresh`"
+    out = {key: value for key, value in out.items() if value not in ({}, None)}
+    return _fit(out, RULES_BYTES, ("split", "tbest", "noise", "formula"))
 
 
 def _env(workspace: Path | str) -> dict[str, Any]:
