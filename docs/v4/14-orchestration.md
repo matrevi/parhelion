@@ -50,9 +50,10 @@
    - 理由：算子优化要同时装下 2000 行级的内核源码、测试摘要和若干轮实验结论，12 万 token 对 100 万窗口的模型来说太早。按日志，worker 的上下文峰值约 22 万 token，所以 30 万的阈值主要是防止无限增长，正常迭代不会频繁触发。token 浪费的主因是并发过多、重试和轮询，已经由 §3、§4 和工作包 A 解决。
    - 为此，`emit_context` 还要回调一次 `("context_window", str(int(size)))`，runner 记录到 `self._context_window`。
 4. 每个 turn 结束、并且已经写入 result 消息后，满足以下任一条件就压缩：
-   - `self._context_tokens ≥ 阈值`；
+   - `self._context_tokens ≥ 阈值`（硬上限）；
    - `context_percent ≥ 70`。
 
+   4.2 C #7（P06）起，低于硬上限时还要有边界事件，并且达到阈值的 40% 下限才压缩；细节见 §12。
    不再要求必须先有 `_stage_result`。
 5. 压缩的检查点文本（4.2 起，`ledger/checkpoint.py`）按顺序拼接：`state_card.build(ws, problem, agent_id)`，`_stage_result` 的**结尾**（没有就取 reply 的最后 3000 字符；超出预算时丢开头，标 `…`），加上一句 `"Continue from the state card. Do not re-read files you already summarized."`。总长度不超过 `agents.seed_budget_chars`（默认 8000，限制在 [3000, 20000]）。`worker_report` 登记的阶段结果超过 4000 字符时同样保留结尾。ACP 压缩还会让模型按固定五个标题写不超过 1500 字的交接叙述，再由 `ledger/handoff.py` 对照账本校验后拼进新会话的种子；Codex 在原生压缩后的下一回合前置同一份账本摘要。校验与回退规则见 `docs/plan-4.1-4.2/P05-ledger-core.md`。
 6. 压缩后把 `_context_tokens` 清零，状态写入方式不变（`compacting` → `idle`）。
@@ -132,3 +133,61 @@ rules: device work only via parhelion_test; submit via parhelion_submit_gate; no
 6. 状态卡不超过 2000 字节，账本为空时也能生成。
 7. `deliver_test_results`：observed 为 false 且 worker 空闲时唤醒；observed 为 true 时只写消息；同一个 request_id 不重复投递。
 8. `compose_session_brief` 不含状态卡的部分不超过 1500 字节，且包含 `parhelion_test_wait`。
+
+## 12. 4.2 C #5 #7 与 4.1 #13 #14（P06）
+
+### 12.1 压缩时机（`agents/compact_window.py` + `manager.py`）
+
+`should_compact(tokens, window, boundary, cfg, tool_in_flight, percent, threshold) -> (bool, reason)`：
+
+1. 有工具调用在跑（`tool_in_flight`）→ 不压缩。
+2. `tokens ≥ compact_threshold` 或 `percent ≥ 70` → 压缩（硬上限，理由 `hard_cap`）。
+3. `tokens < 阈值 × agents.compact_floor_percent%`（默认 40，限制 [10, 100]）→ 不压缩（`below_floor`）。
+4. 否则只在一个边界上压缩：`test_terminal`（本 worker 的测试运行到终态，`deliver_test_results` 记）、
+   `judged`（判题回执到达，`deliver_judgements` 记）、`stage_boundary`（`parhelion_agent_report` 的
+   result/breakthrough/stagnation/escape_zero）。边界只消费一次。
+
+`_WorkerRunner.note_boundary(kind)` 记边界，`_should_compact()` 决定并留下 `compact_reason`。
+
+### 12.2 压缩种子（`ledger/seed.py`，开关 `agents.seed_scheme`）
+
+`legacy`（4.2 之前：叙述 + 检查点）、`ledger_core`（P05：叙述 + 账本摘要 + 检查点，默认）、
+`ledger_full`（本包：由代码按顺序拼装，预算 `agents.seed_budget_chars`，目标 6–10K 字符）：
+
+1. `RULES`：比赛 `AGENTS.md` 的规则段、管理员 directive、平台 `RULES_LINE`，原文照录；同时以
+   `constraint` 条目按文本哈希幂等钉住（`ledger.seed.pin`）。
+2. `STATE`：扩展状态卡（§12.3）。
+3. `LEDGER`：`ledger/digest.py` 的封顶摘要——在研假设按优先级、未利用洞见、最近 15–20 条失败方向；
+   16–20 条以后只留 id（R4），失败列表先被截。open 假设与未利用洞见的 id 永不丢。
+4. `HANDOFF`：模型叙述，≤1500 字，五个固定标题校验（P05）。
+5. `RAW TAIL`：最近几轮回复原文（`agents.seed_tail_turns`，默认 2 轮、1600 字符）+ `git status`、
+   `git diff --stat`、在改文件路径。
+6. 行动指令（替换 `CHECKPOINT_TAIL`）：取最高优先级的假设或洞见并说出 id，重推之前先 `parhelion_recall`。
+
+预算不足时的顺序：先丢原始尾部，再退到只有 id 的摘要，再缩叙述；固定规则与 open id 不截。
+默认值按 `docs/plan-4.1-4.2/reports/P06-replay.md`：`ledger_full` 与 `current` 打平，默认保持 `ledger_core`。
+
+### 12.3 状态卡扩展版（`services/state_card_ext.py`）
+
+`state_card.build(ws, title, agent_id, extended=True)` → `EXT {title} @ HH:MM | worktree <绝对路径>`：
+逐例相对同代基线的加速比（`estimator._case_bench_pair` 的 `cases`）与置信度、逐例 `(ours−tbest)/tbest`
+与 tbest 观测时间（`scheduler.receipt_predict`，没有映射时取最新回执）、最近 3 条回执（SHA/状态/官方分/
+是否刷新最高分）、以及 R8 的「权重 × 差距」前 3 个用例与数值目标。上限 8000 字节，规则行仍在最后。
+`parhelion_status(detail=true)` 对主控返回同一份数据的紧凑表（`case_detail`，最多 3 道题）。
+
+### 12.4 账本工具（`mcp/handlers_ledger.py`）
+
+- `parhelion_note(type, claim, why?, scope?, sha?, evidence?, confidence?, revisit_if?, supersedes?, ...)`：
+  写入一条模型条目并返回 id；平台字段（`outcome`、`per_case_us`、`receipt_id` 等）被拒绝而不是忽略；
+  `confidence=measured` 降为 `inferred`；状态更新是带 `supersedes` 的新行（`id` 也读作更新目标）。
+- `parhelion_ledger(view=open|unexploited|failures|case:<id>|since:<id>, problem?, worker?, limit?)`：
+  每条一行（id、类型、claim、关键数字）。worker 只能读自己题目的账本。
+- `parhelion_recall(query, limit?)`：账本、`state/handoffs/*.jsonl` 与该 worker 的会话流水的倒排索引，
+  结果带 `文件#行`；索引缓存在 `<workspace state>/recall/`，日志目录只读。
+- `parhelion_submit_gate` 新增 `hypothesis_id`、`predicted_effect`；缺省时沿用平台自动生成的假设并在
+  `ledger.note` 里说明生成了哪个 id；id 无法解析也不拒绝提交。
+- `parhelion_test` 新增 `force_rerun`、`reason`：同 SHA、同级别、同套件版本已有正式运行时直接返回该结果
+  与账本 id（不排设备）；候选 diff 与最近实验近似（哈希相同或规范化 diff 重叠 ≥ 0.90）时返回最相近实验
+  与 id，要求先说明差异。`remeasure=true` 视同 `force_rerun`（旧参数）。
+- R5/R8：`ledger/budget.py` 的失败指纹（用例集 × 瓶颈类别 × diff 类别 × 结果）、3 次尝试预算与连续 5 次
+  无提升的平台期，作为 `warnings` 附在测试与门禁返回里，只警告不阻断。

@@ -1249,6 +1249,9 @@ class ScoreEstimator:
             "official": len(set(cand[1]) | set(base[1])),
             "runs_cand": cand[2],
             "runs_base": base[2],
+            "base_sha": base_sha,
+            # Per-case speedup so the extended state card reads the gate's own numbers (P06, 4.1 #14).
+            "cases": {cid: round(ratios[cid], 4) for cid in common},
             "improved": sum(1 for r in ratios.values() if r > 1.03),
             "regressed": [f"{cid}({r:.2f}x)" for cid, r in sorted(ratios.items()) if r < 0.95],
         }

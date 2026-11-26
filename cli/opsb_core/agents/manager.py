@@ -150,6 +150,10 @@ class _WorkerRunner:
         self._context_window: int | None = None
         self._on_fault = on_fault
         self._stage_result = ""
+        # 4.2 C #7: the compaction boundary the platform just observed, consumed by the next decision.
+        self._boundary = ""
+        self._tools_running = 0
+        self.compact_reason = ""
         self.lease = claim_runner(store.db_path.parent, agent_id)
         if resume:
             try:
@@ -198,6 +202,7 @@ class _WorkerRunner:
             self._on_notify()
             return
         if kind == "tool":
+            self._tools_running = 1  # a call started; the runner clears it when the turn returns
             updates: dict[str, Any] = {"last_tool": label}
             if self.adapter.native_session_id:
                 updates["native_session_id"] = self.adapter.native_session_id
@@ -211,9 +216,23 @@ class _WorkerRunner:
     def _reply_direction(self):
         return "squad_note" if self.squad_turn else "worker_to_orch"
 
+    def note_boundary(self, kind: str) -> None:
+        """Remember that a test settled, a receipt was judged or a stage report was filed (4.2 C #7)."""
+        self._boundary = str(kind or "")
+
     def _should_compact(self) -> bool:
-        return (self._context_tokens >= compact_threshold(self._context_window)
-                or (self._context_percent or 0) >= COMPACT_PERCENT)
+        """At a boundary once the context is past the floor; the threshold stays the hard ceiling."""
+        from . import compact_window
+        boundary, self._boundary = self._boundary, ""
+        try:
+            cfg = _cfg.ConfigRepository.load()
+        except Exception:
+            cfg = {}
+        ok, self.compact_reason = compact_window.should_compact(
+            self._context_tokens, self._context_window, boundary=boundary, cfg=cfg,
+            tool_in_flight=bool(self._tools_running), percent=self._context_percent,
+            threshold=compact_threshold(self._context_window, cfg))
+        return ok
 
     def _checkpoint(self, rec: dict[str, Any], reply: str) -> str:
         """State card, then the END of the stage result (or the reply tail), then a continuation line.
@@ -271,6 +290,7 @@ class _WorkerRunner:
             self._on_notify()
             try:
                 reply = self.adapter.send_turn(prompt, on_event=self._on_tool_event)
+                self._tools_running = 0  # the turn is over: no tool call is in progress any more
                 branch, sha7 = _git_branch_and_sha(self.adapter.worktree)
                 self.store.update_agent(
                     self.agent_id,
@@ -418,6 +438,16 @@ class AgentMeshManager:
         self._notify()
         return {"ok": True, "driver": drv, "since": entry["since"], "stopped": stopped, "new": fresh}
 
+    def _note_boundary(self, agent_id: Any, kind: str) -> None:
+        """Tell a running worker's runner that a compaction boundary just happened (4.2 C #7)."""
+        with self._lock:
+            runner = self._runners.get(str(agent_id or ""))
+        if runner is not None:
+            try:
+                runner.note_boundary(kind)
+            except Exception:
+                pass
+
     def deliver_test_results(self, ws: Path) -> int:
         """Post finished test runs to the requesting worker; wake it if idle and it has not observed the result."""
         try:
@@ -433,6 +463,7 @@ class AgentMeshManager:
             if not request_id or not agent_id:
                 continue
             ledger_auto.guard(ledger_auto.on_test_settled, ws, record)  # idempotent backstop of the settle hook
+            self._note_boundary(agent_id, "test_terminal")
             line = test_runs.compact_line(record)
             msg = store.append_message(agent_id, "orch_to_worker", "test_result", line,
                                        problem=str(record.get("problem") or ""), event_key=f"test:{request_id}")
@@ -494,6 +525,7 @@ class AgentMeshManager:
                     if sha and check_commit_safety_gate(ws, title, sha):
                         events.append(("escape_zero", "Review the local/online divergence, add a regression case, and assign an independent KB review."))
                 if agent:
+                    self._note_boundary(agent, "judged")  # a hypothesis just got its conclusion
                     feedback = body + " " + " ".join(message for _, message in events)
                     msg = store.append_message(agent, "orch_to_worker", "judge_result", feedback,
                                                problem=title, commit_sha=sha, event_key=f"receipt:{sid}:{agent}{revision}")
@@ -1089,6 +1121,7 @@ class AgentMeshManager:
         if norm_kind in ("result", "breakthrough", "stagnation", "escape_zero"):
             if runner is not None:
                 runner._stage_result = summary.strip()[-4000:]  # the end holds the conclusions
+                runner.note_boundary("stage_boundary")
         streak = int(rec.get("no_gain_streak") or 0)
         # Judged receipt analysis owns these automatic alerts. Workers can always
         # raise an explicit question when a decision is needed.

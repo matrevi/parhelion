@@ -28,6 +28,11 @@ from .handlers_bench import (
     tool_parhelion_test_plan,
     tool_parhelion_test_wait,
 )
+from .handlers_ledger import (
+    tool_parhelion_ledger,
+    tool_parhelion_note,
+    tool_parhelion_recall,
+)
 from .handlers_kb import (
     tool_parhelion_kb_feedback,
     tool_parhelion_kb_query,
@@ -39,7 +44,8 @@ ToolHandler = Callable[[dict[str, Any], Path], dict[str, Any]]
 VALID_ROLES = ("orchestrator", "worker")
 WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
 # Tools whose handler needs to know whether a worker or the orchestrator is calling.
-ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait",)
+ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait", "parhelion_note", "parhelion_ledger",
+                                               "parhelion_recall")
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
@@ -54,6 +60,9 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_test_cancel": tool_parhelion_test_cancel,
     "parhelion_test_plan": tool_parhelion_test_plan,
     "parhelion_submit_gate": tool_parhelion_submit_gate,
+    "parhelion_note": tool_parhelion_note,
+    "parhelion_ledger": tool_parhelion_ledger,
+    "parhelion_recall": tool_parhelion_recall,
     "parhelion_harness_pool": tool_parhelion_harness_pool,
     "parhelion_sprint_start": tool_parhelion_sprint_start,
     "parhelion_agent_spawn": tool_parhelion_agent_spawn,
@@ -145,7 +154,10 @@ __all__ = [
     "tool_parhelion_kb_feedback",
     "tool_parhelion_kb_query",
     "tool_parhelion_kb_record",
+    "tool_parhelion_ledger",
+    "tool_parhelion_note",
     "tool_parhelion_pmu_card",
+    "tool_parhelion_recall",
     "tool_parhelion_status",
     "tool_parhelion_submit_gate",
     "tool_parhelion_test",

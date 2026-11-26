@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import threading
 import time
 from pathlib import Path
@@ -370,3 +371,16 @@ class ConfigRepository:
         if detected is not None:
             return detected
         return cwd
+
+
+def ensure_scheduler_path() -> str:
+    """Put the repository root on ``sys.path`` so ``scheduler.*`` imports work from ``opsb``.
+
+    ``cli/opsb`` only adds ``cli/``, so a daemon or MCP process started through it cannot import the
+    sibling ``scheduler`` package until the root is added; ``agents.judge_feedback`` already did this
+    by hand. Returns the root for callers that want to log it.
+    """
+    root = str(SUPERVISOR_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    return root

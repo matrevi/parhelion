@@ -71,6 +71,41 @@ def apply_gate(led: Any, sha: str, *, note: str = "", subject: str = "", estimat
     return led.append(entry_type, fields, ekey=ekey)
 
 
+def apply_link(led: Any, sha: str, hypothesis_id: str = "", predicted_effect: Any = None, *,
+               note: str = "", subject: str = "", estimate: dict[str, Any] | None = None,
+               enqueued: bool = False, write: bool = True) -> dict[str, Any]:
+    """``{id, auto, note}`` of the hypothesis a submission request names, or of the generated one."""
+    from . import note as _note
+    rows = led.rows()
+    unknown = ""
+    if hypothesis_id:
+        head = view.head(rows, hypothesis_id)
+        if head is None:  # a stale id must not refuse the submission: generate and say so
+            unknown, hypothesis_id = str(hypothesis_id), ""
+    if hypothesis_id:
+        head = view.head(led.rows(), hypothesis_id)
+        changes: dict[str, Any] = {}
+        if predicted_effect:
+            changes["predicted_effect"] = predicted_effect
+        if enqueued and head.get("status") in model.OPEN_STATUSES:
+            changes["status"] = "queued"
+        row = _note.gate_hypothesis(led, {**changes, "id": hypothesis_id}, sha=sha) if changes else head
+        return {"id": row["id"], "auto": False, "note": ""}
+    rows = led.rows()
+    existing = view.for_sha(rows, "hypothesis", sha)
+    if existing and not write:
+        return {"id": existing[-1]["id"], "auto": False, "note": unknown}
+    created = None if not write else apply_gate(led, sha, note=note, subject=subject, estimate=estimate,
+                                                enqueued=enqueued)
+    row = created or (view.for_sha(led.rows(), "hypothesis", sha) or [{}])[-1]
+    if not row.get("id"):
+        return {"id": "", "auto": False, "note": "no hypothesis could be generated for this SHA"}
+    note = (f"{unknown} is not in this ledger; the platform generated {row['id']} instead" if unknown
+            else f"no hypothesis_id given: the platform generated {row['id']} from the submission note"
+            if created else f"this SHA already has {row['id']}")
+    return {"id": row["id"], "auto": bool(created or unknown), "unknown_id": unknown, "note": note}
+
+
 def apply_receipt(led: Any, canon: dict[str, Any], *, gain: float | None = None,
                   prior: float | None = None) -> dict[str, Any]:
     """``canon`` is a canonical receipt (``official_score`` set). Writes the measurement and the verdicts once."""
@@ -136,6 +171,22 @@ def on_gate_request(ws: Path, problem: str, sha: str, agent_id: Any, *, note: st
     return apply_gate(_ledger(ws, problem, agent_id), sha, note=note,
                       subject=gitref.subject(repo, sha) if repo and not note.strip() else "",
                       estimate=estimate, enqueued=enqueued)
+
+
+def on_gate_link(ws: Path, problem: str, sha: str, agent_id: Any, *, note: str = "",
+                 estimate: dict[str, Any] | None = None, enqueued: bool = False, write: bool = True,
+                 hypothesis_id: str = "", predicted_effect: Any = None) -> dict[str, Any] | None:
+    """The hypothesis behind one submission request (named, updated, or generated) — 4.2 C #3.
+
+    A preview (``write`` false) only reports which id the ledger already holds and writes nothing.
+    """
+    if not problem or not gitref.valid_sha(sha):
+        return None
+    led = _ledger(ws, problem, agent_id)
+    repo = gitref.problem_repo(ws, problem)
+    return apply_link(led, sha, hypothesis_id, predicted_effect, note=note,
+                      subject=gitref.subject(repo, sha) if repo and not note.strip() else "",
+                      estimate=estimate, enqueued=enqueued, write=write)
 
 
 def on_receipt(ws: Path, problem: str, row: dict[str, Any], agent_id: Any = None, *, gain: float | None = None,

@@ -160,7 +160,7 @@ class AgentMeshHttpControlPlaneTests(unittest.TestCase):
                     self.assertNotIn("parhelion_harness_pool", worker_tools)
                     self.assertIn("parhelion_agent_inbox", worker_tools)
 
-                    # 8. Default endpoint (/v1/mcp) is the orchestrator surface with 20 tools.
+                    # 8. Default endpoint (/v1/mcp) is the orchestrator surface with 23 tools.
                     conn.request(
                         "POST",
                         "/v1/mcp",
@@ -170,7 +170,7 @@ class AgentMeshHttpControlPlaneTests(unittest.TestCase):
                     resp = conn.getresponse()
                     self.assertEqual(resp.status, 200)
                     orch_tools = {t["name"] for t in json.loads(resp.read().decode())["result"]["tools"]}
-                    self.assertEqual(len(orch_tools), 20)
+                    self.assertEqual(len(orch_tools), 23)
                     self.assertIn("parhelion_harness_pool", orch_tools)
 
                     # 9. Stop is idempotent enough to report a terminal record over HTTP.
