@@ -29,9 +29,8 @@
 
 | 包 | 分支 | 状态 | 下一步 |
 |---|---|---|---|
-| P01 P02 P02b P03 P04 | — | 已合入 | — |
-| P05 | impl/P05-ledger-core | Sonnet 代理在做（组 2b） | 交付后合入，再 SendMessage 同一代理续做 P06 |
-| P06 | impl/P06-ledger-seed | 未开始 | P05 合入后由同一个 Sonnet 代理续做 |
+| P01 P02 P02b P03 P04 P05 | — | 已合入 | — |
+| P06 | impl/P06-ledger-seed | 组 2b 的 Sonnet 代理在做 | 交付后合入（第 3 步结束），随后按 §3 依次合入 P07 起各分支，并派组 4 |
 | P07 | impl/P07-gate-queue | 已完成 | P06 之后合入 |
 | P07b | impl/P07b-no-closing-reserve | 已完成（Opus）。另有一点：日配额用尽时仍判放行，只等待名额，与用户规则一致 | 随 P07 合入：先 P07，再 P07b。遗留：`available_normal_shots` 仍扣除预留，因此显示偏低；`drivers/brief.py:188` 仍写着 quota gates，留给 P08 |
 | P09 | impl/P09-host-daemon | 已完成，含主机检查报告 | P06 之后合入 |
