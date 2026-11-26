@@ -2,6 +2,48 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.2.0 — 上下文经济（第二部分）与 worker 边界
+
+本版完成 4.2 的 D、E、F、G、K 与 J 的两项（含 4.1 #15），以及 4.1 遗留的小修。H（遮蔽旧工具输出）与 I（预算护栏）经 P16 测量后不做。各包的计划、报告、审查与合入提交见 `docs/plan-4.1-4.2/00-MASTER.md` §4、`reports/` 与 `reviews/`。为 4.3 做的调研（上一场比赛的涨分归因）在 `docs/v4.3/research/antigravity/`。
+
+### 平台视图与输出上限（D、E；P12、P13）
+- **`parhelion_report`。** 七个视图：`per_case`（逐例差距、三态判定、映射、正确性、复现标记）、`diff`（两个 SHA 的逐例比与区间，优先读已有的配对运行）、`history`、`queue`、`board`（只读缓存，不联网）、`bottleneck`、`env`；`view="help"` 返回各列含义。用来代替读 `report.json` 与回执日志的临时脚本。
+- **统一输出上限。** 每个 MCP 工具回复不超过 `mcp.output_cap_bytes`（默认 5000 字节）。列表类工具先分页（`offset`/`limit` 或 `next_cursor`），仍超限时把全文写到 `<workspace state>/spill/`，回复只带开头、结尾与路径，用 `parhelion_spill_read` 读其余部分。`parhelion_status`、`parhelion_kb_query`、`parhelion_test_wait` 与测试结果消息支持 `format=brief|full`。按 11-26 冲刺回放，平台 MCP 回复字节减少 59%。
+- `parhelion_kb_query` 的回复不再重复携带与 `results` 相同的 `entries` 列表（原占简要回复的 48%）。
+
+### 同伴消息（F；P14）
+- `parhelion_squad` 改为先写结论的信封：claim（≤280 字）、账本引用、证据路径；正文超过 1200 字时转为附件，消息只带路径。同一收件方的多条消息在它的回合结束时合并成一次投递；管理员指令与判题反馈仍立即投递。按回放，同伴消息字节减少 69%，阶段结果字节减少 81%。
+
+### worker 启动包与 DSH 插件（G、4.1 #15；P08）
+- worker 开局拿到由代码生成的启动包（约 4.5–4.9KB）：任务契约、工作树绝对路径与「用 `workdir`、别用 `cd && …`」的规则、要改的文件与行号段、本题账本摘要与逐例证据。仓库地图按调研结论默认关闭（`startup_pack.repo_map`）。
+- 新工具 `parhelion_agent_peek`（仅主控）：查看 worker 工作树的文件、会话流水尾部与 `git diff --stat`。
+- DSH 插件按 Agent 类型给角色：比赛根目录的主对话是主控，`.worktrees/*` 下的对话与原生子代理是 worker，识别不了的一律按 worker。
+
+### worker 边界（K；P15）
+- worker 进程的环境去掉平台私有变量与指向平台源码的 `PYTHONPATH`；在 macOS 沙箱里禁读判题账号、会话文件、守护进程 token 与远端判题缓存。
+- worker 读取平台内部状态、导入平台源码、打开判题凭据或调用全队会话时，给主控与管理员各发一条告警（同一 worker 同一类只发一次），在协作页标记该 worker，并记一条账本约束；不会自动停止 worker。按回放扫描，上一场 13 个 worker 中有 11 个共越界 130 次。
+
+### 工具表瘦身（J；P20）
+- 平台工具表（每次模型调用都会带上）：主控 25,007 → 14,601 字节，worker 22,066 → 12,507 字节，测试钉住上限 15,000 / 13,000。
+
+### 小修（P18）
+- 显示的 `available_normal_shots` 不再扣除收尾预留，预留单独列在 `closing_reserve`；门禁不变。
+- 设备代理的两条预算测试改用虚拟时钟，不再在机器高负载时偶发失败。
+- 新配置 `device.case_cache_dir`、`device.case_tmp_dir`：把用例缓存放到持久盘，两者不在同一文件系统时会提示并改为复制。
+
+### 升级
+1. 重启守护进程并重新安装应用，MCP 改动随守护进程生效。DSH 插件的角色改动要等 Parhelion 下一次经驱动启动 DSH、改写 `~/.dsh` 下的插件块时才生效。
+2. 新增配置项都有默认值：`mcp.output_cap_bytes` / `spill_keep_days` / `spill_max_mb`、`startup_pack.tokens` / `repo_map`、`device.case_cache_dir` / `case_tmp_dir`。
+3. 凭据放在 `cj_accounts.json`，不要写进 `config.json`。`config.json` 一旦出现凭据形状的键，就会对 worker 整体禁读。
+4. `opsb doctor clean` 会列出过期的 spill 与同伴附件，`--purge-retention --apply` 才删除。
+
+### 已知限制
+- 4.2 的目标（worker 起步上下文 ≤15K、上下文峰值中位 ≤150K）目前只有回放估算，要在下一场冲刺实测。
+- 原生子代理拿到 worker 角色但没有绑定的 worker 身份，多数 worker 工具会拒绝它们。
+- Codex 的权限配置块没有在真实 codex 上验证；分离式启动的会话读不到远端判题缓存。
+- worker 契约离 1.5KB 上限只剩约 35 字节，更长的题名会截掉最后一行。
+- `device.case_cache_dir` / `case_tmp_dir` 没有在设备主机上验证。
+
 ## 4.1.0 — 判题一致性、可信的本地测量与上下文经济（第一部分）
 
 本版完成 4.1 路线 1–4 与「4.1 待办」#5–#14、#16–#20，并提前带上 4.2 的工作包 A、B、C（计量、变化驱动的等待、实验账本）。#15 随 4.2 的 P08 交付。各包的计划、报告与合入提交见 `docs/plan-4.1-4.2/00-MASTER.md` §4 与 `reports/`。
