@@ -103,6 +103,9 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
         elif "discretionary_remaining" in b_quota:
             # Older bridges report only the reserve-adjusted number; add the display reserve back.
             sched["available_normal_shots"] = int(b_quota["discretionary_remaining"]) + int(sched.get("closing_reserve") or 0)
+    if b_quota.get("slot_hint"):
+        # 4.3 P25: the gate's own per-slot line, display only. The snapshot computes the same rule.
+        sched["slot_hint"] = str(b_quota["slot_hint"])
     if "noise_floor_pts" in b_cfg:
         sched["noise_floor_delta"] = float(b_cfg["noise_floor_pts"])
 

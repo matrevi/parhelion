@@ -145,7 +145,7 @@ def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     out: dict[str, Any] = {
         "sampled_at": snap.get("sampled_at"),
         "contest": {k: snap["contest"].get(k) for k in ("title", "workspace", "weighted_score", "max_weighted_score", "raw_score", "passing_count", "problem_count")},
-        "scheduler": {k: sched.get(k) for k in ("rate_ready", "cooldown_remaining_sec", "used_today_24h", "daily_quota_limit", "closing_reserve", "available_normal_shots", "noise_floor_delta", "actionable_count")},
+        "scheduler": {k: sched.get(k) for k in ("rate_ready", "cooldown_remaining_sec", "used_today_24h", "daily_quota_limit", "closing_reserve", "available_normal_shots", "noise_floor_delta", "actionable_count", "slot_hint")},
         "npu": npu_state,
     }
     q_items = snap.get("submission_queue") or []

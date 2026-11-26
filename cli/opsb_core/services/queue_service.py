@@ -8,7 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read_json, read_jsonl, utc_now
+from ..config import (DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, ensure_scheduler_path, read_json,
+                      read_jsonl, utc_now, workspace_state_dir)
 from ..device_env import device_text
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, displayed_score_bound, index_submission_history, latest_score_evidence, resolve_workspace_meta
@@ -17,6 +18,15 @@ from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATU
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
 from .sync_reconciler import fast_score_backfill, recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
+
+
+def submit_intents_enabled(workspace: Path) -> bool:
+    """The persisted ``submit_intents`` gate switch (4.3 P23): off restores the 4.2.1 behaviour."""
+    try:
+        state = read_json(workspace_state_dir(workspace) / "scheduler_state.json", {}) or {}
+        return bool((state.get("config") or {}).get("submit_intents", True))
+    except Exception:
+        return False
 
 
 def enqueue_once(workspace: Path, record: dict[str, Any]) -> bool:
@@ -29,8 +39,14 @@ def enqueue_once(workspace: Path, record: dict[str, Any]) -> bool:
         outcomes = [r for r in read_jsonl(results / "submit-queue-outcome.jsonl")
                     if (r.get("title"), (r.get("sha") or "")[:7]) == key]
         done = {r.get("queued_at") for r in outcomes}
-        if not record.get("force") and any(r.get("submission_id") or r.get("status") in
-                                             ("blocked_compliance", "skipped") for r in outcomes):
+        # 4.3 P25: a restore re-submits a SHA that already passed online — that is what the intent
+        # means — so the one-row-per-judged-SHA rule cannot apply to it, or no restore could ever be
+        # queued. The gate's restore pricing still decides, and one row per SHA stays in flight.
+        restore_requeue = str(record.get("intent") or "").strip().lower() == "restore" and \
+            submit_intents_enabled(workspace)
+        if not record.get("force") and not restore_requeue and any(
+                r.get("submission_id") or r.get("status") in ("blocked_compliance", "skipped")
+                for r in outcomes):
             return False
         if any((r.get("title"), (r.get("sha") or "")[:7]) == key and r.get("queued_at") not in done
                for r in read_jsonl(queue)):
@@ -196,6 +212,18 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
         team_used_today = hist_idx["used_24h"]
         team_remaining = max(0, daily_limit - hist_idx["used_24h"])
         avail_shots = max(0, team_remaining)
+
+    slot_usage: dict[str, Any] = {}
+    try:
+        ensure_scheduler_path()
+        from scheduler import close_sweep as _slots
+
+        per_slot = _slots.slot_rows(active_slots or (pipeline.get("account_slots") or []), daily_limit)
+        day_pct = _slots.day_elapsed_pct()
+        slot_usage = {"per_slot": per_slot, "day_elapsed_pct": day_pct,
+                      "slot_hint": _slots.slot_notice(per_slot, day_pct)}
+    except Exception:
+        slot_usage = {}
 
     advisory_items: list[dict[str, Any]] = []
     queued_pairs = {
@@ -513,6 +541,10 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             "queue_lock_held": queue_lock_held,
             "actionable_count": len(active_q),
             "skipped_keys": sorted(f"{st_t}|{st_s}" for st_t, st_s in skipped_short),
+            # 4.3 P25: per-slot utilisation by slot number only, plus one display line when a slot
+            # sits under-used and the day is more than half gone. Display only: nothing reads it
+            # for approval or dispatch, and quota is not a gate threshold.
+            **slot_usage,
             "pipeline": pipeline,
         },
         "problems": problems_out,
