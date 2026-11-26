@@ -132,9 +132,77 @@ def run_replay_bench(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_replay_gate(args: argparse.Namespace) -> int:
+    """``opsb replay gate``: judge every receipt again as of its own timestamp, on a copy."""
+    from ..replay import gate_replay
+    ws = _workspace(args.workspace)
+    if ws is None:
+        print(json.dumps({"ok": False, "error": "workspace not found"}) if args.json
+              else f"Error: workspace {args.workspace!r} not found")
+        return 2
+    try:
+        result = gate_replay.run(ws, manifest=args.manifest, board_mode=args.board_mode,
+                                 gate_switches=args.gate, since=args.since, until=args.until,
+                                 groups=[g.strip() for g in str(args.groups or "").split(",") if g.strip()],
+                                 jobs=args.jobs, keep_copy=args.keep_copy, detail=args.detail)
+    except (ValueError, KeyError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}) if args.json else f"Error: {exc}")
+        return 2
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    else:
+        _print_gate(result)
+    return 0
+
+
+def _print_gate(r: dict[str, Any]) -> None:
+    copy, shots = r["copy"], r["shots"]
+    print(f"{r['workspace']}: {shots['replayed']} of {shots['canonical_rows']} journal rows replayed "
+          f"({shots['judged']} judged; {shots['not_judged']} not judged, {shots['no_sha']} without a sha, "
+          f"{shots['no_time']} without a timestamp)")
+    print(f"copy {copy['copy_sec']}s, manifest {copy['manifest']} ({copy['problems']} problems), "
+          f"{copy['repos']} repositories cloned, window {r['window']['since']}..{r['window']['until']}")
+    for name, group in r["groups"].items():
+        gate, out, cred = group["gate"], group["outcome"], group["credibility"]
+        print(f"\n[{name}] board {group['board_mode']}  switches "
+              f"{group['switches'] or 'all 4.2.1 defaults'}")
+        print(f"  gate     blocked {gate['blocked']}/{gate['shots']} ({gate['blocked_rate'] * 100:.1f}%): "
+              + (", ".join(f"{k} {v}" for k, v in gate["by_stage"].items()) or "none")
+              + f"; next step {gate['blocked_with_next_step']}/{gate['blocked']}")
+        print(f"           new highs {len(gate['blocked_new_highs'])}, restores {len(gate['blocked_restores'])}, "
+              f"frozen {gate['frozen']['total']} (max streak {gate['frozen']['max_streak']}), "
+              f"restore {gate['restore']['restore_approved']}/{gate['restore']['restore_attempts']} "
+              f"of {gate['restore']['zero_events']} zeroed boards")
+        print(f"  outcome  new high {out['new_high_rate'] * 100:.1f}% ({out['new_highs']}), "
+              f"tie {out['tie_rate'] * 100:.1f}%, regression {out['regression_rate'] * 100:.1f}%, "
+              f"hard failure {out['hard_fail_rate'] * 100:.1f}% ({out['hard_failures']})")
+        print(f"           points {out['points']} ({out['points_per_judgement']}/judgement), "
+              f"same source {out['same_source_rate'] * 100:.1f}%, "
+              f"recovery {out['recovery_median_min']} min, closing gap {out['closing_gap']}")
+        print(f"  S2       approximate: {cred['s2_paired_shots']}/{out['judged']} shots carry paired local "
+              f"evidence ({cred['s2_paired_rate'] * 100:.1f}%)")
+    print(f"\ntotal {r['elapsed_sec']}s")
+
+
 def register_replay_subcommands(sub: Any) -> None:
     s_rp = sub.add_parser("replay", help="Replay session logs: sprint metrics and the compaction benchmark")
     rp_sub = s_rp.add_subparsers(dest="replay_cmd", required=True)
+    g = rp_sub.add_parser("gate", help="Replay judge receipts through the submission gate on a workspace copy")
+    g.add_argument("--workspace", "-w", required=True, help="Contest workspace directory (read only)")
+    g.add_argument("--board-mode", choices=("best", "latest"),
+                   help="Force every problem to this board type (default: each problem's rule, else best)")
+    g.add_argument("--gate", action="append", metavar="NAME=VALUE",
+                   help="GateConfig switch for this replay only, as `opsb queue config --gate`")
+    g.add_argument("--since", help="ISO-8601 lower bound on submitted_at")
+    g.add_argument("--until", help="ISO-8601 upper bound on submitted_at")
+    g.add_argument("--manifest", help="Problem roster JSON when the workspace has no opsb.workspace.json")
+    g.add_argument("--groups", default="default,420",
+                   help="Switch groups to compare: default (4.2.1) and 420 (4.2.0 behaviour)")
+    g.add_argument("--detail", action="store_true", help="Include every replayed shot in the JSON output")
+    g.add_argument("--jobs", type=int, default=6, help="Problems replayed in parallel (default 6)")
+    g.add_argument("--keep-copy", action="store_true", help="Keep the temporary copy and print its path")
+    g.add_argument("--json", action="store_true")
+    g.set_defaults(func=run_replay_gate)
     for name, func, help_text in (
         ("bench", run_replay_bench, "Score seed schemes against probes cut from compaction points"),
         ("metrics", run_replay_metrics, "Recompute sprint metrics, cache hit rates and cost efficiency"),
