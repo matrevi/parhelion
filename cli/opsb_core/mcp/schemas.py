@@ -29,7 +29,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                        "board (cached board score/rank, frontier top1/top5, and per-case tbest with observed_at when a problem is named; reads cache only, no network); "
                        "bottleneck (R6: category, limited_resource_pct, top_metrics[3], fixes from the KB, raw report/log/run_dir paths); "
                        "env (platform version/root, daemon liveness, workspace/results/state dirs, free disk, <=1KB; no account, session or credential field). "
-                       "A worker reads its own problem only; board and env are open to workers.",
+                       "A worker reads its own problem only; board and env are open to workers. "
+                       "This tool is the data channel: board, tbest, receipts and environment facts come from it, never from "
+                       "files under ~/.parhelion (state/test_runs, agent_bus.db, cj_accounts.json, sessions/) or ~/.judge/, "
+                       "from importing opsb_core / adding the platform root to sys.path, or from calling platform internals "
+                       "such as board_refresh_service._all_team_sessions; a worker that does is flagged on the collaboration "
+                       "page and alerted to the orchestrator and the administrator.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
