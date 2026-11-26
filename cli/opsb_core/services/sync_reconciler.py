@@ -87,10 +87,16 @@ def collapse_reconciled_outcomes(outcome_rows: list[dict[str, Any]]) -> list[dic
         if prev is None or rank >= prev:
             best_rank_by_sid[sid] = rank
             best_idx_by_sid[sid] = idx
+    # A backfill row (scheduler.receipts) takes the journal position of the row it rebuilt.
+    first_idx_by_sid: dict[str, int] = {}
+    for idx, row in enumerate(outcome_rows):
+        first_idx_by_sid.setdefault(str(row.get("submission_id") or "").strip(), idx)
+    slot = {(first_idx_by_sid[sid] if outcome_rows[idx].get("source") == "receipt-backfill" else idx): idx
+            for sid, idx in best_idx_by_sid.items()}
     return [
-        row for idx, row in enumerate(outcome_rows)
-        if not str(row.get("submission_id") or "").strip()
-        or best_idx_by_sid.get(str(row.get("submission_id") or "").strip()) == idx
+        row if not str(row.get("submission_id") or "").strip() else outcome_rows[slot[idx]]
+        for idx, row in enumerate(outcome_rows)
+        if not str(row.get("submission_id") or "").strip() or idx in slot
     ]
 
 

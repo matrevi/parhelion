@@ -181,6 +181,25 @@ def rank(row: dict[str, Any]) -> tuple[int, int, int, int, int]:
     return (verdict, int(effective_source(row) != "judge-reconcile"), *score_rank(row))
 
 
+def placed(rows: list[dict[str, Any]], best_idx: dict[str, int]) -> list[dict[str, Any]]:
+    """Keep each submission's chosen row; a backfill row takes the place of the row it rebuilt.
+
+    Backfill rows are appended at the end of the journal, but replays read the journal in file
+    order (the last judged row of a problem is its replayed board), so they must not move.
+    """
+    first: dict[str, int] = {}
+    for idx, row in enumerate(rows):
+        first.setdefault(str(row.get("submission_id") or "").strip(), idx)
+    at = {(first[sid] if rows[idx].get("source") == BACKFILL_SOURCE else idx): idx for sid, idx in best_idx.items()}
+    out = []
+    for idx, row in enumerate(rows):
+        if not str(row.get("submission_id") or "").strip():
+            out.append(row)
+        elif idx in at:
+            out.append(rows[at[idx]])
+    return out
+
+
 def canonical(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """One row per ``submission_id`` (best by ``rank``, later rows win ties); others unchanged."""
     best: dict[str, tuple[tuple[int, ...], int]] = {}
@@ -190,9 +209,7 @@ def canonical(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             key = rank(row)
             if sid not in best or key >= best[sid][0]:
                 best[sid] = (key, idx)
-    keep = {idx for _, idx in best.values()}
-    return [row for idx, row in enumerate(rows)
-            if idx in keep or not str(row.get("submission_id") or "").strip()]
+    return placed(rows, {sid: idx for sid, (_, idx) in best.items()})
 
 
 _ROWS: dict[str, tuple[tuple[int, int], list[dict[str, Any]]]] = {}

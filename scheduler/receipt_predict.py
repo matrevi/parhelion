@@ -60,6 +60,17 @@ def despike(pairs: list[dict[str, Any]], local: dict[str, float], judged: dict[s
     return out
 
 
+def board_sha(workspace: pathlib.Path, title: str, as_of: datetime.datetime | None = None) -> str | None:
+    """SHA of the newest receipt before ``as_of`` that refreshed the board (``beat_board``)."""
+    best: tuple[datetime.datetime, str] | None = None
+    for row in receipts.load(workspace, title):
+        stamp = judge_cases.parse_iso(row.get("submitted_at") or row.get("finished_at"))
+        if (receipts.beat_board(row) is True and stamp is not None and (as_of is None or stamp < as_of)
+                and row.get("sha") and (best is None or stamp > best[0])):
+            best = (stamp, str(row["sha"]))
+    return best[1] if best else None
+
+
 def _bases(workspace: pathlib.Path, title: str, preferred: list[str | None], obs: list[dict[str, Any]],
            timed: list[str]) -> list[tuple[str, dict[str, Any], str]]:
     """Judged SHAs with official times on every timed case: preferred SHAs first, then newest."""
@@ -81,15 +92,18 @@ def _bases(workspace: pathlib.Path, title: str, preferred: list[str | None], obs
 
 def predict(workspace: pathlib.Path, title: str, cand_sha: str, base_shas: list[str | None],
             as_of: datetime.datetime | None = None, *, tbest_override: dict[str, float | None] | None = None,
-            doc: dict[str, Any] | None = None, allow_other: bool = True) -> dict[str, Any] | None:
+            doc: dict[str, Any] | None = None, allow_other: bool = True,
+            write_map: bool = False) -> dict[str, Any] | None:
     """Per-case prediction for ``cand_sha`` or None when the evidence does not support one.
 
     ``base_shas`` are tried first (board, then historical best); with ``allow_other`` any other
     judged SHA with full official times may serve, newest first. Far bases extrapolate across
     large per-case changes and are less accurate (P01-backtest.md), so the gate does not use them.
+    The stored case map is refreshed only with ``write_map`` (the gate); analysis stays read-only.
     """
     if doc is None:
-        doc = case_map.build(workspace, title, as_of) if as_of else case_map.current(workspace, title)
+        doc = (case_map.build(workspace, title, as_of) if as_of
+               else case_map.current(workspace, title, write=write_map))
     pairs = [p for p in doc.get("pairs") or [] if p.get("judge_mapped")]
     if not case_map.usable(doc) or not pairs:
         return None

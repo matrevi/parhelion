@@ -865,10 +865,7 @@ class ScoreEstimator:
             if prev is None or rank >= prev:
                 best_rank[sid] = rank
                 best_idx[sid] = idx
-        return [
-            rec for idx, rec in enumerate(records)
-            if not str(rec.get("submission_id") or "").strip() or best_idx.get(str(rec.get("submission_id") or "").strip()) == idx
-        ]
+        return receipts.placed(records, best_idx)
 
     def _load_snapshot(self) -> dict[str, dict[str, Any]]:
         from cli.opsb_core.services.board_refresh_service import current_board
@@ -1250,13 +1247,17 @@ class ScoreEstimator:
 
     def _receipt_projection(self, title: str, sha: str | None, ledger: ProblemLedger,
                             as_of: datetime.datetime | None = None) -> dict[str, Any] | None:
-        """Per-case receipt prediction (scheduler.receipt_predict) against the board SHA."""
+        """Per-case receipt prediction (scheduler.receipt_predict) against the board SHA.
+
+        A replay (``as_of``) takes the board from the receipts that refreshed it: the replayed
+        ledger's active SHA is the last judged row, which can be a Pass below the board or a WA.
+        """
         if not sha:
             return None
+        board = receipt_predict.board_sha(self.workspace, title, as_of) if as_of else ledger.active_board_sha
         try:
-            return receipt_predict.predict(self.workspace, title, sha,
-                                           [ledger.active_board_sha, ledger.historical_best_sha], as_of,
-                                           allow_other=False)
+            return receipt_predict.predict(self.workspace, title, sha, [board, ledger.historical_best_sha], as_of,
+                                           allow_other=False, write_map=as_of is None)
         except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):
             return None
 

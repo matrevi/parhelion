@@ -143,9 +143,16 @@ def test_estimator_dedupe_picks_the_backfilled_row(tmp_path):
     receipt_backfill.run(ws, apply=True)
     est = ScoreEstimator.__new__(ScoreEstimator)
     est.workspace = ws
-    picked = {r["submission_id"]: r for r in est._load_outcomes()}
+    loaded = est._load_outcomes()
+    picked = {r["submission_id"]: r for r in loaded}
     assert picked["sub-timing"]["receipt_schema"] == 1
     assert picked["sub-wa-history"]["source"] == receipts.BACKFILL_SOURCE
+    # Backfill rows sit where the rows they rebuilt were: replays read the journal in order.
+    order = ["sub-timing", "sub-wa-poll", "sub-wa-history"]
+    assert [r["submission_id"] for r in loaded] == order
+    raw = receipts.read_rows(ws / "results" / "submit-queue-outcome.jsonl")
+    assert [r["submission_id"] for r in receipts.canonical(raw)] == order
+    assert [r["submission_id"] for r in collapse_reconciled_outcomes(raw)] == order
 
 
 def test_breaker_counts_failed_verdicts_not_passes_below_the_board(tmp_path):
