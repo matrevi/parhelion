@@ -232,6 +232,29 @@ git -C /Users/winbeau/Developer/personal/parhelion-wt/P12 rebase main
 
 每项给出数字、建议做或不做、预计工作量。
 
+**结论（P16 已合入）**：H、I 不做；J-1（`kb_query` 回复去掉与 `results` 重复的 `entries`）已由主会话在 main 上完成；J-2 进入 4.2.0，见 §3.8。
+
+### 3.8 P20 工具表瘦身（4.2 J-2）
+
+分支 `impl/P20-tool-table`，工作树 `/Users/winbeau/Developer/personal/parhelion-wt/P20`，从最新 `main` 切。报告 `reports/P20-tool-table.md`。
+
+**为什么做**：P16 实测，工具表占 worker 首次提示的 86%（9,843 token 里的 8,432）；平台自己的那部分从冲刺时的 8,322 字节涨到现在 worker 角色 22,066 字节、主控 25,007 字节（`list_tool_schemas(role)` 紧凑 JSON），涨幅 165%，主要来自 4.2 自己新增的工具与描述。最大一项 `parhelion_report` 3,112 字节，其中描述 2,148 字符；`parhelion_note` 2,142 字节。工具表随每次模型调用发送，`bound_output` 管不到它。
+
+**目标**：
+- 主控 ≤ 15,000 字节、worker ≤ 13,000 字节（`json.dumps(list_tool_schemas(role), ensure_ascii=False, separators=(",", ":"))` 的 UTF-8 字节）；
+- 加一条测试把这两个上限钉住，以后新增工具或加长描述会直接失败。
+
+**做法**：
+- 工具名、参数名、参数类型、角色与工具数（主控 29）一律不变，只改描述文字与 schema 里的说明字段。
+- `parhelion_report` 的逐视图列说明移出 schema，改由工具自己回答：例如加 `view="help"`（或在各视图回复里带一段简短的 `columns_doc`），保证模型仍能从工具本身查到每一列的含义。schema 描述只留：视图名列表、一句「用它代替读 report.json 与临时脚本」，以及 P15 的数据通道规则的一句话版本。
+- 其余描述按「一句话说做什么 + 必要的约束」改写：`parhelion_note` 的字段说明压缩；`parhelion_wait` 保留「优先它而不是循环 status」；`parhelion_test` 保留级别说明。
+- 不做 P16 的 J-3（少用工具后置、工具搜索），留到 4.3。
+
+**验收**：
+- 两条全量测试全绿（基线见 §2；本包会改几处描述断言）；
+- 报告给出每个角色改前改后的字节与估算 token（0.33 token/字节，与 P16 同口径），以及按 P16 §4.2 口径推算的 worker 首次提示变化；
+- 在工作树内用 `cli/opsb mcp serve` 做一次 stdio 的 `tools/list` 与 `parhelion_report(view=help)`（或等价入口）调用，确认可用。
+
 ## 4. 主会话的审查与合入
 
 **审查清单：**

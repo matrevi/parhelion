@@ -121,3 +121,4 @@
 | P16 | impl/P16-measure | 已合入 | 302d58c | H 无驱动接口、I 无可挡对象，均不做；J 工具表占 worker 首次提示 86%，kb_query 重复键占 brief 48% |
 | P18 | impl/P18-cleanup | 已合入 | efe11d7 | 可用额度不再扣收尾预留（门禁不变）；两条预算测试改虚拟时钟，负载下 20/20；缓存目录可配置，未在真机验证 |
 | P19 | impl/P19-antigravity-mining | 已合入 | dfb51a4 | 4.3 调研：上一场 Antigravity 记录的涨分归因与 Top 10 改进；文中「4.3 现状」指当前 main |
+| P20 | impl/P20-tool-table | 待 DSH 开工 | | 4.2 J-2：工具表瘦身，主控 ≤15,000 字节、worker ≤13,000 字节，见 20-REMAINING §3.8 |
