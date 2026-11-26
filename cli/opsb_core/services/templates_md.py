@@ -12,6 +12,8 @@ Compare each candidate against a passing baseline on matching inputs, environmen
 
 Set enable_auto_submit=true on start when the user asks for automatic submission. Verify the switch in the start receipt. Workers independently request tests, preview their gate and enqueue the exact SHA through MCP. The platform owns device access, account selection, cooldown, quota and uploads; nobody uses `ssh`, `flock` or the device directly. Use the returned evidence to plan the next experiment while waiting for the official verdict in the worker inbox.
 
+To wait, call `parhelion_wait` with the `rev` from its previous reply as `since`: it blocks until a worker message, test run, seat or judge receipt changes and returns only those changes. Do not call `parhelion_status` or `parhelion_agent_wait` in a loop; pass `if_rev` to `parhelion_status` when you need the scores again.
+
 The orchestrator can dispatch other Harnesses through the platform and inspect the ordered message history in Agent Mesh. Route admin directives, review local-pass/online-fail escapes, delegate verified breakthroughs for the five-pillar KB, and hand stagnant problems to a new worker with an orthogonal hypothesis. Record reusable lessons with evidence and applicability.
 """
 
@@ -20,7 +22,7 @@ PROBLEM_AGENTS_MD = """# {problem} · Operator Guide
 Repository `{git_owner}/{repo_slug}` · contest weight {difficulty} · device host {npu_host}
 
 1. Read the official problem contract and inspect recent receipts, current board score and known Bugs. Find the case or bucket with measured headroom. The state card in your brief lists the best SHA, recent receipts, public-case gaps and recent tests.
-2. Choose one change and a baseline SHA. Commit in your assigned worktree, publish your branch with `git push origin HEAD`, then call `parhelion_test` with the problem, explicit SHA and a level. It returns a request_id within seconds; poll `parhelion_test_wait` (up to 45 s per call) for the digest. The finished result also arrives in your inbox. Keep strict precision checks and the frozen golden oracle intact.
+2. Choose one change and a baseline SHA. Commit in your assigned worktree, publish your branch with `git push origin HEAD`, then call `parhelion_test` with the problem, explicit SHA and a level. It returns a request_id within seconds; call `parhelion_wait` (pass back its `rev` as `since`) to sleep until the run or your inbox changes, then read the digest with `parhelion_test_wait`. The finished result also arrives in your inbox. Keep strict precision checks and the frozen golden oracle intact.
 3. Levels: `smoke` re-runs failed cases plus one correctness anchor and one timed case for a quick self-check; `standard` runs every correctness case and warm timing for all timed cases, as daily evidence; `final` adds local adversarial cases and more repeats, once per submission candidate. The suite and timing protocol belong to the platform; worker requests only choose a level and cases.
 4. Compare identical inputs at matching settings. Use judge per-case times or the digest's calibrated warm timing and baseline speedup. Record the hypothesis, SHA, cases, environment, result and uncertainty, including negative results.
 5. Call `parhelion_submit_gate` to preview, then use enqueue=true to hand off a candidate. Check `parhelion_agent_inbox` for the official verdict. Review discrepancies before the next change. Escalate unresolved decisions through `parhelion_agent_report`.

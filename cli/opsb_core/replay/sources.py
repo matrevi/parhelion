@@ -15,7 +15,10 @@ from typing import Any
 from ..drivers.base import resolve_workspace_state_dir
 from ..metrics import usage
 
-POLL_TOOLS = ("agent_wait", "test_wait", "agent_send", "status")
+#: Orchestrator polling as counted in the 4.2 baseline; ``wait`` (``parhelion_wait``, 4.2 B) replaces it.
+POLL_TOOLS = ("agent_wait", "test_wait", "agent_send", "status", "wait")
+#: Worker-side waiting calls (workers never call agent_wait or agent_send).
+WORKER_POLL_TOOLS = ("test_wait", "status", "agent_inbox", "wait")
 
 
 def _in(ts: str | None, since: str | None, until: str | None) -> bool:

@@ -9,6 +9,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from ..agents.event_hub import MAX_BLOCK_SEC, EventHub, normalize_sources
 from ..agents.manager import DEFAULT_WAIT_SEC, MAX_WAIT_SEC, AgentMeshManager
 
 _LOCAL_MANAGER: AgentMeshManager | None = None
@@ -16,9 +17,19 @@ _ACTIVE_DAEMON_MANAGER: AgentMeshManager | None = None
 
 
 def bind_daemon_agent_manager(manager: AgentMeshManager | None) -> None:
-    """Bind the in-process daemon AgentMeshManager so HTTP `/v1/mcp` avoids self-loopback."""
+    """Bind the in-process daemon AgentMeshManager so HTTP `/v1/mcp` avoids self-loopback.
+
+    The daemon's manager owns the event hub, so its legacy waits block on hub events.
+    """
     global _ACTIVE_DAEMON_MANAGER
     _ACTIVE_DAEMON_MANAGER = manager
+    if manager is not None:
+        manager.hub_enabled = True
+
+
+def daemon_hub(workspace: Path) -> EventHub | None:
+    """The event hub when this code runs inside the daemon; None in a stdio or CLI process."""
+    return _ACTIVE_DAEMON_MANAGER.event_hub(workspace) if _ACTIVE_DAEMON_MANAGER is not None else None
 
 
 def _get_local_manager() -> AgentMeshManager:
@@ -35,8 +46,13 @@ def _proxy_daemon(
     payload: dict[str, Any] | None = None,
     *,
     timeout: float = 12.0,
+    missing_ok: bool = False,
 ) -> dict[str, Any] | None:
-    """If `opsb daemon` is running (and we are NOT inside it), forward the bus call to daemon HTTP."""
+    """If `opsb daemon` is running (and we are NOT inside it), forward the bus call to daemon HTTP.
+
+    ``missing_ok``: a 404 means the running daemon predates the route; return None so the caller
+    falls back to its local path instead of failing.
+    """
     if _ACTIVE_DAEMON_MANAGER is not None or os.environ.get("PARHELION_DISABLE_DAEMON_PROXY") == "1":
         return None
     try:
@@ -62,6 +78,8 @@ def _proxy_daemon(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        if missing_ok and exc.code == 404:
+            return None
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             err_obj = json.loads(raw)
@@ -141,6 +159,34 @@ def tool_parhelion_agent_wait(args: dict[str, Any], workspace: Path) -> dict[str
     if proxied := _proxy_daemon("POST", "/v1/agents/wait", workspace, body, timeout=capped + 6.0):
         return proxied
     return _mgr().wait_events(workspace, since_seq=since_seq, agent_ids=agent_ids, problem=problem, strategic_only=strategic_only, timeout_sec=capped)
+
+
+def wait_body(args: dict[str, Any]) -> dict[str, Any]:
+    """Validated ``EventHub.wait`` keyword arguments from MCP arguments (or a daemon route body)."""
+    timeout = args.get("timeout")
+    ids = args.get("agent_ids")
+    return {
+        "since": str(args.get("since") or "").strip() or None,
+        "until": list(normalize_sources(args.get("until"))),
+        "timeout": max(0.0, min(MAX_BLOCK_SEC, float(timeout))) if timeout is not None else None,
+        "agent_ids": [str(x) for x in ids] if isinstance(ids, list) else None,
+        "problem": str(args.get("problem") or "").strip() or None,
+        "strategic_only": args.get("strategic_only") is True,
+    }
+
+
+def tool_parhelion_wait(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    body = wait_body(args)
+    if args.get("_worker_request"):
+        agent_id = str(args.get("_caller_agent_id") or "").strip()
+        if not agent_id:
+            raise ValueError("worker agent_id context missing")
+        scoped = {k: body[k] for k in ("since", "until", "timeout")}  # a worker's scope is fixed
+        return _mgr().event_hub(workspace).wait(role="worker", agent_id=agent_id, **scoped)
+    block = body["timeout"] if body["timeout"] is not None else MAX_BLOCK_SEC
+    if proxied := _proxy_daemon("POST", "/v1/events/wait", workspace, body, timeout=block + 6.0, missing_ok=True):
+        return proxied
+    return _mgr().event_hub(workspace).wait(role="orchestrator", **body)
 
 
 def tool_parhelion_agent_messages(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

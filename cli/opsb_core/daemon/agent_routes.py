@@ -39,6 +39,19 @@ def handle_agent_get(path: str, q: dict[str, str], ws: Path, runtime: Any) -> tu
 
 def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: Any) -> tuple[int, Any] | None:
     try:
+        if path == "/v1/events/wait":
+            # Full-token callers only (the orchestrator); workers wait through /v1/mcp/worker/<id>.
+            from ..mcp.handlers_agents import wait_body
+            return 200, runtime.agent_mesh.event_hub(ws).wait(role="orchestrator", **wait_body(body_obj))
+
+        if path == "/v1/events/test_wait":
+            from ..services import test_runs
+            request_id = str(body_obj.get("request_id") or "").strip()
+            if not request_id:
+                raise ValueError("'request_id' is required")
+            hub = runtime.agent_mesh.event_hub(ws)
+            return 200, test_runs.wait(ws, request_id, body_obj.get("wait_sec", 30), block=hub.test_blocker(request_id))
+
         if path == "/v1/agents/sprint":
             from ..agents.sprint import start_sprint
             return 200, start_sprint(runtime.agent_mesh, ws, driver=body_obj.get("driver") or "",

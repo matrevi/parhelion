@@ -27,6 +27,7 @@ from ..metrics.store import UsageMonitor, orchestrator_target, worker_target
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
+from .event_hub import EventHub, inbox_predicate
 from .judge_feedback import calibration_evidence, judge_feedback
 from .ownership import claim_runner, owned_groups, reap_groups
 
@@ -321,6 +322,19 @@ class AgentMeshManager:
         self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
         self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._usage_monitor = UsageMonitor()
+        self._hubs: dict[str, EventHub] = {}
+        # Set when this manager serves the daemon: legacy waits then block on the event hub.
+        self.hub_enabled = False
+
+    def event_hub(self, workspace: Path) -> EventHub:
+        """The workspace's change-driven event hub, created on first use."""
+        key = str(workspace.expanduser().resolve())
+        store = self._store(Path(key))
+        with self._lock:
+            hub = self._hubs.get(key)
+            if hub is None:
+                hub = self._hubs[key] = EventHub(Path(key), store)
+            return hub
 
     # ---- provider fault circuit breaker -------------------------------------------------
     @staticmethod
@@ -491,6 +505,8 @@ class AgentMeshManager:
     def _notify(self) -> None:
         with self._cond:
             self._cond.notify_all()
+        for hub in list(self._hubs.values()):
+            hub.kick()
         if callable(self._on_change):
             try:
                 self._on_change()
@@ -951,14 +967,27 @@ class AgentMeshManager:
                 limit=40,
             )
 
-        with self._cond:
+        if self.hub_enabled:
+            # Daemon: sleep on the hub until a matching inbox event, then read through list_messages.
+            hub = self.event_hub(ws)
+            pred = inbox_predicate(id_set, problem, strategic_only)
+            after = hub.n
             matched = _collect()
             while not matched:
                 rem = deadline - time.monotonic()
-                if rem <= 0:
+                if rem <= 0 or not hub.wait_until(pred, rem, since_n=after):
                     break
-                self._cond.wait(timeout=min(rem, 1.0))
+                after = hub.n
                 matched = _collect()
+        else:
+            with self._cond:
+                matched = _collect()
+                while not matched:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        break
+                    self._cond.wait(timeout=min(rem, 1.0))
+                    matched = _collect()
 
         agents = store.list_agents(include_stopped=True)
         if id_set:
@@ -1136,6 +1165,10 @@ class AgentMeshManager:
         with self._lock:
             runners = list(self._runners.values())
             self._runners.clear()
+            hubs = list(self._hubs.values())
+            self._hubs.clear()
+        for hub in hubs:
+            hub.stop()
         for r in runners:
             try:
                 r.stop()

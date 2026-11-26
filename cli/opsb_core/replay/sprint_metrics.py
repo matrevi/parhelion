@@ -142,6 +142,19 @@ def repeat_metrics(logs: list[AgentLog]) -> dict[str, Any]:
     }
 
 
+def worker_poll_metrics(logs: list[AgentLog], hours: float) -> dict[str, Any]:
+    """Worker waiting calls (``test_wait``, ``status``, ``agent_inbox``, ``wait``) in the mesh logs."""
+    counts: collections.Counter[str] = collections.Counter()
+    for log in logs:
+        for call in log.tool_calls():
+            name = call.name.removeprefix("parhelion_")
+            if call.is_platform and name in sources.WORKER_POLL_TOOLS:
+                counts[name] += 1
+    total = sum(counts.values())
+    return {**{k: counts.get(k, 0) for k in sources.WORKER_POLL_TOOLS}, "poll_total": total,
+            "poll_per_hour": _rate(total, hours)}
+
+
 def tool_metrics(logs: list[AgentLog], hours: float) -> dict[str, Any]:
     """Per-tool call counts and logged result bytes (the A3 baseline before live metering)."""
     sizes: dict[str, list[int]] = collections.defaultdict(list)
@@ -183,7 +196,7 @@ def compute(paths: list[Path], *, workspace: Path | None = None, since: str | No
         "window": {"since": lo, "until": hi, "hours": hours, "workers": len(logs),
                    "sessions": [g.agent_id for g in logs]},
         "context": context_metrics(logs), **shell_metrics(logs, hours), "repeats": repeat_metrics(logs),
-        "tools": tool_metrics(logs, hours),
+        "worker_polls": worker_poll_metrics(logs, hours), "tools": tool_metrics(logs, hours),
     }
     if workspace is not None:
         orch = sources.orchestrator_sessions(workspace, lo, hi, paths=orchestrator_paths)
