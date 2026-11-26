@@ -121,7 +121,9 @@ def claude_workers_allowed(cfg: dict[str, Any] | None = None) -> bool:
     if str(os.environ.get("PARHELION_ALLOW_CLAUDE_WORKERS", "")).strip().lower() in ("1", "true", "yes", "on"):
         return True
     try:
-        doc = cfg if cfg is not None else _cfg.load_parhelion_config()
+        from ..drivers.base import load_parhelion_config
+
+        doc = cfg if cfg is not None else load_parhelion_config()
     except Exception:
         doc = {}
     return bool((doc or {}).get("allow_claude_workers"))

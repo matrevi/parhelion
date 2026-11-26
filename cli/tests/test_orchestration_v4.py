@@ -460,3 +460,13 @@ def test_guides_use_async_test_tools_and_keep_strategy():
     assert "three opening probes" in WORKSPACE_AGENTS_MD and "mode=solo" in WORKSPACE_AGENTS_MD
     PROBLEM_AGENTS_MD.format(problem="P", git_owner="o", repo_slug="r", difficulty=2, npu_host="h")
     WORKSPACE_AGENTS_MD.format(contest_title="C")
+
+
+def test_claude_workers_follow_the_config_flag(monkeypatch):
+    from opsb_core.agents import manager as mesh
+
+    monkeypatch.delenv("PARHELION_ALLOW_CLAUDE_WORKERS", raising=False)
+    monkeypatch.setattr("opsb_core.drivers.base.load_parhelion_config", lambda: {"allow_claude_workers": True})
+    assert mesh.claude_workers_allowed() is True
+    monkeypatch.setattr("opsb_core.drivers.base.load_parhelion_config", lambda: {})
+    assert mesh.claude_workers_allowed() is False
