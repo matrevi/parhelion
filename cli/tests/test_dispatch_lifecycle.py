@@ -147,15 +147,27 @@ def test_review_trial_binds_changed_root_kernel_and_receipt(tmp_path):
         git("-c", "user.name=Test", "-c", "user.email=test@example.org", "commit", "-qm", content)
         return git("rev-parse", "HEAD")
     bad_sha, good_sha = commit("old"), commit("fixed")
-    folder = tmp_path / bad_sha
-    folder.mkdir()
+    folder = tmp_path / "results" / "Op" / bad_sha
+    folder.mkdir(parents=True)
     bad = dict(sha=bad_sha, run_id="old", engine="e", oracle="o",
                environment={"soc": "a"}, settings={"strict_fp32": True})
     good = dict(bad, sha=good_sha, run_id="new")
     state = dict(escape_lock=True, escape_sha=bad_sha, escape_submission_id="sid", escape_status="Wrong Answer")
     result = authorize_review_trial(tmp_path, folder, bad, good, state, "reviewed")
     assert result["ok"] and not result["cleared"]
-    assert not authorize_review_trial(tmp_path, folder, bad, dict(good, sha=commit("different")), state, "new")["ok"]
+    # An unused binding can move to a better repair, once.
+    better = commit("better")
+    moved = authorize_review_trial(tmp_path, folder, bad, dict(good, sha=better), state, "new")
+    assert moved["ok"] and moved["replaces"] == good_sha
+    # After the bound repair is submitted the receipt's trial is spent.
+    (tmp_path / "results" / "submit-queue-outcome.jsonl").write_text(
+        json.dumps({"title": "Op", "sha": better, "queued_at": "t", "submission_id": "s2"}) + "\n")
+    assert not authorize_review_trial(tmp_path, folder, bad, dict(good, sha=commit("different")), state, "x")["ok"]
+    # A repair still waiting in the queue also holds the binding.
+    from scheduler.case_feedback import trial_spent
+    (tmp_path / "results" / "submit-queue.jsonl").write_text(
+        json.dumps({"title": "Op", "sha": good_sha, "queued_at": "q"}) + "\n")
+    assert trial_spent(folder, good_sha)
 
 
 def test_second_worker_uploads_while_first_is_polling(tmp_path, monkeypatch):

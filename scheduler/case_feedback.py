@@ -19,6 +19,36 @@ def trial_path(folder, submission_id):
     return folder / ("escape-trial-" + hashlib.sha256(submission_id.encode()).hexdigest() + ".json")
 
 
+def _jsonl(path):
+    import json
+    rows = []
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return rows
+
+
+def trial_spent(folder, good_sha):
+    """Whether the repair bound to a receipt was submitted or is waiting in the queue.
+
+    ``folder`` is ``results/<title>/<bad_sha>``. A judge submission ID, or a queued row with no
+    outcome yet, spends the trial; a row the gate rejected or an operator skipped does not.
+    """
+    results, title = folder.parent.parent, folder.parent.name
+    match = lambda row: row.get("title") == title and str(row.get("sha") or "").lower() == good_sha.lower()
+    outcomes = [row for row in _jsonl(results / "submit-queue-outcome.jsonl") if match(row)]
+    if any(row.get("submission_id") for row in outcomes):
+        return True
+    finished = {row.get("queued_at") for row in outcomes}
+    return any(match(row) and row.get("queued_at") not in finished
+               for row in _jsonl(results / "submit-queue.jsonl"))
+
+
 def authorize_review_trial(repo, folder, bad, good, state, reason):
     sid = state.get("escape_submission_id")
     if not (sid and state.get("escape_lock") and state.get("escape_status") == "Wrong Answer"
@@ -34,10 +64,15 @@ def authorize_review_trial(repo, folder, bad, good, state, reason):
     path = trial_path(folder, sid)
     with (folder / ".escape-trial.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if path.exists() and read_doc(path).get("good_sha") != good["sha"]:
-            return {"ok": False, "reason": "Another repair commit is already bound to this receipt"}
+        # One reviewed trial per WA receipt: the binding can move to a better repair only while
+        # the bound one has not been submitted or queued.
+        bound = read_doc(path).get("good_sha") if path.exists() else None
+        if bound and bound != good["sha"] and trial_spent(folder, bound):
+            return {"ok": False, "reason": "Another repair commit is already bound to this receipt and was submitted"}
         record = {"bad_sha": folder.name, "good_sha": good["sha"], "submission_id": sid,
                   "good_run": good["run_id"], "bad_run": bad["run_id"], "review": reason.strip()}
+        if bound and bound != good["sha"]:
+            record["replaces"] = bound
         atomic_write_json(path, record)
     return {"ok": True, "cleared": False, "review_trial": True, **record}
 
