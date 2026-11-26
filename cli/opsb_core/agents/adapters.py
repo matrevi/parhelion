@@ -18,6 +18,7 @@ from ..drivers.claude_driver import ClaudeStreamJsonClient, coerce_claude_uuid
 from ..drivers.codex_appserver import CodexAppServerClient, render_codex_config_toml
 from ..drivers.macos_gui import write_mcp_json_file
 from ..drivers.registry import get_driver, worker_model
+from ..ledger.handoff import HANDOFF_PROMPT
 from .ownership import owned_groups, reap_groups
 
 EventCallback = Callable[[str, str], None]
@@ -96,6 +97,8 @@ class BaseWorkerAdapter:
         self._lock = threading.Lock()
         self._closed = False
         self.on_spawn: Callable[[int, int], None] | None = None
+        #: Set by the runner before ``compact``: the ledger-backed handoff checks (``ledger.handoff.HandoffSession``).
+        self.handoff: Any = None
 
     def _spawn_proc(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
         with self._lock:
@@ -232,20 +235,28 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         client = self._client
         if client is None:
             return ""
-        handoff = client.send_prompt(self.native_session_id,
-            "Write a short handoff: goal, constraints, verified SHAs and evidence, open hypotheses, next experiment.")
-        summary = (handoff.get("text") or "").strip()
-        if not summary:
+        old_sid = self.native_session_id
+        handoff = client.send_prompt(old_sid, HANDOFF_PROMPT)
+        narrative = (handoff.get("text") or "").strip()
+        if not narrative:
             raise RuntimeError("ACP returned an empty handoff")
+        seed = ("Preserve this checkpoint and await the next task.\n" + narrative +
+                "\nLast reported result:\n" + checkpoint)
+        if self.handoff is not None:
+            try:  # checks run in the old session, so a heading repair still has its context (ledger.handoff)
+                seed = self.handoff.build_seed(
+                    narrative, checkpoint,
+                    repair=lambda prompt: str(client.send_prompt(old_sid, prompt).get("text") or "")).text
+            except Exception:  # a validator fault must not cost the worker its compaction: keep the plain seed
+                pass
         servers = build_acp_mcp_servers(self.workspace, mcp_url=_daemon_worker_mcp_url(self.agent_id),
                                         role="worker", agent_id=self.agent_id)
         sid, _ = client.open_session(cwd=self.worktree, mcp_servers=servers, model=self.model)
         if not sid or sid == self.native_session_id:
             raise RuntimeError("ACP did not allocate a new context")
-        client.send_prompt(sid, "Preserve this checkpoint and await the next task.\n" + summary +
-                           "\nLast reported result:\n" + checkpoint)
+        client.send_prompt(sid, seed)
         self.native_session_id = sid
-        return "ACP session continued from a stage handoff."
+        return "ACP session continued from a validated stage handoff."
 
     def interrupt(self) -> None:
         if self._client and self.native_session_id:
@@ -358,10 +369,15 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
             return ""
         self._client.compact(self.native_session_id)
         if checkpoint.strip():
-            # Native compaction keeps the thread; seed it with the platform checkpoint and state card.
-            self._client.start_turn(self.native_session_id,
-                                    "Preserve this checkpoint and await the next task.\n" + checkpoint,
-                                    approval_policy="never", sandbox="workspace-write")
+            # Native compaction keeps recent user messages and drops the worker's reasoning, so the next turn
+            # carries the code-built ledger summary ahead of the platform checkpoint instead of relying on it.
+            seed = "Preserve this checkpoint and await the next task.\n" + checkpoint
+            if self.handoff is not None:
+                try:
+                    seed = self.handoff.ledger_seed(checkpoint).text
+                except Exception:  # keep the plain checkpoint rather than fail the compaction
+                    pass
+            self._client.start_turn(self.native_session_id, seed, approval_policy="never", sandbox="workspace-write")
         return "Codex compacted the thread after the stage result."
 
     def interrupt(self) -> None:

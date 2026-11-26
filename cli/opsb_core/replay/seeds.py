@@ -9,6 +9,9 @@ A builder takes a ``CutContext`` and returns the seed text. Registered schemes:
                         (test digests, gate verdicts, commits, judge feedback, knowledge records);
 ``full_history``        every prompt, reply, thought, tool input and result before the cut (upper bound).
 
+``ledger_core``         ``current``'s handoff, a ledger summary rebuilt with the platform's own ledger code from the
+                        pre-cut events, and the stage-result tail kept (``replay/ledger_seed.py``, P05);
+
 P06 adds its scheme with ``register("full_c", builder)``.
 """
 from __future__ import annotations
@@ -138,3 +141,5 @@ def build_full_history(ctx: CutContext) -> str:
 register("current", build_current)
 register("current_plus_ledger", build_current_plus_ledger)
 register("full_history", build_full_history)
+
+from . import ledger_seed  # noqa: E402,F401  registers ``ledger_core`` (P05); it imports this module's names

@@ -321,7 +321,14 @@ def _finalize(ws: Path | str, record: dict[str, Any], *, returncode: int | None 
             fields["error"] = text[-1500:] or f"test command exited with {returncode}"
         current.update(fields)
         _write(ws, current)
-        return current
+    _ledger_settled(ws, current)
+    return current
+
+
+def _ledger_settled(ws: Path | str, record: dict[str, Any]) -> None:
+    """Write the settled run to its worker's ledger (idempotent on the request id; never raises)."""
+    from ..ledger import auto
+    auto.guard(auto.on_test_settled, Path(ws), record)
 
 
 def _progress(record: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
