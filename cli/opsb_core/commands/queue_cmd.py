@@ -240,13 +240,20 @@ def run_queue(args: argparse.Namespace) -> int:
         if args.noise_floor is not None:
             sched["noise_floor_delta"] = round(max(0.0, min(15.0, float(args.noise_floor))), 2)
             bridge_extra.extend(["--noise-floor", str(sched["noise_floor_delta"])])
+        for text in getattr(args, "gate", None) or []:
+            bridge_extra.extend(["--gate", str(text)])
         if getattr(args, "breakthrough_threshold", None) is not None:
             sched["breakthrough_threshold"] = round(max(0.5, min(50.0, float(args.breakthrough_threshold))), 2)
         if getattr(args, "lang", None) in ("zh", "en"):
             cfg["language"] = args.lang
         ConfigRepository.save(cfg)
         if bridge_extra:
-            invoke_bridge(ws, "config", bridge_extra)
+            applied = invoke_bridge(ws, "config", bridge_extra)
+            if getattr(args, "gate", None) and not isinstance(applied, dict):
+                # The bridge refuses an unknown switch before saving its state; say so instead of
+                # printing an unchanged snapshot.
+                print("gate switch rejected: use NAME=VALUE with a name listed in --help", file=sys.stderr)
+                return 2
         invalidate_ttl_cache("scheduler_bridge")
         snap = compute_workspace_snapshot(ws, cfg)
         bridge = invoke_bridge(ws, "status", ["--offline"], use_cache=False)

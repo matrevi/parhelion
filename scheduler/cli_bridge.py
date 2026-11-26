@@ -1041,8 +1041,11 @@ class SchedulerEngine:
         circuit_hours: float | None = None,
         q0_quantum: int | None = None,
         aging_tau: float | None = None,
+        gate: list[str] | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
+        for text in gate or []:
+            self.config.set_switch(text)  # 4.2.1 switches; an unknown name raises before anything is saved
         if noise_floor is not None:
             self.config.noise_floor_pts = float(noise_floor)
         if reserve is not None:
@@ -1671,6 +1674,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_cfg.add_argument("--circuit-hours", type=float, default=None, help="Rolling circuit window in hours (default 12)")
     p_cfg.add_argument("--q0-quantum", type=int, default=None, help="MLFQ Q0 fast-lane quantum in seconds (default 180)")
     p_cfg.add_argument("--aging-tau", type=float, default=None, help="Aging time constant tau in seconds (default 600)")
+    p_cfg.add_argument("--gate", action="append", default=[], metavar="NAME=VALUE",
+                       help="Set a 4.2.1 gate switch, e.g. circuit_blocks=true (repeatable)")
     p_cfg.add_argument("--dry-run", action="store_true", help="Preview config without saving")
 
     p_tst = sub.add_parser("schedule-test", parents=[common], help="3-Phase MLFQ (Q0/Q1) NPU test runner")
@@ -1833,6 +1838,7 @@ def main(argv: list[str] | None = None) -> int:
                 circuit_hours=args.circuit_hours,
                 q0_quantum=args.q0_quantum,
                 aging_tau=args.aging_tau,
+                gate=args.gate,
                 dry_run=args.dry_run,
             )
         elif args.command == "schedule-test":

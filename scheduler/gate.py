@@ -127,11 +127,38 @@ class GateConfig:
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def set_switch(self, text: str) -> tuple[str, Any]:
+        """Apply one ``name=value`` 4.2.1 switch (``opsb queue config --gate``); unknown names raise."""
+        name, sep, raw = str(text).partition("=")
+        name, raw = name.strip(), raw.strip().lower()
+        kind = GATE_SWITCHES.get(name)
+        if not sep or kind is None:
+            raise ValueError(f"unknown gate switch {text!r}; use one of {', '.join(sorted(GATE_SWITCHES))}")
+        if kind is bool:
+            if raw not in ("1", "0", "true", "false", "on", "off", "yes", "no"):
+                raise ValueError(f"{name} takes true or false, not {raw!r}")
+            value: Any = raw in ("1", "true", "on", "yes")
+        else:
+            value = min(1.0, max(0.0, float(raw)))
+        setattr(self, name, value)
+        return name, value
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> GateConfig:
         valid = {f.name for f in dataclasses.fields(cls)}
         filtered = {k: v for k, v in data.items() if k in valid and v is not None}
         return cls(**filtered)
+
+
+# The 4.2.1 switches `opsb queue config --gate name=value` may set.
+GATE_SWITCHES: dict[str, type] = {
+    "board_mode_from_rules": bool,
+    "tle_arms_escape_lock": bool,
+    "circuit_blocks": bool,
+    "noise_floor_from_judge_sigma": bool,
+    "approve_low_gain_positive": bool,
+    "low_gain_min_prob": float,
+}
 
 
 @dataclasses.dataclass

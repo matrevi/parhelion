@@ -179,5 +179,32 @@ class JudgeNoiseTest(unittest.TestCase):
                 self.assertEqual(gate._noise_floor("Op")[0], 2.5)
 
 
+class SwitchTest(unittest.TestCase):
+    def test_set_switch_parses_and_rejects(self) -> None:
+        from scheduler.gate import GateConfig
+        cfg = GateConfig()
+        self.assertEqual(cfg.set_switch("circuit_blocks=true"), ("circuit_blocks", True))
+        self.assertEqual(cfg.set_switch("low_gain_min_prob=0.6"), ("low_gain_min_prob", 0.6))
+        self.assertTrue(cfg.circuit_blocks)
+        for bad in ("noise_floor_pts=3", "circuit_blocks", "circuit_blocks=maybe"):
+            with self.assertRaises(ValueError):
+                cfg.set_switch(bad)
+
+    def test_bridge_saves_switches(self) -> None:
+        from scheduler.cli_bridge import SchedulerEngine
+        with tempfile.TemporaryDirectory() as td:
+            root = pathlib.Path(td)
+            (root / "ws").mkdir()
+            with mock.patch.dict("os.environ", {"PARHELION_HOME": str(root / "ph")}, clear=False):
+                eng = SchedulerEngine(workspace=root / "ws", state_dir=root / "st")
+                out = eng.update_config(gate=["circuit_blocks=on", "tle_arms_escape_lock=true"])
+                self.assertTrue(out["config"]["circuit_blocks"])
+                again = SchedulerEngine(workspace=root / "ws", state_dir=root / "st")
+                self.assertTrue(again.config.circuit_blocks)
+                self.assertTrue(again.calibrator.tle_arms_escape_lock)
+                with self.assertRaises(ValueError):
+                    again.update_config(gate=["keep_best_board=false"])
+
+
 if __name__ == "__main__":
     unittest.main()

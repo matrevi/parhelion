@@ -2,6 +2,34 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.2.1 — 门禁修复：榜型、TLE、熔断与噪声底线
+
+按上一场比赛的回放（`docs/v4.3/research/antigravity/00-SUMMARY.md` §4.1、§4.3、§4.4、§4.9），修了四条会拦错提交的门禁规则。每一项都有 `GateConfig` 开关，`opsb queue config --gate 名称=值` 可退回 4.2.0 的行为。自动提交开关、额度与强制提交的规则都没有改。
+
+### 榜型跟随赛制
+- 门禁按题读 `ranking_submission_mode`：先读工作区清单，`results/scoring-evidence/problems-all.json` 里有值时以它为准。`opsb workspace sync-problems` 从判题抓题时，接口给出这个字段就写进清单。
+- `latest`（榜上显示最后一次提交）下不再用 E[max(0, gain)] 放行，因为这条只在保留最好分时成立；`[RESTORE]` 也不再要求超过历史最好分，改为与当前在榜分比较。
+- 读不到榜型时按 `best` 处理，与 4.2.0 相同。当前工作区的清单是 4.2.1 之前抓的，没有这个字段；判题的赛题列表接口是否带它，还没在真实比赛上确认。
+- 开关：`board_mode_from_rules`（默认 `true`）。
+
+### TLE 不再锁题
+- 判题侧 TLE 不再触发逃逸锁：本地复现变体只针对 WA/RE，TLE 触发的锁永远解不开。扫描会越过 TLE，继续找更早、尚未解决的 WA/RE。
+- 超时的那个 SHA 在线上 Pass 之前不能原样再交（`TLE_SHA_REPEAT`，卡片显示 `REJECTED` 并给出下一步）；换一个提交，或恢复一个已经通过的 SHA。
+- 开关：`tle_arms_escape_lock`（默认 `false`）。
+
+### 熔断改为建议
+- `OPEN` 与 `HALF_OPEN` 不再拒绝：候选照常批准，标为 `EXPLORE`，优先级减半，原因前缀 `[S3 advisory]` 并写明熔断状态。按回放，「6 发熔断」会拦掉 231 发里的 13 发，其中包括两个最终最好分。
+- 开关：`circuit_blocks`（默认 `false`）。
+
+### 噪声底线按实测判题噪声
+- 新模块 `scheduler/judge_noise.py`：用回执日志里同一 SHA 的多次 Pass 官方分估计判题噪声 σ̂。相隔超过 12 小时的判分不配对，免得把 tbest 的逐日收紧当成噪声；一题的自由度不足 3 时用全场合并值。底线取 `clamp(σ̂, noise_floor_pts, 2 × noise_floor_pts)`。上一场 P19 测得 σ̂ ≈ 3.04；本场目前 σ̂ = 0.51（自由度 5），所以底线仍是 2.5。
+- 低于底线、但期望增益为正且 P(gain>0) ≥ 0.5 的候选不再暂缓，以低优先级批准：`LOW_GAIN_POSITIVE`，标 `EXPLORE`，优先级为加权增益的一半。
+- 开关：`noise_floor_from_judge_sigma`、`approve_low_gain_positive`（默认均为 `true`），以及 `low_gain_min_prob`（默认 `0.5`）。
+
+### 升级
+1. 重启守护进程，重新安装应用。
+2. 门禁的保存状态里没有新字段时取默认值，也就是 4.2.1 的新行为。要退回某一项，例如 `opsb queue config --gate circuit_blocks=true`；`--gate` 可以重复使用。
+
 ## 4.2.0 — 上下文经济（第二部分）与 worker 边界
 
 本版完成 4.2 的 D、E、F、G、K 与 J 的两项（含 4.1 #15），以及 4.1 遗留的小修。H（遮蔽旧工具输出）与 I（预算护栏）经 P16 测量后不做。各包的计划、报告、审查与合入提交见 `docs/plan-4.1-4.2/00-MASTER.md` §4、`reports/` 与 `reviews/`。为 4.3 做的调研（上一场比赛的涨分归因）在 `docs/v4.3/research/antigravity/`。

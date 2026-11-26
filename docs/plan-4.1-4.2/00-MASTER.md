@@ -78,7 +78,7 @@
   ```bash
   PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
   ```
-  基线（4.2.0）：前者 787 passed / 19 skipped，后者 540 passed（4.1.0 时为 686/19 与 442）。改了 Swift 还要 `swift build` 通过。
+  基线（4.2.1）：前者 801 passed / 19 skipped，后者 540 passed（4.2.0 时为 787/19 与 540，4.1.0 时为 686/19 与 442）。改了 Swift 还要 `swift build` 通过。
 - 子计划里标「真机验收」的步骤，在单测全绿后执行，并把命令、耗时与输出摘要写进报告。
 
 ### 2.4 交付报告（子代理最终回复）
@@ -98,7 +98,7 @@
 
 ## 4. 进度
 
-无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。截至 P17 的各包已随 **4.1.0**（tag `v4.1.0`）发布。
+无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。截至 P17 的各包已随 **4.1.0**（tag `v4.1.0`）发布，其余包随 **4.2.0**（tag `v4.2.0`）发布，门禁修复随 **4.2.1**（tag `v4.2.1`）发布。
 
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
@@ -122,3 +122,4 @@
 | P18 | impl/P18-cleanup | 已合入 | efe11d7 | 可用额度不再扣收尾预留（门禁不变）；两条预算测试改虚拟时钟，负载下 20/20；缓存目录可配置，未在真机验证 |
 | P19 | impl/P19-antigravity-mining | 已合入 | dfb51a4 | 4.3 调研：上一场 Antigravity 记录的涨分归因与 Top 10 改进；文中「4.3 现状」指当前 main |
 | P20 | impl/P20-tool-table | 已合入 | 7572fc8 | 4.2 J-2：工具表瘦身，主控 ≤15,000 字节、worker ≤13,000 字节，见 20-REMAINING §3.8 |
+| 4.2.1 | main（主会话） | 已发布 | b4a2ab0 | 门禁修复：榜型跟随赛制、TLE 不锁题、熔断改建议、噪声底线按实测判题噪声；各项可用 `opsb queue config --gate` 退回，见 RUNBOOK §4 与发布说明 |

@@ -193,6 +193,9 @@ def build_parser() -> argparse.ArgumentParser:
     q_cfg.add_argument("--closing-reserve", type=int)
     q_cfg.add_argument("--noise-floor", type=float)
     q_cfg.add_argument("--breakthrough-threshold", type=float)
+    q_cfg.add_argument("--gate", action="append", metavar="NAME=VALUE",
+                       help="4.2.1 gate switch: board_mode_from_rules, tle_arms_escape_lock, circuit_blocks, "
+                            "noise_floor_from_judge_sigma, approve_low_gain_positive, low_gain_min_prob")
     q_cfg.add_argument("--lang", choices=["zh", "en"])
     q_cfg.set_defaults(func=run_queue)
     q_app = q_sub.add_parser("approve")

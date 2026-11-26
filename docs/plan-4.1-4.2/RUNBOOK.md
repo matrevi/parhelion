@@ -56,7 +56,7 @@
 
 已合入（4.3 调研）：P19。
 
-4.2 的包已全部合入（含 P20）。下一步：4.2.0 发布，然后 4.2.1 门禁修复（§4）。
+4.2 的包已全部合入（含 P20），4.2.0 与 4.2.1 已发布。下一步：在新对话里写 4.3 的完整计划，交 DSH 实现。
 
 **预计会冲突的位置**：`mcp/schemas.py`、`mcp/tools.py`（P12、P13、P08）；工具计数断言 `cli/tests/test_agent_mesh_http.py`、`cli/tests/test_mcp_server.py`（P12、P13、P08）；`agents/manager.py`（P14、P15）；`mcp/handlers_bench.py`（P13）。
 
@@ -73,11 +73,13 @@
 2. 版本升到 4.2.0，写发布说明，打 tag；
 3. 用 P03 的 `opsb replay metrics` / `opsb replay bench` 与下一场冲刺的指标做 4.2 前后对比。
 
-**4.2.1 门禁修复（用户 2026-11-26 指定：P20 合入并发布 4.2.0 之后，由主会话在本会话内直接实现、提交、推送并发布）**。依据 `docs/v4.3/research/antigravity/00-SUMMARY.md` §4.1、§4.3、§4.4、§4.9，每项都加 `GateConfig` 开关以便回退：
+**4.2.1 门禁修复（已完成，2026-11-26；实现提交 b4a2ab0，tag `v4.2.1`，build 34；801 passed / 19 skipped 与 540 passed）**。用户指定：P20 合入并发布 4.2.0 之后，由主会话在本会话内直接实现、提交、推送并发布。依据 `docs/v4.3/research/antigravity/00-SUMMARY.md` §4.1、§4.3、§4.4、§4.9，每项都加 `GateConfig` 开关以便回退：
 1. **榜型跟随赛制**：估计器从 `results/scoring-evidence/problems-all.json` 读每题 `ranking_submission_mode`。`latest` 下不走 `EXPECTED_IMPROVEMENT`（E[max(0,gain)] 只在保留最好分时成立），也不走 `[RESTORE]` 的「必须超过历史最好」比较，改为相对当前在榜分。读不到时保持原来的 best 行为。
 2. **TLE 不再永久锁题**：TLE 回执不再触发逃逸锁（逃逸锁只管 WA/RE，扫描继续往前找未解决的 WA/RE）；该次超时的那个 SHA 若从未线上 Pass，不能原样再投。
 3. **熔断改为建议**：`OPEN` 与 `HALF_OPEN` 不再拒绝，候选照常批准，标为 `EXPLORE`、优先级减半，原因里写明熔断状态。
 4. **噪声底线按实测噪声**：每题从同一 SHA 的多次判分估计判题噪声 σ̂（自由度不足时用全场合并值），底线取 `clamp(σ̂, 配置值, 2×配置值)`；低于底线但期望增益为正、且 P(gain>0) ≥ 0.5 的候选以低优先级批准（`EXPLORE`），其余照旧暂缓。
+
+实现补充：赛题抓取在判题给出 `ranking_submission_mode` 时写进工作区清单，估计器读清单，`problems-all.json` 有值时覆盖；开关经 `opsb queue config --gate 名称=值` 设置（`GateConfig.set_switch` 只接受这六个字段）。当前工作区没有榜型记录，按 best 处理；实测 σ̂=0.51（自由度 5），底线仍为 2.5。
 
 发布：版本 4.2.1、发布说明写清四项行为变化与回退开关、打 tag、重启 daemon、重装应用。之后删除心跳，并给用户「新对话写 4.3 全部计划、交 DSH 实现」的提示词。
 
@@ -85,7 +87,7 @@
 
 ## 4a. 定时检查
 
-本会话设有心跳，只在会话空闲时触发，会话结束即失效。每次心跳按 §0 盘点 DSH 的交付并审查合入；没有新交付就静默结束。4.2.0 收尾完成后，用 `CronList` 找到心跳，再用 `CronDelete` 删除。会话被关闭后若要继续，开新会话按 §0 盘点即可。
+本会话设有心跳，只在会话空闲时触发，会话结束即失效。每次心跳按 §0 盘点 DSH 的交付并审查合入；没有新交付就静默结束。4.2.1 发布后已用 `CronDelete` 删除。会话被关闭后若要继续，开新会话按 §0 盘点即可。
 
 ## 5. 设备主机
 
