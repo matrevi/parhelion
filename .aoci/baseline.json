@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T16:25:14Z",
+  "updated_at": "2026-11-26T16:54:45Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "3249f173970765b98f7f255b1181c40c3448812f6469af034529c3049db17776",
-      "size": 167236,
-      "normalized_sha256": "3249f173970765b98f7f255b1181c40c3448812f6469af034529c3049db17776"
+      "sha256": "fbd924c0187b6c3c22e89ad1d2ff7432faec7ca2252f3de813c7017c1a9cb877",
+      "size": 174022,
+      "normalized_sha256": "fbd924c0187b6c3c22e89ad1d2ff7432faec7ca2252f3de813c7017c1a9cb877"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1889,9 +1889,9 @@
     },
     "docs/plan-4.1-4.2/RUNBOOK.md": {
       "role": "index",
-      "sha256": "cf1031bf94fdf92d2d922c9409ddd2f633d9f6b1117d513a65c0df7349ac48e1",
-      "size": 9098,
-      "normalized_sha256": "cf1031bf94fdf92d2d922c9409ddd2f633d9f6b1117d513a65c0df7349ac48e1"
+      "sha256": "2aa9d785e4a32f20f1e4c67afef2d77ca894131b6f88aed2ff7947edfdb5e74a",
+      "size": 9158,
+      "normalized_sha256": "2aa9d785e4a32f20f1e4c67afef2d77ca894131b6f88aed2ff7947edfdb5e74a"
     },
     "docs/plan-4.1-4.2/reports/P01-backtest.md": {
       "role": "index",
@@ -2132,6 +2132,78 @@
       "sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3",
       "size": 40724,
       "normalized_sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3"
+    },
+    "docs/v4.3/00-PLAN.md": {
+      "role": "index",
+      "sha256": "56f2e91f9cab8d3351d2d2c2c9c0fda5d1d9d21335e5012c32407c2c80659d90",
+      "size": 15837,
+      "normalized_sha256": "56f2e91f9cab8d3351d2d2c2c9c0fda5d1d9d21335e5012c32407c2c80659d90"
+    },
+    "docs/v4.3/10-DSH.md": {
+      "role": "index",
+      "sha256": "4eb31eef2175bc2edc2a66442be9ad0f5d6486d463a135dc54b69b7bff832e60",
+      "size": 9081,
+      "normalized_sha256": "4eb31eef2175bc2edc2a66442be9ad0f5d6486d463a135dc54b69b7bff832e60"
+    },
+    "docs/v4.3/P21-gate-replay.md": {
+      "role": "index",
+      "sha256": "24463fd214786382c1d770d4d71f634c1c2cd1df7f9ca4b5d19e58551f3c0178",
+      "size": 5055,
+      "normalized_sha256": "24463fd214786382c1d770d4d71f634c1c2cd1df7f9ca4b5d19e58551f3c0178"
+    },
+    "docs/v4.3/P22-judge-rules.md": {
+      "role": "index",
+      "sha256": "783ea6ce7693ea3326f0197dd861023fe1088c419c968b5b0eb7256d1dc745b3",
+      "size": 5374,
+      "normalized_sha256": "783ea6ce7693ea3326f0197dd861023fe1088c419c968b5b0eb7256d1dc745b3"
+    },
+    "docs/v4.3/P23-submit-intents.md": {
+      "role": "index",
+      "sha256": "5c4091fd78095538c3d2c13ee735b67d1b40123e18ee25281831c2d0416d91a3",
+      "size": 7112,
+      "normalized_sha256": "5c4091fd78095538c3d2c13ee735b67d1b40123e18ee25281831c2d0416d91a3"
+    },
+    "docs/v4.3/P24-escape-health.md": {
+      "role": "index",
+      "sha256": "6ee66f5573951adcc9bb26f4142d915275b091803349e16c97cd3ae83b61d62a",
+      "size": 5682,
+      "normalized_sha256": "6ee66f5573951adcc9bb26f4142d915275b091803349e16c97cd3ae83b61d62a"
+    },
+    "docs/v4.3/P25-close-sweep.md": {
+      "role": "index",
+      "sha256": "42fc445177272f1e3411c519cc99cfbaa2cb029ffae1359aa7ddb2161143ced6",
+      "size": 4594,
+      "normalized_sha256": "42fc445177272f1e3411c519cc99cfbaa2cb029ffae1359aa7ddb2161143ced6"
+    },
+    "docs/v4.3/P26-sprint-seats.md": {
+      "role": "index",
+      "sha256": "cba08dd97da0b131a482929e9a01849416ff63ede1cb5556f7c8fb4b271c1c5d",
+      "size": 7481,
+      "normalized_sha256": "cba08dd97da0b131a482929e9a01849416ff63ede1cb5556f7c8fb4b271c1c5d"
+    },
+    "docs/v4.3/P27-brief-broadcast.md": {
+      "role": "index",
+      "sha256": "b1ca80a2d18ba0987f20353e0da27a8c0b314eed8a9bcc743b3032484bd8226c",
+      "size": 4804,
+      "normalized_sha256": "b1ca80a2d18ba0987f20353e0da27a8c0b314eed8a9bcc743b3032484bd8226c"
+    },
+    "docs/v4.3/P28-kb-evidence.md": {
+      "role": "index",
+      "sha256": "71384d919cfedf1ae65730b82cfeeac13751c770a74c5f08aea7cfe274e28a4f",
+      "size": 5465,
+      "normalized_sha256": "71384d919cfedf1ae65730b82cfeeac13751c770a74c5f08aea7cfe274e28a4f"
+    },
+    "docs/v4.3/P29-ranking.md": {
+      "role": "index",
+      "sha256": "73ba8707d2d88e20102ef590d3dd0c3a6c01e21cb1564366bae57336aaa92cf5",
+      "size": 3775,
+      "normalized_sha256": "73ba8707d2d88e20102ef590d3dd0c3a6c01e21cb1564366bae57336aaa92cf5"
+    },
+    "docs/v4.3/RUNBOOK.md": {
+      "role": "index",
+      "sha256": "7c393f4e6868b3f9250f16a0e71494cabdad4a489778fefe9311256972cec205",
+      "size": 5642,
+      "normalized_sha256": "7c393f4e6868b3f9250f16a0e71494cabdad4a489778fefe9311256972cec205"
     },
     "docs/v4.3/research/antigravity/00-SUMMARY.md": {
       "role": "index",
