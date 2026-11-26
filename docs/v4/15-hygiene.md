@@ -37,7 +37,7 @@
 导出 `register_doctor_subcommands(sub)` 和 `run_doctor(args) -> int`。集成方会在 `cli_app.py` 里加一行注册调用，D 不要修改 `cli_app.py`。
 
 ```
-opsb doctor clean [--apply] [--remote] [--json]
+opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] [--logs-max-mb MB] [--purge-trash] [--json]
 ```
 
 - 默认只列出、不动手。`--apply` 才执行，并且是移动而不是删除。
@@ -48,7 +48,18 @@ opsb doctor clean [--apply] [--remote] [--json]
 - **远端**（`--remote`）：
   - 通过 `ssh -o BatchMode=yes <npu_ssh_host>` 执行一段 Python，列出 `/tmp/opsb-npu-tickets/*.json` 中 pid 已不存在的票据；
   - `--apply` 时删除这些票据。只动 pid 不存在的票据，不碰锁文件。
-- 输出：人类可读的表格；`--json` 时输出 `{"local": [...], "remote": [...], "applied": bool}`。
+- **Agent 沙箱**（`--agents`）：
+  - 每个 worker 会拿到 `workspaces/<id>/agents/<agent_id>/`，里面是一份独立的 `codex_home`（含一份 Codex 应用副本，约 100 MB）。worker 结束后 `AgentBusStore.cleanup_stopped` 只删数据库记录，沙箱目录会一直留着，实测 175 个目录累计 1.0 GB。
+  - 判定口径与 `cleanup_stopped` 完全一致：`status IN ('stopped','error')` 且 `pid`/`pgid` 都已清空；另外把数据库里**没有任何记录**的沙箱也算可回收（同名孤儿）。数据库不可读时一律只列出、不移动。
+  - 登记工作区的**状态目录本身仍然不碰**，只回收它 `agents/` 下已被证明结束的沙箱——否则最需要清理的恰好是正在用的那个工作区。
+  - `--apply` 时移动到 `PARHELION_HOME/trash/<UTC 时间戳>/agents/<workspace 目录>/<agent_id>`。
+- **会话日志**（`--logs DAYS`、`--logs-max-mb MB`）：
+  - 遍历 `PARHELION_HOME/logs/sessions/*`，回收超过 `DAYS` 天（默认 14）的驱动会话流水。
+  - 单靠窗口不够：实测 176 个文件 125 MB 里 162 个、120 MB 都是最近 24 小时产生的，所以再加一条总量封顶——按 mtime 从新到旧装满 `--logs-max-mb`（默认 100 MB，`0` 表示关闭），装不下的更旧文件一并回收。
+  - 这些是平台自己写的诊断 telemetry，与远端死票同类，所以 `--apply` 直接删除而不进 trash；用户数据（工作区目录、agent 沙箱）仍然只移动。
+- **Trash**（`--purge-trash`）：
+  - 列出 `PARHELION_HOME/trash/*` 各批次及占用；`--apply` 时清空。这是唯一会删除 trash 的操作，且必须显式指定，用于回收上面两步腾出的空间。
+- 输出：人类可读的表格；`--json` 时输出 `{"local": [...], "remote": [...], "applied": bool}`，并在带对应开关时追加 `agents` / `logs` / `trash_purge` 三个数组。
 
 ## 6. 验收测试
 
@@ -56,8 +67,13 @@ opsb doctor clean [--apply] [--remote] [--json]
 2. `test_feedback_log.py`：相同签名写两次只记一行；签名变化后再记一行；超过阈值时会轮转（测试里用 monkeypatch 把阈值调小）。
 3. `test_gate_log_verdicts.py`：对同一个候选连续评估 3 次，日志里只有 1 条 gate 记录。
 4. 隔离测试：断言 `config.PARHELION_HOME` 不等于 `Path.home()/".parhelion"`。
+5. Agent 沙箱：用真实 `_SCHEMA_SQL` 建库，放入 finished / error / running 三条记录外加一个无记录孤儿。dry-run 一个都不动；`--apply` 只移走前三类中的 finished、error 与孤儿，`running` 必须原地保留，工作区 `state/` 必须仍在；数据库删掉后所有沙箱都只能列出、不能移动。
+6. 会话日志：三个不同 mtime 的 `*.jsonl`，dry-run 不动文件，`--apply` 只删超过窗口的两个，`--logs` 不带参数时等于默认 14 天；另用独立 `PARHELION_HOME` 验证总量封顶——4 个 400 KB 文件配 1 MB 预算时，只保留最新的两个，`--logs-max-mb 0` 关闭封顶。
+7. Trash：dry-run 只列批次与占用，`--apply` 后 `trash/` 为空目录。
+8. 权限：`ConfigRepository.save()` 落盘后 `config.json` 必须是 `0600`；从 `~/.config/parhelion` 迁移过来的同名文件同样是 `0600`。
 
 ## 7. 不要做的事
 
-- 不要真的删除任何用户数据，只能移到 trash。
+- 不要真的删除任何用户数据，只能移到 trash。这里的"用户数据"指工作区内容、bench-specs、agent 沙箱与任何用户可能改过的东西；平台自己写的诊断流水（`logs/sessions`）与远端死票同类，可以按保留窗口删除，但必须由 `--logs`／`--remote` 显式要求。
+- 清理 trash 只能用 `--purge-trash`，不能顺手在别的分支里删。
 - 不要修改 `cli_app.py`。

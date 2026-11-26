@@ -345,6 +345,9 @@ class ConfigRepository:
         tmp = cfg_path.with_name(f".{cfg_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             tmp.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            # config.json carries SSH hosts and workspace paths; the migration table sets it
+            # to 0600, so every later save must keep that instead of falling back to umask.
+            os.chmod(tmp, 0o600)
             os.replace(tmp, cfg_path)
         finally:
             tmp.unlink(missing_ok=True)

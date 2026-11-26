@@ -5,8 +5,10 @@ import argparse
 import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+import time
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -212,3 +214,209 @@ def test_clean_flags_metadata_less_and_empty_worktree_dirs(tmp_path):
     hits = {h["name"]: h["reason"] for h in doctor_cmd.scan_local(tmp_path, {"workspaces": []})}
     assert hits == {"tmpabc12345-deadbeef": "no workspace metadata",
                     "sprint-solo-12345678": "empty worktree state"}
+
+
+def _seed_agent_store(home: Path, data_dir: str, rows: list[tuple[str, str, int | None, int | None]]) -> None:
+    """Create `workspaces/<data_dir>/state/agent_bus.db` with the real AOCI-free agent schema."""
+    from opsb_core.agents import bus_store
+
+    state = home / "workspaces" / data_dir / "state"
+    state.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(state / "agent_bus.db")
+    try:
+        conn.executescript(bus_store._SCHEMA_SQL)
+        for agent_id, status, pid, pgid in rows:
+            conn.execute(
+                "INSERT INTO agents (agent_id, workspace, driver, status, pid, pgid, created_at, "
+                "updated_at, last_active_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
+                (agent_id, "/tmp/ws", "codex", status, pid, pgid, "t", "t", 0.0),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sandbox(home: Path, data_dir: str, agent_id: str, payload: str = "x") -> Path:
+    directory = home / "workspaces" / data_dir / "agents" / agent_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "codex_home").mkdir(exist_ok=True)
+    (directory / "codex_home" / "log.txt").write_text(payload, encoding="utf-8")
+    return directory
+
+
+class DoctorAgentSandboxTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name).resolve()
+        self.home = self.root / "home"
+        self.addCleanup(self._td.cleanup)
+        env = mock.patch.dict(os.environ, {"PARHELION_HOME": str(self.home), "OPSB_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        # A real data directory records its workspace; without meta.json the pre-existing
+        # "no workspace metadata" rule would claim the whole directory and mask the agents scan.
+        live = self.root / "live-ws"
+        live.mkdir()
+        _write_meta(self.home / "workspaces" / "ws-active-0000aaaa", str(live))
+        _seed_agent_store(self.home, "ws-active-0000aaaa", [
+            ("cod-finished", "stopped", None, None),
+            ("cod-errored", "error", None, None),
+            ("cod-running", "working", 4242, 4242),
+        ])
+        self.finished = _sandbox(self.home, "ws-active-0000aaaa", "cod-finished")
+        self.errored = _sandbox(self.home, "ws-active-0000aaaa", "cod-errored")
+        self.running = _sandbox(self.home, "ws-active-0000aaaa", "cod-running")
+        self.orphan = _sandbox(self.home, "ws-active-0000aaaa", "cla-orphan")
+
+    def test_dry_run_lists_without_moving(self) -> None:
+        rc, report = _run(["doctor", "clean", "--agents", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertFalse(report["applied"])
+        names = {h["agent_id"]: h["reason"] for h in report["agents"]}
+        self.assertEqual(names["cod-finished"], "agent stopped")
+        self.assertEqual(names["cod-errored"], "agent error")
+        self.assertEqual(names["cla-orphan"], "no agent record")
+        self.assertNotIn("cod-running", names)
+        self.assertTrue(self.finished.is_dir())
+        self.assertFalse(any(h.get("applied") for h in report["agents"]))
+
+    def test_apply_moves_only_finished_and_orphan_sandboxes(self) -> None:
+        rc, report = _run(["doctor", "clean", "--agents", "--apply", "--json"])
+        self.assertEqual(rc, 0)
+        moved = {h["agent_id"] for h in report["agents"] if h.get("applied")}
+        self.assertEqual(moved, {"cod-finished", "cod-errored", "cla-orphan"})
+        self.assertFalse(self.finished.exists())
+        self.assertFalse(self.errored.exists())
+        self.assertFalse(self.orphan.exists())
+        self.assertTrue(self.running.is_dir(), "a live agent sandbox must survive")
+        trash = Path(report["trash"])
+        self.assertTrue((trash / "agents" / "ws-active-0000aaaa" / "cod-finished").is_dir())
+        # The workspace data directory itself is never moved.
+        self.assertTrue((self.home / "workspaces" / "ws-active-0000aaaa" / "state").is_dir())
+
+    def test_unreadable_store_keeps_every_sandbox(self) -> None:
+        (self.home / "workspaces" / "ws-active-0000aaaa" / "state" / "agent_bus.db").unlink()
+        rc, report = _run(["doctor", "clean", "--agents", "--apply", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(all(not h.get("applied") for h in report["agents"]))
+        self.assertEqual({h["reason"] for h in report["agents"]}, {"agent store unreadable"})
+        for directory in (self.finished, self.errored, self.running, self.orphan):
+            self.assertTrue(directory.is_dir())
+
+
+class DoctorLogRetentionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name).resolve()
+        self.home = self.root / "home"
+        self.logs = self.home / "logs" / "sessions"
+        self.logs.mkdir(parents=True)
+        self.addCleanup(self._td.cleanup)
+        env = mock.patch.dict(os.environ, {"PARHELION_HOME": str(self.home), "OPSB_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+        now = time.time()
+        for name, age_days in (("fresh.jsonl", 1), ("stale.jsonl", 30), ("ancient.jsonl", 90)):
+            path = self.logs / name
+            path.write_text("{}", encoding="utf-8")
+            stamp = now - age_days * 86400
+            os.utime(path, (stamp, stamp))
+
+    def test_dry_run_removes_nothing(self) -> None:
+        rc, report = _run(["doctor", "clean", "--logs", "14", "--json"])
+        self.assertEqual(rc, 0)
+        names = {h["name"] for h in report["logs"]}
+        self.assertEqual(names, {"stale.jsonl", "ancient.jsonl"})
+        self.assertEqual(len(list(self.logs.iterdir())), 3)
+
+    def test_apply_prunes_only_expired_transcripts(self) -> None:
+        rc, report = _run(["doctor", "clean", "--logs", "14", "--apply", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual({h["name"] for h in report["logs"] if h.get("applied")},
+                         {"stale.jsonl", "ancient.jsonl"})
+        self.assertEqual(sorted(p.name for p in self.logs.iterdir()), ["fresh.jsonl"])
+
+    def test_flag_without_value_uses_default_window(self) -> None:
+        args = _parse(["doctor", "clean", "--logs", "--json"])
+        self.assertEqual(args.logs, doctor_cmd.DEFAULT_LOG_KEEP_DAYS)
+
+    def test_size_cap_keeps_the_newest_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td).resolve() / "home"
+            logs = home / "logs" / "sessions"
+            logs.mkdir(parents=True)
+            for index in range(4):
+                path = logs / f"bulk-{index}.jsonl"
+                path.write_bytes(b"x" * (400 * 1024))
+                stamp = time.time() - index  # bulk-0 is the newest
+                os.utime(path, (stamp, stamp))
+            env = {"PARHELION_HOME": str(home), "OPSB_HOME": str(home)}
+            with mock.patch.dict(os.environ, env):
+                # Window is empty here: only the 1 MB budget can fire.
+                rc, report = _run(["doctor", "clean", "--logs", "14", "--logs-max-mb", "1", "--json"])
+            self.assertEqual(rc, 0)
+            # Newest-first fill: 400K + 400K fits, everything older than that is reclaimed.
+            self.assertEqual({h["name"] for h in report["logs"]},
+                             {"bulk-2.jsonl", "bulk-3.jsonl"})
+            self.assertEqual({h["reason"] for h in report["logs"]}, {"over 1 MB budget"})
+
+    def test_zero_cap_disables_the_budget(self) -> None:
+        for index in range(4):
+            path = self.logs / f"bulk-{index}.jsonl"
+            path.write_bytes(b"x" * (400 * 1024))
+            stamp = time.time() - index
+            os.utime(path, (stamp, stamp))
+        rc, report = _run(["doctor", "clean", "--logs", "14", "--logs-max-mb", "0", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual({h["name"] for h in report["logs"]}, {"stale.jsonl", "ancient.jsonl"})
+
+
+class DoctorTrashPurgeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.root = Path(self._td.name).resolve()
+        self.home = self.root / "home"
+        self.trash = self.home / "trash"
+        (self.trash / "20260101T000000Z" / "bus.db-1").mkdir(parents=True)
+        (self.trash / "20260101T000000Z" / "bus.db-1" / "x").write_text("y", encoding="utf-8")
+        self.addCleanup(self._td.cleanup)
+        env = mock.patch.dict(os.environ, {"PARHELION_HOME": str(self.home), "OPSB_HOME": str(self.home)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_dry_run_lists_batches(self) -> None:
+        rc, report = _run(["doctor", "clean", "--purge-trash", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(report["trash_purge"]), 1)
+        self.assertGreater(report["trash_purge"][0]["size_bytes"], 0)
+        self.assertTrue((self.trash / "20260101T000000Z").is_dir())
+
+    def test_apply_empties_trash(self) -> None:
+        rc, report = _run(["doctor", "clean", "--purge-trash", "--apply", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertTrue(report["trash_purge"][0]["applied"])
+        self.assertTrue(self.trash.is_dir())
+        self.assertEqual(list(self.trash.iterdir()), [])
+
+
+class ConfigFilePermissionTests(unittest.TestCase):
+    def test_save_keeps_config_private(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td).resolve()
+            with mock.patch.dict(os.environ, {"PARHELION_HOME": str(home), "OPSB_HOME": str(home)}):
+                config.ConfigRepository.save({"workspaces": [], "active_workspace": ""})
+                mode = (home / "config.json").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
+
+    def test_migrated_config_is_private(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            legacy = root / ".config" / "parhelion"
+            legacy.mkdir(parents=True)
+            (legacy / "config.json").write_text("{}", encoding="utf-8")
+            home = root / ".parhelion"
+            env = {"PARHELION_HOME": str(home), "OPSB_HOME": str(home), "HOME": str(root)}
+            with mock.patch.dict(os.environ, env):
+                config.ensure_parhelion_migrated()
+                mode = (home / "config.json").stat().st_mode & 0o777
+            self.assertEqual(mode, 0o600)
