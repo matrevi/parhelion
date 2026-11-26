@@ -824,7 +824,13 @@ def baseline_comparison(ws, ledger, report, rows):
     if not candidates:
         return None, base_sha
     base = max(candidates, key=lambda d: d.get("finished_at") or "")
-    before = {c["id"]: c.get("min_us") for c in base.get("cases", []) if c.get("min_us")}
+    # Best warm minimum per case over every eligible baseline run, so one run caught in a
+    # slow timer mode does not inflate the apparent speedup.
+    before = {}
+    for doc in candidates:
+        for c in doc.get("cases", []):
+            if _positive(c.get("min_us")):
+                before[c["id"]] = min(before.get(c["id"], c["min_us"]), c["min_us"])
     speedups = {}
     for key, row in rows.items():
         if row.get("min_us") and before.get(key):
@@ -853,6 +859,31 @@ def failure_detail(row):
     return ""
 
 
+NOISY_RATIO = 1.5
+
+
+def best_known_minima(ws, report):
+    """Per-case best warm minimum over earlier eligible runs of the same SHA and suite version."""
+    best = {}
+    folder = ws / "results" / report["title"] / report["sha"] / "bench-runs"
+    for path in folder.glob("*/report.json"):
+        doc = read_doc(path)
+        if (doc.get("run_id") == report.get("run_id") or doc.get("timing_score_eligible") is not True
+                or doc.get("suite_version") != report.get("suite_version")):
+            continue
+        for c in doc.get("cases", []):
+            if _positive(c.get("min_us")):
+                best[c["id"]] = min(best.get(c["id"], c["min_us"]), c["min_us"])
+    return best
+
+
+def timer_drift(rows, history):
+    """Median ratio of this run's warm minima to the best earlier minima, or None."""
+    ratios = sorted(r["min_us"] / history[k] for k, r in rows.items()
+                    if _positive(r.get("min_us")) and k in history)
+    return round(statistics.median(ratios), 3) if ratios else None
+
+
 def build_digest(ws, report, rows, reasons=()):
     """One-level summary of a run for tool replies and inboxes; at most 2KB serialized."""
     summary = report.get("summary") or {}
@@ -864,10 +895,18 @@ def build_digest(ws, report, rows, reasons=()):
     )[:5]
     timed = sorted((r for r in selected if r.get("min_us")), key=lambda r: -r["min_us"])[:20]
     ledger = _ledger(ws)
-    public = public_estimate(ledger, report["title"], rows, report.get("sha"),
+    history = best_known_minima(ws, report)
+    drift = timer_drift(rows, history)
+    noisy = drift is not None and drift > NOISY_RATIO
+    # Comparisons use the best warm minimum this SHA has shown, including this run.
+    best_rows = {k: ({**r, "min_us": min(r["min_us"], history.get(k, r["min_us"]))}
+                     if _positive(r.get("min_us")) else r) for k, r in rows.items()}
+    public = public_estimate(ledger, report["title"], best_rows, report.get("sha"),
                              cache=ws / "results" / ".timing-offset.json")
-    baseline, missing = baseline_comparison(ws, ledger, report, rows)
+    baseline, missing = baseline_comparison(ws, ledger, report, best_rows)
     hints = list(reasons[:2])
+    if noisy:
+        hints.append(f"timer read x{drift} slower than this SHA's best run; comparisons use the best run")
     if failures:
         hints.append(f"fix {failures[0]['id']} ({failures[0]['status']}) before timing work")
     if missing:
@@ -882,6 +921,8 @@ def build_digest(ws, report, rows, reasons=()):
         "timing": {
             "eligible": not reasons,
             "source": "event_warm",
+            "drift": drift,
+            "noisy": noisy,
             "warmup": report.get("settings", {}).get("warmup"),
             "repeats": report.get("settings", {}).get("repeats"),
             "cases": {r["id"]: {"min_us": round(r["min_us"], 3),

@@ -452,3 +452,21 @@ def test_identical_request_joins_the_running_bench(device, monkeypatch, capsys):
     assert len(sent(ws)) == 1
     started = [line for line in capsys.readouterr().out.splitlines() if line.startswith("OPSB_RUN_STARTED ")]
     assert len(started) == 2 and all(owner["run_id"] in line for line in started)
+
+
+def test_digest_flags_a_slow_timer_run_and_compares_with_the_best_run(device):
+    ws, repo, sha = device
+    prior = ws / "results" / "Op" / sha / "bench-runs" / ("2" * 32) / "report.json"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(json.dumps({"run_id": "2" * 32, "sha": sha, "suite_version": 0,
+                                 "timing_score_eligible": True,
+                                 "cases": [{"id": "01", "min_us": 4.0}, {"id": "02", "min_us": 5.0}]}))
+    ledger = ws / "results" / "submit-queue-outcome.jsonl"
+    ledger.write_text(json.dumps({"title": "Op", "sha": "b" * 40, "status": "Pass", "score": 1.0,
+                                  "submission_id": "s1", "public_tbest_us": [4.0, 5.0]}) + "\n")
+    res = bench.run(ws, "Op", repo, sha, "npu", stream=False, remeasure=True)
+    timing = res["digest"]["timing"]
+    # The fake device reads 10 us; the earlier run of this SHA reached 4-5 us.
+    assert timing["drift"] == 2.25 and timing["noisy"] is True
+    assert res["digest"]["public"]["efficiency_raw"] == 1.0 and "slower" in res["digest"]["hint"]
+    assert bench.timer_drift({"01": {"min_us": 4.0}}, {}) is None
