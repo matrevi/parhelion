@@ -299,10 +299,10 @@ def test_quota_exhausted_badge_bridge_sync_and_deterministic_sort(iso_env: Path,
                 {
                     "title": "ConcatD",
                     "sha": sha_a,
-                    "approved": False,
+                    "approved": True,
                     "status_tag": "QUOTA_EXHAUSTED",
                     "priority_score": 15.0,
-                    "gate_reason": "daily limit reached",
+                    "gate_reason": "Gate stages S1-S3 passed; waiting for a free submission slot",
                     "stages": [
                         {"stage": "SAFETY", "passed": True},
                         {"stage": "NOISE_FLOOR", "passed": True},
