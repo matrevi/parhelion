@@ -245,7 +245,7 @@ REFACTOR_MODULAR_LAYOUT.md[SV6T]: F:模块化重构蓝图：单模块不超过35
 15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令（agent沙箱、会话日志、trash） | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末划定清理边界：用户数据只进trash，error席位默认保留，只有--logs与--remote可按窗口删除
 16-e2e-release.md[SV7T]: F:工作包E：集成、端到端测试与发布流程 | R:code:scripts/bundle_app.sh | A:- | S:发版必须同时改__init__版本与bundle的两个版本字段并打tag，漏一处会让daemon握手或打包版本不一致
 RELEASE-NOTES.md[SV8S]: F:发布说明：4.0.0–4.0.4各版本变更、已知限制、4.1与4.2路线，以及2026-11-26冲刺暴露的问题（已修与4.1待办） | R:code:docs/v4/00-OVERVIEW.md,code:docs/v4/RUN-LOG-2026-11-26.md,code:docs/v4.2/00-PLAN.md | A:- | S:4.1待办编号接续路线1–4；4.0.4与4.0.1两节写有实测数字与清理边界，改遥测或清理策略时同步
-RUN-LOG-2026-11-26.md[SW5S]: F:六题冲刺运行日志：DSH主控流程、时间线、实测延迟与上下文、提交结果和逐项改进 | R:code:docs/v4/RELEASE-NOTES.md | A:- | S:-
+RUN-LOG-2026-11-26.md[SW5S]: F:六题冲刺运行日志：结果（停在1099.54加权）、DSH主控流程、时间线、实测延迟与上下文、提交结果和逐项改进 | R:code:docs/v4/RELEASE-NOTES.md,code:docs/v4.2/00-PLAN.md | A:- | S:本场worker会话日志与工作树保留作4.2回放基准数据，清理前须先导出
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
 encrypt_password.py[IS6T]: F:用公钥把登录口令加密成判题站可解的密文，供无HTTPS的登录链路使用 | R:code:runtime/judge/judge_cli.py | A:- | S:只加密不落盘，私钥永远只在服务端；把私钥写进仓库等于公开所有账号口令
