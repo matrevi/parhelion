@@ -296,6 +296,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
+from . import receipt_predict, receipts
 from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
@@ -849,22 +850,22 @@ class ScoreEstimator:
             except ValueError:
                 continue
         best_idx: dict[str, int] = {}
-        best_rank: dict[str, tuple[int, int, int]] = {}
+        best_rank: dict[str, tuple[int, ...]] = {}
         for idx, rec in enumerate(records):
             sid = str(rec.get("submission_id") or "").strip()
             if not sid:
                 continue
             st = str(rec.get("status") or "")
             is_sync_err = st == "sync_error" or (st == "rejected" and ("poll error:" in str(rec.get("detail") or "").lower() or bool(sid)))
-            rank = (0 if is_sync_err else 1, int(rec.get("source") != "judge-reconcile"), int(rec.get("score") is not None))
+            # A receipt with a known official score (ranking `score`, replayed `timing_score` or a
+            # normalized `official_score`) outranks one without; a normalized row wins ties.
+            rank = (0 if is_sync_err else 1, int(receipts.effective_source(rec) != "judge-reconcile"),
+                    *receipts.score_rank(rec))
             prev = best_rank.get(sid)
             if prev is None or rank >= prev:
                 best_rank[sid] = rank
                 best_idx[sid] = idx
-        return [
-            rec for idx, rec in enumerate(records)
-            if not str(rec.get("submission_id") or "").strip() or best_idx.get(str(rec.get("submission_id") or "").strip()) == idx
-        ]
+        return receipts.placed(records, best_idx)
 
     def _load_snapshot(self) -> dict[str, dict[str, Any]]:
         from cli.opsb_core.services.board_refresh_service import current_board
@@ -1027,12 +1028,14 @@ class ScoreEstimator:
             if st in ("rejected", "skipped", "duplicate"):
                 continue
             csha = r.get("canonical_sha") or r.get("sha")
-            sc = float(r["score"]) if isinstance(r.get("score"), (int, float)) else 0.0
+            sc = receipts.official_score(r) or 0.0
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
-            replayed_status = st
-            replayed_score = sc if st == "Pass" else 0.0
             if st == "Pass" and sc > 0 and csha:
                 draws_by_sha.setdefault(csha, []).append((ts, sc))
+            if st == "Pass" and receipts.beat_board(r) is False:
+                continue  # judged below the board: the replayed board keeps its entry
+            replayed_status = st
+            replayed_score = sc if st == "Pass" else 0.0
 
         # Determine live vs replayed board score
         if override_board_score is not None:
@@ -1242,40 +1245,67 @@ class ScoreEstimator:
         return {"projected": projected, "pair": pair, "base_sha": base_sha,
                 "effective_speedup": round(effective_speedup, 4), "local_quality": local_quality}
 
-    def _receipt_residuals(self) -> list[dict[str, Any]]:
-        """(official score - case-bench projection) for every Pass receipt that had local evidence.
+    def _receipt_projection(self, title: str, sha: str | None, ledger: ProblemLedger,
+                            as_of: datetime.datetime | None = None) -> dict[str, Any] | None:
+        """Per-case receipt prediction (scheduler.receipt_predict) against the board SHA.
 
-        The projection is replayed as of the submission time, so only runs finished before it
-        count. Results never change once computed and are cached per receipt.
+        A replay (``as_of``) takes the board from the receipts that refreshed it: the replayed
+        ledger's active SHA is the last judged row, which can be a Pass below the board or a WA.
         """
-        if getattr(self, "_residuals", None) is not None:
+        if not sha:
+            return None
+        board = receipt_predict.board_sha(self.workspace, title, as_of) if as_of else ledger.active_board_sha
+        try:
+            return receipt_predict.predict(self.workspace, title, sha, [board, ledger.historical_best_sha], as_of,
+                                           allow_other=False, write_map=as_of is None)
+        except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):
+            return None
+
+    def _replay_projection(self, method: str, title: str, sha: str, submitted: datetime.datetime):
+        ledger = self.get_problem_ledger(title, as_of=submitted)
+        if method == receipt_predict.METHOD:
+            rp = self._receipt_projection(title, sha, ledger, submitted)
+            return None if rp is None else {"projected": rp["estimated_score"], "local_quality": rp["coverage"]}
+        cb = self._case_bench_projection(title, sha, ledger, ledger.current_score,
+                                         ledger.public_score, ledger.hidden_score, submitted)
+        return None if cb is None else {"projected": cb["projected"], "local_quality": cb["local_quality"]}
+
+    def _receipt_residuals(self, method: str = CASE_BENCH_METHOD) -> list[dict[str, Any]]:
+        """(official score - projection) for every Pass receipt that had local evidence.
+
+        The projection of ``method`` is replayed as of the submission time, so only runs finished
+        before it count. Results never change once computed and are cached per receipt; keys of
+        methods other than the original case-bench projection carry the method name.
+        """
+        if method == CASE_BENCH_METHOD and getattr(self, "_residuals", None) is not None:
             return self._residuals
+        by_method = getattr(self, "_residuals_by_method", None)
+        if by_method is None:
+            by_method = self._residuals_by_method = {}
+        if method in by_method:
+            return by_method[method]
         cache_path = self.workspace / "results" / ".case-bench-residuals.json"
         cache, _ = read_json_safe(cache_path)
         cache = cache if isinstance(cache, dict) else {}
         changed, out = False, []
         for row in self.outcomes:
             title = row.get("title")
-            score = row.get("score")
-            if score is None and isinstance(row.get("timing_score"), dict):
-                score = row["timing_score"].get("score")  # a receipt that did not beat the board
+            score = receipts.official_score(row)  # includes receipts that did not beat the board
             sha = str(row.get("canonical_sha") or row.get("sha") or "")
             submitted = _parse_iso(row.get("submitted_at"))
             if (row.get("status") != "Pass" or not isinstance(score, (int, float)) or score <= 0
                     or submitted is None or not re.fullmatch(r"[0-9a-f]{40}", sha)):
                 continue
             key = f"{title}:{sha}:{row.get('submitted_at')}"
+            if method != CASE_BENCH_METHOD:
+                key = f"{method}:{key}"
             if key not in cache:
                 cache[key], changed = None, True
                 if (self.workspace / "results" / title / sha / "bench-runs").is_dir():
                     try:
-                        ledger = self.get_problem_ledger(title, as_of=submitted)
-                        cb = self._case_bench_projection(title, sha, ledger, ledger.current_score,
-                                                         ledger.public_score, ledger.hidden_score, submitted)
+                        cache[key] = self._replay_projection(method, title, sha, submitted)
                     except Exception:  # noqa: BLE001 - a replay failure only drops this sample
-                        cb = None
-                    if cb is not None:
-                        cache[key] = {"projected": cb["projected"], "local_quality": cb["local_quality"]}
+                        cache[key] = None
             if cache[key] is not None:
                 out.append({"title": title, "at": submitted, "residual": float(score) - cache[key]["projected"]})
         if changed:
@@ -1283,16 +1313,19 @@ class ScoreEstimator:
                 atomic_write_json(cache_path, cache)
             except OSError:
                 pass
-        self._residuals = out
+        if method == CASE_BENCH_METHOD:
+            self._residuals = out
+        by_method[method] = out
         return out
 
-    def prediction_confidence(self, title: str, as_of: datetime.datetime | None = None) -> dict[str, Any]:
+    def prediction_confidence(self, title: str, as_of: datetime.datetime | None = None,
+                              method: str = CASE_BENCH_METHOD) -> dict[str, Any]:
         """Effective receipt count, mean residual and residual variance (None below two samples).
 
         Receipts of this problem count once, other problems' receipts half.
         """
         weights = [(1.0 if r["title"] == title else OTHER_PROBLEM_WEIGHT, r["residual"])
-                   for r in self._receipt_residuals() if as_of is None or r["at"] < as_of]
+                   for r in self._receipt_residuals(method) if as_of is None or r["at"] < as_of]
         n_eff = sum(w for w, _ in weights)
         if n_eff <= 0:
             return {"n_eff": 0.0, "mean": 0.0, "var": None}
@@ -1448,9 +1481,7 @@ class ScoreEstimator:
         rows = self._filtered_outcomes(title, as_of=as_of)
         prior_same_sha_scores: list[tuple[datetime.datetime | None, float]] = []
         for r in rows:
-            judged = r.get("score")
-            if judged is None and isinstance(r.get("timing_score"), dict):
-                judged = r["timing_score"].get("score")  # judged below the board: still a draw
+            judged = receipts.official_score(r)  # judged below the board: still a draw
             if r.get("status") == "Pass" and isinstance(judged, (int, float)) and judged > 0:
                 if (r.get("canonical_sha") or r.get("sha")) == canonical_sha:
                     ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
@@ -1597,7 +1628,35 @@ class ScoreEstimator:
                 f"(gamma={ledger.decay_factor_gamma:.4f}) => est={estimated_score:.2f}"
             )
 
-        # 2c. Case-bench pairing: platform-run formal suites of the candidate and the board SHA,
+        # 2c. Per-case receipt prediction: the board SHA's official per-case times scaled by the
+        #     local paired ratio on mapped cases, scored with the judge's formula (4.1 #7).
+        elif (rp := (None if pair_cand_cases else self._receipt_projection(
+                title, canonical_sha, ledger, as_of))) is not None:
+            matched_cases = rp["matched"]
+            improved_cases = len(rp["improved"])
+            regressed_cases = list(rp["regressed"])
+            effective_speedup = rp["geo"]
+            local_quality = rp["coverage"] * (1.0 if min(rp["runs"]) >= 2 else 0.75)
+            prior_var = SIGMA_HIDDEN_JITTER ** 2 + (1.0 + 3.0 * (1.0 - local_quality)) ** 2
+            conf = self.prediction_confidence(title, as_of, receipt_predict.METHOD)
+            n_eff, k0 = conf["n_eff"], CONFIDENCE_PRIOR_WEIGHT
+            calibration_samples = n_eff
+            calibration_bias = round(n_eff / (n_eff + k0) * conf["mean"], 2)
+            var = prior_var if conf["var"] is None else (k0 * prior_var + n_eff * conf["var"]) / (k0 + n_eff)
+            sigma = round(math.sqrt(var), 2)
+            estimated_score = round(max(0.0, rp["estimated_score"] + calibration_bias), 2)
+            cal_trust = local_quality * (0.3 + 0.7 * n_eff / (n_eff + k0))
+            base_sha = rp["base_sha"]
+            method = receipt_predict.METHOD
+            refresh = f", refreshes tbest on {len(rp['refresh_tbest'])}" if rp["refresh_tbest"] else ""
+            detail = (
+                f"{rp['matched']}/{rp['timed']} judge cases via {rp['map_method']} map vs "
+                f"{base_sha[:7]} ({rp['base_source']}): base {rp['base_score']:.2f} -> {rp['estimated_score']:.2f} "
+                f"at tbest {str(rp['tbest_observed_at'] or '')[:16]}{refresh}; {n_eff:g} receipt(s) "
+                f"calibrate bias {calibration_bias:+.2f}"
+            )
+
+        # 2d. Case-bench pairing: platform-run formal suites of the candidate and the board SHA,
         #     official cases only, calibrated against earlier official receipts.
         elif (cb := (None if pair_cand_cases else self._case_bench_projection(
                 title, canonical_sha, ledger, anchor_score, anchor_pub, anchor_hid, as_of))) is not None:

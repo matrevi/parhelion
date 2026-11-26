@@ -43,6 +43,7 @@ from .estimator import (
     _parse_iso,
     resolve_sha,
 )
+from . import receipts
 from .parhelion_paths import list_eligible_account_slots
 from .probes import OPENING_PROBES, compile_evidence, submitted_attempts
 
@@ -297,7 +298,7 @@ class SubmissionGate:
     def _scan_prior_online_pass_shas(self) -> dict[tuple[str, str], datetime.datetime | None]:
         passed: dict[tuple[str, str], datetime.datetime | None] = {}
         for r in self.estimator.outcomes:
-            if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+            if r.get("status") == "Pass" and (receipts.official_score(r) or 0.0) > 0:
                 key = (r["title"], r.get("canonical_sha") or r.get("sha", ""))
                 ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
                 if key not in passed or (ts and (passed[key] is None or ts < passed[key])):
@@ -702,7 +703,7 @@ class SubmissionGate:
             ts = _parse_iso(r.get("submitted_at") or r.get("finished_at") or r.get("queued_at"))
             if ts is None or ts >= ref_now:
                 continue
-            raw_sc = float(r["score"]) if isinstance(r.get("score"), (int, float)) and st == "Pass" else 0.0
+            raw_sc = (receipts.official_score(r) or 0.0) if st == "Pass" else 0.0
             if raw_sc > raw_best_seen:
                 raw_best_seen = raw_sc
 
@@ -730,7 +731,9 @@ class SubmissionGate:
                 consec_zeros = 0
             else:
                 non_improving += 1
-                if st != "Pass" or contemp_sc <= 0.0:
+                # The breaker counts failed verdicts only: a Pass that did not beat the board
+                # (score only in `timing_score`) is a non-improving shot, not a zeroing one.
+                if st != "Pass":
                     consec_zeros += 1
                 else:
                     consec_zeros = 0

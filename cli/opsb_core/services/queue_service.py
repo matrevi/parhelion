@@ -12,7 +12,7 @@ from ..config import DEFAULT_CONFIG, DEFAULT_DIFFICULTIES, SUPERVISOR_ROOT, read
 from ..device_env import device_text
 from .breakthrough_service import index_experience_by_commit
 from .contest_service import build_problem_models, displayed_score_bound, index_submission_history, latest_score_evidence, resolve_workspace_meta
-from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATUSES
+from .judge_score_fetch import NON_TERMINAL_JUDGE_STATUSES, TERMINAL_JUDGE_STATUSES, receipts_module
 from .judge_sync import compute_synchronized_pipeline
 from .quota_helpers import build_inflight_queue_items, compute_effective_closing_reserve
 from .sync_reconciler import fast_score_backfill, recent_unreconciled_receipt_pairs, reconcile_sync_errors_async
@@ -67,7 +67,7 @@ def _outcome_precedence(o: dict[str, Any]) -> tuple[int, int, int, str]:
     sid = str(o.get("submission_id") or "").strip()
     st = str(o.get("status") or "").strip()
     has_verdict = 1 if (sid and st in TERMINAL_JUDGE_STATUSES) else 0
-    has_score = 1 if (o.get("score") is not None) else 0
+    has_score = 1 if (o.get("score") is not None or o.get("official_score") is not None) else 0
     has_sid = 1 if sid else 0
     ts = str(o.get("finished_at") or o.get("submitted_at") or o.get("queued_at") or "")
     return (has_verdict, has_score, has_sid, ts)
@@ -311,7 +311,7 @@ def compute_workspace_snapshot(workspace: Path, cfg: dict[str, Any]) -> dict[str
             for r in outcomes_by_title_rows:
                 prior_passes.append(set(acc_p))
                 r_sha = str(r.get("sha") or "")
-                if r.get("status") == "Pass" and r_sha and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+                if r.get("status") == "Pass" and r_sha and (receipts_module().official_score(r) or 0.0) > 0:
                     acc_p.add(r_sha[:7])
             for idx_r in range(len(outcomes_by_title_rows) - 1, -1, -1):
                 r = outcomes_by_title_rows[idx_r]

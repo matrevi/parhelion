@@ -309,3 +309,36 @@ def test_reconcile_sync_errors_self_heals_outcome_and_snapshot(iso_home: Path, t
     assert len(done_items) == 1
     assert done_items[0]["raw_status"] == "Pass"
     assert done_items[0]["actual_score"] == 76.88
+
+
+def test_reconciled_wrong_answer_records_the_failing_case(iso_home: Path, tmp_path: Path) -> None:
+    """4.1 #8: every reconciled verdict carries the canonical receipt fields, WA included."""
+    ws, sha = _make_ws(tmp_path)
+    sess_dir = iso_home / "sessions"
+    sess_dir.mkdir(parents=True)
+    (sess_dir / "primary.json").write_text(json.dumps({
+        "version": 1, "base_url": "https://judge.invalid", "user_id": "u1", "logged_in_at": 9999999999,
+        "cookies": [{"name": "sid", "value": "cookie1"}]}), encoding="utf-8")
+    (ws / "results" / "submit-queue-outcome.jsonl").write_text(json.dumps({
+        "title": "StridedSliceGrad", "sha": sha, "queued_at": "2026-11-23T08:40:11+00:00",
+        "finished_at": "2026-11-23T08:48:27+00:00", "submitted_at": "2026-11-23T08:40:13+00:00",
+        "status": "sync_error", "submission_id": "sid-wa-1", "account_id": "primary",
+        "detail": "poll error: NameError"}) + "\n", encoding="utf-8")
+    detail = {"status": "Wrong Answer", "result": [
+        {"testcase_id": "t1", "testcase_status": "Pass", "time": 3.4, "best_time": 3.1},
+        {"testcase_id": "t2", "testcase_status": "Wrong Answer", "time": None}]}
+
+    def _fake_fetch(_base: str, _cookie: str, path: str, timeout: float = 5.0):
+        if path == "/api/submissions/sid-wa-1":
+            return detail
+        raise AssertionError(path)
+
+    with mock.patch("opsb_core.services.sync_reconciler._fetch_json", side_effect=_fake_fetch):
+        reconciled = reconcile_sync_errors(ws, force=True)
+    assert len(reconciled) == 1
+    rows = [json.loads(line) for line in (ws / "results" / "submit-queue-outcome.jsonl").read_text().splitlines()]
+    row = collapse_reconciled_outcomes(rows)[0]
+    assert row["status"] == "Wrong Answer" and row["score"] == 0 and row["official_score"] == 0.0
+    assert row["receipt_schema"] == 1 and row["beat_board"] is False
+    assert [(c["testcase_id"], c["status"]) for c in row["case_results"]] == [("t1", "Pass"), ("t2", "Wrong Answer")]
+    assert row["time_by_case"] == {"t1": 3.4, "t2": None} and row["tbest_by_case"] == {"t1": 3.1, "t2": None}

@@ -245,6 +245,41 @@ def reconstruct_timing_score(detail: dict, rule: dict, ranking: dict) -> dict | 
             "time_by_case": {row["testcase_id"]: row["time"] for row in detail["result"]}}
 
 
+def extract_case_results(sub_detail: Any) -> list[dict[str, Any]]:
+    """Per-case verdicts of a submission detail, in the judge's order (every status, not only Pass)."""
+    rows = sub_detail.get("result") if isinstance(sub_detail, dict) else None
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or not row.get("testcase_id"):
+            continue
+        values = {}
+        for key, field in (("time_us", "time"), ("tbest_us", "best_time")):
+            raw = row.get(field)
+            ok = type(raw) in (int, float) and math.isfinite(raw)
+            values[key] = float(raw) if ok else None
+        out.append({"testcase_id": str(row["testcase_id"]),
+                    "status": row.get("testcase_status") or row.get("status"), **values})
+    return out
+
+
+def receipts_module():
+    """``scheduler.receipts``, the one reader of receipt rows (repository root put on the path)."""
+    import sys
+
+    from ..config import SUPERVISOR_ROOT
+
+    if str(SUPERVISOR_ROOT) not in sys.path:
+        sys.path.insert(0, str(SUPERVISOR_ROOT))
+    from scheduler import receipts
+
+    return receipts
+
+
+def normalize_receipt(row: dict[str, Any]) -> dict[str, Any]:
+    """Add the canonical receipt fields of ``scheduler.receipts`` before a row is appended."""
+    return receipts_module().normalize(row)
+
+
 def extract_public_times(sub_detail: Any, rank_row: Any = None) -> tuple[list[float], list[float]]:
     """Extract first 5 public testcase times & tbest from submission detail / ranking row."""
     sub_res = (sub_detail.get("result") or []) if isinstance(sub_detail, dict) else []

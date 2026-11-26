@@ -21,6 +21,7 @@ from collections import Counter
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
+from . import case_map, receipts
 from . import suite as suites
 from .parhelion_paths import (
     atomic_write_json,
@@ -714,19 +715,8 @@ def warm_timing(rows, report, cfg):
 
 
 def _ledger(ws):
-    rows = []
-    try:
-        lines = (ws / "results" / "submit-queue-outcome.jsonl").read_text().splitlines()
-    except OSError:
-        return rows
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+    """Receipt rows, one per submission (scheduler.receipts)."""
+    return receipts.load(ws)
 
 
 def _row_sha(row):
@@ -737,62 +727,98 @@ def _positive(value):
     return type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
-def timing_offset(ledger, title, sha, rows, official, cache=None):
+def _judge_view(row, doc, field):
+    """Judge times (``field="times"``) or tbest of one ledger row keyed by the case map's judge keys."""
+    named = receipts.case_times(row) if field == "times" else receipts.case_tbest(row)
+    if named:
+        return {k: v for k, v in named.items() if _positive(v)}
+    public, tbest = receipts.public_times(row)
+    if field == "times" and not receipts.is_pass(row):
+        return {}  # a failed run's positional list can skip more than the untimed cases
+    timed = [k for k in doc["judge_ids"] if k not in set(doc.get("judge_untimed") or [])]
+    return {k: v for k, v in zip(timed, public if field == "times" else tbest) if _positive(v)}
+
+
+def _timing_pairs(doc):
+    """Mapped ``(local_id, judge_key)`` pairs fit for timing: same workload size on both sides."""
+    return [(p["local"], p["judge"]) for p in (doc or {}).get("pairs") or []
+            if p.get("judge_mapped") and not p.get("scale_mismatch")]
+
+
+def timing_offset(ledger, title, sha, rows, official, cache=None, doc=None):
     """Additive per-launch overhead of the local event timer, in microseconds.
 
     Device events bracket the launch as well as the kernel, so tiny kernels read a few
     microseconds slow while long ones agree with the judge. When the judge has timed this
-    exact SHA, the median of (local warm minimum - judged time) over the public cases is
-    that overhead. It is cached per workspace so later SHAs reuse the last calibration.
+    exact SHA, the median of (local warm minimum - judged time) is that overhead. With a usable
+    case map (``doc``, scheduler.case_map) the pairs come from the map and skip judge cases that
+    are a different workload; without one, the public cases pair by position as before. It is
+    cached per workspace so later SHAs reuse the last calibration.
     Returns ``(offset_us, submission_id)`` or ``(None, None)``.
     """
-    calibration = None
+    calibration, gaps = None, []
     for row in ledger:
-        times = row.get("public_times_us")
-        if row.get("title") == title and _row_sha(row) == sha and isinstance(times, list) and times:
+        if row.get("title") != title or _row_sha(row) != sha:
+            continue
+        if doc is not None and _judge_view(row, doc, "times"):
             calibration = row
-    if calibration is not None:
+        elif doc is None and isinstance(row.get("public_times_us"), list) and row["public_times_us"]:
+            calibration = row
+    if calibration is not None and doc is not None:
+        judged = _judge_view(calibration, doc, "times")
+        gaps = [rows[lid]["min_us"] - judged[key] for lid, key in _timing_pairs(doc)
+                if lid in rows and key in judged and _positive(rows[lid].get("min_us"))]
+    elif calibration is not None:
         gaps = [rows[cid]["min_us"] - judged for cid, judged in zip(official, calibration["public_times_us"])
                 if _positive(judged) and _positive(rows[cid].get("min_us"))]
-        if gaps:
-            offset = round(max(0.0, statistics.median(gaps)), 3)
-            if cache is not None:
-                try:
-                    atomic_write_json(cache, {"offset_us": offset, "from": calibration.get("submission_id"),
-                                              "title": title, "sha": sha, "at": now()})
-                except OSError:
-                    pass
-            return offset, calibration.get("submission_id")
+    if gaps:
+        offset = round(max(0.0, statistics.median(gaps)), 3)
+        if cache is not None:
+            try:
+                atomic_write_json(cache, {"offset_us": offset, "from": calibration.get("submission_id"),
+                                          "title": title, "sha": sha, "at": now()})
+            except OSError:
+                pass
+        return offset, calibration.get("submission_id")
     stored = read_doc(cache) if cache is not None else {}
     if _positive(stored.get("offset_us")) or stored.get("offset_us") == 0:
         return float(stored["offset_us"]), stored.get("from")
     return None, None
 
 
-def public_estimate(ledger, title, rows, sha=None, cache=None):
-    """Ratio of the latest official public tbest to the local warm minimum per public case.
+def public_estimate(ledger, title, rows, sha=None, cache=None, doc=None):
+    """Ratio of the latest official tbest to the local warm minimum per judge-timed case.
 
-    ``efficiency`` subtracts the calibrated timer overhead when one is known; the
+    With a usable case map (``doc``) every mapped case with a known tbest counts and cases the
+    judge runs as a different workload are skipped; without one, the five public cases pair by
+    position. ``efficiency`` subtracts the calibrated timer overhead when one is known; the
     uncorrected value stays in ``efficiency_raw``.
     """
     latest = None
     for row in ledger:
-        tbest = row.get("public_tbest_us")
-        if row.get("title") == title and isinstance(tbest, list) and tbest:
+        if row.get("title") != title:
+            continue
+        if (doc is not None and _judge_view(row, doc, "tbest")) or (
+                doc is None and isinstance(row.get("public_tbest_us"), list) and row["public_tbest_us"]):
             latest = row
     if latest is None:
         return None
     official = sorted(r["id"] for r in rows.values() if r["source"] == "official")
-    offset, offset_from = timing_offset(ledger, title, sha, rows, official, cache) if sha else (None, None)
+    offset, offset_from = timing_offset(ledger, title, sha, rows, official, cache, doc) if sha else (None, None)
+    if doc is not None:
+        tbest_by_key = _judge_view(latest, doc, "tbest")
+        pairs = [(lid, tbest_by_key[key]) for lid, key in _timing_pairs(doc) if key in tbest_by_key and lid in rows]
+    else:
+        pairs = list(zip(official, latest["public_tbest_us"]))
     raw, ratios = {}, {}
-    for cid, tbest in zip(official, latest["public_tbest_us"]):
+    for cid, tbest in pairs:
         mine = rows[cid].get("min_us")
         if _positive(tbest) and _positive(mine):
             raw[cid] = round(min(tbest / mine, 1.5), 3)
             kernel = max(mine - offset, 0.1 * mine) if offset is not None else mine
             ratios[cid] = round(min(tbest / kernel, 1.5), 3)
     mean = lambda values: round(sum(values) / len(values), 3) if values else None
-    return {
+    out = {
         "efficiency": mean(list(ratios.values())),
         "efficiency_raw": mean(list(raw.values())),
         "offset_us": offset,
@@ -800,6 +826,9 @@ def public_estimate(ledger, title, rows, sha=None, cache=None):
         "cases": dict(sorted(ratios.items(), key=lambda kv: kv[1])[:10]) or None,
         "tbest_from": latest.get("submission_id"),
     }
+    if doc is not None:
+        out["case_map"] = doc.get("method")
+    return out
 
 
 def baseline_comparison(ws, ledger, report, rows):
@@ -901,8 +930,13 @@ def build_digest(ws, report, rows, reasons=()):
     # Comparisons use the best warm minimum this SHA has shown, including this run.
     best_rows = {k: ({**r, "min_us": min(r["min_us"], history.get(k, r["min_us"]))}
                      if _positive(r.get("min_us")) else r) for k, r in rows.items()}
+    try:
+        doc = case_map.current(ws, report["title"])
+    except (OSError, ValueError, KeyError, TypeError):
+        doc = None
     public = public_estimate(ledger, report["title"], best_rows, report.get("sha"),
-                             cache=ws / "results" / ".timing-offset.json")
+                             cache=ws / "results" / ".timing-offset.json",
+                             doc=doc if case_map.usable(doc) else None)
     baseline, missing = baseline_comparison(ws, ledger, report, best_rows)
     hints = list(reasons[:2])
     if noisy:
