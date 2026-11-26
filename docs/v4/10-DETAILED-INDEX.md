@@ -125,5 +125,5 @@ B2 输出的 `case` 事件在现有字段之外增加 `cold_us`（list[float]，
 - 完成后在分支上提交，不要合并，不要 push。
 
 ```
-Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```

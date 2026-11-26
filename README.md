@@ -69,6 +69,26 @@ cross-Harness external workers on solid bidirectional Bézier lanes (pulses trav
 - **Zero-poll UI** — the compact `agent_mesh` projection rides the existing 1 Hz `/v1/stream/hot` SSE frame;
   full message history is fetched only when a node is selected.
 
+## Test Platform & Worker Economy (v4.0)
+
+Design: [docs/v4/00-OVERVIEW.md](docs/v4/00-OVERVIEW.md) · release notes: [docs/v4/RELEASE-NOTES.md](docs/v4/RELEASE-NOTES.md).
+
+- **One suite per problem** — `bench-specs/<Problem>/suite.json` is owned by the platform and versioned
+  (`opsb bench suite show|migrate|add-variant`). Cases are the unit; buckets are labels. Every official case
+  is timed by default: warmup samples are discarded and warm minima are reported.
+- **Three levels** — `opsb test <Problem> --level smoke|standard|final`. Standard is formal evidence for the
+  submit gate. Workers may only pick a level; the profile/experiment/timing/repeats options are rejected for them.
+- **Device broker** — one resident process on the device host executes jobs in WSPT order, owns the device lock,
+  re-queues the remainder after a TLE and reaps dead tickets.
+- **Asynchronous MCP tests** — `parhelion_test` returns a request id within a couple of seconds and
+  `parhelion_test_wait` waits at most 45 s. Identical requests join or reuse a run. Finished runs reach the
+  requester's inbox as a `test_result`. The stdio MCP server handles requests on worker threads.
+- **Worker economy** — sprints default to one worker per problem (`mode=solo|dual|full`). A provider balance or
+  quota fault suspends the driver once. Compaction follows the model window (30 %, clamped to 120k–400k tokens).
+  A ≤2 KB state card seeds briefs and compactions.
+- **Hygiene** — tests run against a temporary `PARHELION_HOME`. Gate verdicts are logged only when they change.
+  `opsb doctor clean [--remote] [--apply]` moves test residue to `~/.parhelion/trash/` and clears dead device tickets.
+
 ## Contest Problem Scraping
 
 A contest link (or bare contest name / Judge object id) resolves to the real problem set through

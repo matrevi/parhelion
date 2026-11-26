@@ -1,0 +1,70 @@
+# Parhelion 4.0.0 发布说明
+
+> 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
+
+## 变更
+
+### 测试平台
+- 每题一个平台持有的版本化套件 `suite.json`；用例是最小单元，桶只是标签。
+- 三个级别 `smoke` / `standard` / `final`。standard 运行可以作为提交网关的正式证据。
+- 默认对全部官方例计时：丢弃 warmup 样本，报告热态最小值和中位数；套件可以用 `timing_scope=perf` 缩小计时范围。
+- 每次运行生成不超过 2KB 的 digest，包括：
+  - 逐例判定和失败摘要；
+  - 计时结果，以及本次运行相对该 SHA 最好成绩的漂移和慢档标记；
+  - 公开例效率，分为扣除计时开销后的值和原始值；
+  - 相对最佳官方 SHA 的几何平均提速。
+- 计时开销校准：用官方对同一 SHA 的逐例时间，标定本地事件计时的附加开销，并缓存到 `results/.timing-offset.json`。
+- worker 不能再传 profile / experiment / timing / repeats / runner / bucket。
+
+### 设备主机
+- 常驻设备代理按 WSPT 顺序串行执行作业并独占设备锁；TLE 后释放锁，把剩余用例续排；代理启动时清理死票。代理不可用时回退到 3.6.2 的车道逻辑。
+- 探针把代理识别为持锁者，探针版本标记升到 `V5`，设备主机会自动重新部署。
+
+### 控制面与 MCP
+- 新工具 `parhelion_test`、`parhelion_test_wait`、`parhelion_test_cancel`。`parhelion_test_plan` 保留为兼容别名。
+- 测试运行登记表放在 `state/test_runs/`：相同请求会加入正在进行的运行，或复用 30 分钟内的结果；结束后作为 `test_result` 消息投递到请求者的收件箱。
+- stdio MCP 服务改为多线程分发，回复可以乱序返回，长调用不再挡住其他请求。
+- 输出上限：`status` 默认不超过 2KB；`kb_query` 默认返回 3 条、每条摘要不超过 600 字符；`bench_diagnose` 精简。传错 SHA 时，报错里列出最近 5 个提交。
+
+### 编排
+- 冲刺默认每题 1 个 worker（`mode=solo`），`dual` 和 `full` 需要显式开启。
+- 供应商故障熔断：余额、配额、401/402/429 错误会暂停该驱动，只发一次告警，并停掉同驱动的 worker；管理员显式派发时自动解除暂停。
+- 压缩阈值随模型窗口自适应，取窗口的 30%，限制在 12 万到 40 万 token（`agents.compact_tokens` 可以覆盖）；不再要求先有阶段结果。
+- 不超过 2KB 的状态卡用于 brief 和压缩检查点；worker brief 不超过 1500 字节。
+- squad 支持按 agent_id、角色名或 `all` 寻址；报错时附上队友列表。
+- 不再唤醒 error / stopped / 已暂停驱动的 worker。
+- 修复：`allow_claude_workers` 配置项从未被读取。
+
+### 卫生
+- 测试使用临时的 `PARHELION_HOME`，跑前跑后真实目录数不变（293 → 293）。
+- 网关判定只在变化时写日志；`feedback-log.jsonl` 超过 8MB 自动轮转。
+- 工作树路径的 `workspace_id` 归并到所属比赛工作区，不再为每个工作树新建一个数据目录。
+- 新命令 `opsb doctor clean [--remote] [--apply] [--json]`，把测试残留移到 `~/.parhelion/trash/`，并清理设备主机上的死票。
+
+## 迁移
+1. 可选：`opsb bench suite migrate <Problem>`，把旧的 `case-profile.json` 显式转成 `suite.json`。不转也能运行，旧 profile 会在内存里自动转换。
+2. `opsb doctor clean` 先看一遍列表，再用 `--apply` 清理。
+3. 已安装的 3.x 应用在重新安装之前，仍然使用旧的运行时。新的设备代理会在第一次 4.0 测试时自动部署到设备主机。
+
+## 端到端实测（2026-11-25，真机）
+
+| 用例 | 结果 |
+|---|---|
+| E1 全量测试 | 378 通过 / 18 跳过；测试前后 workspaces 目录数不变；Swift 编译通过 |
+| E3 smoke（RevINNorm best） | 端到端 22s，代理已启用，等待 0.001s，持锁 3.9s |
+| E4 standard | 15/15 通过，端到端 31–35s，持锁 2.9–3.9s，formal 证据成立 |
+| E5 复用 | 相同请求 0.4s 返回 `reused` |
+| E6 三题并发 | 端到端 31/38/70s，排队 ≤3.3s，串行执行，零残留票据 |
+| E7 MCP 全流程 | `parhelion_test` 0.02s 返回；运行期间 `status` 1.07s 返回（1.8KB）；wait 33s 得到 15/15；网关预览 0.3s |
+| E8 清理 | 本地 290 个残留移入回收目录；远端死票 0（代理启动时已清理 23 个） |
+
+## 已知限制
+- **事件计时带有主机侧启动延迟。** 同一 SHA，小内核在不同运行之间、甚至同一次运行的不同用例之间，读数会在约 5µs 和约 25µs 之间跳档；10µs 以上的内核与官方相差约 2%。4.0 的应对办法：比较时使用该 SHA 的最好成绩，扣除标定出的开销（实测约 2.4µs），并标记慢档运行。真正的修复是 profiler 任务时长（见 4.1）。
+- 编排流程只用假 adapter 测过，没有调用真实模型（DeepSeek 余额已耗尽）。ACP / Codex 的压缩路径也没有实机验证。
+- 加入同一运行的第二个 worker，能从调用返回值里拿到结果，但收件箱只投递给最初提交的 worker。
+
+## 4.1 路线
+1. 把 profiler 任务时长接入 reference 引擎，替换事件计时（最高优先级）。
+2. A/B 交替配对，以及多轮轮转计时（把各用例的样本分散到不同时刻）。
+3. 跨题合并设备批次。
+4. Swift UI 显示测试登记表、digest 和驱动暂停状态。
