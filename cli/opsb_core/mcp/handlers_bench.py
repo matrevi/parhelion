@@ -495,4 +495,11 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     if isinstance(link, dict):
         result["ledger"] = link
     result["warnings"] = _ledger_warnings(workspace, title, args.get("_caller_agent_id"))
+    # 4.3 P28: advisory anti-pattern/bug hints. Matching lives in knowledge/hints.py and the lines
+    # are appended after every verdict field, so they can never feed a stage, a priority or approval.
+    from ..knowledge.hints import gate_hints
+
+    hints = gate_hints(workspace, title, sha, note)
+    if hints:
+        result["knowledge_hints"] = hints
     return result

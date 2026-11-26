@@ -11,6 +11,7 @@ from typing import Any
 
 from .. import config as _cfg
 from ..drivers.base import resolve_parhelion_home
+from ..knowledge.query import EVIDENCE_CLASSES
 from ..services.breakthrough_service import load_catalog
 from .paging import PAGE_KEYS, page_window, paginate_keys
 
@@ -19,8 +20,7 @@ KB_DEFAULT_LIMIT = 3
 KB_FULL_DEFAULT_LIMIT = 8
 KB_SUMMARY_LIMIT = 600
 KB_PAGE_MAX = 50
-# 4.3 evidence levels; same vocabulary as `opsb_core.knowledge.query.EVIDENCE_CLASSES` (P27 messages share it).
-EVIDENCE_CLASSES = ("local", "paired", "online_receipt")
+# 4.3 evidence levels: one definition on this branch, imported from `opsb_core.knowledge.query`.
 _COMPACT_LISTS = ("results", "entries", "anti_patterns")
 
 

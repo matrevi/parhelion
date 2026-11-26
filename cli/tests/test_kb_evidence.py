@@ -299,3 +299,27 @@ def test_evidence_composition_helper_counts_all_classes() -> None:
     ]
     assert has_strong_evidence(evidence) is True
     assert has_strong_evidence([{}, {"evidence_class": "local"}]) is False
+
+
+def test_evidence_class_vocabulary_is_pinned_for_p27() -> None:
+    """P27 defines the same three values in `evidence.py::CLASSES`; this pins our side of the contract.
+
+    The two branches land independently, so neither can import the other yet. If someone renames a
+    value here, P27's message levels and these KB levels silently stop being the same vocabulary.
+    """
+    assert EVIDENCE_CLASSES == ("local", "paired", "online_receipt")
+    assert (EVIDENCE_CLASSES[0], EVIDENCE_CLASSES[1], EVIDENCE_CLASSES[2]) == ("local", "paired", "online_receipt")
+    assert STRONG_EVIDENCE_CLASSES == ("paired", "online_receipt")
+    from opsb_core.mcp import handlers_kb
+    from opsb_core.mcp.schemas import TOOL_SCHEMAS
+
+    assert handlers_kb.EVIDENCE_CLASSES is EVIDENCE_CLASSES  # one definition on this branch
+    for name in ("parhelion_kb_record", "parhelion_kb_feedback"):
+        schema = next(t for t in TOOL_SCHEMAS if t["name"] == name)
+        assert schema["inputSchema"]["properties"]["evidence_class"]["enum"] == ["local", "paired", "online_receipt"]
+
+
+def test_gate_hint_module_stays_small() -> None:
+    """New modules are capped at 350 lines (10-DSH §2); the gate hint matcher is one of them."""
+    hints_py = REPO_ROOT / "cli" / "opsb_core" / "knowledge" / "hints.py"
+    assert len(hints_py.read_text(encoding="utf-8").splitlines()) <= 350
