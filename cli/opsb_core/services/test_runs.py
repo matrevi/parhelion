@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from .. import config as _cfg
 from ..drivers.base import resolve_workspace_state_dir
@@ -421,8 +421,13 @@ def public_view(record: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def wait(ws: Path | str, request_id: str, wait_sec: float = 30) -> dict[str, Any]:
-    """Poll a run for at most `wait_sec` (clamped to [1, 45]) and return its public view."""
+def wait(ws: Path | str, request_id: str, wait_sec: float = 30,
+         block: Callable[[float], None] | None = None) -> dict[str, Any]:
+    """Wait on a run for at most `wait_sec` (clamped to [1, 45]) and return its public view.
+
+    `block(remaining)` sleeps until the run may have changed; the daemon passes the event hub's
+    blocker, other callers poll every POLL_SEC.
+    """
     try:
         budget = float(wait_sec)
     except (TypeError, ValueError):
@@ -438,7 +443,10 @@ def wait(ws: Path | str, request_id: str, wait_sec: float = 30) -> dict[str, Any
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return public_view(record)
-        time.sleep(min(POLL_SEC, remaining))
+        if block is None:
+            time.sleep(min(POLL_SEC, remaining))
+        else:
+            block(remaining)
 
 
 def cancel(ws: Path | str, request_id: str) -> dict[str, Any]:

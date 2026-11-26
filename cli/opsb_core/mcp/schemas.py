@@ -6,11 +6,12 @@ from typing import Any
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_status",
-        "description": "Compact contest scores, quota and per-problem rows (under 2KB). verbose=true returns the full structure.",
+        "description": "Compact contest scores, quota and per-problem rows (under 2KB). verbose=true returns the full structure. Pass the last rev as if_rev to get {not_modified:true} when nothing changed; to wait for changes use parhelion_wait instead of calling status in a loop.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string", "description": "Optional problem title filter"},
+                "if_rev": {"type": "string", "description": "rev from a previous status reply with the same arguments"},
                 "include_npu": {"type": "boolean", "description": "Probe live device telemetry via SSH (default false)"},
                 "include_queue": {"type": "boolean", "description": "Include up to 5 queue items (default false)"},
                 "verbose": {"type": "boolean", "description": "Return the full uncompacted structure (default false)"},
@@ -133,7 +134,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test_wait",
-        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the compact result digest.",
+        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the compact result digest. To wait for several runs or for messages at once, use parhelion_wait.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -243,7 +244,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_agent_wait",
-        "description": "Block on daemon condition (<=45s cap) until strategic events (breakthrough/stagnation/escape_zero/question/directive) or worker results arrive.",
+        "description": "Block (<=45s cap) until strategic events (breakthrough/stagnation/escape_zero/question/directive) or worker results arrive. Prefer parhelion_wait, which also covers tests, seats and receipts and returns only changes.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
@@ -253,6 +254,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "problem": {"type": "string", "description": "Optional Problem Squad filter"},
                 "strategic_only": {"type": "boolean", "description": "Wake on strategic events (default true). Use false to include ordinary replies."},
                 "timeout_sec": {"type": "number", "description": "Wait timeout in seconds (default 25, max 45)"},
+            },
+        },
+    },
+    {
+        "name": "parhelion_wait",
+        "description": "Block until something you watch changes, then return only the changes since `since` as one-line summaries: inbox messages, test runs, seat status, judge receipts (a worker sees its own; the orchestrator sees all). Pass the returned rev as `since` next time. With no change it returns {changed:false, waiting_for, idle_streak, next_timeout}; omit timeout so the wait lengthens itself (max 100s). Use this instead of polling status, agent_wait or test_wait; read full text with agent_messages, agent_inbox or test_wait.",
+        "roles": ("orchestrator", "worker"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "since": {"type": "string", "description": "rev from the previous parhelion_wait; omit to watch from now"},
+                "until": {"type": "array", "items": {"type": "string", "enum": ["inbox", "test", "agent", "judge"]},
+                          "description": "Sources to wake on (default all four)"},
+                "timeout": {"type": "number", "minimum": 0, "maximum": 100, "description": "Seconds to block; default grows while nothing changes"},
+                "agent_ids": {"type": "array", "items": {"type": "string"}, "description": "Orchestrator only: limit to these workers"},
+                "problem": {"type": "string", "description": "Orchestrator only: limit to one problem"},
+                "strategic_only": {"type": "boolean", "description": "Orchestrator only: wake on strategic messages only"},
             },
         },
     },

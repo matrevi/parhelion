@@ -204,6 +204,8 @@ def test_sprint_metrics_definitions(tmp_path: Path) -> None:
     assert (rep["reads"], rep["reads_after_cut"], rep["rereads"]) == (3, 1, 1)
     assert (rep["tests"], rep["tests_after_cut"], rep["retests"]) == (2, 1, 1)
     assert res["tools"]["bash"]["calls"] == 6
+    polls = res["worker_polls"]
+    assert (polls["test_wait"], polls["status"], polls["wait"], polls["poll_total"]) == (1, 1, 0, 2)
     # A bound without an offset is UTC, like the log rows (not the machine's local time).
     early = sprint_metrics.compute([tmp_path / "mesh-dee-aaaaaa.jsonl"], until="2026-01-02T03:01:00")
     assert 0 < early["window"]["hours"] < 0.02 and early["context"]["compactions"] == 0

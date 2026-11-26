@@ -95,7 +95,11 @@ def _print_metrics(r: dict[str, Any]) -> None:
     if r.get("orchestrator"):
         o = r["orchestrator"]
         print(f"Orchestrator polls {o['poll_total']} ({o['poll_per_hour']}/h): agent_wait {o['agent_wait']}, "
-              f"test_wait {o['test_wait']}, agent_send {o['agent_send']}, status {o['status']}")
+              f"test_wait {o['test_wait']}, agent_send {o['agent_send']}, status {o['status']}, wait {o['wait']}")
+    wp = r.get("worker_polls") or {}
+    if wp:
+        print(f"Worker polls {wp['poll_total']} ({wp['poll_per_hour']}/h): test_wait {wp['test_wait']}, "
+              f"status {wp['status']}, agent_inbox {wp['agent_inbox']}, wait {wp['wait']}")
         for sid, u in o.get("usage", {}).items():
             print(f"  orchestrator {sid[:16]}: hit {u['cache_hit_pct']}% miss {u['input_miss']} read {u['cache_read']} "
                   f"last miss {u['last_miss_reason'] or '-'}")

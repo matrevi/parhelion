@@ -130,6 +130,16 @@ def iso_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return p_home
 
 
+@pytest.fixture()
+def receipt_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fixtures date their receipts 2026-11-23; keep "now" inside the reconciler's 72 h window."""
+    import datetime
+
+    from opsb_core.services import sync_reconciler
+    frozen = datetime.datetime(2026, 11, 23, 12, 0, tzinfo=datetime.timezone.utc)
+    monkeypatch.setattr(sync_reconciler, "utc_now", lambda: frozen)
+
+
 def _write_fake_ict_module(tmp_path: Path, *, ranking_ok: bool = True) -> Path:
     judge_dir = tmp_path / "fake_judge"
     judge_dir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +245,7 @@ def test_sync_error_dedup_across_jump_submit_cli_and_mcp(iso_home: Path, tmp_pat
     assert mcp_res.get("duplicate_sync_error") is True
 
 
-def test_reconcile_sync_errors_self_heals_outcome_and_snapshot(iso_home: Path, tmp_path: Path) -> None:
+def test_reconcile_sync_errors_self_heals_outcome_and_snapshot(iso_home: Path, tmp_path: Path, receipt_clock: None) -> None:
     ws, sha = _make_ws(tmp_path)
     sess_dir = iso_home / "sessions"
     sess_dir.mkdir(parents=True)
@@ -311,7 +321,7 @@ def test_reconcile_sync_errors_self_heals_outcome_and_snapshot(iso_home: Path, t
     assert done_items[0]["actual_score"] == 76.88
 
 
-def test_reconciled_wrong_answer_records_the_failing_case(iso_home: Path, tmp_path: Path) -> None:
+def test_reconciled_wrong_answer_records_the_failing_case(iso_home: Path, tmp_path: Path, receipt_clock: None) -> None:
     """4.1 #8: every reconciled verdict carries the canonical receipt fields, WA included."""
     ws, sha = _make_ws(tmp_path)
     sess_dir = iso_home / "sessions"
