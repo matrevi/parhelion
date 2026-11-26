@@ -35,14 +35,12 @@
 |---|---|---|---|
 | P01 P02 P02b P03 P04 P05 P06 P07 P07b P09 P10 P11 P17 | — | 已合入，随 4.1.0 发布 | — |
 | 4.1.0 发布 | tag `v4.1.0` | 已完成（2026-11-26）：daemon 已重启，应用 4.1.0（build 32）已安装 | — |
-| P12 P14 P18 | — | 已合入 main（2026-11-26：901c3b6、f92efeb、efe11d7），随 4.2.0 发布 | 跟进项见 `reviews/P12.md`、`reviews/P14.md` |
-| P13 | impl/P13-bound-output | 可开工（P12 已合入） | 含 `queue`/`history` 视图的分页 |
-| P15 | impl/P15-worker-boundary | 可开工（P12 已合入） | — |
-| P08 | impl/P08-startup-pack | 待 DSH 开工；`agent_peek` 等 P13 合入 | — |
-| P16 | impl/P16-measure | 待 DSH 开工，等 P13 合入 | 只测量；主会话据报告决定 H/I/J |
+| P12 P14 P18 | — | 已合入 main（2026-11-26：901c3b6、f92efeb、efe11d7），随 4.2.0 发布 | 跟进项见 `reviews/P12.md`、`reviews/P14.md`、`reviews/P18.md` |
+| P13 P15 P08 | — | 已合入 main（2026-11-26：1f035b3、a419f41、f4e0219），随 4.2.0 发布 | 合入后在 main 上修了 P13 的翻页与确认已读、P08 的 peek 预算，见 `reviews/P13.md`、`reviews/P15.md`、`reviews/P08.md` |
+| P16 | impl/P16-measure | 可开工（P13 已合入） | 只测量；主会话据报告决定 H/I/J |
+| P19 | impl/P19-antigravity-mining | DSH 调研中（只读）：从上一场 ops-bench 的 Antigravity 记录提炼涨分逻辑，供 4.3 | 交付后审查合入，据此写 4.3 计划 |
 
 **已知遗留**
-- `drivers/brief.py` 仍写着 quota gates（P08）。
 - P11 的界面（测试登记表、驱动暂停横幅）随 4.1.0 安装，尚未逐屏目视核对。
 - P18 的 `device.case_cache_dir` / `case_tmp_dir` 只有单测，没在设备主机上验证；要在容器重启后保住缓存，需把两项设到同一块持久盘。
 - P18 之后 `available_normal_shots` 是账号剩余额度，收尾预留另列在 `closing_reserve`；4.2.0 发布说明要写清，免得被读成预留已花掉。
@@ -53,12 +51,9 @@
 
 已合入：P01 → P02 → P02b → P03 → P04 → P05 → P06 → P07 → P07b → P09 → P10（随 P11）→ P11 → P17。
 
-已合入（4.2）：P18 → P14 → P12（2026-11-26，合入后在 main 上补了三处小修，见 `reviews/`）。
+已合入（4.2）：P18 → P14 → P12 → P13 → P15 → P08（2026-11-26；每批合入后在 main 上补了小修，见 `reviews/`）。
 
-待合入：按依赖，先交付先合。
-- P13 先于 P08 的 `agent_peek`；
-- P15 随时可合；
-- P16 只产出报告。
+待合入：P16（只产出报告，主会话据此决定 H/I/J）；P19（4.3 调研，只产出报告）。
 
 **预计会冲突的位置**：`mcp/schemas.py`、`mcp/tools.py`（P12、P13、P08）；工具计数断言 `cli/tests/test_agent_mesh_http.py`、`cli/tests/test_mcp_server.py`（P12、P13、P08）；`agents/manager.py`（P14、P15）；`mcp/handlers_bench.py`（P13）。
 

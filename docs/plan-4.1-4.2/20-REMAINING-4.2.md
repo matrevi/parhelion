@@ -84,16 +84,16 @@ git -C /Users/winbeau/Developer/personal/parhelion-wt/P12 rebase main
   不要运行 `opsb daemon reload`，不要安装插件或应用。
 - **P08 改 DSH 插件时不能写进 `~/.dsh`。** 写进去会立即作用于正在运行的 DSH 会话，包括总包自己。只用 node 伪造插件上下文来测。
 - **隐私。** 会话日志（`~/.parhelion/logs/sessions/mesh-dee-*.jsonl`、`~/.dsh/sessions/**`）与总线数据库只做聚合统计，以只读方式打开。报告里不出现 cookie、账号名、用户 ID、token 的值。
-- **模块与工具计数。** 新模块不超过 350 行；`manager.py`、`estimator.py`、`cli_bridge.py`、`handlers_bench.py` 这类大文件只加薄接入点。新增 MCP 工具会改变工具计数断言，在 `cli/tests/test_agent_mesh_http.py` 与 `cli/tests/test_mcp_server.py`，目前主控 27 个（含 P12 的 `parhelion_report`）。
-- **测试基线（main，P12、P14、P18 合入后；新包从这里切）：**
+- **模块与工具计数。** 新模块不超过 350 行；`manager.py`、`estimator.py`、`cli_bridge.py`、`handlers_bench.py` 这类大文件只加薄接入点。新增 MCP 工具会改变工具计数断言，在 `cli/tests/test_agent_mesh_http.py` 与 `cli/tests/test_mcp_server.py`，目前主控 29 个（含 P12 的 `parhelion_report`、P13 的 `parhelion_spill_read`、P08 的 `parhelion_agent_peek`）。
+- **测试基线（main，P12–P15、P08、P18 合入后；新包从这里切）：**
   ```bash
   ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider
   ```
-  716 passed / 19 skipped。
+  785 passed / 19 skipped。
   ```bash
   PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
   ```
-  469 passed。改了 Swift 还要 `swift build`。
+  538 passed。改了 Swift 还要 `swift build`。
 
   `runtime/tests/test_device_broker.py` 的两条预算测试在机器高负载时偶发失败，单独重跑通过即可，报告里注明。
 - **提交信息**用英文祈使句，正文写原因。末尾署名实际执行的模型，例如 `Generated-by: DSH <模型名>`；不要写 Claude 的署名行。
