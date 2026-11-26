@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T07:49:34Z",
+  "updated_at": "2026-11-26T07:57:38Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "91a20c23a79445a4c2e8f05c8a0cace4b955a8486ece68b323c73ab78be114c1",
-      "size": 94167,
-      "normalized_sha256": "91a20c23a79445a4c2e8f05c8a0cace4b955a8486ece68b323c73ab78be114c1"
+      "sha256": "2139cfbd9672fa9e29059de5112ae21b626fadbb9bbad49965daee6b220788ea",
+      "size": 95013,
+      "normalized_sha256": "2139cfbd9672fa9e29059de5112ae21b626fadbb9bbad49965daee6b220788ea"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1637,9 +1637,9 @@
     },
     "scheduler/case_bench.py": {
       "role": "index",
-      "sha256": "63370b256c174204ec32b90e612299e2967b89642e3f38e47c6b4830d35d0c8f",
-      "size": 49720,
-      "normalized_sha256": "63370b256c174204ec32b90e612299e2967b89642e3f38e47c6b4830d35d0c8f"
+      "sha256": "d1a01370a5034cd5af350bf2ea006df0e8705bd674cbacf27f6b56de07c1baea",
+      "size": 49778,
+      "normalized_sha256": "d1a01370a5034cd5af350bf2ea006df0e8705bd674cbacf27f6b56de07c1baea"
     },
     "scheduler/case_feedback.py": {
       "role": "index",
@@ -1649,9 +1649,9 @@
     },
     "scheduler/case_map.py": {
       "role": "index",
-      "sha256": "a37022df657dd2c00b20671ebeef409e574d42028b7e4474e628c90852c74dec",
-      "size": 13424,
-      "normalized_sha256": "a37022df657dd2c00b20671ebeef409e574d42028b7e4474e628c90852c74dec"
+      "sha256": "a56f6215aaa6de0f1622ec5169190b2878d73fbe671f911297492566e763ba9a",
+      "size": 13564,
+      "normalized_sha256": "a56f6215aaa6de0f1622ec5169190b2878d73fbe671f911297492566e763ba9a"
     },
     "scheduler/cli_bridge.py": {
       "role": "index",
@@ -1661,9 +1661,9 @@
     },
     "scheduler/estimator.py": {
       "role": "index",
-      "sha256": "4e857c20746021ae24faf5fd2bce10cd7f43d2fceb6583b3b248cc36c7f5f61e",
-      "size": 90966,
-      "normalized_sha256": "4e857c20746021ae24faf5fd2bce10cd7f43d2fceb6583b3b248cc36c7f5f61e"
+      "sha256": "ee7a58f4ce638e0e5ff9b176afd3014d18ed45c1ce3ce738c40159d3de9b463c",
+      "size": 92100,
+      "normalized_sha256": "ee7a58f4ce638e0e5ff9b176afd3014d18ed45c1ce3ce738c40159d3de9b463c"
     },
     "scheduler/feedback_log.py": {
       "role": "index",
@@ -1695,6 +1695,12 @@
       "size": 53692,
       "normalized_sha256": "1fc9106962f513c58bf35ba54fb4ec53cd7f21bc3ac8af838fc63ea84a405b2d"
     },
+    "scheduler/pairing.py": {
+      "role": "index",
+      "sha256": "e3bdafbc3be011cb21f8898a78053056219c36338243d865f2988a14e6a8d8e3",
+      "size": 2083,
+      "normalized_sha256": "e3bdafbc3be011cb21f8898a78053056219c36338243d865f2988a14e6a8d8e3"
+    },
     "scheduler/pairwise_anchor.py": {
       "role": "index",
       "sha256": "90480131cef74e8e766151d80acffab3b4939debcaacc2486d445829a13da8bd",
@@ -1721,9 +1727,9 @@
     },
     "scheduler/receipt_predict.py": {
       "role": "index",
-      "sha256": "527a8a1fa1b0f9edae49ac411240561db5a71c536dd0971f9b1b6c80cb317822",
-      "size": 9780,
-      "normalized_sha256": "527a8a1fa1b0f9edae49ac411240561db5a71c536dd0971f9b1b6c80cb317822"
+      "sha256": "f1fdfdd28980a5756253d2b1dfb003e3a883eeb4e5e79567c558c2e41539dca8",
+      "size": 9778,
+      "normalized_sha256": "f1fdfdd28980a5756253d2b1dfb003e3a883eeb4e5e79567c558c2e41539dca8"
     },
     "scheduler/receipts.py": {
       "role": "index",
@@ -1791,6 +1797,12 @@
       "size": 9224,
       "normalized_sha256": "77ddfb5e6f2841f40254b961e2aea505ba08de4d10b502dc7e647f7f6e878955"
     },
+    "scheduler/tests/test_pairing.py": {
+      "role": "observe",
+      "sha256": "dbe195d978b810ce668154cfe959884e86d42d3c42af64fc551bb384da9b5412",
+      "size": 4342,
+      "normalized_sha256": "dbe195d978b810ce668154cfe959884e86d42d3c42af64fc551bb384da9b5412"
+    },
     "scheduler/tests/test_perf_log_parse.py": {
       "role": "observe",
       "sha256": "1b664b3b63086cb5aaf19669ebf0fabbf74f062dd0f03cbd7d6ed2affc75325d",
@@ -1853,9 +1865,9 @@
     },
     "scheduler/wa_repro.py": {
       "role": "index",
-      "sha256": "0e7163655d8713065cf154cc798f6220bd54764ee28d2ce8b994232f6fc5e553",
-      "size": 14309,
-      "normalized_sha256": "0e7163655d8713065cf154cc798f6220bd54764ee28d2ce8b994232f6fc5e553"
+      "sha256": "e59eb5c8bbd20e54634fa7dc58c65178827ae81e3ebafa0e98e0359443d37188",
+      "size": 14307,
+      "normalized_sha256": "e59eb5c8bbd20e54634fa7dc58c65178827ae81e3ebafa0e98e0359443d37188"
     },
     "scheduler/wa_ties.py": {
       "role": "index",
