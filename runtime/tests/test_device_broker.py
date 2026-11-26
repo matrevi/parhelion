@@ -186,6 +186,75 @@ def ledger(env):
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
 
+class FakeClock:
+    """Virtual monotonic clock; only a sample's declared `cost-<s>` advances it."""
+
+    def __init__(self):
+        self.value = 1000.0
+
+    def monotonic(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += float(seconds)
+
+
+class FakeConn:
+    """Stands in for the client socket: the broker's JSON events land in `events`."""
+
+    def __init__(self):
+        self.events = []
+
+    def sendall(self, data):
+        self.events.extend(json.loads(line) for line in bytes(data).decode().splitlines())
+
+    def shutdown(self, how):
+        pass
+
+
+def _cost(path):
+    for token in os.path.basename(os.path.dirname(path)).split("_"):
+        kind, _, value = token.partition("-")
+        if kind == "cost":
+            return float(value)
+    return 0.0
+
+
+def sample_on(clock):
+    """In-process sample double: charge the declared cost to `clock`, then apply the deadline."""
+
+    class Sample:
+        def __init__(self, executable, cfg):
+            self.cfg = cfg
+
+        def execute(self, path, timed, deadline):
+            clock.advance(_cost(path))
+            if clock.monotonic() > deadline:
+                return {"status": "TLE",
+                        "detail": f"One device execution exceeded the {self.cfg['timeout']}s per-run budget"}
+            return {"status": "PASS", "us": 1.0 + (100.0 if os.path.basename(path).startswith("warm") else 0.0)}
+
+        def close(self, kill=False):
+            pass
+
+    return Sample
+
+
+def run_on_virtual_clock(env, monkeypatch, spec):
+    """Drive one job through the real Broker on a virtual clock: no sockets, no wall-clock sleeps."""
+    clock = FakeClock()
+    monkeypatch.setattr(device_broker, "time",
+                        SimpleNamespace(monotonic=clock.monotonic, time=time.time, sleep=time.sleep))
+    monkeypatch.setattr(device_broker, "SampleProcess", sample_on(clock))
+    broker = device_broker.Broker(env.broker, str(env.lock), "0", idle=120)
+    conn = FakeConn()
+    job = device_broker.Job(spec, conn)
+    broker.queue.append(job)
+    broker._refresh()
+    broker.serve_one()
+    return job, conn.events
+
+
 def test_single_job_reports_warm_and_hot_samples(env):
     client = Client(start(env), make_job(env, "job-a", [make_case(env, 1, "us-5", warmup=2, repeats=3, parts=2)]))
     client.wait_for("done")
@@ -233,12 +302,16 @@ def test_case_timeout_releases_lock_and_requeues_the_rest(env):
     assert [row["segment"] for row in ledger(env)] == [1, 2]
 
 
-def test_case_budget_limits_each_execution_not_the_repeats(env):
+def test_case_budget_limits_each_execution_not_the_repeats(env, monkeypatch):
     # Five executions of 0.4 s each: 2 s per case, but every single run is inside the 1 s budget.
-    cases = [make_case(env, 1, "sleep-0.4_us-1", warmup=1, repeats=4)]
-    client = Client(start(env), make_job(env, "slow-io", cases, case_timeout=1))
-    client.wait_for("done")
-    assert [(c["id"], c["status"]) for c in client.of("case")] == [("01", "PASS")]
+    # The virtual clock charges exactly the declared cost per execution, so a loaded machine
+    # cannot stretch a 0.4 s run past its 1 s budget.
+    cases = [make_case(env, 1, "cost-0.4", warmup=1, repeats=4)]
+    job, events = run_on_virtual_clock(env, monkeypatch,
+                                       make_job(env, "slow-io", cases, case_timeout=1, reuse_session=True))
+    assert [(e["id"], e["status"]) for e in events if e["event"] == "case"] == [("01", "PASS")]
+    assert job.segments == 1
+    assert len([e for e in events if e["event"] == "progress"]) == 5  # one warmup and four runs
 
 
 def test_seconds_long_case_stops_after_one_warmup_and_two_runs(env, monkeypatch):
@@ -261,11 +334,16 @@ def test_runtime_error_marks_remaining_cases_not_run(env):
     assert statuses[2] == ("NOT_RUN", "Earlier device execution failed")
 
 
-def test_job_budget_turns_remaining_cases_into_tle(env):
-    cases = [make_case(env, 1, "sleep-0.6_us-1"), make_case(env, 2, "sleep-2_us-1"), make_case(env, 3, "us-1")]
-    client = Client(start(env), make_job(env, "budget", cases, job_timeout=1))
-    assert client.wait_for("done")[0]["segments"] == 1
-    results = client.of("case")
+def test_job_budget_turns_remaining_cases_into_tle(env, monkeypatch):
+    # Case 1 charges 0.6 s of the 1 s job budget; case 2 would charge 2 s, so it is cut at the
+    # job deadline and case 3 never starts. The virtual clock makes both overruns exact.
+    cases = [make_case(env, 1, "cost-0.6"), make_case(env, 2, "cost-2"), make_case(env, 3, "cost-0")]
+    job, events = run_on_virtual_clock(env, monkeypatch,
+                                       make_job(env, "budget", cases, job_timeout=1, reuse_session=True))
+    assert job.segments == 1
+    done = [e for e in events if e["event"] == "done"]
+    assert done and done[0]["segments"] == 1
+    results = [e for e in events if e["event"] == "case"]
     assert [c["status"] for c in results] == ["PASS", "TLE", "TLE"]
     assert all("1s device budget" in c["detail"] for c in results[1:])
 
