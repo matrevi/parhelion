@@ -82,3 +82,39 @@ def test_gate_switches_expose_every_p23_switch() -> None:
     assert config.set_switch("probe_per_window=4") == ("probe_per_window", 4)
     assert isinstance(config.probe_per_window, int)  # an int switch stays an int
     assert config.set_switch("probe_window_hours=24") == ("probe_window_hours", 24.0)
+
+
+def test_opsb_submit_writes_the_intent_into_the_queue_row(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`opsb submit --intent probe` asks the bridge for the same judgement and queues the intent."""
+    import argparse
+
+    from opsb_core.commands import queue_cmd
+    from scheduler.tests.test_submit_intents import _make_workspace, _pass_row, BASE
+
+    ws, title, sha = _make_workspace(tmp_path, receipts=[_pass_row(BASE, 55.0, when="2026-11-20T00:00:00Z")])
+    seen: list[list[str]] = []
+
+    def fake_bridge(workspace, action, options, **kwargs):
+        seen.append([action, *options])
+        if action == "status":
+            return {}
+        return {"approved": True, "status_tag": "PROBE", "estimated_score": 51.0, "current_score": 50.0,
+                "delta_expected": 1.0, "estimate": {"estimated_score": 51.0, "detail": "",
+                                                    "exploration_eligible": True},
+                "stages": [{"stage": "SAFETY", "passed": True, "code": "PASS", "reason": "ok", "metrics": {}},
+                           {"stage": "NOISE_FLOOR", "passed": True, "code": "PROBE_INTENT", "reason": "p",
+                            "metrics": {}},
+                           {"stage": "CIRCUIT_BREAKER", "passed": True, "code": "CIRCUIT_CLOSED", "reason": "ok",
+                            "metrics": {}},
+                           {"stage": "QUOTA_RESERVE", "passed": True, "code": "QUOTA_OK", "reason": "ok",
+                            "metrics": {}}]}
+
+    monkeypatch.setattr(queue_cmd, "invoke_bridge", fake_bridge)
+    args = argparse.Namespace(problem=title, sha=sha, note="speculative", intent="probe",
+                              workspace=str(ws), json=True, force=False, now=False)
+    assert queue_cmd.run_submit(args) == 0
+    evaluate = [call for call in seen if call[0] == "evaluate"]
+    assert evaluate and evaluate[0][-2:] == ["--intent", "probe"]
+    row = json.loads((ws / "results" / "submit-queue.jsonl").read_text().splitlines()[-1])
+    assert row["intent"] == "probe"
+    assert row["sha"] == sha
