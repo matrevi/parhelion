@@ -33,6 +33,9 @@ def run(paths: list[Path], *, schemes: list[str] | None = None, since: str | Non
             cuts.append({"agent_id": log.agent_id, "cut": cut.index, "ts": cut.ts, "handoff_chars": len(cut.handoff),
                          "logged_seed": bool(cut.seed), "probes": len(probes_by_cut[key])})
     scored = _score.score(probes_by_cut, seeds_by_cut, names, judge=judge)
+    workers_of = {p.id: p.agent_id for plist in probes_by_cut.values() for p in plist}
+    paired = _score.compare(scored["details"], names, workers_of) if len(names) > 1 else {}
+    moved = _score.by_type_diff(scored["details"], names) if len(names) > 1 else {}
     by_type: dict[str, int] = {}
     for plist in probes_by_cut.values():
         for p in plist:
@@ -42,7 +45,7 @@ def run(paths: list[Path], *, schemes: list[str] | None = None, since: str | Non
         "probes": {"total": sum(by_type.values()), "by_type": dict(sorted(by_type.items()))},
         "seed_chars": {n: {"median": statistics.median(v) if v else None, "max": max(v, default=None)}
                        for n, v in sizes.items()},
-        "schemes": scored["schemes"], "judge": judge,
+        "schemes": scored["schemes"], "paired": paired, "moved": moved, "judge": judge,
     }
     if with_details:
         out["details"] = scored["details"]

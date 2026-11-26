@@ -255,16 +255,48 @@ class HandoffSession:
             findings["unverified"] = bad
         return text, status, findings
 
+    # ---- seed schemes (4.2 C #5): legacy = pre-P05, ledger_core = P05, ledger_full = code-assembled
+    def _ledger(self) -> Any:
+        return store.Ledger(self.workspace, self.problem, self.agent_id)
+
+    def _rules(self) -> list[str]:
+        from . import seed as _seed
+        return (_seed.rules_text(self.workspace) + _seed.admin_directives(self.workspace, self.agent_id)
+                + [_seed.platform_rules()])
+
+    def _pin_rules(self, rules: list[str]) -> None:
+        from . import seed as _seed
+        try:
+            _seed.pin(self._ledger(), rules)
+        except Exception:
+            pass  # pinning a constraint must never cost the worker its compaction
+
     def build_seed(self, narrative: str, checkpoint: str, repair: Callable[[str], str] | None = None,
                    kind: str = "acp") -> Result:
         """The full seed text for the new session, and the check outcome."""
+        from . import seed as _seed
         text, status, findings = self._validated(narrative, repair)
+        scheme = _seed.scheme()
+        findings["seed_scheme"] = scheme
         if status == "ledger_only":
             from ..services import state_card
             seed = seed_min.build(card=state_card.build(self.workspace, self.problem, self.agent_id), rows=self.rows(),
                                   worktree=self.worktree, own=self.agent_id, rules=state_card.RULES_LINE)
             result = Result(seed, status, findings)
             self.record(kind, narrative, "", result)
+            return result
+        if scheme == _seed.LEGACY:  # the pre-P05 seed: the narrative and the platform checkpoint, nothing added
+            result = Result("\n".join(p for p in (seed_min.SEED_PREFIX, text, "Last reported result:\n" + checkpoint) if p),
+                            status, findings)
+            self.record(kind, narrative, text, result)
+            return result
+        if scheme == _seed.FULL:
+            rules = self._rules()
+            seed = _seed.build(self.workspace, self.problem, self.agent_id, self.rows(), narrative=text,
+                               stage=checkpoint, worktree=self.worktree, rules=rules)
+            self._pin_rules(rules)
+            result = Result(seed, status, findings)
+            self.record(kind, narrative, text, result)
             return result
         block = self.summary_block()
         carried = carry_forward(self.previous_narrative(), text, block)
@@ -281,9 +313,24 @@ class HandoffSession:
         return result
 
     def ledger_seed(self, checkpoint: str, kind: str = "codex") -> Result:
-        """Native compaction has no narrative: prefix the checkpoint with the code-built ledger summary."""
+        """Native compaction has no narrative: the code-built seed or the ledger summary, then the checkpoint."""
+        from . import seed as _seed
+        scheme = _seed.scheme()
+        if scheme == _seed.LEGACY:
+            result = Result(f"{seed_min.SEED_PREFIX}\nLast reported result:\n{checkpoint}", "ok",
+                            {"ledger_only_prefix": False, "seed_scheme": scheme})
+            self.record(kind, "", "", result)
+            return result
+        if scheme == _seed.FULL:
+            rules = self._rules()
+            text = _seed.build(self.workspace, self.problem, self.agent_id, self.rows(), stage=checkpoint,
+                               worktree=self.worktree, rules=rules)
+            self._pin_rules(rules)
+            result = Result(text, "ok", {"seed_scheme": scheme})
+            self.record(kind, "", "", result)
+            return result
         block = self.summary_block()
         parts = [seed_min.SEED_PREFIX, block, "Last reported result:\n" + checkpoint]
-        result = Result("\n".join(p for p in parts if p), "ok", {"ledger_only_prefix": True})
+        result = Result("\n".join(p for p in parts if p), "ok", {"ledger_only_prefix": True, "seed_scheme": scheme})
         self.record(kind, "", "", result)
         return result

@@ -57,7 +57,7 @@ def status_rev(out: dict[str, Any], args: dict[str, Any]) -> str:
     body = {k: v for k, v in out.items() if k != "sampled_at"}
     if isinstance(body.get("scheduler"), dict):
         body["scheduler"] = {k: v for k, v in body["scheduler"].items() if k != "cooldown_remaining_sec"}
-    scope = {k: args.get(k) for k in ("problem", "include_npu", "include_queue", "verbose")}
+    scope = {k: args.get(k) for k in ("problem", "include_npu", "include_queue", "verbose", "detail")}
     raw = json.dumps([scope, body], ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return "s1:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
@@ -68,6 +68,27 @@ def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, An
     if str(args.get("if_rev") or "") == rev:
         return {"not_modified": True, "rev": rev}
     out["rev"] = rev
+    return out
+
+
+def _case_detail(workspace: Path, problems: list[dict[str, Any]], agent_id: str | None = None,
+                 limit: int = 3) -> list[dict[str, Any]]:
+    """The extended state card of up to ``limit`` problems, as text plus a compact per-case table."""
+    from ..services import state_card_ext
+    out = []
+    for problem in problems[:limit]:
+        title = str(problem.get("title") or "")
+        if not title:
+            continue
+        doc = state_card_ext.data(workspace, title, agent_id)
+        out.append({
+            "title": title, "card": state_card_ext.render(doc),
+            "columns": ["case", "speedup", "confidence", "ours_us", "tbest_us", "gap_pct", "points"],
+            "rows": [[c.get("case"), c.get("speedup"), c.get("confidence"), c.get("ours_us"), c.get("tbest_us"),
+                      c.get("gap_pct"), c.get("points")] for c in doc.get("cases") or []],
+            "targets": doc.get("targets") or [], "receipts": doc.get("receipts") or [],
+            "worktree": doc.get("worktree"),
+        })
     return out
 
 
@@ -83,6 +104,7 @@ def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     prob_filter = str(args.get("problem") or "").strip().lower()
     include_npu = bool(args.get("include_npu", False))
     verbose = bool(args.get("verbose", False))
+    detail = bool(args.get("detail", False))
     include_queue = bool(args.get("include_queue", verbose))
 
     problems = snap.get("problems") or []
@@ -123,6 +145,8 @@ def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
         ]
         if include_queue:
             out["queue_preview"] = q_items[:12]
+        if detail:
+            out["case_detail"] = _case_detail(workspace, problems, args.get("_caller_agent_id"))
         return out
 
     # Compact default: one row per problem under shared column names keeps 14+ problems under 2KB.
@@ -133,6 +157,8 @@ def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     out["problems"] = {"columns": list(STATUS_PROBLEM_COLUMNS), "rows": rows}
     if include_queue:
         out["queue_preview"] = [_compact_queue_item(q) for q in q_items[:5] if isinstance(q, dict)]
+    if detail:  # 4.1 #14: the orchestrator gets the per-case table instead of computing the ratios itself
+        out["case_detail"] = _case_detail(workspace, problems, args.get("_caller_agent_id"))
     return out
 
 
@@ -242,16 +268,58 @@ def _plan_level(args: dict[str, Any], mode: str) -> str:
     return {"build-only": "standard", "fast": "smoke", "full": "standard"}[mode]
 
 
+def _ledger_warnings(workspace: Path, title: str, agent_id: str | None) -> list[dict[str, Any]]:
+    """Research R5/R8 notes for a tool reply: repeated dead ends and a plateau (warns, never blocks)."""
+    from ..ledger import auto, budget
+    try:
+        rows = auto._ledger(workspace, title, agent_id).rows()
+        return budget.warnings(rows)
+    except Exception:
+        return []
+
+
+def _retest_reply(workspace: Path, title: str, sha: str, level: str, args: dict[str, Any],
+                  agent_id: str | None) -> dict[str, Any] | None:
+    """The reply of a retest or a near duplicate, or None to spend the device time (4.2 #7, R7)."""
+    from ..ledger import auto, retest
+    if args.get("build_only"):
+        return None
+    reason = str(args.get("reason") or "").strip()
+    force = bool(args.get("force_rerun") or args.get("remeasure"))
+    hit = retest.intercept(workspace, title, sha, level, cases=args.get("cases") or [],
+                           force_rerun=force, reason=reason, agent_id=agent_id or "")
+    if hit is not None:
+        return {**hit, "warnings": _ledger_warnings(workspace, title, agent_id)}
+    if force and reason:
+        return None
+    try:
+        rows = auto._ledger(workspace, title, agent_id).rows()
+        found = retest.duplicate_note(retest.near_duplicate(workspace, title, sha, rows, agent_id or ""))
+    except Exception:
+        found = None
+    if found and not reason:
+        return {"ok": True, "sha7": sha[:7], "problem": title, "queued": False, "intercepted": True,
+                **found, "warnings": _ledger_warnings(workspace, title, agent_id)}
+    return None
+
+
 def tool_parhelion_test(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     problem = str(args.get("problem") or "").strip()
     if not problem:
         raise ValueError("'problem' is required for parhelion_test")
     role, agent_id = _caller(args)
-    return test_runs.submit(
-        workspace, problem=problem, sha=str(args.get("sha") or "HEAD"), level=args.get("level") or "standard",
+    level = str(args.get("level") or "standard")
+    title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
+    reused = _retest_reply(workspace, title, sha, level, args, agent_id)
+    if reused is not None:
+        return reused
+    view = test_runs.submit(
+        workspace, problem=problem, sha=str(args.get("sha") or "HEAD"), level=level,
         cases=args.get("cases") or [], remeasure=bool(args.get("remeasure", False)),
         build_only=bool(args.get("build_only", False)), agent_id=agent_id, role=role,
     )
+    warnings = _ledger_warnings(workspace, title, agent_id)
+    return {**view, "warnings": warnings} if warnings else view
 
 
 def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
@@ -379,8 +447,14 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
               "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
               "reasons": [s["reason"] for s in verdict["stages"] if not s["passed"]],
               "enqueued": bool(reply.get("enqueued")), "dry_run": not enqueue}
-    if enqueue:  # a request, not a preview: the SHA gets a platform hypothesis unless it already has one
-        from ..ledger import auto
-        auto.guard(auto.on_gate_request, workspace, title, sha, args.get("_caller_agent_id"), note=note,
-                   estimate=estimate, enqueued=result["enqueued"])
+    # A request, not a preview: it names its hypothesis, or the platform generates the one P05 wrote from
+    # the submission note and says which id it created (4.2 C #3). A ledger fault never fails a submission.
+    from ..ledger import auto, budget
+    link = auto.guard(auto.on_gate_link, workspace, title, sha, args.get("_caller_agent_id"), note=note,
+                      estimate=estimate, enqueued=result["enqueued"], write=enqueue,
+                      hypothesis_id=str(args.get("hypothesis_id") or "").strip(),
+                      predicted_effect=args.get("predicted_effect"))
+    if isinstance(link, dict):
+        result["ledger"] = link
+    result["warnings"] = _ledger_warnings(workspace, title, args.get("_caller_agent_id"))
     return result

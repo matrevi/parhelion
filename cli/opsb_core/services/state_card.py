@@ -165,8 +165,15 @@ def _fit(lines: list[str]) -> str:
     return head[:budget].decode("utf-8", errors="ignore").rstrip() + "\n" + lines[-1]
 
 
-def build(ws: Path, title: str, agent_id: str | None = None) -> str:
-    """Return the plain-text state card for one problem; never raises."""
+def build(ws: Path, title: str, agent_id: str | None = None, extended: bool = False) -> str:
+    """Return the plain-text state card for one problem; never raises.
+
+    ``extended`` gives the per-case card of ``state_card_ext`` (4.1 #13 #14), used by the compaction
+    seed and by ``parhelion_status(detail=true)``; this simple card keeps its 2000-byte ceiling.
+    """
+    if extended:
+        from . import state_card_ext
+        return state_card_ext.build(ws, title, agent_id)
     try:
         ws = Path(ws).expanduser().resolve()
         rows = _receipts(ws, title)
