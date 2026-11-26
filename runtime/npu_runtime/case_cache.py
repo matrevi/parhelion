@@ -44,12 +44,33 @@ def total_budget(cfg):
     return _positive(os.environ.get("OPSB_CASE_CACHE_TOTAL_BYTES"), configured)
 
 
-def find_root():
-    """The cache directory a doctor run on the host inspects (runs place it next to their scratch)."""
+def find_root(configured=None):
+    """The cache directory a doctor run on the host inspects.
+
+    ``configured`` is the platform's ``device.case_cache_dir`` (none when unset). The host's
+    ``OPSB_CASE_CACHE_DIR`` override wins; an explicit configured directory is authoritative
+    even when it does not exist yet, so the doctor reports the place the runs will use.
+    """
+    if configured:
+        return Path(os.environ.get("OPSB_CASE_CACHE_DIR") or configured)
     candidates = [Path(tempfile.gettempdir()) / "opsb-case-cache", Path("/tmp/opsb-case-cache")]
     if os.environ.get("OPSB_CASE_CACHE_DIR"):
         candidates.insert(0, Path(os.environ["OPSB_CASE_CACHE_DIR"]))
     return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
+def same_filesystem(left, right):
+    """True when both paths resolve to one filesystem, so cached files can be hard-linked."""
+    def device(path):
+        probe = Path(path)
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        try:
+            return probe.stat().st_dev
+        except OSError:
+            return None
+    a, b = device(left), device(right)
+    return a is not None and a == b
 
 
 def _link_or_copy(src, dst):
@@ -189,8 +210,10 @@ class CaseCache:
         from importlib import metadata
         self.enabled = cfg.get("case_cache", True) and os.environ.get("OPSB_CASE_CACHE", "1") != "0"
         self.title = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(cfg.get("title") or "problem"))
-        # Next to the run's scratch directory, so cached files can be hard-linked rather than copied.
-        self.top = Path(os.environ.get("OPSB_CASE_CACHE_DIR") or repo.parent.parent / "opsb-case-cache")
+        # `device.case_cache_dir` when the platform sets one, else next to the run's scratch
+        # directory (`device.case_tmp_dir` moves both), so cached files can be hard-linked.
+        self.top = Path(os.environ.get("OPSB_CASE_CACHE_DIR") or cfg.get("case_cache_dir")
+                        or repo.parent.parent / "opsb-case-cache")
         self.root = self.top / self.title
         self.budget = total_budget(cfg)
         try:

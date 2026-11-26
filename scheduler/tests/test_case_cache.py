@@ -41,6 +41,7 @@ class CaseCacheTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
+        self.base = base
         self.repo = base / "work" / "repo"
         self.repo.mkdir(parents=True)
         (self.repo.parent / "reference_cases.py").write_text(STUB)
@@ -149,6 +150,25 @@ class CaseCacheTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_TOTAL_BYTES": "2048"}):
             self.assertEqual(case_cache.total_budget({"case_cache_bytes": 4096}), 2048)
         self.assertEqual(case_cache.total_budget({"case_cache_bytes": "0"}), 24 << 30)
+
+    def test_configured_cache_dir_is_used_without_the_host_override(self) -> None:
+        configured = self.base / "configured-cache"
+        self.cfg.update(case_cache_dir=str(configured))
+        with mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_DIR": ""}):
+            self._prepare("run1")
+            self.assertTrue(configured.is_dir())
+            self.assertEqual(len(list((configured / "Demo_Op").iterdir())), 4)
+            self.assertFalse((self.base / "cache" / "Demo_Op").exists())
+            self.assertEqual(case_batch.CaseCache(self.repo, self.cfg).top, configured)
+            self.assertEqual(case_cache.find_root(str(configured)), configured)
+
+    def test_configured_dirs_report_the_filesystem_they_share(self) -> None:
+        self.assertTrue(case_cache.same_filesystem(self.base, self.base / "not-created" / "cache"))
+        # An explicit configured root is authoritative even before it exists (doctor reports it).
+        with mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_DIR": ""}):
+            self.assertEqual(case_cache.find_root(str(self.base / "later")), self.base / "later")
+        with mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_DIR": str(self.base / "cache")}):
+            self.assertEqual(case_cache.find_root(str(self.base / "later")), self.base / "cache")
 
     def test_report_counts_use_and_recent_hit_rate(self) -> None:
         self._prepare("run1")

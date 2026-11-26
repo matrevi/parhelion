@@ -61,6 +61,11 @@ DEFAULTS: dict[str, Any] = {
     # Global byte budget of the prepared-case cache on the device host (int or digit string);
     # empty keeps the runtime default (24 GiB, see runtime/npu_runtime/case_cache.py).
     "case_cache_bytes": "",
+    # Device-host directories for prepared cases and the scratch they are measured in. Empty
+    # keeps the runtime defaults (system temp on the device host). Hard links need both on one
+    # filesystem; otherwise case_cache copies and the run prints a warning.
+    "case_cache_dir": "",
+    "case_tmp_dir": "",
     # Toolchain the judge compiles with, for the compile-only check before the gate
     # (scheduler/judge_compile.py). Empty root means the check is skipped with a hint.
     "judge_toolchain_root": "",

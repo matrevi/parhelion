@@ -125,6 +125,21 @@ def test_ablation_selection(suite):
         )
 
 
+def test_device_case_dirs_travel_to_the_device_run_settings(suite, monkeypatch):
+    ws, repo, sha = suite
+    cache, scratch = str(ws / "case-cache"), str(ws / "case-scratch")
+    monkeypatch.setattr(bench, "_dev", lambda key, default="": {
+        "case_cache_dir": cache, "case_tmp_dir": scratch}.get(key, default))
+    plan = bench.run(ws, "Op", repo, sha, "npu", dry_run=True)
+    assert plan["settings"]["case_cache_dir"] == cache
+    assert plan["settings"]["case_tmp_dir"] == scratch
+
+    monkeypatch.setattr(bench, "_dev", lambda key, default="": default)
+    empty = bench.run(ws, "Op", repo, sha, "npu", dry_run=True)
+    assert empty["settings"]["case_cache_dir"] is None
+    assert empty["settings"]["case_tmp_dir"] is None
+
+
 def test_escape_proof_is_scoped_to_failed_submission(suite):
     from unittest.mock import Mock
     from scheduler.calibration import BenchmarkCalibrator

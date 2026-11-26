@@ -111,6 +111,25 @@ class DoctorCasesTests(unittest.TestCase):
         self.assertEqual(out["cases"]["host"], "dev-host")
         self.assertTrue(self.entry.is_dir())
 
+    def test_remote_report_uses_the_configured_device_cache_dir(self) -> None:
+        configured = self.home / "configured-cache"
+        configured.mkdir()
+        (self.home / "config.json").write_text(json.dumps({
+            "npu_ssh_host": "dev-host", "device": {"case_cache_dir": str(configured)}}))
+        scripts: list[str] = []
+        real_run = subprocess.run
+
+        def fake_run(cmd, **kwargs):
+            scripts.append(kwargs.get("input") or "")
+            return real_run([sys.executable, "-"], **kwargs)
+
+        with mock.patch.object(doctor_cases.subprocess, "run", side_effect=fake_run), \
+                mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_DIR": "", "OPSB_DEVICE_ISOLATED": "0"}):
+            rc, out = _run(["doctor", "--cases", "--remote", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertIn(f"CONFIGURED_DIR = {str(configured)!r}", scripts[0])
+        self.assertEqual(out["cases"]["root"], str(configured))
+
     def test_unreachable_host_reports_error(self) -> None:
         failed = subprocess.CompletedProcess(["ssh"], 255, stdout="", stderr="Connection reset by peer\n")
         with mock.patch.object(doctor_cases.subprocess, "run", return_value=failed):
