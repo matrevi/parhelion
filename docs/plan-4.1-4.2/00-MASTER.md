@@ -1,6 +1,6 @@
 # Parhelion 4.1 + 4.2 实施总计划
 
-主会话负责本计划、审查与合并；每个子计划由一个 Sonnet 子代理在独立 git 工作树里实现，提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
+主会话负责本计划、审查与合并；每个子计划由一个 Opus 子代理在独立 git 工作树里实现（Sonnet 子代理在 P01 上两次被安全过滤中止，2026-11-26 改用 Opus），提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
 
 需求来源：
 
@@ -38,10 +38,10 @@
 每个子代理开工前完整读本文件与自己的子计划，并按需读子计划列出的资料。子计划写的是目标、证据、接口与验收；实现细节由你按现有代码风格决定，遇到子计划与源码事实冲突时以源码为准，并在报告里说明。
 
 ### 2.1 工作方式
-- 只在分配给你的工作树里改文件，分支名用 `impl/Pxx-<slug>`（子计划首行给出）。只提交到该分支：不推送、不合入 `main`、不改主检出目录。
+- 只在分配给你的工作树里改文件。工具创建的工作树基于 `origin/main`，落后本地 `main`；开工第一步执行 `git checkout -b impl/Pxx-<slug> main`（分支名见子计划首行），并确认 `git log -1` 不早于本文件所在提交。只提交到该分支：不推送、不合入 `main`、不改主检出目录。
 - 用 `aoci_search` / `aoci_get_entries`（若可用）定位文件；**不要**调用 `aoci_maintain`、`aoci_update_entry`，也不要改 `aoci*.txt`，索引由主会话维护。
 - 新模块不超过 350 行（`docs/v3/REFACTOR_MODULAR_LAYOUT.md`）。已超长的文件（`estimator.py`、`cli_bridge.py`、`manager.py` 等）尽量只加薄接入点，新逻辑放新模块。
-- 提交信息用英文祈使句，正文说明原因；末尾加 `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`。可以分多次提交。
+- 提交信息用英文祈使句，正文说明原因；末尾加 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`。可以分多次提交。
 
 ### 2.2 不可违反的约束
 - 不改自动提交开关（`auto_consumer_enabled`），不强制提交，不调用 `queue approve` / `force`，不向判题站提交任何东西。额度不得进入任何门禁阈值或暂缓理由。
