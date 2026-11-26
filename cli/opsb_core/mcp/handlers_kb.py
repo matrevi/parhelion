@@ -11,6 +11,7 @@ from typing import Any
 
 from .. import config as _cfg
 from ..drivers.base import resolve_parhelion_home
+from ..knowledge.query import EVIDENCE_CLASSES
 from ..services.breakthrough_service import load_catalog
 from .paging import PAGE_KEYS, page_window, paginate_keys
 
@@ -19,6 +20,7 @@ KB_DEFAULT_LIMIT = 3
 KB_FULL_DEFAULT_LIMIT = 8
 KB_SUMMARY_LIMIT = 600
 KB_PAGE_MAX = 50
+# 4.3 evidence levels: one definition on this branch, imported from `opsb_core.knowledge.query`.
 _COMPACT_LISTS = ("results", "entries", "anti_patterns")
 
 
@@ -29,6 +31,7 @@ def _slugify(text: str) -> str:
 def _validate_evidence(
     *, problem: str, sha: str, verdict: str,
     delta_raw: float | None = None, delta_us: float | None = None, note: str = "",
+    evidence_class: str = "",
 ) -> dict[str, Any]:
     if not str(problem or "").strip():
         raise ValueError("Evidence gate rejected write: non-empty 'problem' is required.")
@@ -44,8 +47,12 @@ def _validate_evidence(
             "Evidence gate rejected write: provide at least one measurable metric "
             "('delta_raw', 'delta_us', or 'note' citing 'profiler' / 'online')."
         )
+    ev_class = str(evidence_class or "").strip().lower()
+    if ev_class and ev_class not in EVIDENCE_CLASSES:
+        raise ValueError("Evidence gate rejected write: 'evidence_class' must be 'local', 'paired', or 'online_receipt'.")
     return {
         "problem": str(problem).strip(), "sha": sha_s, "verdict": v,
+        "evidence_class": ev_class or "local",
         "delta_raw": float(delta_raw) if delta_raw is not None else None,
         "delta_us": float(delta_us) if delta_us is not None else None,
         "note": note_s, "recorded_at": _cfg.utc_now().isoformat(),
@@ -112,8 +119,13 @@ def _compact_kb_entry(entry: Any) -> Any:
         tags = []
         for key in ("bottlenecks", "regimes", "dtypes"):
             tags.extend(str(t) for t in (entry.get(key) or []) if str(t).strip() and str(t) not in tags)
-    return {"id": entry.get("id"), "pillar": entry.get("pillar"), "title": entry.get("title"),
-            "confidence": entry.get("confidence"), "tags": tags, "summary": summary}
+    out = {"id": entry.get("id"), "pillar": entry.get("pillar"), "title": entry.get("title"),
+           "confidence": entry.get("confidence"), "tags": tags, "summary": summary}
+    if entry.get("pillar") == "hardware" and isinstance(entry.get("evidence_composition"), dict):
+        # Keep the brief honest about evidence strength (P28 scope 1/3).
+        out["evidence"] = entry["evidence_composition"]
+        out["validation"] = "pending" if entry.get("pending_validation") else "strong"
+    return out
 
 
 def _compact_kb_result(res: dict[str, Any]) -> dict[str, Any]:
@@ -251,6 +263,7 @@ def tool_parhelion_kb_record(args: dict[str, Any], workspace: Path) -> dict[str,
     evidence = _validate_evidence(
         problem=str(args.get("problem") or ""), sha=str(args.get("sha") or ""), verdict=str(args.get("verdict") or ""),
         delta_raw=args.get("delta_raw"), delta_us=args.get("delta_us"), note=str(args.get("note") or ""),
+        evidence_class=str(args.get("evidence_class") or ""),
     )
     evidence["workspace"] = str(workspace)
     portability = "anti-pattern" if evidence["verdict"] == "anti-pattern" else str(args.get("portability") or ("native-accel" if pillar in ("snippets", "hardware") else "portable"))
@@ -305,6 +318,7 @@ def tool_parhelion_kb_feedback(args: dict[str, Any], workspace: Path) -> dict[st
     evidence = _validate_evidence(
         problem=str(args.get("problem") or ""), sha=str(args.get("sha") or ""), verdict=str(args.get("verdict") or ""),
         delta_raw=args.get("delta_raw"), delta_us=args.get("delta_us"), note=str(args.get("note") or ""),
+        evidence_class=str(args.get("evidence_class") or ""),
     )
     evidence["workspace"] = str(workspace)
     promote_code = args.get("promote_snippet_code")

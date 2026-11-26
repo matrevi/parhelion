@@ -142,6 +142,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "delta_raw": {"type": "number"},
                 "delta_us": {"type": "number"},
                 "note": {"type": "string"},
+                "evidence_class": {"type": "string", "enum": ["local", "paired", "online_receipt"]},
             },
             "required": ["pillar", "title", "summary", "problem", "sha", "verdict"],
         },
@@ -159,6 +160,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "delta_raw": {"type": "number"},
                 "delta_us": {"type": "number"},
                 "note": {"type": "string"},
+                "evidence_class": {"type": "string", "enum": ["local", "paired", "online_receipt"]},
                 "promote_snippet_code": {"type": "string"},
             },
             "required": ["entry_id", "verdict", "problem", "sha"],
@@ -209,7 +211,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test_plan",
-        "description": "Deprecated: preview the test command, or execute=true to submit and wait 40s; prefer parhelion_test.",
+        "description": "Deprecated; use parhelion_test.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -291,7 +293,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_note",
-        "description": "Write one ledger entry, returns id (L-nnnn); checked per type. A status change needs a new row with supersedes or id.",
+        "description": "Write one ledger entry; returns its id. A status change is a new row with supersedes.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
@@ -452,8 +454,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_agent_peek",
-        "description": "Orchestrator only: read inside one worker instead of cat/ls/git diff. what: files (two levels), file (path "
-                       "relative to that worktree; absolute/.. refused), log_tail (redacted), diff_stat; <=8KB.",
+        "description": "Read inside one worker instead of shelling out. what: files (two levels), file (worktree-relative "
+                       "path), log_tail (redacted), diff_stat; <=8KB.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",

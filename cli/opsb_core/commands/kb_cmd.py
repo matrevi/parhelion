@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from ..services.triad_kb_service import (
+    VALID_CATEGORIES,
     ensure_triad_kb_seeded,
     format_prompt_cache_digest,
     get_kb_entry,
     get_kb_evolution_history,
+    migrate_evidence_classes,
     list_kb_entries,
     migrate_hardware_entries_from_community,
     project_readonly_skills,
@@ -39,6 +41,33 @@ def _print_error(msg: str, as_json: bool) -> int:
     else:
         print(f"Error: {msg}", file=sys.stderr)
     return 1
+
+
+def _add_evidence_class_args(ev: dict[str, Any], args: argparse.Namespace) -> None:
+    """Attach the optional 4.3 evidence-level fields (`local` / `paired` / `online_receipt`)."""
+    if getattr(args, "evidence_class", None):
+        ev["evidence_class"] = args.evidence_class
+    if getattr(args, "n_draws", None) is not None:
+        ev["n_draws"] = int(args.n_draws)
+    if getattr(args, "sigma_pts", None) is not None:
+        ev["sigma_pts"] = float(args.sigma_pts)
+    if getattr(args, "repro", None):
+        ev["repro"] = args.repro
+
+
+def _handle_migrate_evidence(args: argparse.Namespace) -> int:
+    as_json = bool(getattr(args, "json", False))
+    res = migrate_evidence_classes(dry_run=bool(getattr(args, "dry_run", False)))
+    if as_json:
+        print(json.dumps(res, ensure_ascii=False, indent=2))
+        return 0
+    prefix = "[dry-run] " if res["dry_run"] else ""
+    print(
+        f"{prefix}Evidence classes: backfilled {res['backfilled']} row(s) across "
+        f"{res['entries_touched']} entry(ies); hardware 待验证={res['hardware_pending_validation']}, "
+        f"already-promoted kept={res['hardware_promoted_kept']} ({res['parhelion_home']})"
+    )
+    return 0
 
 
 def _handle_query(args: argparse.Namespace) -> int:
@@ -149,6 +178,7 @@ def _handle_record(args: argparse.Namespace) -> int:
         ev["delta_us"] = float(args.delta_us)
     if getattr(args, "speedup", None) is not None:
         ev["speedup"] = float(args.speedup)
+    _add_evidence_class_args(ev, args)
 
     payload: dict[str, Any] = {
         "title": args.title,
@@ -164,6 +194,11 @@ def _handle_record(args: argparse.Namespace) -> int:
         payload["id"] = args.id
     if getattr(args, "portability", None):
         payload["portability"] = args.portability
+    for key in ("category", "mechanism_confirmed", "trigger", "cost", "failure_domain", "retracted_by"):
+        if getattr(args, key, None):
+            payload[key] = getattr(args, key)
+    if getattr(args, "applicable_problem", None):
+        payload["applicable_problems"] = _flatten_csv_args(args.applicable_problem)
 
     code_file = getattr(args, "code_file", None)
     if code_file:
@@ -202,6 +237,7 @@ def _handle_feedback(args: argparse.Namespace) -> int:
         ev["delta_us"] = float(args.delta_us)
     if getattr(args, "speedup", None) is not None:
         ev["speedup"] = float(args.speedup)
+    _add_evidence_class_args(ev, args)
 
     snip_code: str | None = None
     snip_file = getattr(args, "promote_snippet_file", None)
@@ -338,6 +374,7 @@ def run_kb(args: argparse.Namespace) -> int:
         "project": _handle_project,
         "seed": _handle_seed,
         "migrate-hardware": _handle_migrate_hardware,
+        "migrate-evidence": _handle_migrate_evidence,
     }
     handler = handlers.get(cmd)
     if handler is None:
@@ -409,6 +446,17 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_rc.add_argument("--speedup", type=float)
     k_rc.add_argument("--note", default="")
     k_rc.add_argument("--workspace", default="")
+    k_rc.add_argument("--category", choices=list(VALID_CATEGORIES))
+    k_rc.add_argument("--evidence-class", choices=["local", "paired", "online_receipt"])
+    k_rc.add_argument("--n-draws", type=int)
+    k_rc.add_argument("--sigma-pts", type=float)
+    k_rc.add_argument("--repro", default="")
+    k_rc.add_argument("--mechanism-confirmed", choices=["yes", "no", "confounded"])
+    k_rc.add_argument("--trigger", default="")
+    k_rc.add_argument("--cost", default="")
+    k_rc.add_argument("--failure-domain", default="")
+    k_rc.add_argument("--retracted-by", default="")
+    k_rc.add_argument("--applicable-problem", action="append", help="Repeatable or comma-separated problem name")
     k_rc.add_argument("--id", help="Optional explicit entry ID")
     k_rc.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_rc.set_defaults(func=run_kb)
@@ -423,6 +471,10 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_fb.add_argument("--speedup", type=float)
     k_fb.add_argument("--note", default="")
     k_fb.add_argument("--workspace", default="")
+    k_fb.add_argument("--evidence-class", choices=["local", "paired", "online_receipt"])
+    k_fb.add_argument("--n-draws", type=int)
+    k_fb.add_argument("--sigma-pts", type=float)
+    k_fb.add_argument("--repro", default="")
     k_fb.add_argument("--promote-snippet-file", help="Optional .h code file to create/link on verified win")
     k_fb.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_fb.set_defaults(func=run_kb)
@@ -447,6 +499,11 @@ def register_kb_subcommands(sub: argparse._SubParsersAction) -> None:
     k_sd.add_argument("--templates-root", default=None)
     k_sd.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     k_sd.set_defaults(func=run_kb)
+
+    k_me = kb_sub.add_parser("migrate-evidence", help="Idempotently backfill evidence_class on existing evidence rows (never changes status)")
+    k_me.add_argument("--dry-run", action="store_true")
+    k_me.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+    k_me.set_defaults(func=run_kb)
 
     k_mh = kb_sub.add_parser("migrate-hardware", help="Idempotently extract hardware-discovered laws from community/ into hardware/")
     k_mh.add_argument("--dry-run", action="store_true", help="Preview classification without mutating files")

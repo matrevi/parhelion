@@ -3,8 +3,11 @@ from __future__ import annotations
 
 from .audit import get_kb_evolution_history, revert_event, rollback_last
 from .evolution import compute_confidence, promote_entry, record_kb_entry, record_kb_feedback, validate_evidence
-from .migration import classify_community_entry_is_hardware, migrate_hardware_entries_from_community
-from .query import format_prompt_cache_digest, get_kb_entry, list_kb_entries, query_kb
+from .migration import classify_community_entry_is_hardware, migrate_evidence_classes, migrate_hardware_entries_from_community
+from .query import (
+    DEFAULT_EVIDENCE_CLASS, EVIDENCE_CLASSES, STRONG_EVIDENCE_CLASSES, VALID_CATEGORIES,
+    evidence_composition, format_prompt_cache_digest, get_kb_entry, has_strong_evidence, list_kb_entries, query_kb,
+)
 from .seeding import ensure_triad_kb_seeded, project_readonly_skills
 from .store import (
     DEMOTE_MIN_FAILS,
@@ -21,7 +24,11 @@ from .store import (
 )
 
 __all__ = [
+    "DEFAULT_EVIDENCE_CLASS",
     "DEMOTE_MIN_FAILS",
+    "EVIDENCE_CLASSES",
+    "STRONG_EVIDENCE_CLASSES",
+    "VALID_CATEGORIES",
     "PROMOTE_MIN_DELTA_RAW",
     "PROMOTE_MIN_SPEEDUP",
     "VALID_PILLARS",
@@ -32,11 +39,14 @@ __all__ = [
     "WRITABLE_PILLARS",
     "classify_community_entry_is_hardware",
     "compute_confidence",
+    "evidence_composition",
     "ensure_triad_kb_seeded",
     "format_prompt_cache_digest",
     "get_kb_entry",
     "get_kb_evolution_history",
+    "has_strong_evidence",
     "list_kb_entries",
+    "migrate_evidence_classes",
     "migrate_hardware_entries_from_community",
     "project_readonly_skills",
     "promote_entry",

@@ -69,6 +69,7 @@ class FourPillarKBAndV31Tests(unittest.TestCase):
                         "verdict": "win",
                         "delta_raw": 3.2,
                         "bottlenecks": ["sync-hazard"],
+                        "evidence_class": "online_receipt",  # 4.3 P28: hardware promotion needs paired/online evidence
                         "note": "online verified",
                     },
                     ws,

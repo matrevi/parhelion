@@ -14,6 +14,61 @@ from .store import (
     _resolve_doc_path, triad_kb_dirs,
 )
 
+# 4.3 (P28) evidence levels. One vocabulary for squad messages (P27) and KB evidence: it is defined
+# once in `opsb_core.evidence` and only aliased here.
+from ..evidence import CLASSES as EVIDENCE_CLASSES  # noqa: E402
+STRONG_EVIDENCE_CLASSES: tuple[str, ...] = ("paired", "online_receipt")
+DEFAULT_EVIDENCE_CLASS = "local"
+MECHANISM_CONFIRMED_VALUES: tuple[str, ...] = ("yes", "no", "confounded")
+DEFAULT_MECHANISM_CONFIRMED = "no"
+
+# Category enum shared by every KB pillar. The last three are the 4.3 additions; they never add a pillar,
+# because pillars are a front-end contract (`Sources/Parhelion/Domain/TriadKBModels.swift`).
+VALID_CATEGORIES: tuple[str, ...] = (
+    "tiling-regime", "async-pipeline", "simd-transpose", "dma-coalescing",
+    "separable-folding", "deterministic-sync", "vectorization", "hardware-law",
+    "scoring-law", "measurement", "process",
+)
+
+# Keys `_normalize_entry` derives on read; they must not be persisted into `index.json`.
+DERIVED_ENTRY_KEYS: tuple[str, ...] = (
+    "abs_doc_path", "evidence_composition", "evidence_strong", "pending_validation", "retracted",
+)
+
+
+def normalize_evidence_class(value: Any) -> str:
+    """Coerce a stored value to one of `EVIDENCE_CLASSES`; unknown/missing values get the provisional default."""
+    cls = str(value or "").strip().lower()
+    return cls if cls in EVIDENCE_CLASSES else DEFAULT_EVIDENCE_CLASS
+
+
+def _normalize_evidence_line(raw: Any) -> dict[str, Any]:
+    ev = dict(raw) if isinstance(raw, dict) else {}
+    ev["evidence_class"] = normalize_evidence_class(ev.get("evidence_class"))
+    draws = ev.get("n_draws")
+    ev["n_draws"] = int(draws) if _is_num(draws) and int(draws) >= 1 else 1
+    sigma = ev.get("sigma_pts")
+    ev["sigma_pts"] = round(float(sigma), 4) if _is_num(sigma) and float(sigma) >= 0.0 else 0.0
+    ev["repro"] = str(ev.get("repro") or "").strip()
+    return ev
+
+
+def evidence_composition(evidence: Any) -> dict[str, int]:
+    """Count evidence lines per evidence class, always with all three keys present."""
+    counts = {cls: 0 for cls in EVIDENCE_CLASSES}
+    for ev in evidence or []:
+        if isinstance(ev, dict):
+            counts[normalize_evidence_class(ev.get("evidence_class"))] += 1
+    return counts
+
+
+def has_strong_evidence(evidence: Any) -> bool:
+    """True when at least one line is `paired`/`online_receipt` (the hardware promotion gate)."""
+    return any(
+        isinstance(ev, dict) and normalize_evidence_class(ev.get("evidence_class")) in STRONG_EVIDENCE_CLASSES
+        for ev in (evidence or [])
+    )
+
 
 def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict[str, Any]:
     entry_id = str(raw.get("id") or "").strip()
@@ -40,15 +95,16 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
     regimes = [str(r).strip().upper() for r in (raw.get("regimes") or []) if str(r).strip()] or _infer_regimes_from_text(text_blob)
     dtypes = [_normalize_dtype(d) for d in (raw.get("dtypes") or []) if str(d).strip()] or _infer_dtypes_from_text(text_blob, raw_tags)
 
-    evidence = list(raw.get("evidence") or [])
+    evidence = [_normalize_evidence_line(ev) for ev in (raw.get("evidence") or [])]
     if pillar == "breakthrough" and not evidence and raw.get("sha"):
-        evidence = [{
+        evidence = [_normalize_evidence_line({
             "workspace": "", "problem": str(raw.get("problem") or ""), "sha": str(raw.get("sha") or ""),
             "delta_raw": float(raw.get("delta_raw") or 0.0),
             "verdict": "win" if status == "verified" else "fail",
+            "evidence_class": "online_receipt",
             "note": f"online breakthrough entry ({raw.get('score_before', 0)} -> {raw.get('score_after', 0)})",
             "recorded_at": str(raw.get("timestamp") or utc_now().isoformat()),
-        }]
+        })]
 
     if "wins" in raw and "fails" in raw:
         wins, fails = max(0, int(raw["wins"])), max(0, int(raw["fails"]))
@@ -74,6 +130,9 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
         doc_path = f"code/{entry_id}.h" if pillar == "snippets" else f"entries/{entry_id}.md"
 
     default_cat = "tiling-regime" if pillar == "snippets" else ("hardware-law" if pillar == "hardware" else "vectorization")
+    composition = evidence_composition(evidence)
+    strong = has_strong_evidence(evidence)
+    mechanism_raw = str(raw.get("mechanism_confirmed") or "").strip().lower()
     normalized: dict[str, Any] = {
         "id": entry_id, "pillar": pillar, "title": title, "summary": summary,
         "category": category or default_cat,
@@ -82,6 +141,17 @@ def _normalize_entry(raw: dict[str, Any], pillar: str, pillar_dir: Path) -> dict
         "confidence": confidence, "wins": wins, "fails": fails, "evidence": evidence,
         "related_snippets": [str(s) for s in (raw.get("related_snippets") or []) if str(s).strip()],
         "doc_path": doc_path, "abs_doc_path": str(abs_doc) if abs_doc else None,
+        "mechanism_confirmed": mechanism_raw if mechanism_raw in MECHANISM_CONFIRMED_VALUES else DEFAULT_MECHANISM_CONFIRMED,
+        "trigger": str(raw.get("trigger") or "").strip(),
+        "cost": str(raw.get("cost") or "").strip(),
+        "failure_domain": str(raw.get("failure_domain") or "").strip(),
+        "applicable_problems": [str(p).strip() for p in (raw.get("applicable_problems") or []) if str(p).strip()],
+        "retracted_by": str(raw.get("retracted_by") or "").strip(),
+        "retracted": bool(str(raw.get("retracted_by") or "").strip()),
+        "evidence_composition": composition,
+        "evidence_strong": strong,
+        # A hardware candidate with local-only evidence stays a candidate and is surfaced as 待验证.
+        "pending_validation": pillar == "hardware" and status == "unverified" and not strong,
     }
     if pillar == "bugs":
         normalized.update(lesson=raw.get("lesson"),fix=raw.get("fix"),workspace=raw.get("workspace"))
@@ -276,6 +346,16 @@ def query_kb(
     }
 
 
+def _evidence_digest_tag(entry: dict[str, Any]) -> str:
+    """`|ev=local:2` for hardware laws plus `待验证` on local-only candidates (P28 scope 3)."""
+    if entry.get("pillar") != "hardware":
+        return ""
+    comp = entry.get("evidence_composition") or {}
+    bits = "+".join(f"{cls}:{comp[cls]}" for cls in EVIDENCE_CLASSES if comp.get(cls)) or "none"
+    pending = " 待验证" if entry.get("pending_validation") else ""
+    return f" |ev={bits}{pending}"
+
+
 def format_prompt_cache_digest(query_result: dict[str, Any], max_chars: int = 2400) -> str:
     """Format a compact prompt-cache-safe Markdown KB digest for the first user message."""
     budget = max(120, int(max_chars))
@@ -307,7 +387,7 @@ def format_prompt_cache_digest(query_result: dict[str, Any], max_chars: int = 24
             doc_txt = f" | doc: `{it.get('doc_path')}`" if it.get("doc_path") else ""
             lines.append(
                 f"- `[{it.get('pillar')}|{it.get('status')}|conf={float(it.get('confidence', 0.0)):.2f}|{it.get('portability')}]` "
-                f"`{it['id']}` — **{it.get('title')}**: {summary}{rel_txt}{doc_txt}"
+                f"`{it['id']}` — **{it.get('title')}**: {summary}{rel_txt}{doc_txt}{_evidence_digest_tag(it)}"
             )
     elif not anti_list:
         lines.append("_No matching Triad KB entries._")

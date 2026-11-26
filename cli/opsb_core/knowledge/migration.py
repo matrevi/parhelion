@@ -18,8 +18,10 @@ from typing import Any
 from ..config import SUPERVISOR_ROOT, read_json, utc_now
 from ..device_env import device_text
 from .evolution import _render_community_markdown
+from .query import DEFAULT_EVIDENCE_CLASS, _normalize_entry
 from .seeding import ensure_triad_kb_seeded
 from .store import (
+    VALID_PILLARS,
     _append_evolution_event,
     _atomic_write_text,
     _copy_if_missing,
@@ -263,4 +265,80 @@ def migrate_hardware_entries_from_community(
         "migrated_ids": migrated_ids,
         "hardware_total": final_hw,
         "community_total": final_com,
+    }
+
+
+def migrate_evidence_classes(
+    parhelion_home: Path | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Idempotently backfill `evidence_class` on stored evidence rows (P28 scope 3).
+
+    - Only fills a missing/blank class with the provisional default (`local`); a declared value is kept.
+    - Never changes `status`: entries promoted before 4.3 stay promoted and only gain a composition.
+    - A second run finds nothing to fill and writes no index, so the migration is idempotent.
+    """
+    dirs = triad_kb_dirs(parhelion_home)
+    if not dry_run:
+        ensure_triad_kb_seeded(parhelion_home=dirs["home"])
+
+    per_pillar: dict[str, dict[str, int]] = {}
+    totals = {"entries_scanned": 0, "evidence_rows": 0, "backfilled": 0, "entries_touched": 0}
+    for pillar in VALID_PILLARS:
+        idx_path = dirs[pillar] / "index.json"
+        if not idx_path.is_file():
+            continue
+        raw = read_json(idx_path, {"entries": []})
+        entries = [e for e in ((raw.get("entries") if isinstance(raw, dict) else []) or []) if isinstance(e, dict)]
+        rows = filled = touched = 0
+        for ent in entries:
+            entry_filled = 0
+            for ev in ent.get("evidence") or []:
+                if not isinstance(ev, dict):
+                    continue
+                rows += 1
+                if not str(ev.get("evidence_class") or "").strip():
+                    entry_filled += 1
+            filled += entry_filled
+            if entry_filled:
+                touched += 1
+        if filled and not dry_run:
+            def _backfill(cur: dict[str, Any]) -> tuple[dict[str, Any], int]:
+                count = 0
+                for ent in cur.get("entries") or []:
+                    if not isinstance(ent, dict):
+                        continue
+                    for ev in ent.get("evidence") or []:
+                        if isinstance(ev, dict) and not str(ev.get("evidence_class") or "").strip():
+                            ev["evidence_class"] = DEFAULT_EVIDENCE_CLASS
+                            count += 1
+                return cur, count
+
+            applied = int(_with_index_lock(idx_path, _backfill) or 0)
+            if applied != filled:
+                filled = applied
+        per_pillar[pillar] = {
+            "entries": len(entries), "evidence_rows": rows, "backfilled": filled, "entries_touched": touched,
+        }
+        totals["entries_scanned"] += len(entries)
+        totals["evidence_rows"] += rows
+        totals["backfilled"] += filled
+        totals["entries_touched"] += touched
+
+    pending = promoted_without_strong = 0
+    hw_idx = read_json(dirs["hardware"] / "index.json", {"entries": []})
+    for ent in (hw_idx.get("entries") if isinstance(hw_idx, dict) else []) or []:
+        if not isinstance(ent, dict):
+            continue
+        norm = _normalize_entry(ent, "hardware", dirs["hardware"])
+        if norm["pending_validation"]:
+            pending += 1
+        elif norm["status"] == "verified" and not norm["evidence_strong"]:
+            promoted_without_strong += 1
+    return {
+        "ok": True, "dry_run": dry_run, "parhelion_home": str(dirs["home"]),
+        "pillars": per_pillar, **totals,
+        "hardware_pending_validation": pending,
+        "hardware_promoted_kept": promoted_without_strong,
     }

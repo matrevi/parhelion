@@ -195,6 +195,8 @@ struct TriadKBDetailView: View {
                 chipRow(title: lang.tr("瓶颈标签", "Bottlenecks"), items: entry.bottlenecks, tint: .orange)
                 chipRow(title: lang.tr("适用分层", "Regimes"), items: entry.regimes, tint: .blue)
                 chipRow(title: lang.tr("数据类型", "Dtypes"), items: entry.dtypes, tint: .teal)
+                chipRow(title: lang.tr("证据等级", "Evidence"), items: entry.evidenceClassChips, tint: .purple)
+                chipRow(title: lang.tr("机制确认", "Mechanism"), items: [entry.mechanismConfirmed], tint: .pink)
                 if !entry.relatedSnippets.isEmpty {
                     HStack(alignment: .center, spacing: 6) {
                         Text(lang.tr("关联积木", "Snippets"))
