@@ -234,22 +234,32 @@ def diff_stat(worktree: Path) -> dict[str, Any]:
             "dirty": bool(stat.strip())}
 
 
+def _max_out() -> int:
+    """MAX_OUT_BYTES, held under the MCP output cap (4.2 E) so a peek is answered inline, not spilled."""
+    try:
+        from .bound import output_cap
+        return min(MAX_OUT_BYTES, max(1024, output_cap() - 400))
+    except Exception:
+        return MAX_OUT_BYTES
+
+
 def _fit(payload: dict[str, Any]) -> dict[str, Any]:
-    """Keep the JSON answer under MAX_OUT_BYTES by trimming its longest text field."""
+    """Keep the JSON answer under the peek budget by trimming its longest text field."""
+    budget = _max_out()
     text = json.dumps(payload, ensure_ascii=False)
-    if len(text.encode("utf-8")) <= MAX_OUT_BYTES:
+    if len(text.encode("utf-8")) <= budget:
         return payload
     for key in ("text", "stat", "entries"):
         value = payload.get(key)
         if isinstance(value, str) and value:
-            keep = max(120, len(value) - (len(text.encode("utf-8")) - MAX_OUT_BYTES))
+            keep = max(120, len(value) - (len(text.encode("utf-8")) - budget))
             payload[key] = _clip(value, keep)
             payload["truncated"] = True
         elif isinstance(value, list) and value:
             payload[key] = value[: max(1, len(value) // 2)]
             payload["truncated"] = True
         text = json.dumps(payload, ensure_ascii=False)
-        if len(text.encode("utf-8")) <= MAX_OUT_BYTES:
+        if len(text.encode("utf-8")) <= budget:
             break
     return payload
 

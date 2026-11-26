@@ -139,7 +139,9 @@ def test_output_stays_under_the_current_ceiling(contest):
     ws, worktree = contest
     (worktree / "big.txt").write_text("\n".join(["x" * 100] * 2000), encoding="utf-8")
     out = peek.peek({"agent_id": "dee-1", "what": "file", "path": "big.txt", "lines": "1-800"}, ws)
-    assert len(json.dumps(out, ensure_ascii=False).encode("utf-8")) <= peek.MAX_OUT_BYTES
+    assert len(json.dumps(out, ensure_ascii=False).encode("utf-8")) <= peek._max_out() <= peek.MAX_OUT_BYTES
+    from opsb_core.mcp.bound import output_cap
+    assert peek._max_out() < output_cap()  # answered inline, never spilled by the MCP bound
     assert out.get("truncated") is True
 
 

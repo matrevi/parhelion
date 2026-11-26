@@ -205,7 +205,9 @@ def tool_parhelion_agent_messages(args: dict[str, Any], workspace: Path) -> dict
     offset, limit = page_window(args, default=60, maximum=500)
     # A later page must not acknowledge rows it does not show; the first page keeps the old rule.
     ack = bool(args.get("ack", True)) and offset == 0
-    fetch = offset + limit + 1  # one row beyond the page tells us whether another page exists
+    # Fetch exactly up to the end of this page: the read acknowledges every row it returns, so a
+    # look-ahead row would be marked read without being shown. A full page means "maybe more".
+    fetch = offset + limit
     q_dict: dict[str, Any] = {"since_seq": since_seq, "limit": fetch, "ack": "1" if ack else "0",
                               "audience": "orchestrator"}
     if problem:
@@ -225,7 +227,10 @@ def _page_messages(payload: dict[str, Any], offset: int, limit: int) -> dict[str
         return payload
     rows = payload.get("messages") if isinstance(payload.get("messages"), list) else []
     payload["messages"] = rows[offset:offset + limit]
-    return finish_page(payload, "messages", offset, offset + len(rows))
+    # ``rows`` starts at the first message, not at ``offset``. A full fetch may have more behind it
+    # (one more page is offered; an empty page then ends the walk); a short fetch is the end.
+    total = len(rows) + (1 if len(rows) >= offset + limit else 0)
+    return finish_page(payload, "messages", offset, total)
 
 
 def tool_parhelion_agent_stop(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

@@ -146,7 +146,7 @@ def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, 
     out = res if mode == "full" else _compact_kb_result(res)
     if isinstance(out.get("anti_patterns"), list):  # anti-patterns are not paged; keep the page size
         out["anti_patterns"] = out["anti_patterns"][:limit]
-    total = offset + len(out.get("results") or [])
+    total = len(out.get("results") or [])  # the ranked list from the first entry, before paging
     paginate_keys(out, PAGE_KEYS["parhelion_kb_query"], args, total=total,
                   default=default, maximum=KB_PAGE_MAX)
     if "result_count" in out:  # the counts describe the page the caller receives

@@ -181,28 +181,43 @@ def test_ledger_offset_and_cursor_agree(ws: Path) -> None:
 
 def test_agent_messages_pages_with_a_cursor(ws: Path, monkeypatch) -> None:
     rows = [{"seq": i, "body": f"m{i}"} for i in range(1, 122)]
+    acked: list[int] = []
 
     class Stub:
         def read_messages(self, workspace, *, agent_id=None, problem=None, since_seq=0, limit=60,
                           ack=True, include_squad=False):
+            if ack and rows[:limit]:  # the real read acknowledges every row it returns
+                acked.append(max(row["seq"] for row in rows[:limit]))
             return {"ok": True, "agent": None, "problem": problem or "", "diff_stat": "",
                     "latest_seq": 121, "cursor_reset": False, "messages": rows[:limit]}
 
     monkeypatch.setattr(handlers_agents, "_ACTIVE_DAEMON_MANAGER", None)
     monkeypatch.setattr(handlers_agents, "_get_local_manager", lambda: Stub())
     monkeypatch.setattr(handlers_agents, "_proxy_daemon", lambda *args, **kwargs: None)
-    seen: list[int] = []
-    cursor = None
-    for _ in range(20):
-        arguments: dict = {"limit": 50}
-        if cursor:
-            arguments["cursor"] = cursor
-        out = call_tool("parhelion_agent_messages", arguments, ws)
-        seen.extend(row["seq"] for row in out["messages"])
-        cursor = out.get("next_cursor")
-        if not cursor:
-            break
-    assert seen == list(range(1, 122))
+
+    def walk(total_rows: int, limit: int) -> tuple[list[int], int]:
+        del rows[total_rows:]
+        seen: list[int] = []
+        cursor, calls = None, 0
+        while calls < 20:
+            arguments: dict = {"limit": limit}
+            if cursor:
+                arguments["cursor"] = cursor
+            out = call_tool("parhelion_agent_messages", arguments, ws)
+            calls += 1
+            seen.extend(row["seq"] for row in out["messages"])
+            cursor = out.get("next_cursor")
+            if not cursor:
+                return seen, calls
+        raise AssertionError("next_cursor never ended")
+
+    seen, calls = walk(121, 50)
+    assert seen == list(range(1, 122)) and calls == 3
+    # The first page acknowledges exactly the rows it shows, never a look-ahead row.
+    assert acked == [50]
+    rows[:] = [{"seq": i, "body": f"m{i}"} for i in range(1, 101)]
+    seen, calls = walk(100, 50)  # an exact multiple ends on one empty page
+    assert seen == list(range(1, 101)) and calls == 3
 
 
 def test_kb_query_formats_and_cursor_pages(ws: Path, monkeypatch) -> None:
@@ -223,18 +238,20 @@ def test_kb_query_formats_and_cursor_pages(ws: Path, monkeypatch) -> None:
     assert full["results"][0]["summary"] == "s" * 900
     assert call_tool("parhelion_kb_query", {"full": True}, ws)["results"] == full["results"]
     seen: list[str] = []
-    cursor = None
+    cursor, calls = None, 0
     for _ in range(10):
         arguments: dict = {"format": "full", "limit": 4}
         if cursor:
             arguments["cursor"] = cursor
         out = call_tool("parhelion_kb_query", arguments, ws)
+        calls += 1
         seen.extend(entry["id"] for entry in out["results"])
         assert len(out["entries"]) == len(out["results"])
         cursor = out.get("next_cursor")
         if not cursor:
             break
     assert seen == [f"HW-{i:02d}" for i in range(10)]
+    assert cursor is None and calls == 3  # 4 + 4 + 2, and the walk ends
     with pytest.raises(ValueError, match="format must be brief or full"):
         call_tool("parhelion_kb_query", {"format": "verbose"}, ws)
 
@@ -479,3 +496,12 @@ def test_retention_settings_come_from_the_mcp_section(tmp_path: Path, monkeypatc
     monkeypatch.setenv("OPSB_HOME", str(home))
     assert bound.output_cap() == 1234
     assert bound.spill_keep_days() == 3 and bound.spill_max_bytes() == 7 * 1024 * 1024
+
+
+def test_a_failing_bound_still_returns_the_tool_result(ws: Path, monkeypatch) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError("bound exploded")
+
+    monkeypatch.setattr(server, "bound_output", broken)
+    result = _call(ws, "parhelion_report", {"view": "env"})
+    assert result["isError"] is False and _payload(result)["view"] == "env"

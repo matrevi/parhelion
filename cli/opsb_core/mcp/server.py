@@ -109,7 +109,11 @@ def handle_jsonrpc_message(
             is_error = True
         # 4.2 E: every reply leaves through one bound (page first, then a spill file). The meter keeps
         # the pre-bound size, so result_bytes vs bound_bytes shows what the cap removed.
-        text, bound = bound_output(tool_name, payload, ws, agent_id=agent_id)
+        try:
+            text, bound = bound_output(tool_name, payload, ws, agent_id=agent_id)
+        except Exception:  # the bound must never turn a finished tool call into a protocol failure
+            text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+            bound = {"spilled": False, "bound_bytes": len(text.encode("utf-8"))}
         mcp_meter.record_call(ws, agent_id=agent_id, role=norm_role, tool=tool_name, args=raw_args,
                               result_text=text, ms=(time.monotonic() - started) * 1000.0, is_error=is_error,
                               spilled=bound["spilled"], bound_bytes=bound["bound_bytes"])
