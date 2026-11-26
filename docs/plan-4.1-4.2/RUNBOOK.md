@@ -37,7 +37,7 @@
 | P09 | impl/P09-host-daemon | 已完成，含主机检查报告 | P06 之后合入 |
 | P10 | impl/P10-profiler-ab（叠在 P09 上） | 已完成，Edge 复测已补（b10a8ff） | P09 之后合入 |
 | P11 | impl/P11-batch-ui（叠在 P10 上，已合并当时的 main） | 已完成，组 3 结束。合并批次在本主机上没有可测的节省（作业间切换约 1ms），开关保持开启 | P10 之后合入。界面截图要等 daemon 重启后补 |
-| P17 | impl/P17-v2 | Sonnet 代理在做（已含 P07b 与 main） | P11 之后合入。旧分支 `impl/P17-verify-calibrate` 弃用，收尾时删除 |
+| P17 | impl/P17-v2（be22f86 已含 P07、P07b 与 main） | Sonnet 代理在合并完基线后被安全过滤中止（P17 第二次被拦）。按规则改用 Opus 重试一次，并禁止它读调研报告 | 若 Opus 再被拦：不再重试，P17 暂缓，记入发布说明待用户决定；其余包照常合入。旧分支 `impl/P17-verify-calibrate` 弃用 |
 | P12→P13 | impl/P12-report-views → impl/P13-bound-output | 未开始 | P06 合入后派一个 Sonnet 代理（组 4a） |
 | P14→P08→P15 | impl/P14-peer-protocol → impl/P08-startup-pack → impl/P15-worker-boundary | 未开始 | P06 合入后派另一个 Sonnet 代理（组 4b）；P15 等 P12 合入后再做 |
 | P16 | — | 未开始 | 全部合入后由主会话决定 H/I/J，依据 P03 基线：缓存命中已有 99.3–99.6%，H 价值低 |
