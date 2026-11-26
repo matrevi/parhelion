@@ -45,6 +45,7 @@ def judge_feedback(rows, threshold, gamma):
     import sys
     if str(_cfg.SUPERVISOR_ROOT) not in sys.path:
         sys.path.insert(0, str(_cfg.SUPERVISOR_ROOT))
+    from scheduler import receipts as _receipts
     from scheduler.estimator import ScoreEstimator
     from ..services.judge_score_fetch import TERMINAL_JUDGE_STATUSES
 
@@ -58,10 +59,10 @@ def judge_feedback(rows, threshold, gamma):
     previous = []
     last_rotation = 0
     for stamp, row in ordered:
-        if row["status"] == "Pass" and row.get("score") is None:
+        score = _receipts.official_score(row)
+        if score is None:  # a Pass whose score no source has yet
             yield row, []
             continue
-        score = float(row.get("score") or 0)
         def peak(history):
             return max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp)
                         for ts, s in history), default=0.0)

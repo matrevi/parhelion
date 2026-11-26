@@ -22,12 +22,14 @@ from .board_refresh_service import _resolve_team_name
 from .judge_score_fetch import (
     NON_TERMINAL_JUDGE_STATUSES,
     TERMINAL_JUDGE_STATUSES,
+    extract_case_results,
     extract_numeric_score,
     extract_public_times,
     fetch_json_with_cookie,
     fetch_ranking_sid_and_team_with_retry,
     reconstruct_timing_score,
     resolve_problem_id,
+    normalize_receipt,
     resolve_score_and_times,
     update_score_snapshot,
 )
@@ -65,15 +67,22 @@ def needs_score_backfill(row: dict[str, Any]) -> bool:
 def collapse_reconciled_outcomes(outcome_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse superseded `sync_error` / `score=None` rows when a later row exists for the same `submission_id`."""
     best_idx_by_sid: dict[str, int] = {}
-    best_rank_by_sid: dict[str, tuple[int, int, int]] = {}
+    best_rank_by_sid: dict[str, tuple[int, ...]] = {}
     for idx, row in enumerate(outcome_rows):
         sid = str(row.get("submission_id") or "").strip()
         if not sid:
             continue
         st = str(row.get("status") or "").strip()
         has_verdict = 1 if (st in TERMINAL_JUDGE_STATUSES and not is_sync_error_outcome(row)) else 0
-        has_score = 2 if row.get("score") is not None else int(bool(row.get("timing_score") or row.get("best_score_bound")))
-        rank = (has_verdict, int(row.get("source") != "judge-reconcile"), has_score)
+        # A replayed `timing_score` or a normalized `official_score` is a known score as well, and
+        # a normalized row (scheduler.receipts) outranks the row it was built from.
+        known = row.get("score") is not None or row.get("official_score") is not None or bool(
+            isinstance(row.get("timing_score"), dict) and row["timing_score"].get("score") is not None)
+        has_score = 2 if known else int(bool(row.get("timing_score") or row.get("best_score_bound")))
+        source = row.get("backfilled_from_source") if row.get("source") == "receipt-backfill" else row.get("source")
+        rank = (has_verdict, int(source != "judge-reconcile"), has_score,
+                int(bool(row.get("time_by_case") or row.get("case_results") or row.get("timing_score"))),
+                int(row.get("receipt_schema") == 1))
         prev = best_rank_by_sid.get(sid)
         if prev is None or rank >= prev:
             best_rank_by_sid[sid] = rank
@@ -285,12 +294,16 @@ def _reconcile_one_candidate(
     new_row = build_reconciled_outcome_row(orig, status, score, pub_times, pub_tbest, submitted_at, now_iso)
     if score is None and replay:
         new_row["timing_score"] = replay
+    results = extract_case_results(sub_detail)
+    if results:
+        new_row["case_results"] = results
     if bound:
         new_row["best_score_bound"] = bound
     elif score is not None:
         new_row.pop("best_score_bound", None)
     elif needs_score_backfill(orig) and not replay:
         return None
+    new_row = normalize_receipt(new_row)
 
     with io_lock_path.open("a") as iolf:
         fcntl.flock(iolf, fcntl.LOCK_EX)

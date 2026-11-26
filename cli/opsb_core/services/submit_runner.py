@@ -29,7 +29,7 @@ from .inflight_io import (
     reap_inflight_if_stale,
     write_inflight_atomic,
 )
-from .judge_score_fetch import TERMINAL_JUDGE_STATUSES
+from .judge_score_fetch import TERMINAL_JUDGE_STATUSES, normalize_receipt
 from .judge_sync import INFLIGHT_FILE, TERMINAL_OUTCOME_STATUSES
 from .sync_reconciler import collapse_reconciled_outcomes, has_pending_sync_error_for_commit
 
@@ -895,6 +895,8 @@ def _run_worker_submit_locked(workspace: Path, title: str, sha: str, note: str, 
             **({"public_times_us": pub_times} if pub_times else {}),
             **({"public_tbest_us": pub_tbest} if pub_tbest else {}),
         }
+        if status in TERMINAL_JUDGE_STATUSES:
+            out_rec = normalize_receipt(out_rec)
     except Exception as exc:
         out_rec = {
             **record,
@@ -1125,6 +1127,7 @@ def _wait_and_fetch_score(
         f"sys.path.insert(0, {str(judge_dir)!r})\n"
         "from ict_cli import ICTClient\n"
         "from opsb_core.services.judge_score_fetch import (\n"
+        "    extract_case_results,\n"
         "    extract_numeric_score,\n"
         "    extract_public_times,\n"
         "    fetch_ranking_sid_and_team_with_retry,\n"
@@ -1209,7 +1212,7 @@ def _wait_and_fetch_score(
         "        )\n"
         "except Exception:\n"
         "    pass\n"
-        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'timing_score': replay, 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"
+        "print(json.dumps({'status': status, 'score': score if status == 'Pass' else 0, 'timing_score': replay, 'case_results': extract_case_results(sub_detail), 'public_times_us': pub_times, 'public_tbest_us': pub_tbest}))\n"
     )
     proc = subprocess.run([py_exe, "-c", poll_code], stdin=subprocess.DEVNULL, env=env, capture_output=True, text=True, timeout=POLL_TIMEOUT_SEC + 60)
     if proc.returncode != 0:
@@ -1217,6 +1220,8 @@ def _wait_and_fetch_score(
     parsed = json.loads(proc.stdout.strip().splitlines()[-1])
     if evidence is not None and parsed.get("timing_score"):
         evidence["timing_score"] = parsed["timing_score"]
+    if evidence is not None and parsed.get("case_results"):
+        evidence["case_results"] = parsed["case_results"]
     return (
         parsed["status"],
         parsed.get("score"),

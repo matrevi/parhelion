@@ -17,7 +17,7 @@ import subprocess
 import sys
 from typing import Any, Iterable
 
-from .judge_score_fetch import resolve_score_and_times, scan_ranking_pages
+from .judge_score_fetch import extract_case_results, normalize_receipt, resolve_score_and_times, scan_ranking_pages
 from .sync_reconciler import collapse_reconciled_outcomes
 
 RESULT_TERMINAL = {"Pass", "Wrong Answer", "Runtime Error", "Compile Error", "Time Limit Exceeded"}
@@ -102,6 +102,7 @@ def build_boards(
                 "account_id": rec.get("account_id") or "primary",
                 "cases_passed": e.get("cases_passed"),
                 "cases_total": e.get("cases_total"),
+                **({"case_results": e["case_results"]} if e.get("case_results") else {}),
             })
         if not scored:
             virtual.append({"title": title, "reason": "judge history empty", "local_score": None})
@@ -197,6 +198,7 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                 cases = detail.get("result") or []
                 entry["cases_total"] = len(cases) or None
                 entry["cases_passed"] = sum(case.get("testcase_status") == "Pass" for case in cases) if cases else None
+                entry["case_results"] = extract_case_results(detail)
                 if sid not in receipts:
                     receipts[sid] = {"sha": _match_manifest(workspace, p["title"], detail)}
             histories[p["title"]] = entries
@@ -277,6 +279,9 @@ def run(workspace: pathlib.Path, dry_run: bool = False) -> dict[str, Any]:
                                   "cases_passed": att["cases_passed"], "cases_total": att["cases_total"],
                                   "note": f"Judge · {att['cases_passed']}/{att['cases_total']} cases" if att['cases_total'] else "Judge",
                                   "source": "judge-history"}
+                        if att.get("case_results"):
+                            record["case_results"] = att["case_results"]
+                        record = normalize_receipt(record)
                         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
                         added += 1
             report["history_backfilled"] = added
