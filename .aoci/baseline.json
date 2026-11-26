@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T08:52:51Z",
+  "updated_at": "2026-11-26T08:54:13Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "971b02e78c773e8efb589d8083713c0d9b4cb1533db8e6df70eaf1c8c3ba149a",
-      "size": 104382,
-      "normalized_sha256": "971b02e78c773e8efb589d8083713c0d9b4cb1533db8e6df70eaf1c8c3ba149a"
+      "sha256": "a2d62865b44e992a79d8b1f01dfd091469595afbb709a67a42056b19a951cb89",
+      "size": 105049,
+      "normalized_sha256": "a2d62865b44e992a79d8b1f01dfd091469595afbb709a67a42056b19a951cb89"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1397,9 +1397,9 @@
     },
     "docs/plan-4.1-4.2/00-MASTER.md": {
       "role": "index",
-      "sha256": "7f5dd691730fd30f5267b31ed832cbe59e9fb470b5aa439bf93fb961a5072665",
-      "size": 12195,
-      "normalized_sha256": "7f5dd691730fd30f5267b31ed832cbe59e9fb470b5aa439bf93fb961a5072665"
+      "sha256": "43506f3c29029260efe414860fd94f720348e59a0ae80c0c6468ecb97c9f256a",
+      "size": 12875,
+      "normalized_sha256": "43506f3c29029260efe414860fd94f720348e59a0ae80c0c6468ecb97c9f256a"
     },
     "docs/plan-4.1-4.2/P01-judge-alignment.md": {
       "role": "index",
@@ -1493,9 +1493,15 @@
     },
     "docs/plan-4.1-4.2/P17-verify-calibrate.md": {
       "role": "index",
-      "sha256": "2051ff7688470043b7c943e575402f5a1de313dea47fb744e87755c2ca05d7db",
-      "size": 4264,
-      "normalized_sha256": "2051ff7688470043b7c943e575402f5a1de313dea47fb744e87755c2ca05d7db"
+      "sha256": "8ade80d7d5b8a1e94fd5f87441c10bd7ee2fc4ed25a45803d8357355cdca1f0b",
+      "size": 4210,
+      "normalized_sha256": "8ade80d7d5b8a1e94fd5f87441c10bd7ee2fc4ed25a45803d8357355cdca1f0b"
+    },
+    "docs/plan-4.1-4.2/RUNBOOK.md": {
+      "role": "index",
+      "sha256": "e7d99c7813b815756cd96574861d3dff0d20cf2ef31f1e637b42e6e7e026a9e6",
+      "size": 5647,
+      "normalized_sha256": "e7d99c7813b815756cd96574861d3dff0d20cf2ef31f1e637b42e6e7e026a9e6"
     },
     "docs/plan-4.1-4.2/reports/P01-backtest.md": {
       "role": "index",
