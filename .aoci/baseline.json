@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T09:26:01Z",
+  "updated_at": "2026-11-26T10:16:57Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "a6dc2c29c9c57499fec34749ac9e4eb729056f60e261ec114fb6955811e84a1a",
-      "size": 111227,
-      "normalized_sha256": "a6dc2c29c9c57499fec34749ac9e4eb729056f60e261ec114fb6955811e84a1a"
+      "sha256": "398c1bedbc014fbb08f0be7e6871255a934d10250d02789c04b635fc445460a0",
+      "size": 111210,
+      "normalized_sha256": "398c1bedbc014fbb08f0be7e6871255a934d10250d02789c04b635fc445460a0"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1487,9 +1487,9 @@
     },
     "docs/plan-4.1-4.2/00-MASTER.md": {
       "role": "index",
-      "sha256": "3dba8c362f7c69d6e92dad1226477e89544146bc2adb7d50ac8501aeef7bc0ba",
-      "size": 13019,
-      "normalized_sha256": "3dba8c362f7c69d6e92dad1226477e89544146bc2adb7d50ac8501aeef7bc0ba"
+      "sha256": "c1718403e73fe4d47199cce2182be71df003858b1566d48bf7576280f5155dfb",
+      "size": 13829,
+      "normalized_sha256": "c1718403e73fe4d47199cce2182be71df003858b1566d48bf7576280f5155dfb"
     },
     "docs/plan-4.1-4.2/P01-judge-alignment.md": {
       "role": "index",
@@ -1589,9 +1589,9 @@
     },
     "docs/plan-4.1-4.2/RUNBOOK.md": {
       "role": "index",
-      "sha256": "9073abc5855960ff664e216fac30eccf6fbdc36cfab44a61d82854ad7c9bc3fa",
-      "size": 6095,
-      "normalized_sha256": "9073abc5855960ff664e216fac30eccf6fbdc36cfab44a61d82854ad7c9bc3fa"
+      "sha256": "396b9c18f2ae0972991c47b23e80910fb89935afbf1692371c50dcc7fc1bacd0",
+      "size": 7291,
+      "normalized_sha256": "396b9c18f2ae0972991c47b23e80910fb89935afbf1692371c50dcc7fc1bacd0"
     },
     "docs/plan-4.1-4.2/reports/P01-backtest.md": {
       "role": "index",
