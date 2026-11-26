@@ -83,3 +83,51 @@ def test_pair_statistics_use_one_timer_per_case(tmp_path):
     assert "pair" not in rows["03"]
     assert report["compare"]["source"] == "mixed"
     assert report["compare"]["geomean_ratio"] == pytest.approx((2.0 * rows["02"]["pair"]["ratio"]) ** 0.5, abs=1e-3)
+
+
+def test_bootstrap_stops_the_engine_when_its_session_goes_away(tmp_path):
+    """4.3.1: a cancelled run or a dropped link kills the ssh session; the launcher is re-parented
+    and must stop the engine, or the device keeps executing a run nobody is waiting for."""
+    import os
+    import signal
+    import time
+
+    pid_file = tmp_path / "engine.pid"
+    engine = (f"import os, pathlib, time; pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
+              "time.sleep(120)")
+    payload = io.BytesIO()
+    with tarfile.open(fileobj=payload, mode="w:gz"):
+        pass  # an empty source tree is enough for the launcher
+    stream = (json.dumps({"engine": engine}) + "\n").encode() + payload.getvalue()
+    (tmp_path / "stream.bin").write_bytes(stream)
+    (tmp_path / "boot.py").write_text(bench.BOOTSTRAP)
+    # The "session": a parent that starts the launcher and is then killed, as sshd is on a cancel.
+    session = subprocess.Popen([sys.executable, "-c", (
+        "import subprocess, sys, time; "
+        f"p = subprocess.Popen([sys.executable, '-u', {str(tmp_path / 'boot.py')!r}], stdin=subprocess.PIPE); "
+        f"p.stdin.write(open({str(tmp_path / 'stream.bin')!r}, 'rb').read()); p.stdin.close(); time.sleep(120)")])
+    try:
+        deadline = time.monotonic() + 20
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert pid_file.exists(), "the engine never started"
+        engine_pid = int(pid_file.read_text())
+        session.kill()
+        session.wait(timeout=10)
+        deadline = time.monotonic() + 15
+        alive = True
+        while alive and time.monotonic() < deadline:
+            try:
+                os.kill(engine_pid, 0)
+                time.sleep(0.2)
+            except ProcessLookupError:
+                alive = False
+        assert not alive, "the engine outlived its session"
+    finally:
+        if session.poll() is None:
+            session.kill()
+        if pid_file.exists():
+            try:
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+            except (ProcessLookupError, ValueError):
+                pass

@@ -252,7 +252,27 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-', dir=tmp_parent) as temp:
         if source is not None:
             (root/(name+'.py')).write_text(source)
     (root/'config.json').write_text(json.dumps(cfg))
-    sys.exit(subprocess.call([sys.executable,'-u',str(engine)],cwd=repo))
+    # 4.3.1: a cancelled run or a dropped link ends the ssh session, and this process is re-parented.
+    # Stop the engine then: closing its broker connection cancels the job and frees the device,
+    # instead of the device finishing every case of a run nobody is waiting for.
+    import os, signal, threading, time
+    parent = os.getppid()
+    proc = subprocess.Popen([sys.executable,'-u',str(engine)],cwd=repo,start_new_session=True)
+    def _watch():
+        while proc.poll() is None:
+            if os.getppid() != parent:
+                for sig, grace in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 0.0)):
+                    try:
+                        os.killpg(proc.pid, sig)
+                    except OSError:
+                        return
+                    end = time.monotonic() + grace
+                    while proc.poll() is None and time.monotonic() < end:
+                        time.sleep(0.1)
+                return
+            time.sleep(1)
+    threading.Thread(target=_watch, daemon=True).start()
+    sys.exit(proc.wait())
 """
 
 
