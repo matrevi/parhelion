@@ -331,7 +331,7 @@ def test_evidence_gate_kb_record_feedback_and_query(isolated_mcp_env: Path, tmp_
 
     # 3. Query returns the recorded entry
     q_res = call_tool("parhelion_kb_query", {"bottlenecks": ["cold-launch-tax"], "digest": True, "limit": 8}, ws)
-    assert any(e["id"] == entry_id for e in q_res["entries"])
+    assert any(e["id"] == entry_id for e in q_res["results"]) and "entries" not in q_res
     assert "digest" in q_res
 
     # 4. Feedback with delta_raw >= 1.5 promotes unverified -> verified

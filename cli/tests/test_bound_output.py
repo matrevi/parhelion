@@ -232,7 +232,8 @@ def test_kb_query_formats_and_cursor_pages(ws: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(handlers_kb, "_kb_query_full", fake_full)
     brief = call_tool("parhelion_kb_query", {}, ws)
-    assert [len(entry["summary"]) for entry in brief["entries"]] == [600, 600, 600]
+    assert [len(entry["summary"]) for entry in brief["results"]] == [600, 600, 600]
+    assert "entries" not in brief  # 4.2 J-1: the mirrored list no longer doubles the reply
     full = call_tool("parhelion_kb_query", {"format": "full"}, ws)
     assert len(full["results"]) == handlers_kb.KB_FULL_DEFAULT_LIMIT
     assert full["results"][0]["summary"] == "s" * 900
@@ -246,7 +247,7 @@ def test_kb_query_formats_and_cursor_pages(ws: Path, monkeypatch) -> None:
         out = call_tool("parhelion_kb_query", arguments, ws)
         calls += 1
         seen.extend(entry["id"] for entry in out["results"])
-        assert len(out["entries"]) == len(out["results"])
+        assert "entries" not in out
         cursor = out.get("next_cursor")
         if not cursor:
             break

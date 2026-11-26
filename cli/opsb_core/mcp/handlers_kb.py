@@ -144,6 +144,9 @@ def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, 
     # One row beyond the page tells us whether another page exists without a count query.
     res = _kb_query_full({**args, "limit": offset + limit + 1}, workspace)
     out = res if mode == "full" else _compact_kb_result(res)
+    # 4.2 J-1: ``entries`` mirrors ``results`` for older readers of the query layer; in a model's
+    # reply it only doubled the payload (48% of a brief reply), so the MCP answer keeps ``results``.
+    out.pop("entries", None)
     if isinstance(out.get("anti_patterns"), list):  # anti-patterns are not paged; keep the page size
         out["anti_patterns"] = out["anti_patterns"][:limit]
     total = len(out.get("results") or [])  # the ranked list from the first entry, before paging

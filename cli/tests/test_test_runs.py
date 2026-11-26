@@ -358,7 +358,7 @@ def test_kb_query_compact_by_default(tmp_path, monkeypatch):
 
     monkeypatch.setattr(handlers_kb, "_load_triad_kb_module", lambda: FakeKB)
     out = handlers_kb.tool_parhelion_kb_query({"bottlenecks": ["cold-launch-tax"]}, tmp_path)
-    assert out["result_count"] == 3 and len(out["results"]) == 3 and out["entries"] == out["results"]
+    assert out["result_count"] == 3 and len(out["results"]) == 3 and "entries" not in out
     entry = out["results"][0]
     assert set(entry) == {"id", "pillar", "title", "confidence", "tags", "summary"}
     assert len(entry["summary"]) <= 600 and entry["tags"] == ["cold-launch-tax", "S_SMALL"]
