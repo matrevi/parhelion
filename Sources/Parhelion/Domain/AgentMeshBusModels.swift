@@ -74,11 +74,22 @@ struct AgentMessagesResponse: Codable {
     let diffStat: String?
     let latestSeq: Int
     let messages: [AgentBusMessage]
+    /// The daemon restarted the bus sequence (full cleanup on an emptied bus), so the cursor
+    /// that was sent belongs to the old history. Older daemons omit the field.
+    let cursorReset: Bool?
 
     enum CodingKeys: String, CodingKey {
         case ok, problem, messages
         case diffStat = "diff_stat"
         case latestSeq = "latest_seq"
+        case cursorReset = "cursor_reset"
+    }
+
+    /// True when `messages` start a new history for a reader that held `cursor`.
+    func restartsHistory(after cursor: Int) -> Bool {
+        guard cursor > 0 else { return false }
+        // The daemon only returns seq > cursor unless it reset the cursor.
+        return cursorReset ?? messages.contains { $0.seq <= cursor }
     }
 }
 

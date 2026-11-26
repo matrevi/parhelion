@@ -54,6 +54,9 @@ DEFAULTS: dict[str, Any] = {
     "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
     "contest_org": "",
     "contest_track": "",
+    # Global byte budget of the prepared-case cache on the device host (int or digit string);
+    # empty keeps the runtime default (24 GiB, see runtime/npu_runtime/case_cache.py).
+    "case_cache_bytes": "",
 }
 
 
@@ -145,6 +148,8 @@ def device(key: str) -> Any:
 
 def device_text(key: str) -> str:
     value = device(key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)  # numeric settings (byte budgets) may be written as JSON numbers
     return value if isinstance(value, str) else ""
 
 

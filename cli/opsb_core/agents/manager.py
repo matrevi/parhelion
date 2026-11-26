@@ -963,7 +963,8 @@ class AgentMeshManager:
             agents = [a for a in agents if a["agent_id"] in id_set]
         if problem:
             agents = [a for a in agents if str(a.get("problem") or "").lower() == problem.lower()]
-        next_seq = max([int(since_seq), *[int(m["seq"]) for m in matched]])
+        # After a bus reset the old cursor is past the counter; resume from the top, not from it.
+        next_seq = max([store.resolve_cursor(since_seq), *[int(m["seq"]) for m in matched]])
         squad_map: dict[str, list[str]] = {}
         for a in agents:
             p = str(a.get("problem") or ws.name)
@@ -1017,6 +1018,7 @@ class AgentMeshManager:
             "problem": problem or (agent.get("problem") if agent else ""),
             "diff_stat": diff_stat,
             "latest_seq": store.latest_seq(),
+            "cursor_reset": bool(since_seq) and store.resolve_cursor(since_seq) == 0,
             "messages": msgs,
         }
 
@@ -1094,7 +1096,8 @@ class AgentMeshManager:
         if ack_seq is not None:
             store.ack_messages(agent_id, int(ack_seq), reader="worker")
         msgs = store.list_messages(agent_id=agent_id, since_seq=since_seq, worker_inbox=True, limit=30)
-        return {"ok": True, "agent_id": agent_id, "messages": msgs, "latest_seq": store.latest_seq()}
+        return {"ok": True, "agent_id": agent_id, "messages": msgs, "latest_seq": store.latest_seq(),
+                "cursor_reset": bool(since_seq) and store.resolve_cursor(since_seq) == 0}
 
     def stop_agent(self, workspace: Path, agent_id: str, *, cleanup_worktree: bool = False) -> dict[str, Any]:
         ws = workspace.expanduser().resolve()

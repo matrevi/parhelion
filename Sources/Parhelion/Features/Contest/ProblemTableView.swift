@@ -79,17 +79,17 @@ struct ProblemTableView: View {
                 Spacer()
 
                 Button {
-                    Task { await store.launchContestSubagentSession(mode: "gui") }
+                    Task { await store.startContestChat() }
                 } label: {
                     Label(lang.tr("新开对话", "New Contest Chat"), systemImage: "plus.bubble.fill")
                         .font(.system(size: 11, weight: .semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .disabled(store.isLaunchingSession || store.selectedWorkspace.isEmpty)
+                .disabled(!store.canStartContestChat)
                 .help(lang.tr(
-                    "为当前比赛新开主控对话，协调各题并行优化",
-                    "Start an orchestrator chat for the selected contest"
+                    "为当前比赛新开主控对话，协调各题并行优化（⌘⇧N）",
+                    "Start an orchestrator chat for the selected contest (⌘⇧N)"
                 ))
 
                 Toggle(isOn: $sortByROI) {

@@ -312,7 +312,7 @@ class AgentBusStore:
         limit: int = 60,
     ) -> list[dict[str, Any]]:
         clauses = ["seq > ?"]
-        params: list[Any] = [int(since_seq)]
+        params: list[Any] = [self.resolve_cursor(since_seq)]
         if agent_id:
             clauses.append("agent_id = ?")
             params.append(agent_id)
@@ -345,12 +345,13 @@ class AgentBusStore:
 
     def ack_messages(self, agent_id: str, up_to_seq: int, reader: str = "orch") -> int:
         col = "acked_by_orch" if reader == "orch" else "acked_by_worker"
+        up_to = self.resolve_cursor(up_to_seq)  # a pre-reset seq must not ack the new history
         with self._lock:
             conn = self._connect()
             try:
                 cur = conn.execute(
                     f"UPDATE messages SET {col} = 1 WHERE agent_id = ? AND seq <= ? AND {col} = 0",
-                    (agent_id, int(up_to_seq)),
+                    (agent_id, up_to),
                 )
                 if reader == "orch":
                     unread = conn.execute(
@@ -437,7 +438,29 @@ class AgentBusStore:
                                  "AND agent_id NOT IN ('platform', 'admin')")
                     conn.execute("DELETE FROM messages WHERE agent_id IN ('platform', 'admin') AND created_at < "
                                  "COALESCE((SELECT MIN(created_at) FROM agents), '9999')")
+                    # An emptied bus starts again at seq 1. While any message is left the counter
+                    # stays, so sequence numbers remain monotonic for every live reader.
+                    if conn.execute("SELECT 1 FROM messages LIMIT 1").fetchone() is None:
+                        conn.execute("DELETE FROM sqlite_sequence WHERE name = 'messages'")
                 conn.commit()
                 return len(ids)
             finally:
                 conn.close()
+
+    def resolve_cursor(self, since_seq: int) -> int:
+        """Return the cursor to read after: ``since_seq``, or 0 when it is past the bus counter.
+
+        The counter only moves back when a full cleanup emptied the bus, so a cursor beyond it
+        belongs to the history before that reset; the reader then starts again from the top.
+        """
+        cursor = max(0, int(since_seq or 0))
+        if not cursor:
+            return 0
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute("SELECT seq FROM sqlite_sequence WHERE name = 'messages'").fetchone()
+                counter = int(row[0] or 0) if row else 0
+            finally:
+                conn.close()
+        return 0 if cursor > counter else cursor

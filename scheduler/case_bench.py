@@ -222,6 +222,7 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
     engine.write_text(cfg.pop('engine'))
     (root/'lanes.py').write_text(cfg.pop('lanes'))
     (root/'case_batch.py').write_text(cfg.pop('case_batch'))
+    (root/'case_cache.py').write_text(cfg.pop('case_cache'))
     broker = cfg.pop('device_broker', None)
     if broker is not None:
         (root/'device_broker.py').write_text(broker)
@@ -434,9 +435,10 @@ def run(
         "arch": os.getenv("NPU_ARCH", _dev("arch")),
         "device": os.getenv("OPSB_DEVICE_ID", "0"),
         "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
+        "case_cache_bytes": _dev("case_cache_bytes") or None,  # global LRU budget on the device host
     }
     engine = (Path(runner) if runner else RUNNER).read_text()
-    modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch")}
+    modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch", "case_cache")}
     broker = RUNNER.with_name("device_broker.py")
     if broker.is_file():
         modules["device_broker"] = broker.read_text()
