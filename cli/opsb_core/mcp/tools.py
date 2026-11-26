@@ -15,6 +15,7 @@ from .handlers_agents import (
     tool_parhelion_harness_pool,
     tool_parhelion_sprint_start,
     tool_parhelion_squad,
+    tool_parhelion_wait,
 )
 from .handlers_bench import (
     tool_parhelion_bench_diagnose,
@@ -44,6 +45,8 @@ VALID_ROLES = ("orchestrator", "worker")
 WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
 # Escape-lock tools check that a worker acts on the problem its bus record names.
 WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebind", "parhelion_escape_reproducer")
+# Tools whose handler needs to know whether a worker or the orchestrator is calling.
+ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait",)
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
@@ -71,6 +74,7 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_agent_report": tool_parhelion_agent_report,
     "parhelion_agent_inbox": tool_parhelion_agent_inbox,
     "parhelion_squad": tool_parhelion_squad,
+    "parhelion_wait": tool_parhelion_wait,
 }
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -119,7 +123,7 @@ def call_tool(
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
     call_args.pop("_caller_agent_id", None)
-    if name in WORKER_SCOPED_TEST_TOOLS or name in WORKER_SCOPED_PROBLEM_TOOLS:
+    if name in ROLE_AWARE_TOOLS or name in WORKER_SCOPED_PROBLEM_TOOLS:
         call_args["_worker_request"] = norm_role == "worker"
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")
@@ -158,4 +162,5 @@ __all__ = [
     "tool_parhelion_test_cancel",
     "tool_parhelion_test_plan",
     "tool_parhelion_test_wait",
+    "tool_parhelion_wait",
 ]

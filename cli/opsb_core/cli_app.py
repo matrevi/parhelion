@@ -11,6 +11,7 @@ from .commands.doctor_cmd import register_doctor_subcommands
 from .commands.kb_cmd import register_kb_subcommands
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
+from .commands.replay_cmd import register_replay_subcommands
 from .commands.status_cmd import run_history, run_status
 from .commands.tools_cmd import register_fast_tools_subcommands
 from .daemon.server import run_daemon
@@ -504,6 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
     dm_st.set_defaults(func=run_daemon)
 
     register_kb_subcommands(sub)
+    register_replay_subcommands(sub)
 
     register_doctor_subcommands(sub)
     register_driver_and_mcp_subcommands(sub)

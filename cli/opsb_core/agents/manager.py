@@ -23,9 +23,11 @@ from ..drivers.brief import (
     resolve_problem_repo,
 )
 from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
+from ..metrics.store import UsageMonitor, orchestrator_target, worker_target
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
+from .event_hub import EventHub, inbox_predicate
 from .judge_feedback import calibration_evidence, judge_feedback
 from .ownership import claim_runner, owned_groups, reap_groups
 
@@ -319,6 +321,20 @@ class AgentMeshManager:
         self._doctor_cache: tuple[float, dict[str, Any]] = (0.0, {})
         self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
         self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._usage_monitor = UsageMonitor()
+        self._hubs: dict[str, EventHub] = {}
+        # Set when this manager serves the daemon: legacy waits then block on the event hub.
+        self.hub_enabled = False
+
+    def event_hub(self, workspace: Path) -> EventHub:
+        """The workspace's change-driven event hub, created on first use."""
+        key = str(workspace.expanduser().resolve())
+        store = self._store(Path(key))
+        with self._lock:
+            hub = self._hubs.get(key)
+            if hub is None:
+                hub = self._hubs[key] = EventHub(Path(key), store)
+            return hub
 
     # ---- provider fault circuit breaker -------------------------------------------------
     @staticmethod
@@ -489,6 +505,8 @@ class AgentMeshManager:
     def _notify(self) -> None:
         with self._cond:
             self._cond.notify_all()
+        for hub in list(self._hubs.values()):
+            hub.kick()
         if callable(self._on_change):
             try:
                 self._on_change()
@@ -949,14 +967,27 @@ class AgentMeshManager:
                 limit=40,
             )
 
-        with self._cond:
+        if self.hub_enabled:
+            # Daemon: sleep on the hub until a matching inbox event, then read through list_messages.
+            hub = self.event_hub(ws)
+            pred = inbox_predicate(id_set, problem, strategic_only)
+            after = hub.n
             matched = _collect()
             while not matched:
                 rem = deadline - time.monotonic()
-                if rem <= 0:
+                if rem <= 0 or not hub.wait_until(pred, rem, since_n=after):
                     break
-                self._cond.wait(timeout=min(rem, 1.0))
+                after = hub.n
                 matched = _collect()
+        else:
+            with self._cond:
+                matched = _collect()
+                while not matched:
+                    rem = deadline - time.monotonic()
+                    if rem <= 0:
+                        break
+                    self._cond.wait(timeout=min(rem, 1.0))
+                    matched = _collect()
 
         agents = store.list_agents(include_stopped=True)
         if id_set:
@@ -1134,6 +1165,10 @@ class AgentMeshManager:
         with self._lock:
             runners = list(self._runners.values())
             self._runners.clear()
+            hubs = list(self._hubs.values())
+            self._hubs.clear()
+        for hub in hubs:
+            hub.stop()
         for r in runners:
             try:
                 r.stop()
@@ -1181,6 +1216,10 @@ class AgentMeshManager:
             if not sub.get("deep_link"):
                 sub["deep_link"] = orch_deep_link
         active_w_count = sum(1 for w in workers if w.get("status") not in ("stopped", "error"))
+        # Cache hit/miss fields are optional: served from a background-refreshed cache, never parsed here.
+        orch_usage_target = orchestrator_target(orch_session, active)
+        usage_targets = [worker_target(w["agent_id"], str(w["driver"]).lower()) for w in workers]
+        usage_fields = self._usage_monitor.fields(ws, usage_targets + ([orch_usage_target] if orch_usage_target else []))
 
         # Group workers into Problem Squads + collect 4 Strategic Alerts
         squad_groups: dict[str, list[dict[str, Any]]] = {}
@@ -1230,6 +1269,7 @@ class AgentMeshManager:
                 "elapsed_sec": max(0, int(now - float(w.get("last_active_epoch") or now))),
                 "last_msg_epoch": float(w.get("last_msg_epoch") or 0.0),
                 "last_msg_dir": w.get("last_msg_dir") or "",
+                **usage_fields.get(w["agent_id"], {}),
             }
             worker_rows.append(row)
             squad_groups.setdefault(prob, []).append(row)
@@ -1272,6 +1312,7 @@ class AgentMeshManager:
                 "native_subagents": len(native_subs),
                 "squad_count": len(squads),
                 "status": "active" if (active_w_count > 0 or any(n["status"] == "running" for n in native_subs)) else "standby",
+                **(usage_fields.get(orch_usage_target["key"], {}) if orch_usage_target else {}),
             },
             "ready_drivers": ready_drivers,
             "native_subagents": native_subs,

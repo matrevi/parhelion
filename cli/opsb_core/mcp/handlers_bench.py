@@ -1,7 +1,9 @@
 """MCP tool handlers for status, benchmark diagnosis, fast-feedback cards, test planning & submit gate."""
 from __future__ import annotations
 
+import hashlib
 import importlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -46,7 +48,30 @@ def _compact_queue_item(item: dict[str, Any]) -> dict[str, Any]:
     return {k: _round_score(out[k]) for k in STATUS_QUEUE_KEYS}
 
 
+def status_rev(out: dict[str, Any], args: dict[str, Any]) -> str:
+    """Content revision of a status reply: same arguments and same data give the same rev.
+
+    The sample time and the ticking cooldown counter are left out (``rate_ready`` still flips),
+    so an unchanged contest answers ``if_rev`` with ``not_modified``.
+    """
+    body = {k: v for k, v in out.items() if k != "sampled_at"}
+    if isinstance(body.get("scheduler"), dict):
+        body["scheduler"] = {k: v for k, v in body["scheduler"].items() if k != "cooldown_remaining_sec"}
+    scope = {k: args.get(k) for k in ("problem", "include_npu", "include_queue", "verbose")}
+    raw = json.dumps([scope, body], ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    return "s1:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
 def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    out = _status_payload(args, workspace)
+    rev = status_rev(out, args)
+    if str(args.get("if_rev") or "") == rev:
+        return {"not_modified": True, "rev": rev}
+    out["rev"] = rev
+    return out
+
+
+def _status_payload(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     cfg = load_parhelion_config()
     snap = compute_workspace_snapshot(workspace, cfg)
     try:
@@ -233,8 +258,18 @@ def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str,
     request_id = str(args.get("request_id") or "").strip()
     if not request_id:
         raise ValueError("'request_id' is required for parhelion_test_wait")
-    wait_sec = args.get("wait_sec")
-    return test_runs.wait(workspace, request_id, 30 if wait_sec is None else wait_sec)
+    wait_sec = 30 if args.get("wait_sec") is None else args.get("wait_sec")
+    from .handlers_agents import _proxy_daemon, daemon_hub
+    hub = daemon_hub(workspace)
+    if hub is not None:  # inside the daemon: sleep on the run's state changes
+        return test_runs.wait(workspace, request_id, wait_sec, block=hub.test_blocker(request_id))
+    try:
+        budget = min(float(test_runs.WAIT_MAX_SEC), max(1.0, float(wait_sec)))
+    except (TypeError, ValueError):
+        budget = 30.0
+    proxied = _proxy_daemon("POST", "/v1/events/test_wait", workspace, {"request_id": request_id, "wait_sec": budget},
+                            timeout=budget + 6.0, missing_ok=True)
+    return proxied if proxied is not None else test_runs.wait(workspace, request_id, wait_sec)
 
 
 def tool_parhelion_test_cancel(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

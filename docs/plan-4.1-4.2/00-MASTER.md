@@ -1,6 +1,6 @@
 # Parhelion 4.1 + 4.2 实施总计划
 
-主会话负责本计划、审查与合并；每个子计划由一个 Opus 子代理在独立 git 工作树里实现（Sonnet 子代理在 P01 上两次被安全过滤中止，2026-11-26 改用 Opus），提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
+主会话负责本计划、审查与合并；每个子计划由一个子代理在独立 git 工作树里实现。模型优先用 Sonnet：Opus 额度消耗大，只在某个包的 Sonnet 代理被安全过滤中止后，才对该包改用 Opus。简报不写设备厂商相关字眼；会话日志只做聚合统计，不把原文读进上下文，提交到自己的分支，主会话审查 diff 后合入 `main`，再跑全量测试、提交并用 `aoci_maintain` 维护索引。
 
 需求来源：
 
@@ -30,7 +30,7 @@
 | 13 | [P13 统一输出上限 bound_output](P13-bound-output.md) | 4.2 E | `mcp/server.py` 新模块 `cli/opsb_core/mcp/bound.py` | P12 |
 | 14 | [P14 同伴消息协议](P14-peer-protocol.md) | 4.2 F | `agents/manager.py`(squad) `mcp/handlers_agents.py` `ledger/` | P06 |
 | 15 | [P15 worker 边界](P15-worker-boundary.md) | 4.2 K | `agents/adapters.py` `worker_access.py` `drivers/*` | P12（board 视图） |
-| 15a | [P17 本地验证加固、逐例校准表、噪声感知判定](P17-verify-calibrate.md) | 调研 R1 R2 R3 | `runtime/npu_runtime/*` `scheduler/{gate,case_bench,suite}.py` 新模块 | P01、P02、P07 |
+| 15a | [P17 本地验证可信度、逐例校准表、噪声感知判定](P17-verify-calibrate.md) | 调研 R1 R2 R3 | `runtime/npu_runtime/*` `scheduler/{gate,case_bench,suite}.py` 新模块 | P01、P02、P07 |
 | 16 | P16 H/I/J 决策 | 4.2 H I J | 由主会话根据 P03 的测量与回放结果决定，届时补写子计划；调研 R10（按代码相似度注入知识、按驱动 A/B）并入 J | P03–P15 |
 
 ### 1.1 执行分组
@@ -56,7 +56,7 @@
 - 只在分配给你的工作树里改文件。工具创建的工作树基于 `origin/main`，落后本地 `main`；开工第一步执行 `git checkout -b impl/Pxx-<slug> main`（分支名见子计划首行），并确认 `git log -1` 不早于本文件所在提交。只提交到该分支：不推送、不合入 `main`、不改主检出目录。
 - 用 `aoci_search` / `aoci_get_entries`（若可用）定位文件；**不要**调用 `aoci_maintain`、`aoci_update_entry`，也不要改 `aoci*.txt`，索引由主会话维护。
 - 新模块不超过 350 行（`docs/v3/REFACTOR_MODULAR_LAYOUT.md`）。已超长的文件（`estimator.py`、`cli_bridge.py`、`manager.py` 等）尽量只加薄接入点，新逻辑放新模块。
-- 提交信息用英文祈使句，正文说明原因；末尾加 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`。可以分多次提交。
+- 提交信息用英文祈使句，正文说明原因；末尾加 `Co-Authored-By: Claude <所用模型> <noreply@anthropic.com>`，例如 `Claude Sonnet 5.5`。可以分多次提交。
 
 ### 2.2 不可违反的约束
 - 不改自动提交开关（`auto_consumer_enabled`），不强制提交，不调用 `queue approve` / `force`，不向判题站提交任何东西。额度不得进入任何门禁阈值或暂缓理由。
@@ -97,22 +97,24 @@
 
 ## 4. 进度
 
+无人值守续跑的当前状态与下一步，见 [RUNBOOK.md](RUNBOOK.md)。
+
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
 | P01 | impl/P01-judge-alignment | 已合入 | a4a3eda | 留一回测 MAE 2.75→1.32；按位置配对的身份是对的，FFT 05 等是不同工作量（标 judge_mapped=false）；回填 19 行 |
 | P02 | impl/P02-wa-reproducers | 已合入 | 见 git log | 真机复现 Quant a2717b5 的 WA（精确舍入平局变体 24/8320 错），榜上 SHA 全过；每次 WA 套件升版会使旧本地证据失配，修正并入 P07 |
-| P03 | impl/P03-metering-replay | 进行中 | | |
-| P04 | impl/P04-change-driven-wait | 待开始 | | |
-| P05 | impl/P05-ledger-core | 待开始 | | |
+| P03 | impl/P03-metering-replay | 已合入 | 见 git log | 缓存命中已达 99.3–99.6%，成本杠杆在上下文大小；回放基线 current 覆盖 0.642 [0.568,0.716]；主控轮询实测 136/h（计划写约 560/h，日志无法复原） |
+| P04 | impl/P04-change-driven-wait | 已合入 | 见 git log | parhelion_wait 事件到返回 p50 262ms；主控投影 91–67 次/h（实测基线 136/h），单次返回从中位 6.7KB 降到约 200B；另修复两条日期相关测试 |
+| P05 | impl/P05-ledger-core | 进行中（Sonnet） | | |
 | P06 | impl/P06-ledger-seed | 待开始 | | |
-| P07 | impl/P07-gate-queue | 待开始 | | |
+| P07 | impl/P07-gate-queue | 已完成，待按序合入；P07b 删除收尾预留进行中 | | |
 | P08 | impl/P08-startup-pack | 待开始 | | |
 | P09 | impl/P09-host-daemon | 已完成，待 P06 后按序合入 | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
-| P10 | impl/P10-profiler-ab | 进行中（叠在 P09 上） | | |
+| P10 | impl/P10-profiler-ab | 已完成，待按序合入（叠在 P09 上） | | profiler 计时 CV 61%→0.9%；Edge 基线复测待真机 |
 | P11 | impl/P11-batch-ui | 待开始 | | |
 | P12 | impl/P12-report-views | 待开始 | | |
 | P13 | impl/P13-bound-output | 待开始 | | |
 | P14 | impl/P14-peer-protocol | 待开始 | | |
 | P15 | impl/P15-worker-boundary | 待开始 | | |
-| P17 | impl/P17-verify-calibrate | 待开始 | | |
+| P17 | impl/P17-v2 | 待重派 | | 首次在写 diff 规则筛查时被安全过滤中止；按用户决定去掉 diff 筛查后重试 |
 | P16 | — | 待测量 | | |
