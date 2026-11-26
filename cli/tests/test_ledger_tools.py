@@ -355,7 +355,17 @@ def test_near_duplicate_diff_is_reported_with_its_ledger_id(contest):
     assert "near_duplicate" in out and "difference" in out["note"]
     assert retest.near_duplicate(ws, "Op00", contest["base"], rows, WORKER) is None  # a different change
     assert retest.similarity("", "x") == 0.0
-    assert retest.normalize_patch("@@ -1 +1 @@\n-old line\n+new line\n") == ["old line", "new line"]
+    assert retest.normalize_patch("@@ -1 +1 @@\n-old line\n+new line\n") == ["-old line", "+new line"]
+
+
+def test_a_revert_is_not_a_near_duplicate_of_the_change_it_undoes():
+    """The +/- marker is part of a line: undoing a change is a different experiment."""
+    change = "@@ -1,3 +1,3 @@\n keep = 1\n-x = 1\n+x = 2\n keep = 2\n"
+    revert = "@@ -1,3 +1,3 @@\n keep = 1\n-x = 2\n+x = 1\n keep = 2\n"
+    assert retest.similarity(change, change) == 1.0
+    assert retest.similarity(change, revert) < retest.SIMILARITY
+    single = "@@ -10,7 +10,7 @@\n" + "".join(f" keep_{i} = {i}\n" for i in range(6)) + "-TILE = 64\n+TILE = {}\n"
+    assert retest.similarity(single.format(128), single.format(256)) < retest.SIMILARITY  # one-value sweep
 
 
 def test_near_duplicate_lets_a_reasoned_rerun_through(contest):

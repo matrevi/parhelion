@@ -123,17 +123,19 @@ def intercept(workspace: Path | str, problem: str, sha: str, level: str, *, case
 
 
 def normalize_patch(text: str) -> list[str]:
-    """Everything a near-identical patch keeps: file hunks and changed code lines, without hunk offsets."""
+    """Changed and context lines of a patch, each keeping its ``+``/``-``/`` `` marker, whitespace collapsed.
+
+    The marker matters: without it a revert (``-L``) reads exactly like the change it undoes (``+L``)
+    and would be reported as its near duplicate. Hunk offsets and git headers are dropped.
+    """
     lines: list[str] = []
     for line in (text or "").splitlines():
         if line.startswith(("+++", "---", "@@", "index ", "diff ", "new file", "deleted file", "similarity")):
             continue
-        if line.startswith(("+", "-")) or line.startswith((" ",)):
+        if line.startswith(("+", "-", " ")):
             body = " ".join(line[1:].split())
             if body:
-                lines.append(body)
-        elif line[:1].isalpha() and ":" not in line[:12]:
-            continue  # commit message or git header noise
+                lines.append(line[0] + body)
     return lines
 
 
