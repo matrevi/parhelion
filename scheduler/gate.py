@@ -9,16 +9,25 @@ Stages:
      - Cross-core / barrier static+dynamic safety check (`SetAtomicAdd`/`SyncAll` requires
        `STRESS_DONE` / `DETERMINISTIC` / `GATE_DET` unless already proven online)
   2. NOISE_FLOOR:
-     - The board keeps the best score, so a candidate also passes when its expected improvement
-       E[max(0, gain)] under the calibrated sigma clears the floor and P(gain > 0) >= 0.2
-       (`EXPECTED_IMPROVEMENT`); otherwise it holds on `delta_expected < noise_floor_pts` (default `+2.5` pts ~ `0.93 sigma`
-       for `sigma = 2.70` pts) as `HOLD_LOW_GAIN` (and yields `delta_expected = 0.0` when
-       `candidate_sha == active_board_sha` under `tbest(t)` non-stationarity)
+     - The floor is `clamp(sigma_hat, noise_floor_pts, 2 * noise_floor_pts)` where `sigma_hat` is the
+       measured judge noise of the problem (`judge_noise`), else the configured `+2.5` pts.
+     - When the problem's rule keeps the best score (`ranking_submission_mode = best`), a candidate
+       also passes when E[max(0, gain)] clears the floor and P(gain > 0) >= 0.2
+       (`EXPECTED_IMPROVEMENT`). Under `latest` the board shows the last submission, so the gain is
+       measured against the current board and neither that shortcut nor the [RESTORE] "beat the
+       historical best" comparison applies.
+     - Below the floor, a candidate with E[gain] > 0 and P(gain > 0) >= 0.5 is approved at low
+       priority (`LOW_GAIN_POSITIVE`, tagged EXPLORE); the rest hold as `HOLD_LOW_GAIN` (and
+       `delta_expected = 0.0` when `candidate_sha == active_board_sha`).
      - Bypassed automatically when board is `0` / `no-submission` (`CRITICAL_RESTORE`) or `force=True`
   3. CIRCUIT_BREAKER:
      - Nygard 3-state machine (`CLOSED` / `OPEN` / `HALF_OPEN`) over rolling 12h window
      - Compares decay-adjusted contemporary scores (`gamma_p` + residual `-0.015 pts/hr`) rather
        than raw 8-day-old peaks so multi-day `tbest(t)` tightening never manufactures false streaks
+     - Advisory (4.2.1): an open breaker no longer refuses; the candidate is approved at half
+       priority, tagged EXPLORE, with the breaker's reason. `GateConfig.circuit_blocks` restores refusal.
+  A TLE receipt no longer arms the escape lock (no reproducer can clear a timing verdict); the commit
+  that timed out cannot be resubmitted unchanged until it has passed online (`TLE_SHA_REPEAT`).
   4. QUOTA_RESERVE (dispatch slot, not a gate):
      - Reports whether an account slot is free: 190s inter-submission pacing (`RATE_WAIT`) and the
        50/day Beijing-day (`UTC+8` 00:00 reset) per-account cap. With every slot used the stage
@@ -100,6 +109,20 @@ class GateConfig:
     aging_tau_sec: float = 600.0
     # Only judge-acknowledged attempts consume the opening window.
     probe_submissions_per_problem: int = OPENING_PROBES
+    # 4.2.1 (docs/v4.3/research/antigravity/00-SUMMARY.md §4.1/4.3/4.4/4.9). Each switch restores the
+    # 4.2.0 behaviour when flipped.
+    # Read each problem's `ranking_submission_mode`; under `latest` the board shows the last submission,
+    # so neither E[max(0, gain)] nor "must beat the historical best" applies.
+    board_mode_from_rules: bool = True
+    # A TLE arms the escape lock (4.2.0). No reproducer can clear a timing verdict, so it froze the problem.
+    tle_arms_escape_lock: bool = False
+    # An open breaker refuses (4.2.0). Advisory: approve at half priority and say why.
+    circuit_blocks: bool = False
+    # Noise floor from measured judge noise: clamp(sigma_hat, noise_floor_pts, 2 * noise_floor_pts).
+    noise_floor_from_judge_sigma: bool = True
+    # Below the floor but more likely to gain than lose: approve at low priority instead of holding.
+    approve_low_gain_positive: bool = True
+    low_gain_min_prob: float = 0.5
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -446,6 +469,25 @@ class SubmissionGate:
             return False, f"commit {sha[:7]} missing op_host/ or op_kernel/ tree"
         return True, "git_tree_verified"
 
+    def _escape_state(self, title: str, as_of: datetime.datetime | None = None) -> dict[str, Any]:
+        """The calibrator's escape state, with the 4.2.1 TLE switch applied."""
+        calibrator = self.estimator.get_calibrator()
+        calibrator.tle_arms_escape_lock = bool(self.config.tle_arms_escape_lock)
+        return calibrator.inspect_escape_state(title, as_of=as_of)
+
+    @staticmethod
+    def _tle_repeat(sha: str, state: dict[str, Any], proven: bool) -> StageResult | None:
+        """4.2.1: a TLE no longer locks the problem, but the commit that timed out cannot go again unchanged."""
+        tle_sha = str(state.get("tle_sha") or "")
+        if not tle_sha or proven or not (sha.startswith(tle_sha) or tle_sha.startswith(sha)):
+            return None
+        return StageResult(
+            stage="SAFETY", passed=False, code="TLE_SHA_REPEAT",
+            reason=(f"{sha[:7]} timed out online (submission {state.get('tle_submission_id') or '?'}) and has "
+                    "never passed online; change the kernel, or restore a commit that passed"),
+            metrics={"tle_sha": tle_sha, "tle_submission_id": state.get("tle_submission_id"),
+                     "next_step": "commit a faster or different kernel, or restore a proven Pass SHA"})
+
     def evaluate_safety(
         self,
         title: str,
@@ -541,7 +583,7 @@ class SubmissionGate:
             if not report:
                 return StageResult(stage="SAFETY",passed=False,code="REFERENCE_SUITE_REQUIRED",
                                    reason="Run opsb test on this commit with the full current case profile")
-            state = self.estimator.get_calibrator().inspect_escape_state(title, as_of=as_of)
+            state = self._escape_state(title, as_of=as_of)
             prior = self._prior_online_pass_shas.get((title, sha))
             if state.get("escape_lock") and not (prior and (as_of is None or prior < as_of)):
                 from .case_bench import read_doc
@@ -565,6 +607,9 @@ class SubmissionGate:
                                        metrics={"submission_id": sid, "bad_sha": bad, "repro_state": repro["state"],
                                                 "next_step": step or "reproduce the failure locally or request an "
                                                                      "exact-SHA reviewed trial"})
+            repeat = self._tle_repeat(sha, state, bool(prior and (as_of is None or prior < as_of)))
+            if repeat is not None:
+                return repeat
             from .judge_compile import stage1 as judge_compile_stage1
             rejected, compile_note = judge_compile_stage1(self.workspace, title, sha)
             if rejected:
@@ -659,7 +704,7 @@ class SubmissionGate:
 
         # Closed-Loop Escape Lock: if the latest online submission escaped local S1 (`WA`/`TLE`/`RE`),
         # block unproven new commits until `verify-escape` confirms a separating regression test!
-        esc_state = self.estimator.get_calibrator().inspect_escape_state(title, as_of=as_of)
+        esc_state = self._escape_state(title, as_of=as_of)
         if esc_state.get("escape_lock") and not proven_prior:
             esc_s7 = esc_state.get("escape_short_sha") or "unknown"
             esc_st = esc_state.get("escape_status") or "Online Failure"
@@ -675,6 +720,10 @@ class SubmissionGate:
                 metrics={"escape_sha": esc_state.get("escape_sha"), "escape_status": esc_st,
                          "next_step": f"add a regression case, then verify-escape --bad-sha {esc_s7} --good-sha {sha[:7]}"},
             )
+
+        repeat = self._tle_repeat(sha, esc_state, proven_prior)
+        if repeat is not None:
+            return repeat
 
         return StageResult(
             stage="SAFETY",
@@ -1012,8 +1061,34 @@ class SubmissionGate:
             metrics={"remaining": quota.remaining_today},
         )
 
-    def _s2_metrics(self, estimate: ScoreEstimate) -> dict[str, Any]:
+    def _keeps_best(self, title: str) -> bool:
+        """4.2.1: True when the board keeps the problem's best score (``best``), False under ``latest``."""
+        if not self.config.keep_best_board:
+            return False
+        if not self.config.board_mode_from_rules:
+            return True
+        meta = self.estimator.problems_meta.get(title) or {}
+        return str(meta.get("ranking_submission_mode") or "").strip().lower() != "latest"
+
+    def _noise_floor(self, title: str) -> tuple[float, dict[str, Any] | None]:
+        """4.2.1: ``clamp(sigma_hat, floor, 2 * floor)`` from repeated judgments, else the configured floor."""
+        base = float(self.config.noise_floor_pts)
+        if not self.config.noise_floor_from_judge_sigma:
+            return base, None
+        try:
+            from . import judge_noise
+            noise = judge_noise.sigma_for(self.workspace, title)
+        except Exception:
+            noise = None
+        if not noise:
+            return base, None
+        return round(min(2.0 * base, max(base, float(noise["sigma"]))), 2), noise
+
+    def _s2_metrics(self, estimate: ScoreEstimate, floor: float | None = None,
+                    noise: dict[str, Any] | None = None, keeps_best: bool = True) -> dict[str, Any]:
         return {
+            "board_mode": "best" if keeps_best else "latest",
+            "judge_noise": noise,
             "delta_expected": estimate.delta_expected,
             "expected_improvement": estimate.expected_improvement,
             "prob_positive": estimate.prob_positive,
@@ -1022,7 +1097,7 @@ class SubmissionGate:
             "calibration_trust": estimate.calibration_trust,
             "calibration_samples": estimate.calibration_samples,
             "calibration_bias": estimate.calibration_bias,
-            "threshold": self.config.noise_floor_pts,
+            "threshold": self.config.noise_floor_pts if floor is None else floor,
             "prediction_interval": estimate.prediction_interval,
         }
 
@@ -1061,6 +1136,8 @@ class SubmissionGate:
         )
         cb = self.get_circuit_breaker(title, as_of=as_of)
         quota = self.get_quota_status(as_of=as_of)
+        keeps_best = self._keeps_best(title)  # 4.2.1: the contest's own board rule
+        floor, noise = self._noise_floor(title)  # 4.2.1: measured judge noise
 
         is_critical_restore = (
             ledger.confirmed_board_zero
@@ -1076,7 +1153,8 @@ class SubmissionGate:
         )
         ref_best = float(ledger.contemporary_best_score or ledger.raw_historical_best_score or 0.0)
         is_restore_regime = (
-            (not is_critical_restore)
+            keeps_best
+            and (not is_critical_restore)
             and bool(ledger.historical_best_sha)
             and (ref_best - estimate.current_score >= 1.5)
         )
@@ -1092,7 +1170,7 @@ class SubmissionGate:
         ev = estimate.explore_evidence or {}
         restore_explore_ok = (
             delta_vs_best > 0.0
-            and ucb_vs_best >= self.config.noise_floor_pts
+            and ucb_vs_best >= floor
             and not bool(ev.get("veto_pos_corr"))
             and not bool(ev.get("veto_small_core"))
         )
@@ -1112,7 +1190,7 @@ class SubmissionGate:
                 StageResult(stage="NOISE_FLOOR", passed=True, code="PROBE_ALLOWANCE",
                             reason="Probe submissions are not gated on score improvement",
                             metrics={"delta_expected": estimate.delta_expected,
-                                     "threshold": self.config.noise_floor_pts}),
+                                     "threshold": floor}),
                 StageResult(stage="CIRCUIT_BREAKER", passed=True, code="PROBE_ALLOWANCE",
                             reason="Circuit breaker is not armed for opening probes",
                             metrics={"remaining": probe["remaining"]}),
@@ -1150,13 +1228,14 @@ class SubmissionGate:
         # Stage 2: NOISE_FLOOR (Uncertainty-Aware with `EXPLORE` Anti-Burial Channel)
         is_explore_pass = False
         is_ei_pass = False
+        is_low_gain_pass = False
         if explicit_skip:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
                 passed=False,
                 code="OPERATOR_SKIPPED",
                 reason=f"Skipped by operator override: {ov.get('reason', 'manual skip')}",
-                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                metrics={"delta_expected": estimate.delta_expected, "threshold": floor},
             )
         elif is_critical_restore:
             s2 = StageResult(
@@ -1165,10 +1244,10 @@ class SubmissionGate:
                 code="BYPASS_CRITICAL_RESTORE",
                 reason=(
                     f"Board is '{estimate.board_status}' (score={estimate.current_score:.2f}); "
-                    f"CRITICAL_RESTORE bypasses +{self.config.noise_floor_pts:.1f}pt floor "
+                    f"CRITICAL_RESTORE bypasses +{floor:.1f}pt floor "
                     f"(contemp est +{estimate.delta_expected:.2f} pts)"
                 ),
-                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                metrics={"delta_expected": estimate.delta_expected, "threshold": floor},
             )
         elif is_already_active_on_board and ov_action != "approve":
             s2 = StageResult(
@@ -1180,7 +1259,7 @@ class SubmissionGate:
                     f"(S_live={estimate.current_score:.2f}, gamma={estimate.decay_factor_gamma:.4f}); "
                     f"restore_gain=0.00 pts"
                 ),
-                metrics={"delta_expected": 0.0, "threshold": self.config.noise_floor_pts},
+                metrics={"delta_expected": 0.0, "threshold": floor},
             )
         elif effective_force and estimate.delta_expected >= 0.0:
             s2 = StageResult(
@@ -1188,17 +1267,17 @@ class SubmissionGate:
                 passed=True,
                 code="FORCED_APPROVAL",
                 reason=f"Explicit force/override approved (contemp delta={estimate.delta_expected:+.2f} pts)",
-                metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                metrics={"delta_expected": estimate.delta_expected, "threshold": floor},
             )
         elif is_restore_regime and not is_restoring_best and not effective_force:
-            if delta_vs_best >= self.config.noise_floor_pts:
+            if delta_vs_best >= floor:
                 s2 = StageResult(
                     stage="NOISE_FLOOR",
                     passed=True,
                     code="ABOVE_NOISE_FLOOR",
                     reason=(
                         f"New-best gain vs best({(ledger.historical_best_sha or '')[:7]}={ref_best:.2f}): "
-                        f"delta_vs_best={delta_vs_best:+.2f} pts >= +{self.config.noise_floor_pts:.2f} pts "
+                        f"delta_vs_best={delta_vs_best:+.2f} pts >= +{floor:.2f} pts "
                         f"(sigma={estimate.confidence_sigma:.2f}, UCB_vs_best={ucb_vs_best:+.2f})"
                     ),
                     metrics={
@@ -1206,7 +1285,7 @@ class SubmissionGate:
                         "ucb_delta": estimate.ucb_delta,
                         "sigma": estimate.confidence_sigma,
                         "calibration_trust": estimate.calibration_trust,
-                        "threshold": self.config.noise_floor_pts,
+                        "threshold": floor,
                         "ref_best": ref_best,
                         "delta_vs_best": delta_vs_best,
                         "ucb_vs_best": ucb_vs_best,
@@ -1216,7 +1295,7 @@ class SubmissionGate:
                 is_explore_pass = True
                 explore_msg = estimate.explore_reason or (
                     f"new-best upside in [RESTORE] (est={estimate.estimated_score:.2f} > "
-                    f"best={ref_best:.2f}, UCB_vs_best={ucb_vs_best:+.2f} >= +{self.config.noise_floor_pts:.2f})"
+                    f"best={ref_best:.2f}, UCB_vs_best={ucb_vs_best:+.2f} >= +{floor:.2f})"
                 )
                 s2 = StageResult(
                     stage="NOISE_FLOOR",
@@ -1228,7 +1307,7 @@ class SubmissionGate:
                         "ucb_delta": estimate.ucb_delta,
                         "sigma": estimate.confidence_sigma,
                         "calibration_trust": estimate.calibration_trust,
-                        "threshold": self.config.noise_floor_pts,
+                        "threshold": floor,
                         "ref_best": ref_best,
                         "delta_vs_best": delta_vs_best,
                         "ucb_vs_best": ucb_vs_best,
@@ -1243,7 +1322,7 @@ class SubmissionGate:
                     reason=(
                         f"In [RESTORE] regime (best={ref_best:.2f} vs board={estimate.current_score:.2f}): "
                         f"est={estimate.estimated_score:.2f} gives delta_vs_best={delta_vs_best:+.2f}, "
-                        f"UCB_vs_best={ucb_vs_best:+.2f} < +{self.config.noise_floor_pts:.2f}; "
+                        f"UCB_vs_best={ucb_vs_best:+.2f} < +{floor:.2f}; "
                         f"holding to avoid eating cur->best delta"
                     ),
                     metrics={
@@ -1251,19 +1330,19 @@ class SubmissionGate:
                         "ucb_delta": estimate.ucb_delta,
                         "sigma": estimate.confidence_sigma,
                         "calibration_trust": estimate.calibration_trust,
-                        "threshold": self.config.noise_floor_pts,
+                        "threshold": floor,
                         "ref_best": ref_best,
                         "delta_vs_best": delta_vs_best,
                         "ucb_vs_best": ucb_vs_best,
                     },
                 )
-        elif estimate.delta_expected >= self.config.noise_floor_pts:
+        elif estimate.delta_expected >= floor:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
                 passed=True,
                 code="ABOVE_NOISE_FLOOR",
                 reason=(
-                    f"Expected gain {estimate.delta_expected:+.2f} pts >= +{self.config.noise_floor_pts:.2f} pts "
+                    f"Expected gain {estimate.delta_expected:+.2f} pts >= +{floor:.2f} pts "
                     f"(sigma={estimate.confidence_sigma:.2f}, UCB={estimate.ucb_delta:+.2f}, "
                     f"P(gain>0)={estimate.prob_positive * 100:.0f}%)"
                 ),
@@ -1272,7 +1351,7 @@ class SubmissionGate:
                     "ucb_delta": estimate.ucb_delta,
                     "sigma": estimate.confidence_sigma,
                     "calibration_trust": estimate.calibration_trust,
-                    "threshold": self.config.noise_floor_pts,
+                    "threshold": floor,
                 },
             )
         elif estimate.explore_eligible and not (ov_action == "skip"):
@@ -1287,7 +1366,7 @@ class SubmissionGate:
                     "ucb_delta": estimate.ucb_delta,
                     "sigma": estimate.confidence_sigma,
                     "calibration_trust": estimate.calibration_trust,
-                    "threshold": self.config.noise_floor_pts,
+                    "threshold": floor,
                     "explore_evidence": estimate.explore_evidence,
                 },
             )
@@ -1298,7 +1377,7 @@ class SubmissionGate:
                     passed=True,
                     code="OPERATOR_OVERRIDE",
                     reason=f"Operator explicitly overrode negative expected delta ({estimate.delta_expected:+.2f} pts)",
-                    metrics={"delta_expected": estimate.delta_expected, "threshold": self.config.noise_floor_pts},
+                    metrics={"delta_expected": estimate.delta_expected, "threshold": floor},
                 )
             else:
                 s2 = StageResult(
@@ -1316,12 +1395,12 @@ class SubmissionGate:
                         "ucb_delta": estimate.ucb_delta,
                         "sigma": estimate.confidence_sigma,
                         "calibration_trust": estimate.calibration_trust,
-                        "threshold": self.config.noise_floor_pts,
+                        "threshold": floor,
                     },
                 )
         elif (
-            self.config.keep_best_board
-            and estimate.expected_improvement >= self.config.noise_floor_pts
+            keeps_best
+            and estimate.expected_improvement >= floor
             and estimate.prob_positive >= self.config.min_prob_positive
         ):
             is_ei_pass = True
@@ -1331,12 +1410,28 @@ class SubmissionGate:
                 code="EXPECTED_IMPROVEMENT",
                 reason=(
                     f"Expected improvement {estimate.expected_improvement:+.2f} pts >= "
-                    f"+{self.config.noise_floor_pts:.2f} pts (gain {estimate.delta_expected:+.2f}, "
+                    f"+{floor:.2f} pts (gain {estimate.delta_expected:+.2f}, "
                     f"sigma={estimate.confidence_sigma:.2f}, P(gain>0)={estimate.prob_positive:.2f}, "
                     f"confidence={estimate.calibration_trust:.2f} from {estimate.calibration_samples:g} receipt(s)); "
                     f"the board keeps the best score"
                 ),
-                metrics=self._s2_metrics(estimate),
+                metrics=self._s2_metrics(estimate, floor, noise, keeps_best),
+            )
+        elif (
+            self.config.approve_low_gain_positive
+            and estimate.delta_expected > 0.0
+            and estimate.prob_positive >= self.config.low_gain_min_prob
+        ):
+            is_low_gain_pass = True
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=True,
+                code="LOW_GAIN_POSITIVE",
+                reason=(
+                    f"Expected gain {estimate.delta_expected:+.2f} pts is below the +{floor:.2f} pt noise floor "
+                    f"but more likely up than down (P(gain>0)={estimate.prob_positive:.2f}); approved at low priority"
+                ),
+                metrics=self._s2_metrics(estimate, floor, noise, keeps_best),
             )
         else:
             low_odds = estimate.prob_positive < self.config.min_prob_positive
@@ -1346,15 +1441,17 @@ class SubmissionGate:
                 code="BELOW_NOISE_FLOOR",
                 reason=(
                     f"Expected improvement {estimate.expected_improvement:+.2f} pts < "
-                    f"+{self.config.noise_floor_pts:.2f} pts (gain {estimate.delta_expected:+.2f}, "
+                    f"+{floor:.2f} pts (gain {estimate.delta_expected:+.2f}, "
                     f"sigma={estimate.confidence_sigma:.2f}, P(gain>0)={estimate.prob_positive:.2f}, "
                     f"confidence={estimate.calibration_trust:.2f} from {estimate.calibration_samples:g} receipt(s))"
                     + ("; gain is unlikely" if low_odds else "")
+                    + ("" if keeps_best else "; the board shows the latest submission")
                 ),
-                metrics=self._s2_metrics(estimate),
+                metrics=self._s2_metrics(estimate, floor, noise, keeps_best),
             )
 
-        # Stage 3: CIRCUIT_BREAKER
+        # Stage 3: CIRCUIT_BREAKER (4.2.1: advisory unless GateConfig.circuit_blocks)
+        circuit_advisory = False
         if is_critical_restore:
             s3 = StageResult(
                 stage="CIRCUIT_BREAKER",
@@ -1371,7 +1468,7 @@ class SubmissionGate:
                 reason="Operator override bypassed circuit breaker",
                 metrics=cb.to_dict(),
             )
-        elif cb.state == "OPEN":
+        elif cb.state == "OPEN" and self.config.circuit_blocks:
             s3 = StageResult(
                 stage="CIRCUIT_BREAKER",
                 passed=False,
@@ -1379,12 +1476,21 @@ class SubmissionGate:
                 reason=cb.reason,
                 metrics=cb.to_dict(),
             )
-        elif cb.state == "HALF_OPEN" and (title, canonical_sha) not in self._prior_online_pass_shas:
+        elif cb.state == "HALF_OPEN" and self.config.circuit_blocks and (title, canonical_sha) not in self._prior_online_pass_shas:
             s3 = StageResult(
                 stage="CIRCUIT_BREAKER",
                 passed=False,
                 code="HALF_OPEN_UNPROVEN_SHA",
                 reason=cb.reason,
+                metrics=cb.to_dict(),
+            )
+        elif cb.state == "OPEN" or (cb.state == "HALF_OPEN" and (title, canonical_sha) not in self._prior_online_pass_shas):
+            circuit_advisory = True
+            s3 = StageResult(
+                stage="CIRCUIT_BREAKER",
+                passed=True,
+                code="CIRCUIT_OPEN_ADVISORY" if cb.state == "OPEN" else "HALF_OPEN_ADVISORY",
+                reason=f"{cb.reason}; advisory only: approved at half priority, try an orthogonal direction",
                 metrics=cb.to_dict(),
             )
         else:
@@ -1429,13 +1535,14 @@ class SubmissionGate:
             elif is_critical_restore:
                 status_tag = "CRITICAL_RESTORE"
                 gate_reason = f"CRITICAL_RESTORE approved: {s2.reason}"
-            elif is_explore_pass:
+            elif is_explore_pass or is_low_gain_pass or circuit_advisory:
+                why = f"[S3 advisory] {s3.reason} | {s2.reason}" if circuit_advisory else s2.reason
                 if quota.rate_wait_sec > 0 and as_of is None:
                     status_tag = "RATE_WAIT"
-                    gate_reason = f"EXPLORE approved (pacing {quota.rate_wait_sec}s): {s2.reason}"
+                    gate_reason = f"EXPLORE approved (pacing {quota.rate_wait_sec}s): {why}"
                 else:
                     status_tag = "EXPLORE"
-                    gate_reason = s2.reason
+                    gate_reason = why
             elif quota.rate_wait_sec > 0 and as_of is None:
                 status_tag = "RATE_WAIT"
                 gate_reason = f"All 4 stages passed; pacing {quota.rate_wait_sec}s for 190s rate limit"
@@ -1450,8 +1557,12 @@ class SubmissionGate:
             priority_score = round(estimate.difficulty * max(0.5, 0.5 * estimate.ucb_delta), 2)
         elif approved and is_ei_pass:
             priority_score = round(estimate.difficulty * estimate.expected_improvement, 2)
+        elif approved and is_low_gain_pass:
+            priority_score = round(estimate.difficulty * max(0.0, estimate.delta_expected) * 0.5, 2)
         else:
             priority_score = round(estimate.weighted_delta, 2)
+        if approved and circuit_advisory and not is_critical_restore:
+            priority_score = round(priority_score * 0.5, 2)
 
         return GateVerdict(
             title=title,

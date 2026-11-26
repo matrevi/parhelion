@@ -775,8 +775,14 @@ class ScoreEstimator:
                 ev = json.loads(ev_file.read_text())
                 items = ev.values() if isinstance(ev, dict) else ev
                 for v in items:
-                    if isinstance(v, dict) and v.get("title") in out and v.get("difficulty"):
+                    if not isinstance(v, dict) or v.get("title") not in out:
+                        continue
+                    if v.get("difficulty"):
                         out[v["title"]]["difficulty"] = int(v["difficulty"])
+                    # 4.2.1: "best" keeps a problem's best score on the board, "latest" shows the
+                    # last submission; the gate reads this per problem.
+                    if v.get("ranking_submission_mode"):
+                        out[v["title"]]["ranking_submission_mode"] = str(v["ranking_submission_mode"])
             except Exception:
                 pass
         if not out:

@@ -210,6 +210,7 @@ class SchedulerEngine:
             state_dir=self.state_dir,
         )
         self.estimator._calibrator = self.calibrator
+        self.calibrator.tle_arms_escape_lock = bool(self.config.tle_arms_escape_lock)  # 4.2.1 switch
         self.gate = SubmissionGate(
             self.workspace,
             estimator=self.estimator,

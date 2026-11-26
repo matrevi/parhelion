@@ -76,11 +76,19 @@ class GateStageTwoTest(unittest.TestCase):
         self.assertAlmostEqual(verdict.priority_score, 4 * 2.84, places=1)
         self.assertNotIn("quota", s2.reason)
 
-    def test_confident_small_gain_still_holds(self) -> None:
+    def test_confident_small_gain_is_approved_at_low_priority(self) -> None:
+        # 4.2.1: below the floor but very likely up (P = 0.91): approve, ordered below READY gains.
         verdict = self._verdict(_estimate(1.07, 0.8))
+        self.assertTrue(verdict.approved, verdict.gate_reason)
+        self.assertEqual(verdict.stages[1].code, "LOW_GAIN_POSITIVE")
+        self.assertEqual(verdict.status_tag, "EXPLORE")
+        self.assertAlmostEqual(verdict.priority_score, 4 * 1.07 * 0.5, places=2)
+        self.assertNotIn("preserve daily quota", verdict.gate_reason)
+
+    def test_confident_small_gain_holds_with_the_switch_off(self) -> None:
+        verdict = self._verdict(_estimate(1.07, 0.8), approve_low_gain_positive=False)
         self.assertFalse(verdict.approved)
         self.assertEqual(verdict.stages[1].code, "BELOW_NOISE_FLOOR")
-        self.assertNotIn("preserve daily quota", verdict.gate_reason)
 
     def test_unlikely_gain_holds_despite_upside(self) -> None:
         est = _estimate(-20.0, 22.0)  # EI 2.17 clears the floor, P(gain>0) = 0.18 does not
@@ -89,7 +97,12 @@ class GateStageTwoTest(unittest.TestCase):
         self.assertFalse(verdict.approved)
 
     def test_rule_can_be_switched_off(self) -> None:
+        # Without keep-best the E[max(0, gain)] shortcut is off; P(gain>0) = 0.57 still clears the
+        # 4.2.1 low-gain rule, and with that switched off too the candidate holds.
         verdict = self._verdict(_estimate(1.07, 5.68), keep_best_board=False)
+        self.assertNotEqual(verdict.stages[1].code, "EXPECTED_IMPROVEMENT")
+        self.assertEqual(verdict.stages[1].code, "LOW_GAIN_POSITIVE")
+        verdict = self._verdict(_estimate(1.07, 5.68), keep_best_board=False, approve_low_gain_positive=False)
         self.assertFalse(verdict.approved)
 
 

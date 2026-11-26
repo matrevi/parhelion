@@ -134,6 +134,10 @@ def fetch_contest_problems(
                 "problem_url": f"{base}/public/{contest.get('name') or contest_name or contest_id}/{row.get('name') or ''}".rstrip("/"),
             }
         )
+        # 4.2.1: the gate reads the board rule ("best" keeps the best score, "latest" shows the
+        # last submission) from the manifest; omitted when Judge does not publish it.
+        if row.get("ranking_submission_mode"):
+            problems[-1]["ranking_submission_mode"] = str(row["ranking_submission_mode"])
     if not problems:
         raise ContestScrapeError(f"contest {contest_id} returned no usable problem titles")
 

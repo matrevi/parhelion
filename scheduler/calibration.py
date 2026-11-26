@@ -200,6 +200,9 @@ class BenchmarkCalibrator:
         self._regime_cache: dict[tuple[str, str, str | None], str] = {}
         self._cal_cache: dict[tuple[str, str], dict[str, Any]] = {}
         self._esc_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        # 4.2.1: a TLE is a timing verdict no local correctness reproducer can clear, so it no longer
+        # arms the escape lock (GateConfig.tle_arms_escape_lock restores the old behaviour).
+        self.tle_arms_escape_lock = False
 
     def _spec_paths(self, title: str) -> tuple[pathlib.Path, pathlib.Path]:
         repo_bench = self.workspace / _dev("work_prefix") / title / "bench"
@@ -907,6 +910,7 @@ class BenchmarkCalibrator:
         escape_sha = None
         escape_status = None
         escape_row = {}
+        tle_row: dict[str, Any] = {}
         for idx in range(len(live_rows) - 1, -1, -1):
             r = live_rows[idx]
             st = str(r.get("status", ""))
@@ -920,6 +924,12 @@ class BenchmarkCalibrator:
                     # Restoring a historical passing SHA recovers board score, NOT the escaped bug!
                     continue
                 break
+            if st == "Time Limit Exceeded" and not self.tle_arms_escape_lock:
+                # Keep scanning: an older unresolved WA/RE still locks; the timed-out SHA itself is
+                # reported so the gate can refuse resubmitting it unchanged.
+                if not tle_row:
+                    tle_row = r
+                continue
             if st in ("Wrong Answer", "Time Limit Exceeded", "Runtime Error"):
                 ver_rec = self.verified_escapes.get(f"{title}:{csha}") or self.verified_escapes.get(f"{title}:{csha[:7]}")
                 sid = r.get("submission_id")
@@ -941,6 +951,8 @@ class BenchmarkCalibrator:
             "escape_submission_id": escape_row.get("submission_id"),
             "escape_account_id": escape_row.get("account_id"),
             "escaped_commits": escaped_commits,
+            "tle_sha": str(tle_row.get("canonical_sha") or tle_row.get("sha") or "") or None,
+            "tle_submission_id": tle_row.get("submission_id"),
         }
         from .wa_repro import lock_view
         esc_out["escape_repro"] = lock_view(self.workspace, title, esc_out, as_of=as_of)

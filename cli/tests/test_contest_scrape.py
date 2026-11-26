@@ -50,7 +50,8 @@ class ContestScrapeTests(unittest.TestCase):
             if path == "/api/problems/contest/cid-1":
                 return [
                     {"_id": "p1", "name": "neighborlistpbcfixedk", "title": "NeighborListPbcFixedK", "difficulty": 5,
-                     "kernel_pattern": "fused", "sdk_version": "9.0.0", "tags": ["科学计算"]},
+                     "kernel_pattern": "fused", "sdk_version": "9.0.0", "tags": ["科学计算"],
+                     "ranking_submission_mode": "latest"},
                     {"_id": "p2", "name": "revinnorm", "title": "RevINNorm", "difficulty": 2},
                 ]
             raise AssertionError(f"unexpected path {path}")
@@ -66,6 +67,8 @@ class ContestScrapeTests(unittest.TestCase):
         self.assertEqual(first["difficulty"], 5)
         self.assertEqual(first["problem_id"], "p1")
         self.assertEqual(first["kernel_pattern"], "fused")
+        self.assertEqual(first["ranking_submission_mode"], "latest")
+        self.assertNotIn("ranking_submission_mode", res["problems"][1])
         self.assertTrue(first["problem_url"].endswith("/public/mat-chem-sim-pred/neighborlistpbcfixedk"))
 
     def test_unknown_contest_name_reports_available_names(self) -> None:
