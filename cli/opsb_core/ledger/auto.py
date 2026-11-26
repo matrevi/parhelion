@@ -61,19 +61,19 @@ def apply_test(led: Any, record: dict[str, Any], *, diff_hash: str = "", subject
 
 
 def apply_gate(led: Any, sha: str, *, note: str = "", subject: str = "", estimate: dict[str, Any] | None = None,
-               enqueued: bool = False) -> dict[str, Any] | None:
+               enqueued: bool = False, intent: str = "exploit") -> dict[str, Any] | None:
     if view.for_sha(led.rows(), "hypothesis", sha):
         return None
     est = estimate or {}
     entry_type, fields, ekey = builders.gate_hypothesis(
         sha, note=note, subject=subject, mu=est.get("delta_expected"), sigma=est.get("confidence_sigma"),
-        enqueued=enqueued)
+        enqueued=enqueued, intent=intent)
     return led.append(entry_type, fields, ekey=ekey)
 
 
 def apply_link(led: Any, sha: str, hypothesis_id: str = "", predicted_effect: Any = None, *,
                note: str = "", subject: str = "", estimate: dict[str, Any] | None = None,
-               enqueued: bool = False, write: bool = True) -> dict[str, Any]:
+               enqueued: bool = False, write: bool = True, intent: str = "exploit") -> dict[str, Any]:
     """``{id, auto, note}`` of the hypothesis a submission request names, or of the generated one."""
     from . import note as _note
     rows = led.rows()
@@ -96,7 +96,7 @@ def apply_link(led: Any, sha: str, hypothesis_id: str = "", predicted_effect: An
     if existing and not write:
         return {"id": existing[-1]["id"], "auto": False, "note": unknown}
     created = None if not write else apply_gate(led, sha, note=note, subject=subject, estimate=estimate,
-                                                enqueued=enqueued)
+                                                enqueued=enqueued, intent=intent)
     row = created or (view.for_sha(led.rows(), "hypothesis", sha) or [{}])[-1]
     if not row.get("id"):
         return {"id": "", "auto": False, "note": "no hypothesis could be generated for this SHA"}
@@ -175,7 +175,8 @@ def on_gate_request(ws: Path, problem: str, sha: str, agent_id: Any, *, note: st
 
 def on_gate_link(ws: Path, problem: str, sha: str, agent_id: Any, *, note: str = "",
                  estimate: dict[str, Any] | None = None, enqueued: bool = False, write: bool = True,
-                 hypothesis_id: str = "", predicted_effect: Any = None) -> dict[str, Any] | None:
+                 hypothesis_id: str = "", predicted_effect: Any = None,
+                 intent: str = "exploit") -> dict[str, Any] | None:
     """The hypothesis behind one submission request (named, updated, or generated) — 4.2 C #3.
 
     A preview (``write`` false) only reports which id the ledger already holds and writes nothing.
@@ -186,7 +187,7 @@ def on_gate_link(ws: Path, problem: str, sha: str, agent_id: Any, *, note: str =
     repo = gitref.problem_repo(ws, problem)
     return apply_link(led, sha, hypothesis_id, predicted_effect, note=note,
                       subject=gitref.subject(repo, sha) if repo and not note.strip() else "",
-                      estimate=estimate, enqueued=enqueued, write=write)
+                      estimate=estimate, enqueued=enqueued, write=write, intent=intent)
 
 
 def on_receipt(ws: Path, problem: str, row: dict[str, Any], agent_id: Any = None, *, gain: float | None = None,

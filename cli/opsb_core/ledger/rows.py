@@ -123,13 +123,16 @@ def test_entries(record: dict[str, Any], *, diff_hash: str = "", subject: str = 
 
 
 def gate_hypothesis(sha: str, *, note: str = "", subject: str = "", mu: Any = None, sigma: Any = None,
-                    enqueued: bool = False) -> tuple[str, dict[str, Any], str]:
+                    enqueued: bool = False, intent: str = "exploit") -> tuple[str, dict[str, Any], str]:
     """The hypothesis a submission request implies when the worker named none (``source=platform``)."""
     effect = ({"delta_mu": _round(mu, 2), "delta_sigma": _round(sigma, 2)}
               if _num(mu) is not None and _num(sigma) is not None else None)
+    why = "created by the platform from the submission request and the gate's estimate"
+    if intent and intent != "exploit":
+        why += f" ({intent} intent)"  # 4.3 P23: a probe or restore reads as one in the ledger
     return "hypothesis", {
         "claim": note.strip() or subject.strip() or f"candidate {sha[:7]}",
-        "why": "created by the platform from the submission request and the gate's estimate",
+        "why": why,
         "sha": sha, "status": "queued" if enqueued else "open", "priority": 3, "confidence": "inferred",
         "predicted_effect": effect}, f"gate:{sha}"
 

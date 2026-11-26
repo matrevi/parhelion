@@ -181,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     s_sub.add_argument("--note", default="")
     s_sub.add_argument("--now", action="store_true", help="Dispatch rate-paced submission worker immediately")
     s_sub.add_argument("--force", action="store_true")
+    s_sub.add_argument("--intent", default="exploit", choices=["exploit", "probe", "restore"],
+                       help="4.3 submit intent: exploit (default), probe (speculative, undo+budget), restore")
     s_sub.add_argument("--workspace", "-w")
     s_sub.add_argument("--json", action="store_true")
     s_sub.set_defaults(func=run_submit)

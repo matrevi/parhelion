@@ -49,7 +49,13 @@ def run_submit(args: argparse.Namespace) -> int:
         (it for it in snap["submission_queue"] if it["title"] == title and it["sha"].startswith(sha[:7]) and it["kind"] != "completed"),
         None,
     )
-    bridge_eval = invoke_bridge(ws, "evaluate", ["--title", title, "--sha", sha, "--note", args.note or ""], use_cache=False)
+    intent = str(getattr(args, "intent", "exploit") or "exploit").strip().lower()
+    if intent not in ("exploit", "probe", "restore"):
+        raise SystemExit(f"Unknown submit intent '{intent}': use exploit, probe or restore")
+    eval_args = ["--title", title, "--sha", sha, "--note", args.note or ""]
+    if intent != "exploit":
+        eval_args.extend(["--intent", intent])
+    bridge_eval = invoke_bridge(ws, "evaluate", eval_args, use_cache=False)
 
     bridge_est = (bridge_eval or {}).get("estimate") or {}
     est = (
@@ -176,6 +182,9 @@ def run_submit(args: argparse.Namespace) -> int:
     }
     if args.force:
         record["force"] = True
+    if intent != "exploit":
+        # 4.3 P23: dispatch re-evaluates the row without an explicit intent, so the row carries it.
+        record["intent"] = intent
     explicit_now = bool(getattr(args, "now", False))
     inserted = enqueue_once(ws, record)
     if not inserted and not (explicit_now and args.force):
