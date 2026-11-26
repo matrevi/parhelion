@@ -1,8 +1,27 @@
-# Parhelion 4.0.0 发布说明
+# Parhelion 发布说明
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
-## 变更
+## 4.0.1 — 卫生修复
+
+4.0 的清理只覆盖了"测试污染的工作区目录"和"远端死票"，两条平台自己写入的路径因此无界增长：每个 worker 的 `workspaces/<id>/agents/<agent_id>/`（各带一份 ~100MB 的 `codex_home`，实测 175 个共 1.0GB）与驱动会话流水（125MB，其中 90% 来自单日）。本次补齐回收，并修正一处权限漂移。
+
+### `opsb doctor clean`
+
+- `--agents`：回收已结束 agent 的沙箱。判定与 `AgentBusStore.cleanup_stopped` 完全一致（`stopped`/`error` 且 `pid`、`pgid` 均已清空），数据库里无记录的孤儿沙箱一并回收。登记工作区的**状态目录本身仍不移动**，只回收其 `agents/` 下已被证明结束的沙箱；数据库不可读时只列出、不移动。`--apply` 移入 `trash/<UTC>/agents/<workspace>/<agent_id>`。
+- `--logs DAYS`（默认 14 天）与 `--logs-max-mb MB`（默认 100，`0` 关闭）：驱动会话流水的时间窗 + 总量封顶，按 mtime 从新到旧装满预算，装不下的更旧文件回收。这类流水属平台诊断 telemetry，与远端死票同类，`--apply` 直接删除；用户数据仍只移动。
+- `--purge-trash`：唯一会删除 trash 的操作，需显式指定，用于真正释放前两步腾出的空间。
+- 默认仍是只列出不动手；`--json` 在带对应开关时追加 `agents` / `logs` / `trash_purge`。
+
+### 配置权限
+
+- `ConfigRepository.save()` 在原子替换前 `chmod 0600`：迁移表承诺 `config.json` 为 0600，但运行期保存会掉回 umask。
+
+### 实测回收
+
+- `workspaces/` 1.0GB → 5.2MB，`logs/` 125MB → 100MB，`~/.parhelion` 约 1.2GB → 144MB。
+
+## 4.0.0
 
 ### 测试平台
 - 每题一个平台持有的版本化套件 `suite.json`；用例是最小单元，桶只是标签。
