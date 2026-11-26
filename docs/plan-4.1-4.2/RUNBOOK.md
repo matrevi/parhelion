@@ -29,9 +29,8 @@
 
 | 包 | 分支 | 状态 | 下一步 |
 |---|---|---|---|
-| P01 P02 P02b P03 | — | 已合入 | — |
-| P04 | impl/P04-change-driven-wait | 组 2 的 Opus 代理在做 | 交付后合入（第 2 步收尾），之后组 2 不再续派给这个 Opus 代理 |
-| P05 | impl/P05-ledger-core | 未开始 | P04 合入后派新的 Sonnet 代理；简报写明 P03 回放接口（`replay/seeds.py` 的 `register`）与 P04 hub 位置 |
+| P01 P02 P02b P03 P04 | — | 已合入 | — |
+| P05 | impl/P05-ledger-core | Sonnet 代理在做（组 2b） | 交付后合入，再 SendMessage 同一代理续做 P06 |
 | P06 | impl/P06-ledger-seed | 未开始 | P05 合入后由同一个 Sonnet 代理续做 |
 | P07 | impl/P07-gate-queue | 已完成 | P06 之后合入 |
 | P07b | impl/P07b-no-closing-reserve | Opus 代理在做（删除收尾预留，用户已批准） | 随 P07 一起合入：先 P07，再 P07b |
