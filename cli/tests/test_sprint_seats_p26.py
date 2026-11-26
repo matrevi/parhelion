@@ -288,6 +288,27 @@ def test_replace_hands_over_failures_and_the_last_narrative_once(env):
     assert sorted(a["seat"] for a in live) == ["replace-1", "solo"]
 
 
+def test_a_plain_start_reports_the_live_replacement_not_the_stopped_seat(env):
+    """4.3 run 2: after replace=[title] the old solo row was stopped, and a later solo preview reported
+    the problem blocked ("Worker explicitly stopped") although its replace-1 worker was running."""
+    from opsb_core.agents.sprint import start_sprint
+
+    ws, mgr = env
+    title = _make_contest(ws, 1)[0]
+    old_id = start_sprint(mgr, ws, driver="deepseek")["assignments"][0]["agent_id"]
+    new_id = start_sprint(mgr, ws, driver="deepseek", replace=[title])["replaced"][0]["agent_id"]
+    mgr._store(ws).update_agent(old_id, status="stopped")
+    plan = start_sprint(mgr, ws, driver="deepseek", problems=[title], mode="solo", preview=True)
+    slot = plan["assignments"][0]
+    assert slot["state"] == "existing" and slot["agent_id"] == new_id
+    assert slot["live_seat"] == "replace-1" and slot["replaces"] == old_id
+    assert plan["ok"]
+    # With the replacement stopped too, the seat is blocked again as before.
+    mgr._store(ws).update_agent(new_id, status="stopped")
+    blocked = start_sprint(mgr, ws, driver="deepseek", problems=[title], mode="solo", preview=True)
+    assert blocked["assignments"][0]["state"] == "blocked"
+
+
 def test_replace_is_keyed_by_the_stagnation_event(env):
     from opsb_core.agents.sprint import start_sprint
 

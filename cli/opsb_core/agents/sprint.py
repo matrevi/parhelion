@@ -87,6 +87,22 @@ def _stop_seats(manager, ws: Path, names: list[str], *, preview: bool) -> list[d
     return out
 
 
+def _live_replacement(occupied: dict[tuple[str, str], dict[str, Any]], title: str,
+                      existing: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The live ``replace-N`` seat that took over a stopped seat of ``title``, if any.
+
+    ``replace`` stops every seat of a problem and opens one replacement seat. A later plain sprint
+    start looked the old seat name up, found the stopped row and reported the problem blocked although
+    its replacement was working, which invited a second ``replace`` that would restart it (4.3 run 2).
+    """
+    if not existing or existing["status"] not in ("stopped", "error"):
+        return None
+    live = [w for (problem, seat), w in occupied.items()
+            if problem == title and seat.startswith("replace-") and w["status"] not in ("stopped", "error")
+            and str(w.get("created_at") or "") > str(existing.get("created_at") or "")]
+    return max(live, key=lambda w: str(w.get("created_at") or ""), default=None)
+
+
 def _replace_seats(manager, ws: Path, titles: list[str], *, preview: bool, driver: str,
                    suspended: bool) -> list[dict[str, Any]]:
     """Ask the live seats of each title to hand off, then start one orthogonal replacement seat.
@@ -241,7 +257,11 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
                         mode=plan["mode"])
             assignments.append(slot)
             existing = occupied.get((title, seat))
-            if existing and existing["status"] in ("stopped", "error"):
+            successor = _live_replacement(occupied, title, existing)
+            if successor:
+                slot.update(state="existing", agent_id=successor["agent_id"], live_seat=seat_of(successor),
+                            replaces=existing["agent_id"])
+            elif existing and existing["status"] in ("stopped", "error"):
                 slot.update(state="blocked", agent_id=existing["agent_id"],
                             reason=existing.get("error") or "Worker explicitly stopped")
             elif existing:
