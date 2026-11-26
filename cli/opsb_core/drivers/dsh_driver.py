@@ -233,6 +233,67 @@ def ensure_subagent_capacity(
         (home / "profiles" / profile / "cordis.patch.yml").write_text("\n".join(lines) + "\n", encoding="utf-8")
     return result
 
+
+PARHELION_MCP_PLUGIN = Path(__file__).with_name("dsh_parhelion_mcp.mjs")
+PARHELION_MCP_PLUGIN_ID = "global-parhelion-mcp"
+PARHELION_MCP_BEGIN = "# >>> parhelion-mcp (managed by opsb, rewritten on launch)"
+PARHELION_MCP_END = "# <<< parhelion-mcp"
+
+
+def ensure_parhelion_mcp_plugin(
+    profile: str = "desktop",
+    dsh_home: Path | None = None,
+    command: str | None = None,
+    opsb_script: str | None = None,
+) -> dict[str, Any]:
+    """Install the per-Agent Parhelion MCP mount into a DSH profile.
+
+    DSH Desktop conversations only see MCP servers that the profile mounts; registering a
+    contest folder as a DSH workspace does not give its conversations the `parhelion_*`
+    tools. The plugin mounts the orchestrator server for any Agent whose cwd is inside a
+    contest workspace. Like ensure_subagent_capacity, the profile is read at load time, so
+    a change only takes effect on the next DSH start; callers must not restart DSH.
+    """
+    home = _resolve_dsh_home(dsh_home)
+    profile_dir = home / "profiles" / profile
+    patch = profile_dir / "cordis.patch.yml"
+    result: dict[str, Any] = {"path": str(patch), "changed": False, "exists": patch.is_file()}
+    if not patch.is_file():
+        return result
+    plugin_target = profile_dir / f"{PARHELION_MCP_PLUGIN_ID}.mjs"
+    source = PARHELION_MCP_PLUGIN.read_text(encoding="utf-8")
+    if not plugin_target.is_file() or plugin_target.read_text(encoding="utf-8") != source:
+        plugin_target.write_text(source, encoding="utf-8")
+        result["changed"] = True
+    cmd = command or _cfg.resolve_python_exe(None)
+    script = opsb_script or str(_cfg.CLI_DIR / "opsb")
+    block = [
+        PARHELION_MCP_BEGIN,
+        "# Parhelion contest tools for Agents whose folder holds opsb.workspace.json.",
+        "- insert:",
+        f"    - id: {PARHELION_MCP_PLUGIN_ID}",
+        f"      name: ./{PARHELION_MCP_PLUGIN_ID}.mjs",
+        "      config:",
+        f"        command: {json.dumps(str(cmd))}",
+        f"        opsb: {json.dumps(script)}",
+        PARHELION_MCP_END,
+    ]
+    lines = patch.read_text(encoding="utf-8").splitlines()
+    if PARHELION_MCP_BEGIN in lines and PARHELION_MCP_END in lines:
+        begin, end = lines.index(PARHELION_MCP_BEGIN), lines.index(PARHELION_MCP_END) + 1
+        if lines[begin:end] != block:
+            lines[begin:end] = block
+            result["changed"] = True
+    else:
+        kept = [ln for ln in lines if ln.strip() != "[]"]
+        lines = kept + ([""] if kept and kept[-1].strip() else []) + block
+        result["changed"] = True
+    if result["changed"]:
+        patch.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    result["plugin"] = str(plugin_target)
+    return result
+
+
 class DeepSeekDriver(BaseDriver):
     """Unified DeepSeek Harness driver (`DeepSeek Harness.app` GUI + bundled `dsh` CLI / ACP stdio)."""
 
@@ -571,11 +632,16 @@ class DeepSeekDriver(BaseDriver):
         ws = Path(os.path.realpath(workspace.expanduser()))
         wt = Path(os.path.realpath(worktree.expanduser()))
         subagent_cap: dict[str, Any] = {}
+        parhelion_mcp: dict[str, Any] = {}
         if not dry_run:
             try:
                 subagent_cap = ensure_subagent_capacity()
             except Exception:
                 subagent_cap = {}
+            try:
+                parhelion_mcp = ensure_parhelion_mcp_plugin()
+            except Exception as exc:  # noqa: BLE001 - registration must not fail the launch
+                parhelion_mcp = {"error": str(exc)}
         sync_res = self.sync_workspace(ws)
         brief_path, copied = stage_brief_and_clipboard(wt, brief, copy_clipboard=(not dry_run))
         url = self.build_gui_deep_link(wt, prompt="", thread_id=resume_id)
@@ -604,9 +670,12 @@ class DeepSeekDriver(BaseDriver):
             workspace_reg["restarted"] = restarted
             if subagent_cap:
                 workspace_reg["subagent_capacity"] = subagent_cap
+            if parhelion_mcp:
+                workspace_reg["parhelion_mcp"] = parhelion_mcp
             workspace_reg["needs_reload"] = bool(
                 not restarted and (running or _dsh_desktop_running())
-                and (workspace_reg.get("created") or workspace_reg.get("session_linked"))
+                and (workspace_reg.get("created") or workspace_reg.get("session_linked")
+                     or parhelion_mcp.get("changed"))
             )
             launch_macos_deep_link(url, diag.gui_app_path, [], "DeepSeek Harness")
             status = "draft"

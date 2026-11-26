@@ -337,6 +337,30 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("maxActiveSubagents: 20", patch.read_text(encoding="utf-8"))
             self.assertFalse(ensure_subagent_capacity(profile="missing", dsh_home=home)["exists"])
 
+    def test_parhelion_mcp_plugin_is_installed_and_kept_current(self) -> None:
+        from opsb_core.drivers.dsh_driver import PARHELION_MCP_PLUGIN, ensure_parhelion_mcp_plugin
+
+        with tempfile.TemporaryDirectory() as td:
+            home = pathlib.Path(td)
+            patch = home / "profiles" / "desktop" / "cordis.patch.yml"
+            patch.parent.mkdir(parents=True)
+            patch.write_text("- insert:\n    - id: global-aoci-mcp\n      name: ./global-aoci-mcp.mjs\n", encoding="utf-8")
+            first = ensure_parhelion_mcp_plugin(dsh_home=home, command="/py", opsb_script="/cli/opsb")
+            self.assertTrue(first["changed"])
+            plugin = patch.parent / "global-parhelion-mcp.mjs"
+            self.assertEqual(plugin.read_text(encoding="utf-8"), PARHELION_MCP_PLUGIN.read_text(encoding="utf-8"))
+            text = patch.read_text(encoding="utf-8")
+            self.assertIn("global-aoci-mcp", text)          # existing mounts preserved
+            self.assertIn("- id: global-parhelion-mcp", text)
+            self.assertIn('command: "/py"', text)
+            self.assertFalse(ensure_parhelion_mcp_plugin(dsh_home=home, command="/py", opsb_script="/cli/opsb")["changed"])
+            moved = ensure_parhelion_mcp_plugin(dsh_home=home, command="/py2", opsb_script="/cli/opsb")
+            self.assertTrue(moved["changed"])
+            text = patch.read_text(encoding="utf-8")
+            self.assertEqual(text.count("- id: global-parhelion-mcp"), 1)   # rewritten, not duplicated
+            self.assertIn('command: "/py2"', text)
+            self.assertFalse(ensure_parhelion_mcp_plugin(profile="missing", dsh_home=home)["exists"])
+
     def _seed_dsh_home(self, root: Path) -> Path:
         home = root / ".dsh"
         store = home / "storages" / "workspace.json"
