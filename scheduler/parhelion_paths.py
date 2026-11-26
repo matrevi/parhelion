@@ -145,8 +145,23 @@ def get_parhelion_home() -> pathlib.Path:
     return (pathlib.Path.home() / ".parhelion").resolve()
 
 
-def workspace_id(workspace: pathlib.Path | str) -> str:
+def canonical_workspace(workspace: pathlib.Path | str) -> pathlib.Path:
+    """Map a worker worktree (``<contest>/<problem>/.worktrees/<track>``) to its contest root.
+
+    Workers run tools from their worktree; keying platform state by that path would split
+    a contest's state across one data directory per worktree.
+    """
     resolved = pathlib.Path(workspace).expanduser().resolve()
+    parts = resolved.parts
+    if ".worktrees" in parts:
+        for parent in pathlib.Path(*parts[:parts.index(".worktrees")]).parents:
+            if (parent / "opsb.workspace.json").is_file():
+                return parent
+    return resolved
+
+
+def workspace_id(workspace: pathlib.Path | str) -> str:
+    resolved = canonical_workspace(workspace)
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", resolved.name).strip("-") or "workspace"
     digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:8]
     return f"{slug}-{digest}"

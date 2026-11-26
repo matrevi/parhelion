@@ -115,6 +115,13 @@ def _pollution_reason(directory: Path) -> str | None:
         return "pytest workspace"
     if name.startswith("ws-") and ws and not Path(ws).exists():
         return "workspace path missing"
+    if not (directory / "meta.json").is_file():
+        # Every data directory created for a real workspace records its path.
+        return "no workspace metadata"
+    if ws and ".worktrees" in Path(ws).parts and not any(
+            p.is_file() and p.name != "meta.json" for p in directory.rglob("*")):
+        # 3.x keyed state by worker worktree paths; empty leftovers carry no data.
+        return "empty worktree state"
     return None
 
 

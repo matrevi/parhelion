@@ -195,3 +195,20 @@ class SessionHomeIsolationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_clean_flags_metadata_less_and_empty_worktree_dirs(tmp_path):
+    from opsb_core.commands import doctor_cmd
+
+    root = tmp_path / "workspaces"
+    (root / "tmpabc12345-deadbeef" / "agents").mkdir(parents=True)
+    split = root / "sprint-solo-12345678"
+    (split / "state").mkdir(parents=True)
+    (split / "meta.json").write_text('{"workspace": "/c/Op/.worktrees/sprint-solo"}')
+    kept = root / "sprint-dual-87654321"
+    (kept / "state").mkdir(parents=True)
+    (kept / "meta.json").write_text('{"workspace": "/c/Op/.worktrees/sprint-dual"}')
+    (kept / "state" / "scheduler_state.json").write_text("{}")
+    hits = {h["name"]: h["reason"] for h in doctor_cmd.scan_local(tmp_path, {"workspaces": []})}
+    assert hits == {"tmpabc12345-deadbeef": "no workspace metadata",
+                    "sprint-solo-12345678": "empty worktree state"}

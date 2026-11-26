@@ -40,8 +40,23 @@ DAEMON_LOCK_PATH = PARHELION_HOME / "daemon.lock"
 DAEMON_LOG_PATH = LOGS_DIR / "daemon.log"
 
 
-def workspace_id(workspace: Path | str) -> str:
+def canonical_workspace(workspace: Path | str) -> Path:
+    """Map a worker worktree (``<contest>/<problem>/.worktrees/<track>``) to its contest root.
+
+    Workers run tools from their worktree; keying platform state by that path would split
+    a contest's state across one data directory per worktree.
+    """
     resolved = Path(workspace).expanduser().resolve()
+    parts = resolved.parts
+    if ".worktrees" in parts:
+        for parent in Path(*parts[:parts.index(".worktrees")]).parents:
+            if (parent / "opsb.workspace.json").is_file():
+                return parent
+    return resolved
+
+
+def workspace_id(workspace: Path | str) -> str:
+    resolved = canonical_workspace(workspace)
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", resolved.name).strip("-") or "workspace"
     digest = hashlib.sha1(str(resolved).encode("utf-8")).hexdigest()[:8]
     return f"{slug}-{digest}"
