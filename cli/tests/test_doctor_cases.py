@@ -130,6 +130,20 @@ class DoctorCasesTests(unittest.TestCase):
         self.assertIn(f"CONFIGURED_DIR = {str(configured)!r}", scripts[0])
         self.assertEqual(out["cases"]["root"], str(configured))
 
+    def test_remote_report_follows_case_tmp_dir_when_no_cache_dir_is_set(self) -> None:
+        # Runs keep the cache next to their scratch, so a scratch-only setting moves the report too.
+        scratch = self.home / "scratch"
+        (scratch / "opsb-case-cache").mkdir(parents=True)
+        (self.home / "config.json").write_text(json.dumps({
+            "npu_ssh_host": "dev-host", "device": {"case_tmp_dir": str(scratch)}}))
+        real_run = subprocess.run
+        with mock.patch.object(doctor_cases.subprocess, "run",
+                               side_effect=lambda cmd, **kw: real_run([sys.executable, "-"], **kw)), \
+                mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_DIR": "", "OPSB_DEVICE_ISOLATED": "0"}):
+            rc, out = _run(["doctor", "--cases", "--remote", "--json"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(out["cases"]["root"], str(scratch / "opsb-case-cache"))
+
     def test_unreachable_host_reports_error(self) -> None:
         failed = subprocess.CompletedProcess(["ssh"], 255, stdout="", stderr="Connection reset by peer\n")
         with mock.patch.object(doctor_cases.subprocess, "run", return_value=failed):

@@ -347,6 +347,21 @@ def test_extended_card_gap_and_targets_from_a_receipt(contest):
     assert "case gap ours/tbest" in state_card_ext.render(doc)
 
 
+def test_extended_card_speedup_reads_the_local_case_through_the_map(contest, monkeypatch):
+    # The gate's pairing is keyed by local case ids; the card rows by judge keys.
+    ws = contest["ws"]
+    (ws / "results").mkdir(exist_ok=True)
+    row = {"submission_id": "s1", "title": "Op00", "sha": contest["sha"], "status": "Pass", "score": 61.0,
+           "submitted_at": "2026-01-02T03:00:00+00:00", "finished_at": "2026-01-02T03:05:00+00:00",
+           "case_results": [{"testcase_id": "j-aa", "status": "Pass", "time_us": 12.0, "tbest_us": 10.0}]}
+    (ws / "results" / "submit-queue-outcome.jsonl").write_text(json.dumps(row) + "\n")
+    monkeypatch.setattr(state_card_ext, "speedups",
+                        lambda *a: {"cases": {"07": 1.25}, "confidence": "inferred"})
+    monkeypatch.setattr(state_card_ext, "judge_to_local", lambda *a: {"j-aa": "07"})
+    doc = state_card_ext.data(ws, "Op00", WORKER)
+    assert doc["cases"][0]["judge"] == "j-aa" and doc["cases"][0]["speedup"] == pytest.approx(1.25)
+
+
 def test_status_detail_adds_the_per_case_table(contest):
     from opsb_core.mcp import handlers_bench
     ws = contest["ws"]

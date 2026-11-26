@@ -139,6 +139,15 @@ def test_a_model_confidence_is_capped_at_inferred(contest):
     assert platform["confidence"] == "measured"
 
 
+def test_unverified_confidence_belongs_to_peer_rows_only(contest):
+    ws = contest["ws"]
+    led = store.Ledger(ws, "Op00", WORKER)
+    own = note.write(led, {"type": "insight", "claim": "mine", "confidence": "unverified"}, source="worker")
+    assert own["confidence"] == "speculative"
+    peer = note.write(led, {"type": "insight", "claim": "theirs", "confidence": "unverified"}, source="peer")
+    assert peer["confidence"] == "unverified" and peer["source"] == "peer"
+
+
 def test_note_cannot_touch_a_measurement(contest):
     ws = contest["ws"]
     led = store.Ledger(ws, "Op00", WORKER)

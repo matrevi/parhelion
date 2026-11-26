@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import posixpath
 import subprocess
 import sys
 from typing import Any
@@ -113,10 +114,18 @@ def _host(cfg: dict[str, Any], remote: bool) -> str | None:
 
 
 def _configured_dir(host: str | None) -> str | None:
-    """`device.case_cache_dir` describes the device host, so only --remote can use it."""
+    """The device host's cache directory from `device.*`, so only --remote can use it.
+
+    `case_cache_dir` names it; with only `case_tmp_dir` set, runs keep the cache next to their
+    scratch (`<case_tmp_dir>/opsb-case-cache`, see CaseCache.top), so the report looks there.
+    """
     if not host:
         return None
-    return device_text("case_cache_dir") or None
+    cache = device_text("case_cache_dir")
+    if cache:
+        return cache
+    scratch = device_text("case_tmp_dir")
+    return posixpath.join(scratch, "opsb-case-cache") if scratch else None
 
 
 def run_cases(args: Any, cfg: dict[str, Any]) -> int:

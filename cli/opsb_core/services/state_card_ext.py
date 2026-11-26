@@ -124,6 +124,19 @@ def speedups(ws: Path, title: str, head: str, base: str) -> dict[str, Any]:
             "base_sha": base, "geo": pair.get("geo")}
 
 
+def judge_to_local(ws: Path, title: str) -> dict[str, str]:
+    """``{judge_key: local_id}`` from the case map: the gate's pairing is keyed by local case ids,
+    the card rows by judge keys, so a speedup is looked up through this map."""
+    try:
+        _cfg.ensure_scheduler_path()
+        from scheduler import case_map
+        doc = case_map.current(Path(ws), title, write=False)
+    except Exception:
+        return {}
+    return {str(p["judge"]): str(p["local"]) for p in (doc or {}).get("pairs") or []
+            if isinstance(p, dict) and p.get("judge") and p.get("local")}
+
+
 def predictions(ws: Path, title: str, head: str, base: str) -> dict[str, Any]:
     """Predicted per-case times of ``head`` against tbest (``receipt_predict``) when a map is stored."""
     _cfg.ensure_scheduler_path()
@@ -175,6 +188,7 @@ def case_rows(ws: Path, title: str) -> list[dict[str, Any]]:
     head = head_sha(ws, title)
     base = base_of(ws, title)
     pair = speedups(ws, title, head, base)
+    local_of = judge_to_local(ws, title) if pair else {}
     pred = predictions(ws, title, head, base) if head else {}
     received = receipt_cases(rows)
     names = labels(ws, title)
@@ -190,7 +204,7 @@ def case_rows(ws: Path, title: str) -> list[dict[str, Any]]:
         points = round(receipts.case_points(ours, tbest), 2) if ours and tbest else None
         out.append({
             "case": names.get(key, f"#{position:02d}"), "judge": key,
-            "speedup": _num(pair.get("cases", {}).get(key)) if pair else None,
+            "speedup": _num(pair.get("cases", {}).get(local_of.get(key, key))) if pair else None,
             "confidence": pair.get("confidence") if pair else None,
             "ours_us": round(ours, 2) if ours else None, "tbest_us": round(tbest, 2) if tbest else None,
             "gap_pct": gap, "points": points,

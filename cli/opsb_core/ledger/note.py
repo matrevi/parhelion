@@ -39,7 +39,7 @@ def target_of(fields: dict[str, Any]) -> str:
     return ""
 
 
-def prepare(fields: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
+def prepare(fields: dict[str, Any], rows: list[dict[str, Any]], *, source: str = "worker") -> tuple[str, dict[str, Any]]:
     """``(target, fields)`` of a new note row: platform fields rejected, the update target resolved."""
     check_platform_fields(fields)
     body = {k: v for k, v in fields.items() if k != "id"}
@@ -56,13 +56,15 @@ def prepare(fields: dict[str, Any], rows: list[dict[str, Any]]) -> tuple[str, di
         body["supersedes"] = [str(s) for s in body["supersedes"]] if isinstance(body["supersedes"], list) else [str(body["supersedes"])]
     if body.get("confidence") == "measured":
         body["confidence"] = "inferred"  # a model cannot claim a measured confidence
+    if body.get("confidence") == "unverified" and source != "peer":
+        body["confidence"] = "speculative"  # unverified marks a teammate's claim (agents/peer.py)
     return target, body
 
 
 def write(ledger: Any, fields: dict[str, Any], *, source: str = "worker") -> dict[str, Any]:
     """Append (or supersede) one model-written entry and return the stored row."""
     rows = ledger.rows()
-    target, body = prepare(fields, rows)
+    target, body = prepare(fields, rows, source=source)
     entry_type = str(body.pop("type", "") or "")
     if not entry_type:
         raise NoteError("type is required: one of " + ", ".join(model.TYPES))
@@ -74,7 +76,7 @@ def write(ledger: Any, fields: dict[str, Any], *, source: str = "worker") -> dic
 def gate_hypothesis(ledger: Any, fields: dict[str, Any], *, sha: str, source: str = "worker") -> dict[str, Any]:
     """The hypothesis an explicit ``parhelion_submit_gate`` request names (or updates)."""
     rows = ledger.rows()
-    target, body = prepare(fields, rows)
+    target, body = prepare(fields, rows, source=source)
     body.pop("type", None)
     body.setdefault("sha", sha)
     body.setdefault("status", "queued")
