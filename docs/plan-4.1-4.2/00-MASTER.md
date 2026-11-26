@@ -100,15 +100,15 @@
 | 子计划 | 分支 | 状态 | 合入提交 | 备注 |
 |---|---|---|---|---|
 | P01 | impl/P01-judge-alignment | 已合入 | a4a3eda | 留一回测 MAE 2.75→1.32；按位置配对的身份是对的，FFT 05 等是不同工作量（标 judge_mapped=false）；回填 19 行 |
-| P02 | impl/P02-wa-reproducers | 进行中 | | |
-| P03 | impl/P03-metering-replay | 待开始 | | |
+| P02 | impl/P02-wa-reproducers | 已合入 | 见 git log | 真机复现 Quant a2717b5 的 WA（精确舍入平局变体 24/8320 错），榜上 SHA 全过；每次 WA 套件升版会使旧本地证据失配，修正并入 P07 |
+| P03 | impl/P03-metering-replay | 进行中 | | |
 | P04 | impl/P04-change-driven-wait | 待开始 | | |
 | P05 | impl/P05-ledger-core | 待开始 | | |
 | P06 | impl/P06-ledger-seed | 待开始 | | |
 | P07 | impl/P07-gate-queue | 待开始 | | |
 | P08 | impl/P08-startup-pack | 待开始 | | |
 | P09 | impl/P09-host-daemon | 已完成，待 P06 后按序合入 | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
-| P10 | impl/P10-profiler-ab | 待开始 | | |
+| P10 | impl/P10-profiler-ab | 进行中（叠在 P09 上） | | |
 | P11 | impl/P11-batch-ui | 待开始 | | |
 | P12 | impl/P12-report-views | 待开始 | | |
 | P13 | impl/P13-bound-output | 待开始 | | |
