@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T14:48:23Z",
+  "updated_at": "2026-11-26T15:03:19Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "06415905f8a7dae9d443fab8940f7dc6a90f440b2bbff14fb4eb56aabfba7ccb",
-      "size": 159396,
-      "normalized_sha256": "06415905f8a7dae9d443fab8940f7dc6a90f440b2bbff14fb4eb56aabfba7ccb"
+      "sha256": "d65f7a43d52b7e7fe404b57795b1a209f07e683108cc6c917377180c72c23d8e",
+      "size": 163193,
+      "normalized_sha256": "d65f7a43d52b7e7fe404b57795b1a209f07e683108cc6c917377180c72c23d8e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1781,9 +1781,9 @@
     },
     "docs/plan-4.1-4.2/00-MASTER.md": {
       "role": "index",
-      "sha256": "4c17984ecd6a174348f911b686df6ed823ced950430237d84faabc356add8195",
-      "size": 14734,
-      "normalized_sha256": "4c17984ecd6a174348f911b686df6ed823ced950430237d84faabc356add8195"
+      "sha256": "cddc5d9fd9bcf281948f8751b31560a6607bd953aa67a375901c2c39196e81e8",
+      "size": 14909,
+      "normalized_sha256": "cddc5d9fd9bcf281948f8751b31560a6607bd953aa67a375901c2c39196e81e8"
     },
     "docs/plan-4.1-4.2/20-REMAINING-4.2.md": {
       "role": "index",
@@ -1889,9 +1889,9 @@
     },
     "docs/plan-4.1-4.2/RUNBOOK.md": {
       "role": "index",
-      "sha256": "c0bcae3aa4bbb6add9c997ffe9b2cd99c486d333ca6963d98fc52ec6c373e040",
-      "size": 6592,
-      "normalized_sha256": "c0bcae3aa4bbb6add9c997ffe9b2cd99c486d333ca6963d98fc52ec6c373e040"
+      "sha256": "5cfd11d69e276d15f77c1cef2091eaeffbbd49a1e1d7f8a822d7d19a56735209",
+      "size": 6605,
+      "normalized_sha256": "5cfd11d69e276d15f77c1cef2091eaeffbbd49a1e1d7f8a822d7d19a56735209"
     },
     "docs/plan-4.1-4.2/reports/P01-backtest.md": {
       "role": "index",
@@ -1995,6 +1995,12 @@
       "size": 10717,
       "normalized_sha256": "0516cdfbf9cc8aa4f1e6963bbd9ac2a0f04c751b8e263b371211a1baf1bf6efa"
     },
+    "docs/plan-4.1-4.2/reports/P19-antigravity-mining.md": {
+      "role": "index",
+      "sha256": "7558c7e8d8c76d25bbc32c83cceb122551f2ccfeec7c59f4880f914b73d220fa",
+      "size": 8392,
+      "normalized_sha256": "7558c7e8d8c76d25bbc32c83cceb122551f2ccfeec7c59f4880f914b73d220fa"
+    },
     "docs/plan-4.1-4.2/reviews/P08.md": {
       "role": "index",
       "sha256": "a1acfb637e3a3d10f9d5e7d8919b81486a11353ea9e38a19cc08fb62b071f4db",
@@ -2030,6 +2036,12 @@
       "sha256": "0bb5e91b231620a83a2a970c8a24f501a70556d7c220c6ecbc0099fc97dc1c93",
       "size": 715,
       "normalized_sha256": "0bb5e91b231620a83a2a970c8a24f501a70556d7c220c6ecbc0099fc97dc1c93"
+    },
+    "docs/plan-4.1-4.2/reviews/P19.md": {
+      "role": "index",
+      "sha256": "d974acb06f88bf715c083bf275017653241a153bd52361017e17311af6afc756",
+      "size": 1153,
+      "normalized_sha256": "d974acb06f88bf715c083bf275017653241a153bd52361017e17311af6afc756"
     },
     "docs/v3/01-fast-feedback-tools.md": {
       "role": "index",
@@ -2096,6 +2108,42 @@
       "sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3",
       "size": 40724,
       "normalized_sha256": "7bb7d2f6d6d93acdea3168bb2b9840b18b45adec454374c671b6ac873fa91de3"
+    },
+    "docs/v4.3/research/antigravity/00-SUMMARY.md": {
+      "role": "index",
+      "sha256": "cd82b762d1287638e68d80575fe9d5f18162fa30895bd4f392594de2c9deb100",
+      "size": 34797,
+      "normalized_sha256": "cd82b762d1287638e68d80575fe9d5f18162fa30895bd4f392594de2c9deb100"
+    },
+    "docs/v4.3/research/antigravity/R1-breakthroughs.md": {
+      "role": "index",
+      "sha256": "585acd7d1bbd7c0e16fdebad3b7e3395386aed5baebc5fb89db89345dce3f8f5",
+      "size": 51484,
+      "normalized_sha256": "585acd7d1bbd7c0e16fdebad3b7e3395386aed5baebc5fb89db89345dce3f8f5"
+    },
+    "docs/v4.3/research/antigravity/R2-orchestration.md": {
+      "role": "index",
+      "sha256": "faf734a888e61fa67362b94e82e21c09abd613c1a524367fce638064e5df2c3b",
+      "size": 44390,
+      "normalized_sha256": "faf734a888e61fa67362b94e82e21c09abd613c1a524367fce638064e5df2c3b"
+    },
+    "docs/v4.3/research/antigravity/R3-loop-and-tools.md": {
+      "role": "index",
+      "sha256": "5194f03f7b0527c3474bcf54f7ed4547607cc6a2519913c43536a511fe16b09b",
+      "size": 36902,
+      "normalized_sha256": "5194f03f7b0527c3474bcf54f7ed4547607cc6a2519913c43536a511fe16b09b"
+    },
+    "docs/v4.3/research/antigravity/R4-methods-vs-kb.md": {
+      "role": "index",
+      "sha256": "770121ea23a577eb3e7865095838d094ebcfc906d4be0042b403b634dfd83bd6",
+      "size": 44310,
+      "normalized_sha256": "770121ea23a577eb3e7865095838d094ebcfc906d4be0042b403b634dfd83bd6"
+    },
+    "docs/v4.3/research/antigravity/R5-open.md": {
+      "role": "index",
+      "sha256": "1fb885ca8bf82ef7b3034ed6a002b7591f4b04b318c352ba334f160b334bba3d",
+      "size": 31487,
+      "normalized_sha256": "1fb885ca8bf82ef7b3034ed6a002b7591f4b04b318c352ba334f160b334bba3d"
     },
     "docs/v4/00-OVERVIEW.md": {
       "role": "index",
