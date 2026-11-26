@@ -321,11 +321,13 @@ def test_smoke_and_final_protocols(device):
     smoke = bench.run(ws, "Op", repo, sha, "npu", level="smoke", stream=False)
     assert smoke["level"] == "smoke" and not smoke["formal"] and smoke["timing_score_eligible"]
     final = bench.run(ws, "Op", repo, sha, "npu", level="final", stream=False)
-    assert final["formal"] and final["selected"] == ["01", "02", "local/v"]
+    published = [c for c in final["selected"] if not c.startswith("local/hf-")]
+    assert final["formal"] and published == ["01", "02", "local/v"]
+    assert final["hidden_variants"] == len(final["selected"]) - 3 > 0  # scheduler.hidden_final
     smoke_cfg, final_cfg = sent(ws)
     assert (smoke_cfg["warmup"], smoke_cfg["repeats"], smoke_cfg["timeout"], smoke_cfg["tier"]) == (1, 3, 8, 2)
     assert (final_cfg["repeats"], final_cfg["timeout"], final_cfg["tier"]) == (7, 30, 1)
-    assert final_cfg["job_timeout"] == 90
+    assert final_cfg["job_timeout"] == 30 * len(final["selected"])
 
 
 def test_digest_reports_public_efficiency_and_baseline(device):
@@ -351,7 +353,9 @@ def test_digest_reports_public_efficiency_and_baseline(device):
                                  "cases": [{"id": "02", "min_us": 20.0}]}))
     second = bench.run(ws, "Op", repo, sha, "npu", stream=False, remeasure=True)
     baseline = second["digest"]["baseline"]
+    calls = baseline.pop("verdicts")  # scheduler.verdicts: the baseline run has no samples, so no band
     assert baseline == {"sha": "fffffff", "run_id": "1" * 32, "geomean_speedup": 2.0, "cases": {"02": 2.0}}
+    assert calls["improved"] == [] and calls["regressed"] == []
 
 
 def test_public_estimate_subtracts_the_calibrated_timer_overhead(tmp_path):

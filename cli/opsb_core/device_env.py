@@ -66,6 +66,9 @@ DEFAULTS: dict[str, Any] = {
     "judge_toolchain_root": "",
     "judge_toolchain_env": "",
     "judge_compile_flags": [],
+    # Device peak memory bandwidth in GB/s: the physical floor of a case's time
+    # (scheduler.plausibility). Empty means unknown, and only the ratio checks apply.
+    "peak_bandwidth_gbps": "",
 }
 
 

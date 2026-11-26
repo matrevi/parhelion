@@ -246,6 +246,8 @@ def build_parser() -> argparse.ArgumentParser:
     s_ts.add_argument("--remeasure", action="store_true", help="Repeat a completed reference measurement")
     s_ts.add_argument("--compare", metavar="BASE",
                       help="A/B paired run against a baseline commit (or 'board'): both builds alternate in one device job")
+    s_ts.add_argument("--cold", action="store_true",
+                      help="Run every case in a fresh device session (confirms implausible timings)")
     s_ts.add_argument("--level", choices=["smoke", "standard", "final"],
                       help="Suite level: smoke self-check, standard evidence (default) or final candidate run")
     s_ts.add_argument("--suite", choices=["adaptive", "all"],

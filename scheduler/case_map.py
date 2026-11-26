@@ -30,7 +30,7 @@ import statistics
 from collections import Counter
 from typing import Any
 
-from . import judge_cases, pairing, receipts, timing
+from . import judge_cases, pairing, plausibility, receipts, timing
 from .parhelion_paths import atomic_write_json
 
 MAP_FILE = ".case-map.json"
@@ -89,7 +89,9 @@ def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *,
     """
     minima: dict[str, float] = {}
     runs = 0
-    for doc in _reports(workspace, title, sha):
+    docs = list(_reports(workspace, title, sha))
+    blocked = plausibility.unconfirmed(docs)  # implausible readings wait for a cold confirmation
+    for doc in docs:
         if version is not None and pairing.pairing_key(doc) != version:
             continue
         if strict and not (doc.get("verified") is True and doc.get("exit_code") == 0
@@ -104,7 +106,8 @@ def local_minima(workspace: pathlib.Path, title: str, sha: str, version: Any, *,
             continue
         for case in doc.get("cases") or []:
             value = timing.case_value(case, source)
-            if case.get("source") == "official" and case.get("status") in ("PASS", None) and value is not None:
+            if (case.get("source") == "official" and case.get("status") in ("PASS", None) and value is not None
+                    and plausibility.gate_minimum(doc, case, blocked)):
                 minima[case["id"]] = min(minima.get(case["id"], value), value)
     return minima, runs
 

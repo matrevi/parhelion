@@ -196,7 +196,8 @@ def _score(doc, keys, tbest, base_obs, base, cand, pairs, timed, meta, paired=No
         "map_method": doc.get("method"), "map_confidence": doc.get("confidence"),
         "cases": {k: {"t_base": round(judged[k], 3), "ratio": round(ratios[k], 4) if k in ratios else None,
                       "t_pred": round(predicted[k], 3), "tbest": round(tbest[k], 3),
-                      "points": round(receipts.case_points(predicted[k], tbest[k]), 3)}
+                      "points": round(receipts.case_points(predicted[k], tbest[k]), 3),
+                      "local": proxy[k]["local"] if k in proxy else None}
                   for k in keys if predicted.get(k) is not None},
         **meta,
     }

@@ -233,6 +233,23 @@ def parts(golden, names, case, defaults):
     return result
 
 
+def scaled_builder(build, scale):
+    """``build_case`` with every floating-point input array multiplied by ``scale``."""
+    import numpy as np
+
+    def scaled(cid):
+        inputs, values = build(cid)
+        out = {}
+        for name, value in inputs.items():
+            array = np.asarray(value) if value is not None else None
+            if array is not None and array.dtype.kind in "fc":
+                value = (array * array.dtype.type(scale)).astype(array.dtype)
+            out[name] = value
+        return out, values
+
+    return scaled
+
+
 def prepare_case(root, item, groups, attrs):
     import numpy as np
     import reference
@@ -242,6 +259,12 @@ def prepare_case(root, item, groups, attrs):
     # Each invocation is a fresh Python process; derived cases never change the oracle on disk.
     spec.update(seed=item.get("seed", spec.get("seed")))
     spec["params"] = {**spec.get("params", {}), **item.get("params", {})}
+    scale = (item.get("transform") or {}).get("scale")
+    if scale is not None:
+        # A platform value transform: the oracle builds its usual inputs, every floating-point
+        # input is multiplied by `scale`, and the oracle's own run() computes the golden output
+        # from the transformed inputs (it reads them through build_case).
+        reference.build_case = scaled_builder(reference.build_case, float(scale))
     inputs, values = reference.build_case(spec["id"])
     golden = reference.run(spec["id"])
     signature = inspect.signature(reference.impl).parameters
@@ -280,6 +303,7 @@ def prepare_case(root, item, groups, attrs):
         (work / "input").mkdir()
         (work / "output").mkdir()
         fields = []
+        moved = 0  # bytes the device reads and writes: the plausibility floor (scheduler.plausibility)
         for name, shape, dt, inp in groups:
             if (
                 inp
@@ -305,6 +329,7 @@ def prepare_case(root, item, groups, attrs):
                     tensor.nbytes,
                 ]
             )
+            moved += int(tensor.nbytes)
             if inp:
                 tensor.tofile(work / "input" / f"{name}.bin")
         attr_values = {**defaults, **values, **overrides}
@@ -320,7 +345,8 @@ def prepare_case(root, item, groups, attrs):
         for name, want in outputs.items():
             if want is not None:
                 np.save(work / (name + ".npy"), want, allow_pickle=False)
-        manifest.append(dict(path=str(work), tolerances={n: tolerances[n] for n in outputs if outputs[n] is not None}))
+        manifest.append(dict(path=str(work), bytes=moved,
+                             tolerances={n: tolerances[n] for n in outputs if outputs[n] is not None}))
     (root / "parts.json").write_text(json.dumps(manifest))
 
 

@@ -91,7 +91,7 @@ def prepare(repo, cfg, root, update):
                     if cache and cache.store(item, plan["case"], plan["parts"]):
                         stored += 1
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
-                    plan["error"] = {"status": "ERROR", "detail": str(exc)}
+                    plan["error"] = {"status": "ERROR", "detail": str(exc), "phase": "prepare"}
                 done += 1
                 update(dict(plan["progress"], index=done, cached=total - len(missing)))
     for plan in plans:
@@ -342,4 +342,7 @@ def run_series(repo, cfg, compare, emit):
                 result = plan.get("error") or verify(plan, cfg, compare)
             except (ValueError, OSError) as exc:
                 result = {"status": "ERROR", "detail": str(exc)}
+            moved = [part.get("bytes") for part in plan["parts"]]
+            if moved and all(type(n) is int for n in moved):
+                result = dict(result, bytes=sum(moved))
             emit("case", id=plan["progress"]["id"], **dict({"cold_us": []}, **result))

@@ -1023,6 +1023,7 @@ class SubmissionGate:
             "calibration_samples": estimate.calibration_samples,
             "calibration_bias": estimate.calibration_bias,
             "threshold": self.config.noise_floor_pts,
+            "prediction_interval": estimate.prediction_interval,
         }
 
     def _evaluate_impl(

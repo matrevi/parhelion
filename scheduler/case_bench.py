@@ -21,7 +21,7 @@ from collections import Counter
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from . import case_map, pairing, receipts
+from . import case_map, harness_check, hidden_final, pairing, plausibility, receipts, verdicts
 from . import suite as suites
 from . import paired_timing, timing
 from .parhelion_paths import (
@@ -178,8 +178,11 @@ def catalog(repo, sha, profile):
         if not label or not isinstance(ids, list) or set(ids) - by_id.keys():
             raise ValueError(f"Unknown case or invalid membership in bucket {label}")
     for row in rows:
+        # A platform value transform (scheduler.hidden_final) changes the input; official keys
+        # and every earlier key stay as they were.
         row["key"] = digest(
             [oracle, row["base"], row.get("params", {}), row.get("seed")]
+            + ([row["transform"]] if row.get("transform") else [])
         )
         labels = [row["source"]]
         if row["perf"]:
@@ -382,6 +385,7 @@ def run(
     dry_run=False,
     stream=True,
     compare=None,
+    cold=False,
 ):
     """Run one level of the platform suite (or a custom experiment) as one device job.
 
@@ -391,6 +395,8 @@ def run(
     `level` is smoke, standard or final; None means standard, except that a custom
     experiment without a level keeps the legacy targeted probe. The deprecated `suite`
     maps adaptive to smoke and all to standard, and also accepts the level names.
+    `cold` runs every case in a fresh device session; a formal run of a SHA with an
+    unconfirmed implausible reading (scheduler.plausibility) runs cold on its own.
     """
     sha = committed(repo, rev or "HEAD")
     requested = suites.requested_level(level, suite)
@@ -416,6 +422,14 @@ def run(
         raise ValueError(f"Unknown bucket: {bucket}")
     folder = ws / "results" / title / sha
     base = requested or ("smoke" if custom else "standard")
+    run_id = uuid.uuid4().hex
+    hidden = []
+    if base == "final" and not custom and not ids:
+        # Unpublished inputs for this run only (scheduler.hidden_final); suite.json is untouched.
+        spec_hidden, hidden = hidden_final.derive(spec, cases, run_id, hidden_final.recent_reports(ws, title))
+        if hidden:
+            oracle, cases = catalog(repo, sha, suites.to_profile(spec_hidden))
+    protected = harness_check.protected_changes(repo, sha)
     if ids or bucket or official_only:
         selected = [
             r
@@ -429,7 +443,8 @@ def run(
         selected, selection, formal = suites.select(cases, spec, base, folder=folder)
     if not selected:
         raise ValueError("Empty case selection")
-    formal = formal and not custom and not base_sha  # paired evidence is kept apart from formal runs
+    formal = formal and not custom and not base_sha and not protected  # paired evidence stays apart
+    cold = bool(cold) or (formal and plausibility.pending(list(case_map._reports(ws, title, sha))))
     probe = selection not in ("explicit", "standard", "final")
     # An explicit case list measures like standard; it keeps the requested level's device tier.
     proto = suites.protocol(spec, "standard" if selection == "explicit" else base)
@@ -450,7 +465,7 @@ def run(
         timed = suites.timed_ids(cases, spec)
     level_label = "custom" if custom else base
     cfg = {
-        "reuse_session": spec["reuse_session"],
+        "reuse_session": spec["reuse_session"] and not cold,
         "title": title,
         "sha": sha,
         "jobs": os.getenv("OPSB_BUILD_JOBS"),
@@ -486,7 +501,6 @@ def run(
     for optional in ("device_broker", "profiler_capture", "case_pairs"):
         if RUNNER.with_name(optional + ".py").is_file():
             modules[optional] = RUNNER.with_name(optional + ".py").read_text()
-    run_id = uuid.uuid4().hex
     cfg["run_id"] = run_id
     dest = folder / "bench-runs" / run_id
     report = {
@@ -515,10 +529,16 @@ def run(
     }
     if base_sha:
         report["compare"] = {"base_sha": base_sha, "rounds": cfg["repeats"]}
+    if hidden:
+        report["hidden_variants"] = len(hidden)
+    if protected:
+        report["harness"] = {"protected_changed": protected, "detail": harness_check.describe(protected)}
     if dry_run:
         return {**report, "dry_run": True, "exit_code": 0}
+    # Identical requests share one measurement; this run's hidden variants do not make it unique.
+    shared_cfg = {**cfg, "selected": [c for c in cfg["selected"] if not hidden_final.is_hidden(c)]}
     key = digest([host, engine, profile, formal, oracle,
-                  {k: v for k, v in cfg.items() if k not in ("run_id", "wspt_base", "aging_tau")},
+                  {k: v for k, v in shared_cfg.items() if k not in ("run_id", "wspt_base", "aging_tau")},
                   os.getenv("OPSB_TOOLCHAIN_ENV"), modules, level_label, base, spec["suite_version"]])
     with active_bench(folder, key, run_id, remeasure=remeasure,
                       limit_experiments=worker_request and not formal) as shared:
@@ -669,8 +689,10 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         ) as exc:
             report["error"] = str(exc)
             event("error", detail=str(exc))
+        hidden_final.settle(rows)
         results = list(rows.values())
-        summary = summarize([rows[key] for key in report["selected"]])
+        # Advisory hidden variants are reported apart and never decide verification.
+        summary = summarize(hidden_final.blocking(rows, report["selected"]))
         ok = rc == 0 and built and summary["verified"]
         report.update(
             cases=results,
@@ -682,6 +704,9 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
             verified=formal and ok,
             official=summarize([r for r in results if r["source"] == "official"]),
         )
+        hidden = hidden_final.summary(rows, report["selected"])
+        if hidden:
+            report["hidden_final"] = hidden
         event("finish", exit_code=report["exit_code"], summary=summary)
         # Warmup executions absorb kernel load and session setup; only warm samples count.
         reasons = warm_timing(rows, report, cfg)
@@ -691,6 +716,9 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         if report.get("compare"):
             pair_statistics(folder.parents[2], report, rows)
         report["timing_score_eligible"] = not reasons
+        # Readings faster than physics or history allow wait for a cold confirmation.
+        report["implausible"] = plausibility.check(
+            report, rows, list(case_map._reports(folder.parents[2], report["title"])), plausibility.peak_bandwidth())
         report["digest"] = build_digest(folder.parents[2], report, rows, reasons)
         env = report.get("environment", {})
         if formal and ok and env.get("soc"):
@@ -702,7 +730,8 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         current = read_doc(folder / "latest-bench.json")
         if report["finished_at"] >= current.get("finished_at", ""):
             failures = [
-                r["id"] for r in results if r["status"] not in ("PASS", "NOT_RUN")
+                r["id"] for r in results
+                if r["status"] not in ("PASS", "NOT_RUN") and not hidden_final.advisory(r)
             ]
             atomic_write_json(
                 folder / "latest-bench.json",
@@ -999,23 +1028,30 @@ def baseline_comparison(ws, ledger, report, rows):
     base = max(candidates, key=lambda d: d.get("finished_at") or "")
     # Best warm minimum per case over every eligible baseline run, so one run caught in a
     # slow timer mode does not inflate the apparent speedup.
-    before = {}
+    before, before_rows = {}, {}
     for doc in candidates:
         for c in doc.get("cases", []):
             row = rows.get(c.get("id")) or {}
             value = timing.doc_value(doc, c, row.get("timing_source") or "event")  # same timer as this run
-            if value is not None:
-                before[c["id"]] = min(before.get(c["id"], value), value)
-    speedups = {}
+            if value is not None and value < before.get(c["id"], math.inf):
+                before[c["id"]] = value
+                before_rows[c["id"]] = (c, doc.get("timing_source"))
+    speedups, per_case = {}, {}
     for key, row in rows.items():
         if row.get("min_us") and before.get(key):
             speedups[key] = before[key] / row["min_us"]
+            # Three-state verdicts against each case's noise band (scheduler.verdicts).
+            call = verdicts.paired(before_rows[key][0], row, before_source=before_rows[key][1],
+                                   after_source=report.get("timing_source"))
+            if call:
+                per_case[key] = call
     geomean = math.exp(sum(math.log(v) for v in speedups.values()) / len(speedups)) if speedups else None
     ranked = sorted(speedups.items(), key=lambda kv: abs(math.log(kv[1])), reverse=True)[:10]
     return {
         "sha": base_sha[:7],
         "run_id": base.get("run_id"),
         "geomean_speedup": round(geomean, 4) if geomean else None,
+        "verdicts": verdicts.summarize(per_case),
         "cases": {k: round(v, 3) for k, v in ranked} or None,
     }, None
 
@@ -1068,7 +1104,7 @@ def build_digest(ws, report, rows, reasons=()):
     weights = report.get("weights") or {}
     selected = [rows[k] for k in report.get("selected", []) if k in rows]
     failures = sorted(
-        (r for r in selected if r["status"] not in ("PASS", "NOT_RUN")),
+        (r for r in selected if r["status"] not in ("PASS", "NOT_RUN") and not hidden_final.advisory(r)),
         key=lambda r: -weights.get(r["id"], 1.0 if r["source"] == "official" else 0.0),
     )[:5]
     timed = sorted((r for r in selected if r.get("min_us")), key=lambda r: -r["min_us"])[:20]
@@ -1091,24 +1127,36 @@ def build_digest(ws, report, rows, reasons=()):
     if report.get("aborted_early"):
         hints.insert(0, "aborted early: slower than " + str(report["aborted_early"].get("base_sha", ""))[:7]
                      + " on the first timed cases; the rest was not measured")
+    if (report.get("harness") or {}).get("protected_changed"):
+        hints.append("restore " + ", ".join(report["harness"]["protected_changed"])
+                     + ": only the kernel may change; this run is not formal evidence")
     if noisy:
         hints.append(f"timer read x{drift} slower than this SHA's best run; comparisons use the best run")
     if failures:
-        hints.append(f"fix {failures[0]['id']} ({failures[0]['status']}) before timing work")
+        shown = hidden_final.redact(failures[0])["id"] if hidden_final.is_hidden(failures[0]) else failures[0]["id"]
+        hints.append(f"fix {shown} ({failures[0]['status']}) before timing work")
+    if report.get("implausible"):
+        hints.append(f"implausible timing on {', '.join(report['implausible'][:3])}: not gate evidence until "
+                     "the next formal run of this SHA (it runs cold) agrees within 10%")
     if missing:
         hints.append(f"run standard on {missing[:7]} first to enable baseline comparison")
+    elif baseline and baseline.get("verdicts"):
+        calls = baseline["verdicts"]
+        hints.append(f"vs {baseline['sha']}: {len(calls['improved'])} improved, {len(calls['regressed'])} regressed "
+                     f"beyond noise" + (f", {len(calls['noisy'])} noisy" if calls["noisy"] else ""))
     doc = {
         "level": report.get("level"),
         "suite_version": report.get("suite_version"),
         "formal": report.get("formal"),
         "summary": {k: summary.get(k) for k in ("total", "passed", "counts")},
-        "failures": [{"id": r["id"], "status": r["status"],
-                      "detail": failure_detail(r)[:200]} for r in failures],
+        "failures": [hidden_final.redact(r) if hidden_final.is_hidden(r) else
+                     {"id": r["id"], "status": r["status"], "detail": failure_detail(r)[:200]} for r in failures],
         "timing": {
             "eligible": not reasons,
             "source": report.get("timing_source", "event_warm"),
             "drift": drift,
             "noisy": noisy,
+            "implausible": report.get("implausible") or None,
             "warmup": report.get("settings", {}).get("warmup"),
             "repeats": report.get("settings", {}).get("repeats"),
             "cases": {r["id"]: {"min_us": round(r["min_us"], 3),
@@ -1122,6 +1170,8 @@ def build_digest(ws, report, rows, reasons=()):
     }
     if report.get("compare"):
         doc["paired"] = paired_digest(report, rows)
+    if report.get("hidden_final"):
+        doc["hidden_final"] = report["hidden_final"]  # class and base case only (scheduler.hidden_final)
     return shrink_digest(doc)
 
 
@@ -1212,6 +1262,10 @@ def compare_runs(left, right):
         if same_env and a["status"] == b["status"] == "PASS" and before_us and after_us:
             row.update(before_us=before_us, after_us=after_us)
             row["speedup"] = row["before_us"] / row["after_us"]
+            call = verdicts.paired({**a, "min_us": before_us}, {**b, "min_us": after_us},
+                                   before_source=left.get("timing_source"), after_source=right.get("timing_source"))
+            if call:
+                row.update(verdict=call["verdict"], band=call["band"], noisy=call["noisy"])
         paired.append(row)
     groups = {}
     for label in sorted({label for r in paired for label in r["buckets"]}):
@@ -1235,6 +1289,7 @@ def compare_runs(left, right):
         "settings_before": left["settings"],
         "settings_after": right["settings"],
         "paired_timings": sum("speedup" in r for r in paired),
+        "verdicts": verdicts.summarize({r["id"]: r for r in paired if "verdict" in r}),
     }
 
 
