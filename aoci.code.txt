@@ -84,7 +84,7 @@ NpuLaneModel.swift[CR8M]: F:三车道卡片归并器：逻辑身份跨车道与P
 NpuMonitorView.swift[CU6T]: F:NPU页容器：遥测甲板、调度条与服务器队列与提交队列的左右分栏 | R:code:Sources/Parhelion/Features/NpuMonitor/BtopTelemetryDeckView.swift | A:NpuMonitorView | S:-
 NpuServerQueueView.swift[CU7M]: F:服务器队列：用NpuLaneModel把热任务归并成三车道卡片并做过渡动画 | R:code:Sources/Parhelion/Features/NpuMonitor/NpuLaneModel.swift | A:NpuServerQueueView | S:用taskFingerprint做轻量签名决定是否ingest，改成全量比较会在1Hz下拖慢主线程
 SchedulerBarView.swift[CU7M]: F:调度条：配额与冷却限流倒计时、门禁弹层与自动消费开关 | R:code:Sources/Parhelion/Domain/NpuModels.swift | A:SchedulerBarView | S:倒计时以WallClockTicker的epoch为锚，不要用本地Timer累加，否则会与服务端时间漂移
-SubmissionQueueCardViews.swift[CU7M]: F:队列卡片：候选提交卡（含高风险提交二次确认）与已完成提交卡 | R:code:Sources/Parhelion/Domain/QueueModels.swift | A:CandidateSubmissionCardView,CompletedSubmissionCardView | S:本地占用判定排除waiting_cooldown：等冷却期间应允许继续排队，算成占用会白白挡住下一发
+SubmissionQueueCardViews.swift[EU7M]: F:队列卡片：候选提交卡（含高风险提交二次确认）与已完成提交卡，按门禁结论给出中文状态与下一步 | R:code:Sources/Parhelion/Domain/QueueModels.swift,code:cli/opsb_core/ipc_bridge.py | A:CandidateSubmissionCardView,CompletedSubmissionCardView | S:状态文字依据后端badge：ESCAPE LOCK、TEST FAILED、NOT TESTED须先于safetyOk判断，否则所有S1拦截都显示成缺少精度记录；本地占用判定排除waiting_cooldown
 SubmissionQueueSections.swift[CU6M]: F:队列分区：标签头、等待与暂缓与历史三区内容，以及按提交键去重 | R:code:Sources/Parhelion/Features/Contest/ContestStore+Reconcile.swift | A:KeyedQueueItem,SubmissionQueueHeaderTabs,WaitingQueueContentView,HeldQueueContentView,HistoryQueueContentView,deduplicatedBySubmissionKey | S:去重键必须用SubmissionKey.of，直接按元素判等会把同一提交的热态与冷态各画一次
 SubmissionQueueView.swift[CU7M]: F:提交队列页：等待与突破与历史与暂缓四个标签的容器，并与检查器联动 | R:code:Sources/Parhelion/Features/NpuMonitor/SubmissionQueueSections.swift | A:QueueViewTab,SubmissionQueueView | S:-
 
@@ -106,13 +106,13 @@ __init__.py[CV6T]: F:包声明与版本号单一来源，MCP服务端与ACP与Co
 cli_app.py[EG9L]: F:统一CLI解析与分发：装配全部子命令、多语言与JSON输出，把异常收敛成退出码 | R:code:cli/opsb_core/commands/admin_cmd.py,code:cli/opsb_core/commands/queue_cmd.py,code:cli/opsb_core/commands/kb_cmd.py | A:build_parser,main,run_bench_suite | S:新子命令只在这里注册，命令实现留在commands包内，让commands反向依赖解析器会把全量命令拖进daemon导入链
 config.py[CC9M]: F:配置仓库与工作区发现：~/.parhelion迁移、默认配置合并、原子JSON与JSONL读写、python解释器解析 | R:code:cli/opsb_core/device_env.py,code:scheduler/parhelion_paths.py | A:ConfigRepository,ensure_parhelion_migrated,read_json,append_jsonl_locked,resolve_python_exe | S:迁移表约定config.json为0600，save()必须在原子替换前chmod，否则每次保存都掉回umask
 device_env.py[FH8S]: F:硬件与工具链设置的唯一读取入口：config.json的device段可OPSB_DEVICE_*覆盖、未配置回中性默认；并把探针所需设置渲染成远端环境前缀 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/services/npu_service.py,code:cli/opsb_core/daemon/npu_stream.py | A:device_settings,device_text,device_list,device_env_exports,PROBE_DEVICE_KEYS | S:仓库里不得出现真实设备值；只导出PROBE_DEVICE_KEYS且跳过默认值，因为远端命令行在共享主机上对所有用户可见；字典与列表以JSON传递
-ipc_bridge.py[IM7M]: F:到scheduler.cli_bridge的IPC适配层，带mtime感知的TTL缓存 | R:code:scheduler/cli_bridge.py | A:invoke_bridge,merge_bridge_enrichment,_queue_fingerprint | S:桥接失败一律返回None让调用方降级，不能抛异常，否则status会因兄弟模块缺失而整体失败
+ipc_bridge.py[IM7M]: F:到scheduler.cli_bridge的IPC适配层，带mtime感知TTL缓存，并把门禁结论合并进队列卡片 | R:code:scheduler/cli_bridge.py,code:Sources/Parhelion/Features/NpuMonitor/SubmissionQueueCardViews.swift | A:invoke_bridge,merge_bridge_enrichment,_queue_fingerprint,_safety_badge | S:桥接失败一律返回None让调用方降级；REJECTED_GATE按S1代码细分为ESCAPE LOCK、TEST FAILED、NOT TESTED，界面靠这些字面量区分
 worker_access.py[ES7T]: F:把受管worker绑定到自己的回环MCP路由并保持SSH环境隔离 | R:code:cli/opsb_core/daemon/server.py | A:- | S:worker只能拿到自己的回环路由与角色化工具，复用同一路由会破坏权限边界
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/agents/===
 __init__.py[CG4T]: F:导出Agent总线的两个门面：AgentBusStore与AgentMeshManager | R:code:cli/opsb_core/agents/bus_store.py,code:cli/opsb_core/agents/manager.py | A:AgentBusStore,AgentMeshManager | S:-
 adapters.py[RW8L]: F:多轮headless worker适配器：进程组启动与优雅终止、事件回调、codex_home沙箱，以及ACP与Codex两种驱动实现 | R:code:cli/opsb_core/agents/manager.py,code:cli/opsb_core/agents/bus_store.py | A:BaseWorkerAdapter,AcpWorkerAdapter,CodexWorkerAdapter,terminate_process_group,worker_runtime_dir | S:停止必须先向整个进程组发SIGTERM再限时SIGKILL；只杀父进程会留下子进程继续占卡并污染后续运行
-bus_store.py[PM8L]: F:SQLite WAL消息总线：agent记录、消息追加与确认、序号与脉冲查询 | R:code:cli/opsb_core/agents/manager.py | A:AgentBusStore,create_agent,append_message,ack_messages,cleanup_stopped | S:cleanup_stopped的判定是status在stopped/error且pid与pgid均为NULL，doctor的--agents沿用同一谓词，改这里必须同步回收逻辑
+bus_store.py[PM8L]: F:SQLite WAL消息总线：agent记录、消息追加与确认、序号与脉冲查询、停止agent的清理 | R:code:cli/opsb_core/agents/manager.py | A:AgentBusStore,create_agent,append_message,ack_messages,cleanup_stopped | S:cleanup_stopped判定status在stopped/error且pid与pgid均为NULL，doctor --agents沿用同一谓词；全量清理还删除无主消息和早于最早agent的platform/admin消息，单个agent清理不动它们；messages用AUTOINCREMENT，清理后序号不回落
 judge_feedback.py[DA7T]: F:从付费判题回执算战略事件：配对提交时刻已有的不可变报告，得出标定证据 | R:code:cli/opsb_core/services/judge_score_fetch.py | A:calibration_evidence,judge_feedback | S:只认提交时刻已存在的报告，事后写入的报告不得用于标定，否则会把未来信息注入当前评估
 manager.py[AW9L]: F:daemon内的AgentMeshManager：派发与停止与清理worker、消息总线投递、驱动熔断、压缩与检查点 | R:code:cli/opsb_core/agents/adapters.py,code:cli/opsb_core/agents/bus_store.py,code:cli/opsb_core/agents/ownership.py | A:AgentMeshManager,compact_threshold,claude_workers_allowed,stop_agent,cleanup_stopped,build_hot_mesh | S:compact_threshold取模型窗口的30%并夹在12万至40万token；驱动熔断只告警一次，只有管理员显式派发才解除
 ownership.py[RR7T]: F:独占runner租约与原生worker进程组回收：校验进程身份、按agent回收残留进程组 | R:code:cli/opsb_core/agents/manager.py | A:claim_runner,owned_groups,reap_groups,_has_identity | S:租约用fcntl flock持有，进程表被复用时靠身份串校验，不能只按pid判归属
@@ -147,12 +147,13 @@ brief.py[MW8M]: F:会话准备工作树与精简brief组装：worker不超1.5KB�
 claude_driver.py[IE7M]: F:Claude Code驱动：claude -p stream-json客户端与.claude/skills工作区软链同步 | R:code:cli/opsb_core/drivers/base.py | A:ClaudeDriver,ClaudeStreamJsonClient,coerce_claude_uuid | S:会话ID必须是合法UUID，非UUID会被CLI拒绝，coerce_claude_uuid负责归一
 codex_appserver.py[IE7L]: F:codex app-server的JSON-RPC 2.0客户端，以及config.toml的渲染与合并 | R:code:cli/opsb_core/drivers/codex_driver.py | A:render_codex_config_toml,upsert_workspace_codex_toml,_strip_toml_sections | S:合并TOML必须先剥掉同名section再整体重写，直接追加会产生重复key让codex起不来
 codex_driver.py[IE7M]: F:Codex驱动：桌面深链、config.toml同步与state_5.sqlite会话观察 | R:code:cli/opsb_core/drivers/codex_appserver.py,code:cli/opsb_core/drivers/base.py | A:CodexDriver | S:-
-dsh_driver.py[IE8L]: F:DeepSeek Harness统一驱动：dsh://open深链、内置CLI与ACP stdio，以及JSON与flock观察 | R:code:cli/opsb_core/drivers/base.py,code:cli/opsb_core/drivers/macos_gui.py | A:DshDriver,_zstd_read,_dsh_project_key | S:DSH会话日志是zstd压缩的jsonl，必须先解帧；按明文读会解析失败并丢会话
+dsh_driver.py[IE8L]: F:DeepSeek Harness统一驱动：dsh://open深链、内置CLI与ACP stdio、桌面配置（子代理上限、parhelion MCP插件）与JSON/flock观察 | R:code:cli/opsb_core/drivers/base.py,code:cli/opsb_core/drivers/macos_gui.py,code:cli/opsb_core/drivers/dsh_parhelion_mcp.mjs | A:DshDriver,ensure_subagent_capacity,ensure_parhelion_mcp_plugin,_zstd_read,_dsh_project_key | S:DSH会话日志是zstd压缩的jsonl，须先解帧；cordis.patch.yml里parhelion块由起止标记界定、启动时整段改写，手改会被覆盖；GUI启动只改配置不重启DSH，DSH会热加载
 ext_drivers.py[IE5T]: F:扩展CLI驱动：Gemini CLI，以及从DeepSeek Harness重导出的dsh驱动 | R:code:cli/opsb_core/drivers/base.py | A:GeminiDriver | S:-
 macos_gui.py[LE6M]: F:macOS集成工具：应用包检视、WAL安全只读SQLite、flock检测、剪贴板暂存与MCP与skills同步 | R:code:cli/opsb_core/drivers/base.py | A:inspect_macos_app_bundle,open_sqlite_readonly_wal,is_flock_held,stage_brief_and_clipboard,compact_prompt_for_url | S:读GUI的SQLite必须只读加超时，抢锁会让双方卡住；URL深链有长度上限，长prompt必须先压缩
 pi_driver.py[IE5S]: F:Pi驱动：pi --mode rpc的原生JSON行RPC适配 | R:code:cli/opsb_core/drivers/base.py | A:PiDriver,PiRpcClient | S:-
 registry.py[AE8M]: F:驱动注册表与编排：活动驱动选择、诊断、工作区同步、会话启动与列举，以及分离式worker入口 | R:code:cli/opsb_core/drivers/base.py,code:cli/opsb_core/drivers/dsh_driver.py | A:get_active_driver_kind,select_active_driver,doctor_drivers,launch_problem_session,list_all_sessions | S:launch必须脱离当前进程组后台运行、作业经JSON文件传递；父进程退出不能把会话一起带走
 session_store.py[PD7S]: F:每工作区驱动会话的加锁原子持久化 | R:code:cli/opsb_core/drivers/base.py | A:load_sessions,save_session,sessions_file_path | S:读改写全程持flock并原子替换目标文件，只写不锁会在并发launch时丢会话记录
+dsh_parhelion_mcp.mjs[IE6T]: F:DSH桌面插件：为工作目录位于比赛目录内的Agent挂载parhelion编排MCP | R:code:cli/opsb_core/drivers/dsh_driver.py | A:apply,contestRoot | S:~/.dsh下的副本每次启动被覆盖；工具超时120s以容纳wait类调用；默认orchestrator角色，子代理也拿到
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/fast_feedback/===
 __init__.py[CP4T]: F:快速反馈包门面：导出ELF与Cold3与PMU与脚手架及阈值常量 | R:code:cli/opsb_core/fast_feedback/bench_scaffold.py | A:scaffold_bench_specs,evaluate_cold3_probe | S:-
@@ -243,7 +244,8 @@ REFACTOR_MODULAR_LAYOUT.md[SV6T]: F:模块化重构蓝图：单模块不超过35
 14-orchestration.md[SW7S]: F:工作包C：编排与token经济（席位、熔断、压缩阈值） | R:code:cli/opsb_core/agents/manager.py | A:- | S:-
 15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令（agent沙箱、会话日志、trash） | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末划定清理边界：用户数据只进trash，error席位默认保留，只有--logs与--remote可按窗口删除
 16-e2e-release.md[SV7T]: F:工作包E：集成、端到端测试与发布流程 | R:code:scripts/bundle_app.sh | A:- | S:发版必须同时改__init__版本与bundle的两个版本字段并打tag，漏一处会让daemon握手或打包版本不一致
-RELEASE-NOTES.md[SV8T]: F:发布说明：4.0.4修复NPU遥测断流、4.0.3清理误伤与索引校正、4.0.2重建索引、4.0.1卫生回收与4.0.0四大工作包 | R:code:docs/v4/00-OVERVIEW.md | A:- | S:4.0.4与4.0.1两节写有实测数字与清理边界，改遥测或清理策略时要同步这里
+RELEASE-NOTES.md[SV8S]: F:发布说明：4.0.0–4.0.4各版本变更、已知限制、4.1路线，以及2026-11-26冲刺暴露的问题（已修与4.1待办） | R:code:docs/v4/00-OVERVIEW.md,code:docs/v4/RUN-LOG-2026-11-26.md | A:- | S:4.1待办编号接续路线1–4；4.0.4与4.0.1两节写有实测数字与清理边界，改遥测或清理策略时同步
+RUN-LOG-2026-11-26.md[SW5S]: F:六题冲刺运行日志：DSH主控流程、时间线、实测延迟与上下文、提交结果和逐项改进 | R:code:docs/v4/RELEASE-NOTES.md | A:- | S:-
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
 encrypt_password.py[IS6T]: F:用公钥把登录口令加密成判题站可解的密文，供无HTTPS的登录链路使用 | R:code:runtime/judge/judge_cli.py | A:- | S:只加密不落盘，私钥永远只在服务端；把私钥写进仓库等于公开所有账号口令
@@ -259,10 +261,10 @@ submit-validated.py[DW7S]: F:提交与服务端成功运行一致的源码，并
 ===/Users/winbeau/Developer/personal/parhelion/runtime/npu_runtime/===
 arena_accel.py[RP7M]: F:KernelC运行时的透明后导入钩子：把acl_runner的Runner路由到常驻内存的arena实现 | R:code:runtime/npu_runtime/arena_cache.py | A:- | S:钩子只替换Runner方法并在失败时回落子进程，改它会让整批模板验证静默变慢
 arena_cache.py[RP7L]: F:阶段A与B与C分离的扩展套件重放与无锁黄金校验 | R:code:runtime/npu_runtime/arena_accel.py | A:- | S:黄金比对必须在设备锁外做，放回锁内会白占整段时间
-case_batch.py[DH8M]: F:把准备好的用例作为一个设备预约跑完，再统一校验 | R:code:runtime/npu_runtime/reference_cases.py | A:- | S:一次预约只排一次队，同批用例必须连续跑完再释放设备
-device_broker.py[RH9L]: F:常驻设备代理：单进程持有设备锁、按WSPT串行执行作业并在TLE后释放 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:TLE后必须释放锁并把剩余用例续排，否则整队会卡在已死作业上
+case_batch.py[DH8M]: F:准备用例（带设备主机缓存）、作为一个设备预约跑完，再统一校验 | R:code:runtime/npu_runtime/reference_cases.py,code:runtime/npu_runtime/device_broker.py,code:runtime/npu_runtime/lanes.py | A:CaseCache,prepare,run_series,execute_batch,broker_job,verify | S:缓存键含oracle侧文件摘要（排除内核源码与build目录）、schema、引擎与numpy版本；条目放在运行临时目录同一文件系统并以只读硬链接恢复，内核写输入会失败；每题8GB上限；未命中并行生成且限BLAS线程；预算按单次执行计
+device_broker.py[RH9L]: F:常驻设备代理：单进程持有设备锁、按WSPT串行执行作业并在TLE后释放 | R:code:runtime/npu_runtime/case_batch.py | A:ensure_broker,SampleProcess | S:TLE后必须释放锁并把剩余用例续排；case_timeout限制单次执行而非预热加全部重复，作业预算另算；单次≥2s（OPSB_LONG_RUN_SEC）的用例只做1次预热2次计时；源码按哈希版本化，改动后新代理与旧代理靠设备flock互斥
 fast_profiler.py[RP6S]: F:手动使用的低锁剖析启动器：持锁期间只启动采集，导出与解析推迟到Phase-C队列；平台代码目前不调用它 | R:code:runtime/npu-test.py | A:main | S:profiler程序名与运行时追踪开关是部署值，取自OPSB_DEVICE_PROFILER_BIN与OPSB_DEVICE_PROFILER_ACL_FLAG；写死会让远端profiler拒绝参数
-lanes.py[MW7S]: F:远端CMake预算、WSPT准入与探针可见的持锁登记 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:持锁登记必须对探针只读可见；写在私有文件里探针看不到会误判设备空闲
+lanes.py[MW7S]: F:远端CMake预算、WSPT准入与探针可见的持锁登记 | R:code:runtime/npu_runtime/case_batch.py | A:compile_lane,cpu_share,device_lane,case_series | S:持锁登记必须对探针只读可见；cpu_builds下的记录会被探针显示为编译卡片，cpu_share只读预算余量、不写记录
 reference_cases.py[DH8L]: F:描述符驱动的官方样例模板运行器 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:-
 sitecustomize.py[RP6T]: F:进程启动时挂载arena钩子的site钩子 | R:code:runtime/npu_runtime/arena_accel.py | A:- | S:只在PYTHONPATH指向runtime目录时生效，未挂载时必须静默降级
 
@@ -273,11 +275,11 @@ backfill_status.py[DP6S]: F:补测状态摘要：未配对与已排队与运行�
 bench_evolution.py[DA8L]: F:本地基准演进与成对残差标定引擎 | R:code:scheduler/calibration.py | A:- | S:残差按成对同输入比较得出，跳输入混合会污染标定
 calibration.py[DA9L]: F:闭环Simplex-MAP标定与逃逸锁引擎 | R:code:scheduler/estimator.py,code:scheduler/bench_evolution.py | A:- | S:只吃通过日志且同代SoC配对，混入其它代际会把基线拉偏
 case_bench.py[DP9L]: F:版本化参考用例、基准档案与不可变逐次运行证据 | R:code:scheduler/suite.py | A:- | S:每次运行生成不可变证据并带digest，事后改写会同时破坏标定与对账
-case_feedback.py[DA7M]: F:把判题回执接到不可变运行上，得出可复现的实验结论 | R:code:scheduler/case_bench.py | A:- | S:-
-cli_bridge.py[MW8L]: F:统一的CLI与JSON IPC桥，供CLI与GUI共用 | R:code:cli/opsb_core/ipc_bridge.py | A:- | S:桥接协议是CLI与GUI的共享契约，改字段必须两端同步
-estimator.py[KA9L]: F:期望分数估计与非平稳tbest(t)衰减账本 | R:code:scheduler/calibration.py | A:- | S:tbest按时间衰减记账，直接用历史最高分会高估当前可得分
+case_feedback.py[DA7M]: F:把判题回执接到不可变运行上，得出可复现的实验结论，并管理逃逸复核试验 | R:code:scheduler/case_bench.py,code:scheduler/gate.py | A:authorize_review_trial,trial_spent,trial_path | S:每次WA回执只给一次免复现复核；绑定的修复未提交、未排队时可改绑；失败SHA本身由复核放行时拒绝再次复核，必须本地复现
+cli_bridge.py[MW8L]: F:统一的CLI与JSON IPC桥，供CLI与GUI共用 | R:code:cli/opsb_core/ipc_bridge.py,code:scheduler/gate.py | A:- | S:桥接协议是CLI与GUI的共享契约，改字段必须两端同步；approve把覆盖写进调度状态文件并以force入队，但不绕过S1
+estimator.py[KA9L]: F:期望分数估计、非平稳tbest(t)衰减账本，以及按回执校准的case-bench配对预测与期望提升 | R:code:scheduler/calibration.py,code:scheduler/gate.py | A:ScoreEstimator,ScoreEstimate,expected_improvement | S:tbest按时间衰减记账；未刷新最高分的回执分数只在timing_score.score，同SHA历史与校准都要读它；校准残差按提交时刻重放并缓存在results/.case-bench-residuals.json，先验计3发、他题半权；只有本地与榜上SHA同套件版本的正式计时报告才配对
 feedback_log.py[PO6S]: F:单场比赛的持久追加式反馈日志，带签名去重与大小轮转 | R:code:scheduler/gate.py | A:- | S:同签名只记一行且超过8MB轮转；去掉去重会写出几万条重复门禁记录
-gate.py[DW9L]: F:四阶统计与安全提交门禁，含衰减感知额度与冷却 | R:code:scheduler/feedback_log.py,code:scheduler/estimator.py | A:- | S:额度与冷却按服务端时钟扣减，本地重试与轮询不得重复计数
+gate.py[DW9L]: F:四阶统计与安全提交门禁，含期望提升放行、熔断、额度与冷却 | R:code:scheduler/feedback_log.py,code:scheduler/estimator.py,code:scheduler/case_feedback.py | A:SubmissionGate,GateConfig | S:额度与冷却按服务端时钟扣减；S2在keep_best_board下期望提升≥底线且上涨概率≥0.2即放行，额度不参与门槛；operator approve只绕过S3，S1逃逸锁需绑定复核试验
 npu_scheduler.py[DW9L]: F:NPU任务序列调度器：分阶段流水、两队列MLFQ、WSPT与老化 | R:code:scheduler/gate.py | A:- | S:只读探针绝不flock锁文件；抢锁会干扰正在跑的验证任务
 pairwise_anchor.py[KA7M]: F:双锚Pairwise-v2候选评估与锚点选择 | R:code:scheduler/estimator.py | A:- | S:锚点必须同代同输入，换锚会让残差不再可比
 parhelion_paths.py[CD8M]: F:共享的~/.parhelion数据路径解析：目录布局、工作区id、题目清单加载与去NaN原子写 | R:code:cli/opsb_core/config.py | A:sanitize_json_value,atomic_write_json,read_json_safe,load_problem_manifest | S:清单以opsb.workspace.json优先、legacy目录回退，两条路径的path与repo_slug归一规则必须一致，否则同一题会出现两种身份
