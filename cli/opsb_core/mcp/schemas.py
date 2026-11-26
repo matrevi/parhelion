@@ -1,4 +1,11 @@
-"""JSON Schema definitions for the role-scoped Parhelion MCP tools (`parhelion_*`)."""
+"""JSON Schema definitions for the role-scoped Parhelion MCP tools (`parhelion_*`).
+
+The whole table rides on every model call, so a description here is context, not documentation: one
+sentence of what the tool does plus the constraint a caller must not get wrong. A parameter carries a
+note only when its name, type and enum do not already say it. Column meanings of the report views live in
+the tool (``parhelion_report(view="help")``), not in the schema. ``cli/tests/test_mcp_server.py`` pins the
+serialized size of both role tables: a new tool or a longer description has to pay for itself there.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -6,48 +13,37 @@ from typing import Any
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_status",
-        "description": "Compact contest scores, quota and per-problem rows (brief: one row per problem under 2KB, the default). format=full returns the complete structure, the same as verbose=true. Pass the last rev as if_rev to get {not_modified:true} when nothing changed; to wait for changes use parhelion_wait instead of calling status in a loop.",
+        "description": "Contest scores, quota and per-problem rows (brief). Pass an earlier reply's rev as if_rev for "
+                       "{not_modified:true}; to wait for a change use parhelion_wait, not a loop.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Optional problem title filter"},
-                "if_rev": {"type": "string", "description": "rev from a previous status reply with the same arguments"},
-                "include_npu": {"type": "boolean", "description": "Probe live device telemetry via SSH (default false)"},
-                "include_queue": {"type": "boolean", "description": "Include up to 5 queue items (default false)"},
-                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact rows and a queue preview; full: the uncompacted structure, still subject to the output cap"},
-                "verbose": {"type": "boolean", "description": "Return the full uncompacted structure (default false); format=full is the preferred spelling"},
-                "detail": {"type": "boolean", "description": "Include the extended state card: the per-case speedup, gap to tbest, targets and last receipts (default false)"},
+                "problem": {"type": "string"},
+                "if_rev": {"type": "string"},
+                "include_npu": {"type": "boolean"},
+                "include_queue": {"type": "boolean"},
+                "format": {"type": "string", "enum": ["brief", "full"]},
+                "verbose": {"type": "boolean"},
+                "detail": {"type": "boolean"},
             },
         },
     },
     {
         "name": "parhelion_report",
-        "description": "Read one platform report view; use this instead of ad-hoc scripts that open report.json, results/submit-queue-outcome.jsonl or `opsb queue list --json`, and instead of `opsb history`/`opsb --help` for column discovery. Views: "
-                       "per_case (<=4KB; columns: case, ours_us, tbest_us, gap_pct, speedup, band_pct, verdict, noisy, judge, mapped, local, timer, passed, exit_code, mismatch_n, strict_fp32, cal, wa, run - judge gap from the state card, three-state verdict and noise band from scheduler.verdicts, wa from the reproducer plan; sha/base default to the head and same-generation baseline); "
-                       "diff (columns: case, ratio, lo, hi, n, method, timer, bootstrap, verdict, plus git diff --stat; a stored P10 paired report is read as-is, else separate-run minima with a Welch interval); "
-                       "history (problems[] and receipts[]: sid, sha, status, score, beat_board, at, note, cases[case,ours_us,tbest_us,ratio], mean_ratio; from the canonical receipt journal); "
-                       "queue (same source as `opsb queue list --json`; threshold, count, by_kind, active_submissions, items[] with badge, raw_status, scores, gate lamps, note/detail/next_step; never an account field); "
-                       "board (cached board score/rank, frontier top1/top5, and per-case tbest with observed_at when a problem is named; reads cache only, no network); "
-                       "bottleneck (R6: category, limited_resource_pct, top_metrics[3], fixes from the KB, raw report/log/run_dir paths); "
-                       "env (platform version/root, daemon liveness, workspace/results/state dirs, free disk, <=1KB; no account, session or credential field). "
-                       "history and queue page: pass offset/limit or the next_cursor of the previous page. "
-                       "A worker reads its own problem only; board and env are open to workers. "
-                       "This tool is the data channel: board, tbest, receipts and environment facts come from it, never from "
-                       "files under ~/.parhelion (state/test_runs, agent_bus.db, cj_accounts.json, sessions/) or ~/.judge/, "
-                       "from importing opsb_core / adding the platform root to sys.path, or from calling platform internals "
-                       "such as board_refresh_service._all_team_sessions; a worker that does is flagged on the collaboration "
-                       "page and alerted to the orchestrator and the administrator.",
+        "description": "Read one report view instead of ad-hoc scripts over report.json or submit-queue-outcome.jsonl. Views: per_case, "
+                       "diff, history, queue, board, bottleneck, env, help (what each column means). Data channel: board, tbest, receipts "
+                       "and environment facts come from these views, never from ~/.parhelion or ~/.judge files or from platform internals.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "view": {"type": "string", "enum": ["per_case", "diff", "history", "queue", "board", "bottleneck", "env"], "description": "Which report to read"},
-                "problem": {"type": "string", "description": "Problem title; the orchestrator may name any, a worker is bound to its own"},
-                "sha": {"type": "string", "description": "per_case/diff candidate commit or run SHA (default: HEAD for per_case, the newest formal run for diff)"},
-                "base": {"type": "string", "description": "per_case/diff baseline SHA (default: the same-generation board SHA)"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum rows per page: default 10 (queue 20, board 30)"},
-                "offset": {"type": "integer", "minimum": 0, "description": "history: receipts to skip, counted from the newest; queue: items to skip"},
-                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
+                "view": {"type": "string", "enum": ["per_case", "diff", "history", "queue", "board", "bottleneck", "env", "help"]},
+                "problem": {"type": "string", "description": "a worker may name only its own problem"},
+                "sha": {"type": "string"},
+                "base": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "offset": {"type": "integer", "minimum": 0},
+                "cursor": {"type": "string"},
             },
             "required": ["view"],
         },
@@ -55,16 +51,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_spill_read",
         "roles": ("orchestrator", "worker"),
-        "description": "Read one window of a spilled tool result. A reply above the output cap returns "
-                       "{spilled:true, path, total_bytes, head, tail}; call this with that path and pass "
-                       "next_offset as offset to read the rest. Workers read only their own spill files, the "
-                       "orchestrator every file. The window is never spilled a second time.",
+        "description": "Read one window of a spilled reply from the returned path and next_offset; a worker reads only its own spill files.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "path from a spilled result (a path relative to the spill directory is also accepted)"},
-                "offset": {"type": "integer", "minimum": 0, "description": "Byte offset to start at (default 0, or the previous next_offset)"},
-                "limit": {"type": "integer", "minimum": 1, "description": "Bytes to read (default 3000, capped below the output cap)"},
+                "path": {"type": "string"},
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {"type": "integer", "minimum": 1},
             },
             "required": ["path"],
         },
@@ -75,21 +68,21 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Optional operator problem title"},
-                "sha": {"type": "string", "description": "Optional commit SHA"},
-                "verbose": {"type": "boolean", "description": "Include the coverage grid (default false)"},
+                "problem": {"type": "string"},
+                "sha": {"type": "string"},
+                "verbose": {"type": "boolean"},
             },
         },
     },
     {
         "name": "parhelion_pmu_card",
-        "description": "Generate compact ours/torch ratio and PMU pipe bottleneck diagnostic card.",
+        "description": "PMU pipe bottleneck card: ours/torch ratio per bucket.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Operator problem title"},
-                "sha": {"type": "string", "description": "Optional commit SHA"},
-                "top_n": {"type": "integer", "description": "Top worst buckets to surface (default 5)"},
+                "problem": {"type": "string"},
+                "sha": {"type": "string"},
+                "top_n": {"type": "integer"},
             },
             "required": ["problem"],
         },
@@ -100,15 +93,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Operator problem title"},
-                "sha": {"type": "string", "description": "Optional commit SHA"},
+                "problem": {"type": "string"},
+                "sha": {"type": "string"},
             },
             "required": ["problem"],
         },
     },
     {
         "name": "parhelion_kb_query",
-        "description": "Query the 5-pillar KB by symptom, regime, dtype or text. brief (the default) returns 3 compact entries with 600-char summaries; format=full (or full=true) returns complete entries, still subject to the output cap. Pass offset/limit or next_cursor to walk the ranked list.",
+        "description": "Query the 5-pillar KB by symptom, regime, dtype or text: brief (default) summaries, format=full entries, paged by "
+                       "cursor or offset/limit.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -118,18 +112,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "bugs", "all"]},
                 "text": {"type": "string"},
                 "include_anti_patterns": {"type": "boolean"},
-                "limit": {"type": "integer", "description": "Entries per page (default 3 brief, 8 full)"},
-                "offset": {"type": "integer", "minimum": 0, "description": "Ranked entries to skip"},
-                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer", "minimum": 0},
+                "cursor": {"type": "string"},
                 "digest": {"type": "boolean"},
-                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact summaries; full: complete entries"},
-                "full": {"type": "boolean", "description": "Legacy alias of format=full"},
+                "format": {"type": "string", "enum": ["brief", "full"]},
+                "full": {"type": "boolean"},
             },
         },
     },
     {
         "name": "parhelion_kb_record",
-        "description": "Propose a new snippet, hardware law (silicon/doc-discovered Accel behavior), community acceleration card, or anti-pattern (strictly evidence-gated).",
+        "description": "Propose a snippet, hardware law, community card or anti-pattern (evidence-gated).",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -154,7 +148,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_feedback",
-        "description": "Record win/fail/anti-pattern evidence on an existing KB entry to drive Bayesian promotion/demotion.",
+        "description": "Record win/fail/anti-pattern evidence on a KB entry; drives promotion.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -172,40 +166,41 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test",
-        "description": "Submit a platform test run and get a request_id within 2s. Then call parhelion_test_wait; the result also arrives in your inbox when it ends. format=brief (default) delivers the one-line summary, format=full delivers the complete digest bounded by the output cap.",
+        "description": "Submit one platform test run (request_id within 2s) and follow it with parhelion_test_wait; the result also "
+                       "reaches your inbox. The level decides how much device time the run costs.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string"},
-                "format": {"type": "string", "enum": ["brief", "full"], "description": "How the delivered result message reads: brief (default) one line, full the complete digest (spilled when over the cap)"},
-                "sha": {"type": "string", "description": "Commit to test (default HEAD)"},
-                "level": {"type": "string", "enum": ["smoke", "standard", "final"], "description": "smoke: quick self-check; standard (default): all correctness cases plus warm timing; final: candidate validation"},
-                "cases": {"type": "array", "items": {"type": "string"}, "description": "Optional case IDs to restrict the run"},
-                "remeasure": {"type": "boolean", "description": "Measure again instead of reusing a recent passing result"},
-                "force_rerun": {"type": "boolean", "description": "Run again even though this SHA and level already have a formal run; requires reason"},
-                "reason": {"type": "string", "description": "Why a forced rerun or a near-duplicate candidate is worth the device time"},
-                "build_only": {"type": "boolean", "description": "Compile only, no device time"},
-                "compare": {"type": "string", "description": "A/B paired run against this baseline commit, or 'board': both builds alternate in one device job and the result reports per-case speedup intervals"},
+                "format": {"type": "string", "enum": ["brief", "full"]},
+                "sha": {"type": "string"},
+                "level": {"type": "string", "enum": ["smoke", "standard", "final"], "description": "smoke: quick check; standard (default): all cases plus warm timing; final: candidate validation"},
+                "cases": {"type": "array", "items": {"type": "string"}},
+                "remeasure": {"type": "boolean"},
+                "force_rerun": {"type": "boolean"},
+                "reason": {"type": "string"},
+                "build_only": {"type": "boolean"},
+                "compare": {"type": "string"},
             },
             "required": ["problem"],
         },
     },
     {
         "name": "parhelion_test_wait",
-        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the result digest. format=brief (default) is the compact digest (about 2.5KB); format=full is the complete record, still subject to the output cap. To wait for several runs or for messages at once, use parhelion_wait.",
+        "description": "Wait up to wait_sec (default 30, max 45) for a test request and return progress or the digest; parhelion_wait covers several at once.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "request_id": {"type": "string"},
                 "wait_sec": {"type": "number", "minimum": 1, "maximum": 45},
-                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact digest; full: complete record"},
+                "format": {"type": "string", "enum": ["brief", "full"]},
             },
             "required": ["request_id"],
         },
     },
     {
         "name": "parhelion_test_cancel",
-        "description": "Cancel a running parhelion_test request (workers may cancel only their own).",
+        "description": "Cancel a running test request (a worker may cancel only its own).",
         "inputSchema": {
             "type": "object",
             "properties": {"request_id": {"type": "string"}},
@@ -214,30 +209,31 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test_plan",
-        "description": "Deprecated: preview the test command, or execute=true to submit and wait 40s. Prefer parhelion_test + parhelion_test_wait.",
+        "description": "Deprecated: preview the test command, or execute=true to submit and wait 40s. Prefer parhelion_test.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string"},
                 "sha": {"type": "string"},
-                "mode": {"type": "string", "enum": ["build-only", "fast", "full"], "description": "build-only, fast (smoke) or full (standard)"},
+                "mode": {"type": "string", "enum": ["build-only", "fast", "full"]},
                 "level": {"type": "string", "enum": ["smoke", "standard", "final"]},
                 "execute": {"type": "boolean"},
                 "cases": {"type": "array", "items": {"type": "string"}},
                 "bucket": {"type": "string"},
                 "experiment": {"type": "string"},
-                "profile": {"type": "string", "description": "Path to a shared experimental case profile in this contest workspace."},
+                "profile": {"type": "string"},
                 "timing": {"type": "string", "enum": ["off", "perf", "all"]},
                 "repeats": {"type": "integer", "minimum": 1},
-                "remeasure": {"type": "boolean", "description": "Request a fresh measurement for a reference suite even when matching successful evidence is recent."},
-                "suite": {"type": "string", "enum": ["adaptive", "all"], "description": "Default adaptive reference probe. Supply cases or bucket to target an experiment. Use all for formal candidate validation."},
+                "remeasure": {"type": "boolean"},
+                "suite": {"type": "string", "enum": ["adaptive", "all"]},
             },
             "required": ["problem"],
         },
     },
     {
         "name": "parhelion_submit_gate",
-        "description": "Evaluate 4-Stage Submission Gate (G1-G4 + ESCAPE_LOCK) and optionally enqueue validated commit. Name the hypothesis this candidate tests (hypothesis_id) and its predicted_effect; without them the platform generates the hypothesis from the commit message and says which id it created.",
+        "description": "Evaluate the 4-stage submission gate: a call is a preview, enqueue=true queues the SHA when it passes. Give "
+                       "hypothesis_id and predicted_effect, or the platform derives one from the commit message.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
@@ -245,8 +241,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "problem": {"type": "string"},
                 "sha": {"type": "string"},
                 "note": {"type": "string"},
-                "hypothesis_id": {"type": "string", "description": "Ledger id (L-nnnn) of the hypothesis this candidate tests"},
-                "predicted_effect": {"type": "object", "description": "Expected effect, e.g. {delta_mu: 0.8, delta_sigma: 0.4} or {case05: '-8..-12%'}"},
+                "hypothesis_id": {"type": "string"},
+                "predicted_effect": {"type": "object"},
                 "enqueue": {"type": "boolean"},
                 "force": {"type": "boolean"},
             },
@@ -255,64 +251,64 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_escape_status",
-        "description": "Escape locks of a problem: per WA/RE receipt the reproducer state (pending, reproduced, fixed), "
-                       "the reviewed-trial binding and whether it was used, and the next step. Workers: own problem only.",
+        "description": "Escape locks: per WA/RE receipt the reproducer state, the reviewed-trial binding and the next step; a worker sees "
+                       "its own problem only.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
-            "properties": {"problem": {"type": "string", "description": "Operator problem title"}},
+            "properties": {"problem": {"type": "string"}},
             "required": ["problem"],
         },
     },
     {
         "name": "parhelion_escape_rebind",
-        "description": "Bind the active escape lock's one reviewed trial to another repair SHA; allowed only while the "
-                       "bound repair was neither submitted nor queued. Refusals return the reason and change nothing.",
+        "description": "Bind the active escape lock's one reviewed trial to another repair SHA, only while the bound repair was neither "
+                       "submitted nor queued.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Operator problem title"},
-                "receipt": {"type": "string", "description": "Submission ID of the active escape lock"},
-                "sha": {"type": "string", "description": "Repair commit with a formal run of the current suite"},
-                "review": {"type": "string", "description": "Why this repair addresses the online failure"},
+                "problem": {"type": "string"},
+                "receipt": {"type": "string"},
+                "sha": {"type": "string"},
+                "review": {"type": "string"},
             },
             "required": ["problem", "receipt", "sha"],
         },
     },
     {
         "name": "parhelion_escape_reproducer",
-        "description": "The local reproducer variants generated for a WA/RE receipt and the exact parhelion_test calls "
-                       "that confirm the reproduction on the bad SHA and verify a repair.",
+        "description": "The reproducer variants for a WA/RE receipt and the parhelion_test calls that confirm and verify a repair.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "problem": {"type": "string", "description": "Operator problem title"},
-                "receipt": {"type": "string", "description": "Submission ID of the WA/RE receipt"},
+                "problem": {"type": "string"},
+                "receipt": {"type": "string"},
             },
             "required": ["problem", "receipt"],
         },
     },
     {
         "name": "parhelion_note",
-        "description": "Write one experiment-ledger entry and get its id back (L-nnnn). Types: hypothesis, experiment, insight, failure, decision, constraint. Platform fields (outcome, per-case times, measured confidence) are rejected; a status change is a new row and needs supersedes or id.",
+        "description": "Write one ledger entry and get its id (L-nnnn); fields are checked per type. Platform fields are rejected; a status "
+                       "change is a new row that needs supersedes or id.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "type": {"type": "string", "enum": ["hypothesis", "experiment", "insight", "failure", "decision", "constraint"]},
-                "claim": {"type": "string", "description": "One assertive sentence, at most 240 characters"},
-                "why": {"type": "string", "description": "Mechanism or reasoning, at most 300 characters"},
-                "scope": {"type": "object", "description": "Where the claim applies: {cases, bucket, shape, dtype}"},
+                "claim": {"type": "string", "description": "one assertive sentence, at most 240 characters"},
+                "why": {"type": "string"},
+                "scope": {"type": "object"},
                 "sha": {"type": "string"},
                 "base_sha": {"type": "string"},
                 "evidence": {"type": "array", "items": {"type": "string"}},
-                "confidence": {"type": "string", "enum": ["inferred", "speculative"], "description": "A model cannot claim measured"},
+                "confidence": {"type": "string", "enum": ["inferred", "speculative"]},
                 "links": {"type": "array", "items": {"type": "string"}},
-                "supersedes": {"type": "array", "items": {"type": "string"}, "description": "Ids this row replaces (a status update)"},
-                "id": {"type": "string", "description": "Entry to update; read as supersedes"},
-                "revisit_if": {"type": "string", "description": "Conditions under which a closed item should be re-opened"},
+                "supersedes": {"type": "array", "items": {"type": "string"}},
+                "id": {"type": "string"},
+                "revisit_if": {"type": "string"},
                 "status": {"type": "string", "enum": ["open", "queued", "testing", "confirmed", "refuted", "inconclusive", "abandoned"]},
                 "predicted_effect": {"type": "object"},
                 "test_plan": {"type": "string"},
@@ -330,83 +326,83 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "text": {"type": "string"},
                 "rule_source": {"type": "string"},
                 "lesson": {"type": "string"},
-                "problem": {"type": "string", "description": "Orchestrator only; a worker's problem is bound"},
-                "worker": {"type": "string", "description": "Orchestrator only: write into this worker's ledger"},
+                "problem": {"type": "string", "description": "orchestrator only; a worker's problem is bound"},
+                "worker": {"type": "string"},
             },
             "required": ["type"],
         },
     },
     {
         "name": "parhelion_ledger",
-        "description": "Read one ledger view, one line per entry: open hypotheses by priority, unexploited insights, failures, one case, or everything since an id. Lines carry the id, type, claim and the number that matters.",
+        "description": "One ledger view, one line per entry: open hypotheses by priority, unexploited insights, failures, one case, or since an id.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "view": {"type": "string", "description": "open | unexploited | failures | case:<id> | since:<id>"},
-                "problem": {"type": "string", "description": "Orchestrator only; a worker's problem is bound"},
-                "worker": {"type": "string", "description": "Orchestrator only: read this worker's ledger"},
+                "problem": {"type": "string"},
+                "worker": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 40},
-                "offset": {"type": "integer", "minimum": 0, "description": "Matched entries to skip"},
-                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
+                "offset": {"type": "integer", "minimum": 0},
+                "cursor": {"type": "string"},
             },
         },
     },
     {
         "name": "parhelion_recall",
-        "description": "Search the ledger, the compaction handoffs and this worker's archived session log for what was already known. Results are snippets with their source as file#line.",
+        "description": "Search the ledger, compaction handoffs and this worker's session log; results carry a file#line source.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 40},
-                "problem": {"type": "string", "description": "Orchestrator only; a worker's problem is bound"},
-                "worker": {"type": "string", "description": "Orchestrator only: search this worker's records"},
-                "refresh": {"type": "boolean", "description": "Rebuild the index instead of using the cached one"},
+                "problem": {"type": "string"},
+                "worker": {"type": "string"},
+                "refresh": {"type": "boolean"},
             },
             "required": ["query"],
         },
     },
     {
         "name": "parhelion_harness_pool",
-        "description": "Inspect primary orchestrator (self-dispatch disabled), eligible external Harnesses, problem squads, and strategic alerts.",
+        "description": "Primary orchestrator, external Harnesses, squads and strategic alerts.",
         "roles": ("orchestrator",),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "parhelion_sprint_start",
-        "description": "On a contest start request, launch or reuse workers per problem (one per problem by default). Defaults to the active Harness. A preview checks readiness without launching. Inspect blocked slots and worker messages.",
+        "description": "On a contest start, launch or reuse one worker per problem on the active Harness; preview checks readiness without launching.",
         "roles": ("orchestrator",),
         "inputSchema": {"type": "object", "properties": {
             "driver": {"type": "string"}, "preview": {"type": "boolean"},
-            "mode": {"type": "string", "enum": ["solo", "dual", "full"], "description": "solo (default): 1 worker per problem; dual adds algorithm/dataflow tracks; full also adds bench-author"},
-            "problems": {"type": "array", "items": {"type": "string"}, "description": "Optional problem titles to staff; omit for every problem in the contest"},
-            "enable_auto_submit": {"type": "boolean", "description": "Enable the existing queue consumer for the active contest when the user requests automatic submission. Defaults to preserving the switch."}
+            "mode": {"type": "string", "enum": ["solo", "dual", "full"], "description": "solo (default): 1 per problem; dual adds algorithm/dataflow; full adds bench-author"},
+            "problems": {"type": "array", "items": {"type": "string"}},
+            "enable_auto_submit": {"type": "boolean", "description": "only when the user asks for automatic submission"}
         }},
     },
     {
         "name": "parhelion_agent_spawn",
-        "description": "Spawn a non-blocking autonomous external Harness worker (blocks active_driver self-dispatch; no concurrency cap; full bench+gate autonomy).",
+        "description": "Spawn a non-blocking autonomous external Harness worker (blocks active_driver self-dispatch; no concurrency cap).",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "driver": {"type": "string", "enum": ["antigravity", "codex", "claude", "deepseek", "pi", "gemini"]},
-                "task": {"type": "string", "description": "Initial task instruction for the external worker"},
-                "role_label": {"type": "string", "description": "Short role badge (e.g. impl, audit, recon)"},
-                "problem": {"type": "string", "description": "Optional operator problem title (groups into Problem Squad)"},
-                "collab_mode": {"type": "string", "enum": ["orthogonal", "pipeline", "solo"], "description": "Squad concurrency philosophy"},
-                "axis": {"type": "string", "description": "Orthogonal exploration axis or pipeline stage tag (e.g. L1I-pack, ring4-ub, audit)"},
+                "task": {"type": "string"},
+                "role_label": {"type": "string"},
+                "problem": {"type": "string"},
+                "collab_mode": {"type": "string", "enum": ["orthogonal", "pipeline", "solo"]},
+                "axis": {"type": "string"},
                 "worktree_mode": {"type": "string", "enum": ["isolated", "readonly", "shared"]},
-                "track": {"type": "string", "description": "Optional git worktree branch/track name"},
+                "track": {"type": "string"},
             },
             "required": ["driver", "task"],
         },
     },
     {
         "name": "parhelion_agent_send",
-        "description": "Send a strategic adjustment, generalization hint, or mid-turn interrupt to an external Harness worker.",
+        "description": "Send a strategic adjustment or mid-turn interrupt to a worker.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
@@ -420,75 +416,73 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_agent_wait",
-        "description": "Block (<=45s cap) until strategic events (breakthrough/stagnation/escape_zero/question/directive) or worker results arrive. Prefer parhelion_wait, which also covers tests, seats and receipts and returns only changes.",
+        "description": "Block (<=45s) until strategic events or worker results arrive. Prefer parhelion_wait, which also covers tests, seats and receipts.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "since_seq": {"type": "integer"},
                 "agent_ids": {"type": "array", "items": {"type": "string"}},
-                "problem": {"type": "string", "description": "Optional Problem Squad filter"},
-                "strategic_only": {"type": "boolean", "description": "Wake on strategic events (default true). Use false to include ordinary replies."},
-                "timeout_sec": {"type": "number", "description": "Wait timeout in seconds (default 25, max 45)"},
+                "problem": {"type": "string"},
+                "strategic_only": {"type": "boolean"},
+                "timeout_sec": {"type": "number"},
             },
         },
     },
     {
         "name": "parhelion_wait",
-        "description": "Block until something you watch changes, then return only the changes since `since` as one-line summaries: inbox messages, test runs, seat status, judge receipts (a worker sees its own; the orchestrator sees all). Pass the returned rev as `since` next time. With no change it returns {changed:false, waiting_for, idle_streak, next_timeout}; omit timeout so the wait lengthens itself (max 100s). Use this instead of polling status, agent_wait or test_wait; read full text with agent_messages, agent_inbox or test_wait.",
+        "description": "Block until something you watch changes and return only the changes since `since`: inbox, test runs, seats, judge receipts. "
+                       "Prefer this over looping parhelion_status, agent_wait or test_wait; omit timeout and the wait lengthens itself (max 100s).",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "since": {"type": "string", "description": "rev from the previous parhelion_wait; omit to watch from now"},
-                "until": {"type": "array", "items": {"type": "string", "enum": ["inbox", "test", "agent", "judge"]},
-                          "description": "Sources to wake on (default all four)"},
-                "timeout": {"type": "number", "minimum": 0, "maximum": 100, "description": "Seconds to block; default grows while nothing changes"},
-                "agent_ids": {"type": "array", "items": {"type": "string"}, "description": "Orchestrator only: limit to these workers"},
-                "problem": {"type": "string", "description": "Orchestrator only: limit to one problem"},
-                "strategic_only": {"type": "boolean", "description": "Orchestrator only: wake on strategic messages only"},
+                "since": {"type": "string", "description": "rev from the previous wait; omit to watch from now"},
+                "until": {"type": "array", "items": {"type": "string", "enum": ["inbox", "test", "agent", "judge"]}},
+                "timeout": {"type": "number", "minimum": 0, "maximum": 100},
+                "agent_ids": {"type": "array", "items": {"type": "string"}},
+                "problem": {"type": "string"},
+                "strategic_only": {"type": "boolean"},
             },
         },
     },
     {
         "name": "parhelion_agent_peek",
-        "description": "Orchestrator only: look inside one worker without shelling out. Use it instead of `cat`/`tail`/`ls`/`git diff --stat` against a worker's worktree, which need a `cd` and re-send whole files. "
-                       "what=files lists the worker's worktree two levels deep; what=file reads one file by path **relative to that worktree** (absolute paths and `..` escapes are refused) with an optional `lines` range such as `40-120` or `200`; "
-                       "what=log_tail returns the last lines of the worker's session log (read-only, credential-shaped fields redacted); what=diff_stat returns `git diff --stat` plus `--shortstat`. "
-                       "The answer is capped at 8 KB and one file at 256 KB; call it again with a narrower `lines` range instead of asking for a whole large file.",
+        "description": "Orchestrator only: look inside one worker without shelling out; use it instead of cat/tail/ls/git diff --stat on its "
+                       "worktree. what: files (two levels), file (one path **relative to that worktree**; absolute and .. refused; optional lines "
+                       "range), log_tail (last lines, credentials redacted), diff_stat. Answers are capped at 8 KB.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "agent_id": {"type": "string", "description": "Worker agent id as shown on the collaboration page"},
-                "what": {"type": "string", "enum": ["files", "file", "log_tail", "diff_stat"],
-                         "description": "Which view to read (default files)"},
-                "path": {"type": "string", "description": "what=file: path relative to the worker's worktree"},
-                "lines": {"type": "string", "description": "what=file/log_tail: line range `40-120` or a start line; default 200 lines from the start"},
+                "agent_id": {"type": "string"},
+                "what": {"type": "string", "enum": ["files", "file", "log_tail", "diff_stat"]},
+                "path": {"type": "string"},
+                "lines": {"type": "string"},
             },
             "required": ["agent_id"],
         },
     },
     {
         "name": "parhelion_agent_messages",
-        "description": "Read message history (per-worker or aggregated by Problem Squad), worktree git diff --stat, and commit SHA.",
+        "description": "Message history (per worker or Problem Squad), worktree git diff --stat, and commit.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "agent_id": {"type": "string"},
-                "problem": {"type": "string", "description": "Optional Problem Squad filter"},
+                "problem": {"type": "string"},
                 "since_seq": {"type": "integer"},
-                "limit": {"type": "integer", "description": "Messages per page (default 60)"},
-                "offset": {"type": "integer", "minimum": 0, "description": "Messages to skip in the same result set"},
-                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
+                "limit": {"type": "integer"},
+                "offset": {"type": "integer", "minimum": 0},
+                "cursor": {"type": "string"},
                 "ack": {"type": "boolean"},
             },
         },
     },
     {
         "name": "parhelion_agent_stop",
-        "description": "Terminate an external Harness worker process group (-pgid) and optionally remove its isolated worktree.",
+        "description": "Terminate a worker process group (-pgid), optionally removing its worktree.",
         "roles": ("orchestrator",),
         "inputSchema": {
             "type": "object",
@@ -501,14 +495,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_agent_report",
-        "description": "Report progress or a question. At a completed stage use kind=result with the SHA, evidence and next idea; this is a checkpoint for context compaction.",
+        "description": "Report progress or a question; kind=result with the SHA, evidence and next idea is the compaction checkpoint.",
         "roles": ("worker",),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "enum": ["progress", "breakthrough", "stagnation", "escape_zero", "question", "result", "error"]},
                 "summary": {"type": "string"},
-                "no_gain_streak": {"type": "integer", "description": "Optional count of consecutive attempts without positive gain (>=6 escalates)"},
+                "no_gain_streak": {"type": "integer"},
                 "artifacts": {"type": "array", "items": {"type": "string"}},
             },
             "required": ["summary"],
@@ -517,26 +511,22 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_squad",
         "roles": ("worker",),
-        "description": "List teammates for your problem, or send them a claim-first peer envelope: recipient/to, "
-                       "refs (ledger ids), claim (<= 280 chars), evidence (path#anchor, test run id or receipt id), "
-                       "ask?. A body above 1200 chars becomes an attachment at <workspace state>/peer/<msg_id>.md and "
-                       "only its claim and path travel. Peer messages reach a teammate merged at its next turn "
-                       "boundary; no arguments lists teammates.",
+        "description": "List teammates, or send one claim-first peer envelope: recipient/to, refs, claim (<=280 chars), evidence "
+                       "(path#anchor, run id or receipt id), ask; over 1200 chars becomes an attachment carrying only the claim and path.",
         "inputSchema": {"type": "object", "properties": {
-            "recipient": {"type": "string", "description": "agent_id, teammate role name (e.g. algorithm, dataflow, bench-author) or all; omit all content arguments to list teammates"},
-            "to": {"type": "string", "description": "Envelope alias of recipient; recipient wins when both are given."},
-            "claim": {"type": "string", "description": "What the teammate should know, at most 280 characters, without the supporting text."},
-            "refs": {"type": "array", "items": {"type": "string"},
-                     "description": "Ledger ids this message cites (L-0001 or worker/L-0001); the recipient gets the ids, not a re-quote."},
-            "evidence": {"type": "string", "description": "One reference the recipient can open: a path#anchor, a test run id or a receipt id."},
-            "ask": {"type": "string", "description": "Optional explicit question or next step you want from the recipient."},
-            "message": {"type": "string", "description": "Legacy free text: up to 280 characters becomes the claim; a longer body is delivered inline up to 1200 characters and stored as an attachment above that."},
-            "request_id": {"type": "string", "description": "Reuse on retries to deliver only once."},
+            "recipient": {"type": "string"},
+            "to": {"type": "string"},
+            "claim": {"type": "string"},
+            "refs": {"type": "array", "items": {"type": "string"}},
+            "evidence": {"type": "string"},
+            "ask": {"type": "string"},
+            "message": {"type": "string"},
+            "request_id": {"type": "string"},
         }},
     },
     {
         "name": "parhelion_agent_inbox",
-        "description": "Worker-only: read and optionally acknowledge pending orchestrator follow-up messages or cross-problem broadcasts.",
+        "description": "Worker-only: pending orchestrator follow-ups and broadcasts; ack what you read.",
         "roles": ("worker",),
         "inputSchema": {
             "type": "object",
