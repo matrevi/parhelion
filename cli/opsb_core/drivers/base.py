@@ -170,6 +170,10 @@ class SessionRecord:
         )
 
 
+#: The problem label of the contest-wide orchestrator session (``opsb driver launch ALL``).
+ORCHESTRATOR_PROBLEM = "ALL-10"
+
+
 class BaseDriver(ABC):
     """Single unified interface for all Parhelion Harness Drivers."""
 
@@ -269,15 +273,18 @@ class BaseDriver(ABC):
                 job_env = {**os.environ, "PARHELION_HOME": str(resolve_parhelion_home())}
                 existing_pp = job_env.get("PYTHONPATH", "")
                 job_env["PYTHONPATH"] = f"{_cfg.CLI_DIR}:{existing_pp}" if existing_pp else str(_cfg.CLI_DIR)
-                with log_path.open("a", encoding="utf-8") as err_fh:
+                runner = [_cfg.resolve_python_exe(ws), "-m", "opsb_core.drivers.registry", "--exec-job", str(job_path)]
+                if problem != ORCHESTRATOR_PROBLEM:
                     # 4.2 K: the job runner needs the CLI on PYTHONPATH to start, so it is sandboxed
                     # instead: the driver child inherits the credential read denies, and
                     # ``_execute_headless_turn`` drops the platform paths from its environment again.
+                    # The contest orchestrator is not a managed worker: its MCP server reads the
+                    # daemon state to start seats, which the sandbox denies (4.3.0 fix).
+                    runner = worker_sandbox.wrap_command(runner)
+                with log_path.open("a", encoding="utf-8") as err_fh:
                     proc = subprocess.Popen(
-                        worker_sandbox.wrap_command(
-                            [_cfg.resolve_python_exe(ws), "-m", "opsb_core.drivers.registry", "--exec-job", str(job_path)]),
-                        cwd=str(wt), env=job_env, stdin=subprocess.DEVNULL, stdout=err_fh, stderr=subprocess.STDOUT,
-                        start_new_session=True, close_fds=True,
+                        runner, cwd=str(wt), env=job_env, stdin=subprocess.DEVNULL, stdout=err_fh,
+                        stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
                     )
                 pid = proc.pid
             status = "running"

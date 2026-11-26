@@ -249,3 +249,53 @@ def test_worker_codex_config_renders_permission_excludes(tmp_path, monkeypatch):
     assert files[str(Path.home() / ".judge")] == "deny"
     assert files[str(wt)] == "write"
     assert "parhelion_agent_report" in doc["mcp_servers"]["parhelion"]["tools"]
+
+
+def test_a_sandboxed_process_still_loads_the_platform_config(tmp_path):
+    """4.3.0: under the sandbox ``sessions/`` exists but cannot be stat'ed, so ``mkdir(exist_ok)``
+    raised FileExistsError and every sandboxed ``opsb mcp serve`` died before its first tool."""
+    import subprocess
+
+    if sys.platform != "darwin" or not Path(worker_sandbox.SANDBOX_EXEC).exists():
+        pytest.skip("sandbox-exec is macOS only")
+    home, ph = tmp_path / "home", tmp_path / "ph"
+    (ph / "sessions").mkdir(parents=True)
+    (home / ".config" / "opsb").mkdir(parents=True)  # a legacy store makes the migration run
+    (home / ".config" / "opsb" / "cj_accounts.json").write_text("{}", encoding="utf-8")
+    profile = "\n".join(worker_sandbox.seatbelt_profile(home=home, parhelion=ph))
+    code = ("from opsb_core import config; config.ensure_parhelion_migrated(); "
+            "config.ConfigRepository.load(); print('loaded')")
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(home), "PARHELION_HOME": str(ph), "PYTHONPATH": str(_cfg.CLI_DIR)}
+    proc = subprocess.run([worker_sandbox.SANDBOX_EXEC, "-p", profile, sys.executable, "-c", code],
+                          capture_output=True, text=True, env=env, timeout=60)
+    assert proc.returncode == 0 and "loaded" in proc.stdout, proc.stderr[-800:]
+    assert not (ph / "cj_accounts.json").exists()  # the sandboxed process migrated no credential
+
+
+def test_only_the_orchestrator_launch_runs_outside_the_sandbox(tmp_path, monkeypatch):
+    """4.3.0: the contest orchestrator must read the daemon state to start seats; workers stay sandboxed."""
+    from opsb_core.drivers import base as drv_base
+    from opsb_core.drivers.registry import get_driver
+
+    launched: list[list[str]] = []
+
+    class _Proc:
+        pid = 4242
+
+    def fake_popen(cmd, *args, **kwargs):
+        launched.append(list(cmd))
+        return _Proc()
+
+    driver = get_driver("deepseek")
+    monkeypatch.setattr(drv_base.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(type(driver), "discover", lambda self: drv_base.DriverDiagnostic(
+        kind="deepseek", display_name="d", installed=True, binary_path="/bin/true", version="",
+        auth_ok=True, protocol="acp-stdio", detail=""))
+    monkeypatch.setattr(type(driver), "sync_workspace", lambda self, ws, mcp_url=None: {})
+    monkeypatch.setattr(worker_sandbox, "wrap_command", lambda cmd, **kw: ["SANDBOX", *cmd])
+    monkeypatch.setenv("PARHELION_HOME", str(tmp_path / "ph"))
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    driver.launch_session(ws, drv_base.ORCHESTRATOR_PROBLEM, ws, "brief", mode="background")
+    driver.launch_session(ws, "DemoOp", ws, "brief", mode="background")
+    assert launched[0][0] != "SANDBOX" and launched[1][0] == "SANDBOX", launched

@@ -197,8 +197,19 @@ def ensure_parhelion_migrated() -> None:
         if ph in _MIGRATED_HOMES:
             return
         logs_dir, sessions_dir = ph / "logs", ph / "sessions"
+        sandboxed = False
         for sub in (ph, ph / "cache", logs_dir, sessions_dir):
-            sub.mkdir(mode=0o700, parents=True, exist_ok=True)
+            try:
+                sub.mkdir(mode=0o700, parents=True, exist_ok=True)
+            except FileExistsError:
+                # The path exists but this process may not stat it: the worker sandbox (4.2 K)
+                # denies the credential stores to every agent and to its MCP server.
+                sandboxed = True
+        if sandboxed:
+            # A sandboxed process cannot see the credential stores, so it must not migrate them
+            # either; the platform's own unsandboxed processes do that.
+            _MIGRATED_HOMES.add(ph)
+            return
 
         home = Path.home()
         if ph == (home / ".parhelion").resolve():

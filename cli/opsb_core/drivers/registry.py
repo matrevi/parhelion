@@ -8,6 +8,7 @@ from typing import Any
 
 from .antigravity_driver import AntigravityDriver
 from .base import (
+    ORCHESTRATOR_PROBLEM,
     BaseDriver,
     DriverDiagnostic,
     SessionRecord,
@@ -129,8 +130,8 @@ def launch_problem_session(
     ws = workspace.expanduser().resolve()
     drv = get_driver(driver_kind)
     prob_key = str(problem or "").strip()
-    if prob_key.upper() in ("ALL", "ALL-10", "ALL_OPS", "CONTEST", "__ALL__"):
-        title = "ALL-10"
+    if prob_key.upper() in ("ALL", ORCHESTRATOR_PROBLEM, "ALL_OPS", "CONTEST", "__ALL__"):
+        title = ORCHESTRATOR_PROBLEM
         worktree = ws
         brief = compose_contest_subagent_brief(ws, goal=goal)
     else:
