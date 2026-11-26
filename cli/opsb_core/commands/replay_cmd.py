@@ -144,7 +144,8 @@ def run_replay_gate(args: argparse.Namespace) -> int:
         result = gate_replay.run(ws, manifest=args.manifest, board_mode=args.board_mode,
                                  gate_switches=args.gate, since=args.since, until=args.until,
                                  groups=[g.strip() for g in str(args.groups or "").split(",") if g.strip()],
-                                 jobs=args.jobs, keep_copy=args.keep_copy, detail=args.detail)
+                                 jobs=args.jobs, keep_copy=args.keep_copy, detail=args.detail,
+                                 intents=args.intents)
     except (ValueError, KeyError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}) if args.json else f"Error: {exc}")
         return 2
@@ -181,7 +182,25 @@ def _print_gate(r: dict[str, Any]) -> None:
               f"recovery {out['recovery_median_min']} min, closing gap {out['closing_gap']}")
         print(f"  S2       approximate: {cred['s2_paired_shots']}/{out['judged']} shots carry paired local "
               f"evidence ({cred['s2_paired_rate'] * 100:.1f}%)")
+        if group.get("intents"):
+            _print_intents(group["intents"])
     print(f"\ntotal {r['elapsed_sec']}s")
+
+
+def _print_intents(block: dict[str, Any]) -> None:
+    """4.3 P23: G4, the hypothetical probe series and the opening window of one switch group."""
+    restore, probe, opening = block["restore"], block["probe"], block["opening"]
+    rate = "n/a" if restore["approve_rate"] is None else f"{restore['approve_rate'] * 100:.0f}%"
+    print(f"  G4       restore {restore['approved']}/{restore['events']} approved ({rate}); "
+          f"board open {restore['by_reason']['board_open']}, after a failure {restore['by_reason']['after_failure']}")
+    print(f"  probe    held shots re-judged as intent=probe: {probe['approved']}/{probe['evaluated']} approved, "
+          f"{probe['approved_new_highs']} new highs, gain {probe['gain']:+.2f} / loss {probe['loss']:+.2f} "
+          f"(net {probe['net']:+.2f})")
+    scored = [(t, v) for t, v in opening["per_problem"].items() if v["scored"]]
+    unscored = [t for t, v in opening["per_problem"].items() if not v["scored"]]
+    print(f"  opening  window <= {opening['max_probes']}: first score at shot "
+          + (", ".join(f"{t} #{v['first_score_shot']}" for t, v in scored) or "none")
+          + (f"; never scored within the window: {', '.join(unscored)}" if unscored else ""))
 
 
 def register_replay_subcommands(sub: Any) -> None:
@@ -201,6 +220,8 @@ def register_replay_subcommands(sub: Any) -> None:
     g.add_argument("--detail", action="store_true", help="Include every replayed shot in the JSON output")
     g.add_argument("--jobs", type=int, default=6, help="Problems replayed in parallel (default 6)")
     g.add_argument("--keep-copy", action="store_true", help="Keep the temporary copy and print its path")
+    g.add_argument("--intents", action="store_true",
+                   help="4.3 P23 block: re-judge as intent=probe/restore and report G4, probe and opening window")
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=run_replay_gate)
     for name, func, help_text in (

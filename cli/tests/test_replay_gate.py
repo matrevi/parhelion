@@ -278,3 +278,34 @@ def test_real_entry_point_runs_without_pythonpath(workspace: Path, tmp_path: Pat
     assert proc.returncode == 0, proc.stderr[-2000:]
     result = json.loads(proc.stdout)
     assert result["groups"]["default"]["gate"]["shots"] > 0
+
+
+def test_every_blocked_shot_names_a_next_step(workspace: Path) -> None:
+    """4.3 P23 §6a: a held shot is never a dead end; P21 measured 6/50 = 12% before this."""
+    for group in gate_replay.run(workspace, jobs=1)["groups"].values():
+        assert group["gate"]["blocked"] > 0
+        assert group["gate"]["blocked_with_next_step"] == group["gate"]["blocked"]
+        assert all(entry[1] == entry[0] for entry in group["gate"]["by_stage_code"].values())
+
+
+def test_intents_block_prices_the_probe_and_restore_hypotheses(workspace: Path) -> None:
+    plain = gate_replay.run(workspace, jobs=1)["groups"]["default"]
+    assert "intents" not in plain
+    group = gate_replay.run(workspace, jobs=1, intents=True)["groups"]["default"]
+    block = group["intents"]
+    # G4: a restore after a zeroed board or a judge-side failure is approved
+    assert block["restore"]["events"] >= 1
+    assert block["restore"]["approved"] == block["restore"]["events"]
+    assert block["restore"]["approve_rate"] == 1.0
+    # the 4.2.1 hold re-judged as a probe, under the rolling budget, priced on its real outcome
+    probe = block["probe"]
+    assert probe["evaluated"] >= 1
+    assert probe["approved"] == len(probe["approved_detail"])
+    assert all(row["budget_used"] < 2 for row in probe["approved_detail"])
+    assert probe["gain"] >= 0 and probe["loss"] <= 0
+    # the opening window is per problem and capped
+    opening = block["opening"]["per_problem"]
+    assert set(opening) == set(TITLES)
+    assert all(value["opening_length"] <= 8 for value in opening.values())
+    # the intent pass is an extra judgement only: it must not move the 4.2.1 gate block
+    assert group["gate"] == plain["gate"]

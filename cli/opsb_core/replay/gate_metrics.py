@@ -184,3 +184,77 @@ def credibility(shots: list[dict[str, Any]]) -> dict[str, Any]:
     return {"s1_s3_board_restore": "credible", "s2": "approximate",
             "s2_paired_shots": paired, "s2_paired_rate": _rate(paired, len(shots)),
             "estimation_methods": dict(sorted(methods.items(), key=lambda kv: -kv[1]))}
+
+
+def intents(shots: list[dict[str, Any]], seeding: dict[str, Any] | None = None,
+            opening_max_probes: int = 8) -> dict[str, Any]:
+    """4.3 P23 acceptance: G4 restore approvals, the hypothetical probe series, the opening window.
+
+    ``restore``: of the shots that follow a zeroed board or a judge-side failure *and* whose SHA had
+    already passed online, how many would ``intent=restore`` approve (G4, target 100%).
+    ``probe``: every 4.2.1 hold re-judged as ``intent=probe`` under a rolling per-problem budget;
+    the recorded outcome of each approved probe gives its board change, so the gain and the loss are
+    the history's own numbers, comparable to the +45.21 / −44.23 of the 27 forced shots.
+    ``opening``: per problem, how many judged receipts the opening window covers before the first
+    scored Pass, and which shot produced that score.
+    """
+    peak: dict[str, float] = dict((seeding or {}).get("peak") or {})
+    seen: dict[str, int] = {}
+    first_score: dict[str, int | None] = {}
+    restore_events: list[dict[str, Any]] = []
+    probe_approved: list[dict[str, Any]] = []
+    probe_held: list[dict[str, Any]] = []
+    probe_evaluated = 0
+    for shot in shots:
+        title, score = shot["title"], shot["score"] or 0.0
+        seen[title] = seen.get(title, 0) + 1
+        if shot["status"] == "Pass" and score > 0:
+            first_score.setdefault(title, seen[title])
+        before = peak.get(title, 0.0)
+        extra = shot.get("intents") or {}
+        restore = extra.get("restore")
+        if isinstance(restore, dict):
+            # G4 counts the shots whose restore the 4.3 rule would decide: a zeroed board in either
+            # mode, and a judge-side failure only under `latest` (a best board keeps its score).
+            relaxed = bool(restore["board_open"] or (
+                restore["after_failure"] and shot.get("board_mode") == "latest"))
+            if relaxed:
+                restore_events.append({"title": title, "sha": shot["short_sha"],
+                                       "at": shot["submitted_at"], "approved": bool(restore["approved"]),
+                                       "code": restore["code"], "board_open": restore["board_open"],
+                                       "after_failure": restore["after_failure"]})
+        probe = extra.get("probe")
+        if isinstance(probe, dict):
+            probe_evaluated += 1
+            delta = round(shot["board_after"] - shot["board_score"], 2)
+            row = {"title": title, "sha": shot["short_sha"], "at": shot["submitted_at"], "shot": seen[title],
+                   "status": shot["status"], "score": round(score, 2), "delta": delta,
+                   "new_high": bool(shot["status"] == "Pass" and score > before),
+                   "previous_peak": round(before, 2), "budget_used": probe["budget_used"],
+                   "code": probe["code"], "approved": bool(probe["approved"])}
+            (probe_approved if probe["approved"] else probe_held).append(row)
+        if shot["status"] == "Pass" and score > before:
+            peak[title] = score
+    approved_restores = [e for e in restore_events if e["approved"]]
+    gains = round(sum(r["delta"] for r in probe_approved if r["delta"] > 0), 2)
+    losses = round(sum(r["delta"] for r in probe_approved if r["delta"] < 0), 2)
+    opening = {}
+    for title, index in sorted(first_score.items()):
+        opening[title] = {"first_score_shot": index,
+                          "opening_length": min(index or opening_max_probes, opening_max_probes),
+                          "scored": True}
+    for title in sorted(set(seen) - set(first_score)):
+        opening[title] = {"first_score_shot": None,
+                          "opening_length": min(seen[title], opening_max_probes), "scored": False}
+    return {
+        "restore": {"events": len(restore_events), "approved": len(approved_restores),
+                    "approve_rate": _rate(len(approved_restores), len(restore_events)) if restore_events else None,
+                    "by_reason": {"board_open": sum(1 for e in restore_events if e["board_open"]),
+                                  "after_failure": sum(1 for e in restore_events if e["after_failure"])},
+                    "detail": restore_events},
+        "probe": {"evaluated": probe_evaluated, "approved": len(probe_approved),
+                  "approved_new_highs": sum(1 for r in probe_approved if r["new_high"]),
+                  "gain": gains, "loss": losses, "net": round(gains + losses, 2),
+                  "approved_detail": probe_approved, "held_detail": probe_held},
+        "opening": {"max_probes": opening_max_probes, "per_problem": opening},
+    }
