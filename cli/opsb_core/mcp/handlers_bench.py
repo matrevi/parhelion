@@ -447,9 +447,14 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     if not problem:
         raise ValueError("'problem' is required for parhelion_submit_gate")
     note, enqueue, force = str(args.get("note") or "").strip(), bool(args.get("enqueue", False)), bool(args.get("force", False))
+    from scheduler.submit_intent import normalize_intent
+
+    intent = normalize_intent(args.get("intent"))  # 4.3 P23: exploit (default), probe or restore
 
     title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
     options = ["--title", title, "--sha", sha, "--note", note]
+    if intent != "exploit":
+        options.extend(["--intent", intent])
     if force:
         options.append("--force")
     if enqueue and not force:
@@ -484,7 +489,8 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     link = auto.guard(auto.on_gate_link, workspace, title, sha, args.get("_caller_agent_id"), note=note,
                       estimate=estimate, enqueued=result["enqueued"], write=enqueue,
                       hypothesis_id=str(args.get("hypothesis_id") or "").strip(),
-                      predicted_effect=args.get("predicted_effect"))
+                      predicted_effect=args.get("predicted_effect"),
+                      intent=str(verdict.get("intent") or "exploit"))
     if isinstance(link, dict):
         result["ledger"] = link
     result["warnings"] = _ledger_warnings(workspace, title, args.get("_caller_agent_id"))

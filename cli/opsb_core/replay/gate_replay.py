@@ -213,47 +213,64 @@ def _primary(verdict: Any) -> tuple[str, str]:
 
 
 def _replay_title(task: tuple[str, str, tuple[str, ...], str | None, str,
-                             list[dict[str, Any]], list[dict[str, Any]]]) -> dict[str, Any]:
+                             list[dict[str, Any]], list[dict[str, Any]], bool]) -> dict[str, Any]:
     """Worker: replay one problem's shots for one switch group; the board advances on real outcomes."""
-    copy, name, switches, board_mode, title, prior, shots = task
+    copy, name, switches, board_mode, title, prior, shots, intents = task
     from scheduler.estimator import ScoreEstimator
     from scheduler.gate import SubmissionGate
+
+    from . import intent_replay
+
     gate = SubmissionGate(pathlib.Path(copy), estimator=ScoreEstimator(pathlib.Path(copy)),
                           config=_gate_config(name, list(switches), board_mode))
     keeps_best = gate._keeps_best(title)
     board = _Board(keeps_best)
     for shot in prior:  # shots outside --since/--until still move the board, they are just not judged
         board.after(shot, board.before())
+    passed: set[str] = set()
+    probe_log: list[float] = []
+    last_status = ""
     out = []
     for shot in shots:
         before = board.before()
         verdict = gate._evaluate_impl(title, shot["sha"], as_of=shot["at"],
                                       override_board_score=float(before[0]),
                                       override_board_status=before[1] or None)
-        after = board.after(shot, before)
         stage, code = _primary(verdict)
         steps = [str(s.metrics["next_step"]) for s in verdict.stages
                  if isinstance(s.metrics, dict) and s.metrics.get("next_step")]
-        out.append({
+        record = {
             "title": title, "sha": shot["sha"], "short_sha": shot["sha"][:7],
             "submitted_at": shot["at"].isoformat(), "ts": shot["at"].timestamp(),
             "status": shot["status"], "score": shot["score"],
             "board_score": round(before[0], 2), "board_status": before[1], "board_source": before[2],
-            "board_after": round(after[0], 2), "approved": bool(verdict.approved),
+            "board_after": 0.0, "approved": bool(verdict.approved),
             "status_tag": verdict.status_tag, "stage": stage, "code": code,
             "reason": verdict.gate_reason, "next_step": steps[0] if steps else "",
             "failed": [f"{s.stage}:{s.code}" for s in verdict.stages if not s.passed],
             "board_mode": "best" if keeps_best else "latest",
             "paired_cases": int(getattr(verdict.estimate, "matched_cases", 0) or 0),
             "method": str(getattr(verdict.estimate, "estimation_method", "")),
-        })
+        }
+        if intents:
+            extra = intent_replay.intents(gate, title, record, shot["at"], before, verdict, passed,
+                                          probe_log, last_status)
+            if extra:
+                record["intents"] = extra
+        after = board.after(shot, before)
+        record["board_after"] = round(after[0], 2)
+        out.append(record)
+        if shot["status"] == "Pass" and (shot["score"] or 0.0) > 0:
+            passed.add(shot["sha"])
+        last_status = shot["status"]
     return {"group": name, "title": title, "board_mode": "best" if keeps_best else "latest", "shots": out}
 
 
 def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
         board_mode: str | None = None, gate_switches: list[str] | None = None,
         since: str | None = None, until: str | None = None, groups: list[str] | None = None,
-        jobs: int = DEFAULT_JOBS, keep_copy: bool = False, detail: bool = False) -> dict[str, Any]:
+        jobs: int = DEFAULT_JOBS, keep_copy: bool = False, detail: bool = False,
+        intents: bool = False) -> dict[str, Any]:
     """Replay every judged receipt of ``workspace`` through the gate, once per switch group."""
     from ..config import ensure_scheduler_path
     from . import gate_metrics
@@ -288,7 +305,7 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
             target.setdefault(shot["title"], []).append(shot)
         seed = gate_metrics.seed([s for shots in before_window.values() for s in shots])
         tasks = [(str(tmp / "workspace"), name, tuple(gate_switches or ()), board_mode, title,
-                  before_window.get(title, []), shots)
+                  before_window.get(title, []), shots, bool(intents and name == "default"))
                  for name in names for title, shots in sorted(by_title.items())]
         results: list[dict[str, Any]] = []
         if tasks:
@@ -323,6 +340,9 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
                 "credibility": gate_metrics.credibility(shots),
                 "shots_detail": shots if detail else [],
             }
+            if intents and name == "default":
+                # 4.3 P23 acceptance block: G4, the hypothetical probe series and the opening window.
+                result["groups"][name]["intents"] = gate_metrics.intents(shots)
         result["elapsed_sec"] = round(time.time() - started, 1)
         return result
     finally:

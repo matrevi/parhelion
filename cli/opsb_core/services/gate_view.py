@@ -21,6 +21,8 @@ TAG_BADGES = {
     "EXPLORE": "EXPLORE", "RATE_WAIT": "RATE WAIT", "CRITICAL_RESTORE": "CRITICAL RESTORE",
     "PROBE": "PROBE", "READY": "READY", "SKIPPED": "SKIPPED",
 }
+# 4.3 P23 stage codes of an approved probe/restore; a CRITICAL_RESTORE keeps its own badge.
+INTENT_BADGES = {"PROBE_INTENT": "PROBE", "RESTORE_INTENT": "RESTORE"}
 NOT_TESTED = ("NO_VALIDATION_RECORD", "VALIDATION_INCOMPLETE", "REFERENCE_SUITE_REQUIRED", "MISSING_LOG",
               "MISSING_EXTENDED_PASSED", "MISSING_CROSS_CORE_STRESS", "FAST_LANE_ONLY")
 TEST_FAILED = ("NONZERO_MISMATCH", "LOG_FAILURE_MARKER", "STRESS_FAILURES", "NON_DETERMINISTIC_GATE", "GATE_BAD_LANES")
@@ -83,6 +85,14 @@ def _first_failed(stages: dict[str, dict[str, Any]]) -> tuple[str, str, dict[str
     return None
 
 
+def intent_badge(stages: dict[str, dict[str, Any]]) -> str:
+    """The badge of an approved 4.3 intent shot (S2 passed with an intent code), else ``""``."""
+    result = stages.get("NOISE_FLOOR") or {}
+    if not result.get("passed"):
+        return ""
+    return INTENT_BADGES.get(str(result.get("code") or ""), "")
+
+
 def badge(verdict: dict[str, Any] | None) -> str:
     stages = _stages(verdict or {})
     if not all(stage in stages for _, stage, _ in LAMPS):
@@ -98,6 +108,12 @@ def badge(verdict: dict[str, Any] | None) -> str:
         return "CIRCUIT OPEN" if stage == "CIRCUIT_BREAKER" else "HOLD: LOW GAIN"
     if DISPATCH_STAGE in stages and not stages[DISPATCH_STAGE].get("passed"):
         return WAITING
+    if tag != "CRITICAL_RESTORE":
+        # 4.3 P23: a probe reads PROBE and a priced restore RESTORE, whatever tier they were
+        # approved at; the critical restore keeps its own badge and its dispatch priority.
+        intent = intent_badge(stages)
+        if intent:
+            return intent
     return TAG_BADGES.get(tag, "READY")
 
 
@@ -119,10 +135,15 @@ def reason(verdict: dict[str, Any] | None) -> str:
 
 
 def next_step(verdict: dict[str, Any] | None) -> str:
-    """The escape lock's next step (S1 metrics, scheduler.wa_repro), or empty."""
-    s1 = _stages(verdict or {}).get("SAFETY") or {}
-    metrics = s1.get("metrics") if isinstance(s1.get("metrics"), dict) else {}
-    return str(metrics.get("next_step") or "")
+    """The S1 escape lock's next step, else the 4.3 intent's (probe undo command, restore pricing)."""
+    stages = _stages(verdict or {})
+    for stage in ("SAFETY", "NOISE_FLOOR"):
+        result = stages.get(stage) or {}
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        step = str(metrics.get("next_step") or "")
+        if step:
+            return step
+    return ""
 
 
 def card_fields(verdict: dict[str, Any] | None) -> dict[str, Any]:

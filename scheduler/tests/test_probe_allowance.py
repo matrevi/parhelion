@@ -1,4 +1,8 @@
-"""Opening probe allowance: first three acknowledged submissions per problem."""
+"""Opening probe allowance: acknowledged submissions before the problem's first score (D1).
+
+The fixed window of three is the 4.2.1 behaviour and stays reachable with
+``opening_until_first_score=false``; the P23 tests cover the extended window.
+"""
 from __future__ import annotations
 
 import dataclasses
@@ -65,7 +69,7 @@ class ProbeAllowanceTests(unittest.TestCase):
     def test_rejected_answer_still_gets_three_opening_probes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
-            gate = SubmissionGate(ws)
+            gate = SubmissionGate(ws, config=GateConfig(opening_until_first_score=False))
             probe = gate.probe_allowance(title, sha, unsolved=True)
             self.assertTrue(probe["allowed"])
             self.assertEqual(probe["remaining"], 3)
@@ -97,7 +101,7 @@ class ProbeAllowanceTests(unittest.TestCase):
                 d = ws / "results" / title / f"{sha[:7]}-probe{idx}"
                 d.mkdir(parents=True)
                 (d / "submission-receipt.json").write_text(json.dumps({"submission_id": f"sid-{idx}"}), encoding="utf-8")
-            gate = SubmissionGate(ws)
+            gate = SubmissionGate(ws, config=GateConfig(opening_until_first_score=False))
             probe = gate.probe_allowance(title, sha, unsolved=True)
             self.assertFalse(probe["allowed"])
             self.assertEqual(probe["remaining"], 0)
@@ -141,7 +145,7 @@ class ProbeAllowanceTests(unittest.TestCase):
             rows = [{"title": title, "sha": sha, "submission_id": sid, "status": "Wrong Answer"}
                     for sid in ["a", "a", "b"]]
             (results / "submit-queue-outcome.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
-            probe = SubmissionGate(ws).probe_allowance(title, sha)
+            probe = SubmissionGate(ws, config=GateConfig(opening_until_first_score=False)).probe_allowance(title, sha)
             self.assertEqual(probe["remaining"], 1)
 
 

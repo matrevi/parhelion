@@ -317,9 +317,11 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
 
     inflight = [x for x in payload["submission_queue"] if x["kind"] == "inflight"]
     active = [x for x in payload["submission_queue"] if x["kind"] not in ("completed", "inflight")] + extra_cands
+    # Tier 0 recovers a broken board, tier 2 is a 4.3 probe (4.3 P23: probes never outrank a READY
+    # exploit of the same board); everything else orders by priority inside tier 1.
     active.sort(
         key=lambda x: (
-            0 if x["badge"] == "CRITICAL RESTORE" else 1,
+            0 if x["badge"] == "CRITICAL RESTORE" else (2 if x["badge"] == "PROBE" else 1),
             -float(x.get("wspt_priority") or 0.0),
             str(x.get("title") or ""),
             str(x.get("short_sha") or "").lower(),

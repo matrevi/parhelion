@@ -845,9 +845,11 @@ class SchedulerEngine:
         speedup: float | None = None,
         note: str = "",
         force: bool = False,
+        intent: str = "exploit",
     ) -> dict[str, Any]:
         self.refresh_models()
-        verdict = self.gate.evaluate(title=title, sha=sha, speedup=speedup, note=note, force=force)
+        verdict = self.gate.evaluate(title=title, sha=sha, speedup=speedup, note=note, force=force,
+                                     intent=intent)
         return verdict.to_dict()
 
     def submit(
@@ -859,10 +861,12 @@ class SchedulerEngine:
         force: bool = False,
         dry_run: bool = False,
         agent_id: str = "",
+        intent: str = "exploit",
     ) -> dict[str, Any]:
         """Gate-checked submission enqueue entry point (`opsb submit`)."""
         self.refresh_models()
-        verdict = self.gate.evaluate(title=title, sha=sha, speedup=speedup, note=note, force=force)
+        verdict = self.gate.evaluate(title=title, sha=sha, speedup=speedup, note=note, force=force,
+                                     intent=intent)
         h_key = f"{verdict.title}:{verdict.sha}"
 
         enqueued = False
@@ -884,6 +888,12 @@ class SchedulerEngine:
                     "expected_improvement": verdict.estimate.expected_improvement,
                     "calibration_trust": verdict.estimate.calibration_trust,
                 }
+                if verdict.intent != "exploit":
+                    # 4.3 P23: the intent travels with the row so dispatch, calibration, the ledger
+                    # and the replay read the same decision the worker got.
+                    q_rec["intent"] = verdict.intent
+                if verdict.requested_intent != verdict.intent:
+                    q_rec["intent_requested"] = verdict.requested_intent
                 if speedup is not None:
                     q_rec["speedup"] = speedup
                 if agent_id:
@@ -1644,6 +1654,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ev.add_argument("--speedup", type=float, default=None, help="Optional explicit speedup ratio k")
     p_ev.add_argument("--note", default="", help="Optional commit/performance note")
     p_ev.add_argument("--force", action="store_true", help="Evaluate as forced/closing restore")
+    p_ev.add_argument("--intent", default="exploit", choices=["exploit", "probe", "restore"],
+                      help="4.3 submit intent: exploit (default), probe or restore")
 
     p_sub = sub.add_parser("submit", parents=[common], help="Gate-evaluate and enqueue a validated commit")
     p_sub.add_argument("--title", required=True, help="Operator problem title")
@@ -1653,6 +1665,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_sub.add_argument("--force", action="store_true", help="Force restore / bypass noise floor")
     p_sub.add_argument("--dry-run", action="store_true", help="Evaluate without mutating queue files")
     p_sub.add_argument("--agent-id", default="", help="Worker inbox for the official result")
+    p_sub.add_argument("--intent", default="exploit", choices=["exploit", "probe", "restore"],
+                       help="4.3 submit intent: exploit (default), probe or restore")
 
     p_dr = sub.add_parser("drain", parents=[common], help="Run WSPT single-consumer submission drain")
     p_dr.add_argument("--once", action="store_true", default=True, help="Drain current pending queue once")
@@ -1805,6 +1819,7 @@ def main(argv: list[str] | None = None) -> int:
                 speedup=args.speedup,
                 note=args.note,
                 force=args.force,
+                intent=getattr(args, "intent", "exploit"),
             )
         elif args.command == "submit":
             payload = engine.submit(
@@ -1815,6 +1830,7 @@ def main(argv: list[str] | None = None) -> int:
                 speedup=args.speedup,
                 force=args.force,
                 dry_run=args.dry_run,
+                intent=getattr(args, "intent", "exploit"),
             )
         elif args.command == "drain":
             payload = engine.drain(

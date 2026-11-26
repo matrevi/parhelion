@@ -287,8 +287,9 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertNotIn("10-Operator", brief)
             for rule in (
                 "PUBLIC", "S_SMALL_CORE", "M_MID_UB", "L_HBM_TILED", "X_EXTREME",
-                "first three distinct judge submission IDs", "even after an early AC",
-                "HTTP 429 without a judge ID", "From attempt four", "Respect manual holds",
+                "opening probes until the first scored Pass, at most 8", "even after an early AC",
+                "HTTP 429 without a judge ID", "After that, apply the safety, gain and circuit gates",
+                "intent=probe", "intent=restore", "Respect manual holds",
                 "opsb submit <op> <sha>", "predictions separate from judged scores",
             ):
                 self.assertIn(rule, brief)
