@@ -31,7 +31,7 @@ def _stages(s1=True, s2=True, s3=True, s4=True, code="PASS"):
             {"stage": "NOISE_FLOOR", "passed": s2, "code": "EXPECTED_IMPROVEMENT", "reason": "E[gain] 2.1 >= 1.9"},
             {"stage": "CIRCUIT_BREAKER", "passed": s3, "code": "CIRCUIT_CLOSED", "reason": "breaker reason"},
             {"stage": "QUOTA_RESERVE", "passed": s4, "code": "QUOTA_OK" if s4 else "DAILY_LIMIT_REACHED",
-             "reason": "50/day hard limit reached (50/50); quota detail"}]
+             "reason": "no account slot is free until the reset (50/50 used today); quota detail"}]
 
 
 @pytest.mark.parametrize("s1,s2,s3,s4,code,tag,badge", [
@@ -48,7 +48,8 @@ def _stages(s1=True, s2=True, s3=True, s4=True, code="PASS"):
     (True, False, True, False, "PASS", "HOLD_LOW_GAIN", "HOLD: LOW GAIN"),
 ])
 def test_queue_lamps_mirror_every_gate_stage(s1, s2, s3, s4, code, tag, badge):
-    verdict = {"approved": s1 and s2 and s3 and s4, "status_tag": tag, "priority_score": 4.2,
+    # The dispatch stage never withholds approval: a candidate waiting for a slot stays approved.
+    verdict = {"approved": s1 and s2 and s3, "status_tag": tag, "priority_score": 4.2,
                "stages": _stages(s1, s2, s3, s4, code), "estimate": {"delta_expected": 1.5, "ucb_delta": 3.0}}
     fields = gate_view.card_fields(verdict)
     gates = fields["gates"]
