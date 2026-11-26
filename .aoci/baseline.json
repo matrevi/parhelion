@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T22:27:16Z",
+  "updated_at": "2026-11-26T22:39:53Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "0d47de281e5bb99fb13b3699770155e0b6b1c9ccc836a19f6660201d83dc2652",
-      "size": 205778,
-      "normalized_sha256": "0d47de281e5bb99fb13b3699770155e0b6b1c9ccc836a19f6660201d83dc2652"
+      "sha256": "d763b5929869b97653630ce7b1e3f9a2c327e30007f9a7acb508ae697a72ebf5",
+      "size": 206160,
+      "normalized_sha256": "d763b5929869b97653630ce7b1e3f9a2c327e30007f9a7acb508ae697a72ebf5"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1373,9 +1373,9 @@
     },
     "cli/opsb_core/services/npu_service.py": {
       "role": "index",
-      "sha256": "4261bba10776fba14603c00643c5cd1a17b09fe680ad6814021055a66074d4c0",
-      "size": 11441,
-      "normalized_sha256": "4261bba10776fba14603c00643c5cd1a17b09fe680ad6814021055a66074d4c0"
+      "sha256": "b6d01989a257cd7d4dd048759015a1a2291a69737a86b171bb228b6de7f01bb1",
+      "size": 11841,
+      "normalized_sha256": "b6d01989a257cd7d4dd048759015a1a2291a69737a86b171bb228b6de7f01bb1"
     },
     "cli/opsb_core/services/orphan_receipts.py": {
       "role": "index",
@@ -1712,6 +1712,12 @@
       "sha256": "981ea462151c981ec025b8d3bbe8b0b060597811af3451bc2adf9bfb14639580",
       "size": 16692,
       "normalized_sha256": "981ea462151c981ec025b8d3bbe8b0b060597811af3451bc2adf9bfb14639580"
+    },
+    "cli/tests/test_npu_remote_scripts.py": {
+      "role": "observe",
+      "sha256": "047f18b15c37fdabe70af4df5a9610b96bebb24499928494d5d0bc5664088a99",
+      "size": 2295,
+      "normalized_sha256": "047f18b15c37fdabe70af4df5a9610b96bebb24499928494d5d0bc5664088a99"
     },
     "cli/tests/test_npu_stream_probe.py": {
       "role": "observe",
@@ -2327,9 +2333,9 @@
     },
     "docs/v4.3/RUN-LOG-2026-11-26-e2e.md": {
       "role": "index",
-      "sha256": "e4f1492ec3a7e1b6377e213a4c408945c651a2a2a483d80eaf79f6aff6ea7a5c",
-      "size": 18121,
-      "normalized_sha256": "e4f1492ec3a7e1b6377e213a4c408945c651a2a2a483d80eaf79f6aff6ea7a5c"
+      "sha256": "e293e0867ce68c6b5a7ec1fe942109ff4198b120b2c9d39e95eb0db5656becbf",
+      "size": 21725,
+      "normalized_sha256": "e293e0867ce68c6b5a7ec1fe942109ff4198b120b2c9d39e95eb0db5656becbf"
     },
     "docs/v4.3/RUNBOOK.md": {
       "role": "index",
