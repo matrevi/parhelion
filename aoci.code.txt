@@ -3,7 +3,7 @@
 ===/Users/winbeau/Developer/personal/parhelion/===
 .gitattributes[FC5T]: F:固定全仓库文本以LF检出，使AOCI Baseline的原始字节在各平台保持一致 | R:- | A:* text=auto eol=lf | S:缺少该规则时Windows的autocrlf会把整棵树标成stale，Baseline校验随之全量失败
 .gitignore[FC6T]: F:排除构建产物、Python缓存、密钥、AOCI托管文件备份与机器绑定的Agent/AOCI宿主集成文件，防止运行态数据进入仓库 | R:- | A:- | S:.mcp.json与.codex/config.toml携带本机绝对路径和凭据；*.backup.*是aoci改写AGENTS.md等托管文件时留下的副本，同样不得入库
-AGENTS.md[SG9S]: F:规定平台目标、主控与worker分工、提交额度与五元知识库纪律，是改动调度/界面/比赛提示词时的验收基准 | R:code:aoci.txt,code:README.md | A:- | S:aoci:begin到aoci:end的托管块由aoci init重写，块外内容必须原样保留；手改块内文字会让机器合同与索引失配
+AGENTS.md[SG9S]: F:规定平台目标、主控与worker分工、冲刺席位模式、提交额度与五元知识库纪律，是改动调度/界面/比赛提示词时的验收基准 | R:code:aoci.txt,code:README.md | A:- | S:aoci:begin到aoci:end的托管块由aoci init重写，块外内容必须原样保留；手改块内文字会让机器合同与索引失配
 Package.swift[FV7T]: F:SwiftPM清单，声明Parhelion可执行产品、macOS 14平台与单一executableTarget的源码根 | R:- | A:Package,executableTarget | S:仓库没有Test target，swift test只会报no tests found；验证唯一手段是swift build
 README.md[SG8M]: F:面向使用者的架构总览：仓库目录、~/.parhelion运行数据布局、Agent Mesh、v4.0测试平台与构建发布流程 | R:code:AGENTS.md,code:Package.swift | A:- | S:目录树与~/.parhelion子目录是运维约定，调整运行数据布局时必须同步本节，否则现场按文档找不到状态文件
 conftest.py[TQ7T]: F:测试会话默认值：把PARHELION_HOME指到临时目录并在import期生效 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/device_env.py | A:- | S:必须在被测模块import前设PARHELION_HOME；放到fixture里已太晚，config那时已把路径读成常量
@@ -102,7 +102,7 @@ WorkspaceWizardView.swift[CC6M]: F:新建工作区向导：目标目录、比赛
 opsb[EG9T]: F:可执行入口：在LaunchServices的系统python下自动重入工作区venv，再交给cli_app分发 | R:code:cli/opsb_core/cli_app.py | A:_ensure_venv_python | S:从.app启动时系统python没有requests与比赛SDK，必须重入venv，否则所有网络子命令直接失败
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/===
-__init__.py[CV6T]: F:包声明与版本号单一来源，CLI与daemon的SERVER_INFO都读它 | R:code:cli/opsb_core/cli_app.py | A:__version__ | S:版本号是打包脚本与daemon握手的唯一来源，build_dmg.sh与bundle_app.sh都从这里解析，改它等于发版
+__init__.py[CV6T]: F:包声明与版本号单一来源，MCP服务端与ACP/Codex客户端的版本信息都读它 | R:code:cli/opsb_core/mcp/server.py,code:scripts/build_dmg.sh,code:scripts/bundle_app.sh | A:__version__ | S:build_dmg.sh从这里解析版本并核对bundle，但bundle_app.sh的Info.plist版本是写死的，发版时两处要手工同步
 cli_app.py[EG9L]: F:统一CLI解析与分发：装配全部子命令、多语言与JSON输出，把异常收敛成退出码 | R:code:cli/opsb_core/commands/admin_cmd.py,code:cli/opsb_core/commands/queue_cmd.py,code:cli/opsb_core/commands/kb_cmd.py | A:build_parser,main,run_bench_suite | S:新子命令只在这里注册，命令实现留在commands包内，让commands反向依赖解析器会把全量命令拖进daemon导入链
 config.py[CC9M]: F:配置仓库与工作区发现：~/.parhelion迁移、默认配置合并、原子JSON与JSONL读写、python解释器解析 | R:code:cli/opsb_core/device_env.py,code:scheduler/parhelion_paths.py | A:ConfigRepository,ensure_parhelion_migrated,read_json,append_jsonl_locked,resolve_python_exe | S:迁移表约定config.json为0600，save()必须在原子替换前chmod，否则每次保存都掉回umask
 device_env.py[FH8S]: F:硬件与工具链设置的唯一读取入口：~/.parhelion/config.json的device段，可被OPSB_DEVICE_*覆盖，未配置时回中性默认 | R:code:cli/opsb_core/config.py | A:device_settings,device,device_text,device_list | S:仓库里不得出现真实设备值；测试用conftest设OPSB_DEVICE_ISOLATED=1强制中性默认，否则本机配置会漏进断言
@@ -123,12 +123,12 @@ __init__.py[CG3T]: F:CLI命令处理器的包标记 | R:code:cli/opsb_core/cli_a
 admin_cmd.py[EC8M]: F:管理类命令：workspace与collab与auth与ssh与skills的增删改查及登录会话管理 | R:code:cli/opsb_core/services/auth_service.py,code:cli/opsb_core/services/scaffold_service.py | A:run_workspace,run_auth,run_ssh,run_skills,run_collab | S:登录密码只从stdin读、不进命令行参数；写进argv会被进程列表与shell历史带出
 bench_cmd.py[EP8M]: F:基准命令族：init与status与calibrate与diagnose与backfill与verify-escape，转调scheduler桥接 | R:code:scheduler/cli_bridge.py | A:run_bench,_call_bridge_subcmd,_format_diagnose_report,_format_evolve_report | S:重活走cli_bridge转发给scheduler而不是在CLI进程里直接测量；子命令超时要按实际给足，默认120s不够诊断
 breakthrough_cmd.py[EA6M]: F:突破命令：列出与同步突破目录，以及queue list的--breakthrough视图 | R:code:cli/opsb_core/services/breakthrough_service.py | A:run_breakthrough,run_queue_list | S:-
-doctor_cmd.py[OO7L]: F:卫生命令：清理测试污染工作区、已结束agent沙箱、过期会话日志、trash与远端死票 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/agents/bus_store.py | A:run_doctor,scan_local,scan_agents,scan_logs,scan_trash,remote_ticket_script | S:默认只列不动手；用户数据只移进trash，只有--logs与--remote按窗口删除；--purge-trash是唯一清空trash的显式开关
+doctor_cmd.py[OO7L]: F:卫生命令：清理测试污染工作区、已结束agent沙箱、过期会话日志、trash与远端死票 | R:code:cli/opsb_core/config.py,code:cli/opsb_core/agents/bus_store.py | A:run_doctor,scan_local,scan_agents,scan_logs,scan_trash,remote_ticket_script | S:默认只列不动手；error席位留着续跑，需--include-errored才回收；用户数据只进trash，仅--logs与--remote按窗口删除
 driver_mcp_cmd.py[EE7M]: F:驱动与本地MCP命令：驱动诊断与选择与同步与启动与会话，以及mcp serve与工具列举 | R:code:cli/opsb_core/drivers/registry.py,code:cli/opsb_core/mcp/server.py | A:run_driver,run_mcp,register_driver_and_mcp_subcommands | S:-
 kb_cmd.py[EA7L]: F:知识库命令：query与list与show与record与feedback与history与rollback与project与seed与migrate-hardware | R:code:cli/opsb_core/services/triad_kb_service.py | A:run_kb,_handle_query,_handle_feedback,_handle_rollback,_handle_seed | S:-
 npu_cmd.py[EH6T]: F:NPU命令：状态查询、探针部署与SSH连通性测试 | R:code:cli/opsb_core/services/npu_service.py | A:run_npu | S:-
 queue_cmd.py[EW9L]: F:提交与队列命令：submit四阶门禁、queue系列操作与test三阶段调度 | R:code:cli/opsb_core/services/submit_runner.py,code:cli/opsb_core/services/queue_service.py | A:run_submit,run_queue,run_test,_remote_problem_dir | S:submit锁.submit-queue-io.lock防同title与sha并发重复占额；远端目录由manifest的npu_remote_root或contest_id推导，缺省落到work_root下
-status_cmd.py[EO8S]: F:状态与历史命令：汇总本地快照、认证、榜单刷新与IPC桥接增强 | R:code:cli/opsb_core/services/queue_service.py,code:cli/opsb_core/ipc_bridge.py | A:run_status,run_history,invoke_bridge,merge_bridge_enrichment | S:status默认带--compact且输出不超过2KB，是给MCP用的；去掉上限会把agent上下文撑爆
+status_cmd.py[EO8S]: F:状态与历史命令：汇总本地快照、认证、NPU遥测、B0补测、榜单新鲜度与IPC桥接增强 | R:code:cli/opsb_core/services/queue_service.py,code:cli/opsb_core/ipc_bridge.py,code:cli/opsb_core/services/backfill_status_service.py | A:run_status,run_history | S:--compact只去掉JSON缩进，不限制大小；2KB上限在MCP的parhelion_status里。补测探针硬限200ms并降级为null，--offline-npu跳过对账与远端遥测
 tools_cmd.py[EP7M]: F:快速反馈工具命令：bench elf与cold3与pmu与scaffold的结果格式化与按题批量执行 | R:code:cli/opsb_core/fast_feedback/cold3_probe.py,code:cli/opsb_core/fast_feedback/bench_scaffold.py | A:run_bench_elf,run_bench_cold3,run_bench_pmu,run_bench_scaffold | S:用例脚手架是追加式，重复执行必须幂等，不能覆盖worker手调过的spec
 
 ===/Users/winbeau/Developer/personal/parhelion/cli/opsb_core/daemon/===
@@ -240,9 +240,9 @@ REFACTOR_MODULAR_LAYOUT.md[SV6T]: F:模块化重构蓝图：单模块不超过35
 12-unified-suite.md[SP7S]: F:工作包B1：统一套件与smoke/standard/final三级别 | R:code:scheduler/suite.py | A:- | S:-
 13-device-broker.md[SH7S]: F:工作包B2：设备代理与热态计时 | R:code:runtime/npu_runtime/device_broker.py | A:- | S:-
 14-orchestration.md[SW7S]: F:工作包C：编排与token经济（席位、熔断、压缩阈值） | R:code:cli/opsb_core/agents/manager.py | A:- | S:-
-15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令 | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末的不要做的事划定了清理边界：用户数据只进trash，只有--logs与--remote可按窗口删除
+15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令（agent沙箱、会话日志、trash） | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末划定清理边界：用户数据只进trash，error席位默认保留，只有--logs与--remote可按窗口删除
 16-e2e-release.md[SV7T]: F:工作包E：集成、端到端测试与发布流程 | R:code:scripts/bundle_app.sh | A:- | S:发版必须同时改__init__版本与bundle的两个版本字段并打tag，漏一处会让daemon握手或打包版本不一致
-RELEASE-NOTES.md[SV8T]: F:发布说明：4.0.1的卫生回收与4.0.0四大工作包变更 | R:code:docs/v4/00-OVERVIEW.md | A:- | S:4.0.1一节写明了实测回收数字与例外规则，改清理策略时要同步这里
+RELEASE-NOTES.md[SV8T]: F:发布说明：4.0.2重建仓库认知索引、4.0.1卫生回收与4.0.0四大工作包变更 | R:code:docs/v4/00-OVERVIEW.md | A:- | S:4.0.1一节写明了实测回收数字与例外规则，改清理策略时要同步这里
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
 encrypt_password.py[IS6T]: F:用公钥把登录口令加密成判题站可解的密文，供无HTTPS的登录链路使用 | R:code:runtime/judge/judge_cli.py | A:- | S:只加密不落盘，私钥永远只在服务端；把私钥写进仓库等于公开所有账号口令
@@ -252,7 +252,7 @@ project_files.py[DV7S]: F:判题工程打包：只允许可编辑源文件进入
 session_store.py[PS7T]: F:持久化登录Cookie，不保存密码与RSA密文 | R:code:runtime/judge/judge_cli.py | A:- | S:只落Cookie与用户ID；把密码写进会话文件等于长期明文泄露
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/===
-npu-test.py[DH9L]: F:三阶段提交验证主控：CPU无锁编译、独占设备验证、零占卡收尾与结果落盘 | R:code:runtime/npu_runtime/device_broker.py,code:runtime/npu_runtime/reference_cases.py | A:- | S:阶段A失败或--build-only时必须lock_waste_sec=0立即退出，不能进入设备锁
+npu-test.py[DH9L]: F:三阶段提交验证主控：CPU无锁编译、独占设备验证、零占卡收尾与结果落盘 | R:code:runtime/npu_runtime/device_broker.py,code:runtime/npu_runtime/reference_cases.py | A:- | S:阶段A失败或--build-only时必须lock_waste_sec=0立即退出，不能进入设备锁；profiler二进制名与运行时追踪开关取自device配置
 submit-validated.py[DW7S]: F:提交与服务端成功运行一致的源码，并遵守服务端门禁与额度 | R:code:runtime/npu-test.py | A:- | S:只提交本地验证通过的SHA，跳过验证直接提交会白白消耗额度
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/npu_runtime/===
@@ -260,7 +260,7 @@ arena_accel.py[RP7M]: F:KernelC运行时的透明后导入钩子：把acl_runner
 arena_cache.py[RP7L]: F:阶段A与B与C分离的扩展套件重放与无锁黄金校验 | R:code:runtime/npu_runtime/arena_accel.py | A:- | S:黄金比对必须在设备锁外做，放回锁内会白占整段时间
 case_batch.py[DH8M]: F:把准备好的用例作为一个设备预约跑完，再统一校验 | R:code:runtime/npu_runtime/reference_cases.py | A:- | S:一次预约只排一次队，同批用例必须连续跑完再释放设备
 device_broker.py[RH9L]: F:常驻设备代理：单进程持有设备锁、按WSPT串行执行作业并在TLE后释放 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:TLE后必须释放锁并把剩余用例续排，否则整队会卡在已死作业上
-fast_profiler.py[RP7S]: F:低锁占用的剖析启动器，带Phase-C延迟导出与结果解析 | R:code:runtime/npu_runtime/lanes.py | A:- | S:导出推迟到锁外，锁内只留采集启动，否则剖析会把占卡时间放大数倍
+fast_profiler.py[RP6S]: F:手动使用的低锁剖析启动器：持锁期间只启动采集，导出与解析推迟到Phase-C队列；平台代码目前不调用它 | R:code:runtime/npu-test.py | A:main | S:profiler程序名与运行时追踪开关是部署值，取自OPSB_DEVICE_PROFILER_BIN与OPSB_DEVICE_PROFILER_ACL_FLAG；写死会让远端profiler拒绝参数
 lanes.py[MW7S]: F:远端CMake预算、WSPT准入与探针可见的持锁登记 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:持锁登记必须对探针只读可见；写在私有文件里探针看不到会误判设备空闲
 reference_cases.py[DH8L]: F:描述符驱动的官方样例模板运行器 | R:code:runtime/npu_runtime/case_batch.py | A:- | S:-
 sitecustomize.py[RP6T]: F:进程启动时挂载arena钩子的site钩子 | R:code:runtime/npu_runtime/arena_accel.py | A:- | S:只在PYTHONPATH指向runtime目录时生效，未挂载时必须静默降级
@@ -284,8 +284,8 @@ probes.py[DP6T]: F:调度器与最终上传门禁共用的证据采集 | R:code:
 suite.py[DP9M]: F:每题一份平台持有的版本化测试套件：用例分层、计时范围与级别 | R:code:scheduler/case_bench.py | A:- | S:套件由平台版本维护，worker不能传profile与timing与repeats，绕过会让运行失去可比性
 
 ===/Users/winbeau/Developer/personal/parhelion/scripts/===
-build_dmg.sh[OV6T]: F:压缩UDZO的dmg打包与SHA-256校验文件生成 | R:code:scripts/bundle_app.sh | A:- | S:打包前必须确认bundle版本与仓库版本一致，否则会打出旧版本号的包
-bundle_app.sh[OV7T]: F:Release构建、签名并安装/Applications/Parhelion.app，附带CLI软链 | R:code:scripts/build_dmg.sh | A:- | S:bundle必须在仓库之外组装，否则Spotlight与mdworker会重新注册仓库内的副本
+build_dmg.sh[OV6T]: F:压缩UDZO的dmg打包与SHA-256校验文件生成 | R:code:scripts/bundle_app.sh,code:cli/opsb_core/__init__.py | A:- | S:版本号从__init__.py解析并与bundle对照，缺包或不一致时重建，否则会打出旧版本号的包
+bundle_app.sh[OV7S]: F:在仓库外临时目录构建并ad-hoc签名Parhelion.app，打入cli/scheduler/runtime/templates/skills；仅--install时复制到/Applications | R:code:scripts/build_dmg.sh,code:cli/opsb_core/__init__.py | A:- | S:Info.plist版本号写死在脚本里，发版要与__version__手工同步；bundle须在仓库外组装，否则Spotlight会重新注册副本
 generate_icon.swift[OV5T]: F:用CoreGraphics矢量绘制AppIcon图标集 | R:code:scripts/bundle_app.sh | A:- | S:图标完全代码绘制、不依赖外部素材；引入外部图会破坏可复现构建
 
 ===/Users/winbeau/Developer/personal/parhelion/skills/kernelc-deep-reference/===
