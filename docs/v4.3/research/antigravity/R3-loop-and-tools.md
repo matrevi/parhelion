@@ -271,7 +271,7 @@ note 形如 `Simplex-MAP (15/16 buckets vs f2cee3b, beta=0.843, d_hid=+21.29, d_
 | 1 | LayerNormV3 `cec9fed` | TLE | 编译通过、性能 210→229 s 还涨了 | 本地只测**编译成功**，不测编译**多久**；`wall_sec` 只记总时长 | 27 dtype × 3 schMode = **81 份实例化**，判题机「编译+50 例」总时限 **420 s** 被撞穿 |
 | 2 | LayerNormV3 `07ae054` | WA | note 写 `75/75, DETERMINISTIC` | 75 例是本地生成分布，**没有覆盖官方 Test_050 那个数值区间** | `fp32 accumulate + one rounding` 在极端量级上越过 `float:1e-4` 阈值 |
 | 3 | StridedSliceGrad `dfa784f` | WA | 常规测试全过 | 本地用例的尾部长度恰好落在安全填充区内 | `BuildBatchGatherTable` 尾部对齐到 64 元素的 `kInfOff` 区**未清零**，`Gather` 读到脏偏移 |
-| 4 | PadV3Grad `be05c5b` | Pass 但 43.62→**42.45** | 16 桶提速 1.4–2.2× | 本地 warmup 后取中位，**冷态被暖态抹掉** | `.o` **172 KB**（全 10 题最肥）撞 910B3 **32 KB I-cache**，3-run 冷启每发白交 +1.8 us；公开 5 例死锁在 5.3–5.6 us |
+| 4 | PadV3Grad `be05c5b` | Pass 但 43.62→**42.45** | 16 桶提速 1.4–2.2× | 本地 warmup 后取中位，**冷态被暖态抹掉** | `.o` **172 KB**（全 10 题最肥）撞设备的 **32 KB I-cache**，3-run 冷启每发白交 +1.8 us；公开 5 例死锁在 5.3–5.6 us |
 | 5 | SyncBN `1795a85` | WA | `18 paired cases … raw_geo=1.412x, improved=17, regressed=1` | 17/18 桶赢，唯一输的那桶不是精度桶；本地没有 `Test_050` 级别的边界数值 | `vrsqrt` 近似 + 大数值范围溢出 + 非对齐 `dcci`，在 `Test_050` 精度边界逃逸 |
 | 6 | QuantUpdateScatter `becddb8` | TLE | `122/122 green`，kv_decode 1.28×、rows_big 2.26× | 本地只比**核内时间**，不比**编译规模** | E15 的 3-op cast + dispatch-floor + FusedGroupPass 组合把 Cube 编译推到 12 min 红线 |
 | 7 | ConfusionTransposeD `b32a0a0` | TLE | note 是 `restore best validated SHA (76.37)` | 回滚一发**不需要**本地验证（N=0），所以没有任何本地信号 | 同一份已验证源码在线上 300 s 内没跑完——判题机负载/编译波动本身就能把 Pass 变 TLE |

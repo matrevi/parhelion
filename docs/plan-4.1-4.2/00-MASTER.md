@@ -120,3 +120,4 @@
 | P17 | impl/P17-v2-calibrate | 已合入 | 746e928 | 真机：已知通过 SHA 无误报；a2717b5 仍只在平局变体上失败 |
 | P16 | impl/P16-measure | 可开工（P12、P13 已合入） | | 主会话据报告决定 H/I/J |
 | P18 | impl/P18-cleanup | 已合入 | efe11d7 | 可用额度不再扣收尾预留（门禁不变）；两条预算测试改虚拟时钟，负载下 20/20；缓存目录可配置，未在真机验证 |
+| P19 | impl/P19-antigravity-mining | 已合入 | dfb51a4 | 4.3 调研：上一场 Antigravity 记录的涨分归因与 Top 10 改进；文中「4.3 现状」指当前 main |
