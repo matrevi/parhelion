@@ -22,7 +22,10 @@ from .handlers_bench import (
     tool_parhelion_pmu_card,
     tool_parhelion_status,
     tool_parhelion_submit_gate,
+    tool_parhelion_test,
+    tool_parhelion_test_cancel,
     tool_parhelion_test_plan,
+    tool_parhelion_test_wait,
 )
 from .handlers_kb import (
     tool_parhelion_kb_feedback,
@@ -33,6 +36,7 @@ from .schemas import TOOL_SCHEMAS
 
 ToolHandler = Callable[[dict[str, Any], Path], dict[str, Any]]
 VALID_ROLES = ("orchestrator", "worker")
+WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
 
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
@@ -42,6 +46,9 @@ TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_kb_query": tool_parhelion_kb_query,
     "parhelion_kb_record": tool_parhelion_kb_record,
     "parhelion_kb_feedback": tool_parhelion_kb_feedback,
+    "parhelion_test": tool_parhelion_test,
+    "parhelion_test_wait": tool_parhelion_test_wait,
+    "parhelion_test_cancel": tool_parhelion_test_cancel,
     "parhelion_test_plan": tool_parhelion_test_plan,
     "parhelion_submit_gate": tool_parhelion_submit_gate,
     "parhelion_harness_pool": tool_parhelion_harness_pool,
@@ -102,7 +109,7 @@ def call_tool(
         raise ValueError("Tool 'arguments' must be a JSON object")
     call_args = dict(arguments or {})
     call_args.pop("_caller_agent_id", None)
-    if name == "parhelion_test_plan":
+    if name in WORKER_SCOPED_TEST_TOOLS:
         call_args["_worker_request"] = norm_role == "worker"
     if norm_role == "worker" and name == "parhelion_submit_gate" and call_args.get("force"):
         raise PermissionError("Worker submissions must pass the platform gate")
@@ -137,5 +144,8 @@ __all__ = [
     "tool_parhelion_pmu_card",
     "tool_parhelion_status",
     "tool_parhelion_submit_gate",
+    "tool_parhelion_test",
+    "tool_parhelion_test_cancel",
     "tool_parhelion_test_plan",
+    "tool_parhelion_test_wait",
 ]

@@ -198,10 +198,15 @@ def test_calibration_selects_pre_submission_evidence(tmp_path):
 
 def test_worker_mcp_case_plan_and_role(isolated_mcp_env, tmp_path):
     ws, _, sha = _make_mcp_workspace(tmp_path)
-    plan = call_tool("parhelion_test_plan", dict(problem="PadV3Grad", cases=["01", "03"],
-                     timing="all", repeats=3, experiment="paired"), ws, role="worker")
-    assert plan["sha"] == sha and not plan["executed"]
-    assert plan["command"][-10:] == ["--case", "01", "--case", "03", "--experiment", "paired", "--timing", "all", "--repeats", "3"]
+    plan = call_tool("parhelion_test_plan", dict(problem="PadV3Grad", cases=["01", "03"]), ws, role="worker")
+    assert plan["sha"] == sha and not plan["executed"] and plan["level"] == "standard"
+    assert plan["command"][-6:] == ["--level", "standard", "--case", "01", "--case", "03"]
+    for name, value in (("profile", "p.json"), ("experiment", "paired"), ("timing", "all"), ("repeats", 3), ("bucket", "small")):
+        with pytest.raises(ValueError, match="Workers select a level"):
+            call_tool("parhelion_test_plan", {"problem": "PadV3Grad", name: value}, ws, role="worker")
+    orch = call_tool("parhelion_test_plan", dict(problem="PadV3Grad", cases=["01"], timing="all", repeats=3,
+                     experiment="paired"), ws)
+    assert orch["command"][-8:] == ["--case", "01", "--experiment", "paired", "--timing", "all", "--repeats", "3"]
     assert list_tool_schemas(role="typo") == []
     with pytest.raises(ValueError, match="Unknown problem"):
         call_tool("parhelion_test_plan", {"problem": "missing"}, ws, role="worker")
@@ -226,10 +231,11 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
     assert rc == 0
 
     lines = [json.loads(ln) for ln in stdout.getvalue().splitlines() if ln.strip()]
-    # notifications/initialized emits no response, so 6 responses total
+    # notifications/initialized emits no response, so 6 responses total; replies may arrive out of order
     assert len(lines) == 6
-
-    init_resp, list_resp, status_resp, bad_tool_resp, bad_method_resp, parse_err_resp = lines
+    by_id = {resp.get("id"): resp for resp in lines}
+    init_resp, list_resp, status_resp, bad_tool_resp, bad_method_resp, parse_err_resp = (
+        by_id[1], by_id[2], by_id[3], by_id[4], by_id[5], by_id[None])
 
     assert init_resp["id"] == 1
     assert init_resp["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION
@@ -237,12 +243,12 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
     assert init_resp["result"]["capabilities"] == {"tools": {}}
 
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 16
+    assert len(tools) == 19
     assert {t["name"] for t in tools} == {t["name"] for t in list_tool_schemas()}
 
     assert status_resp["result"]["isError"] is False
     st_payload = json.loads(status_resp["result"]["content"][0]["text"])
-    assert st_payload["problems"][0]["title"] == "PadV3Grad"
+    assert st_payload["problems"]["rows"][0][st_payload["problems"]["columns"].index("title")] == "PadV3Grad"
     assert st_payload["npu"]["skipped"] is True
 
     assert bad_tool_resp["error"]["code"] == -32602
@@ -324,7 +330,7 @@ def test_evidence_gate_kb_record_feedback_and_query(isolated_mcp_env: Path, tmp_
     assert rec_data["entry"]["status"] == "unverified"
 
     # 3. Query returns the recorded entry
-    q_res = call_tool("parhelion_kb_query", {"bottlenecks": ["cold-launch-tax"], "digest": True}, ws)
+    q_res = call_tool("parhelion_kb_query", {"bottlenecks": ["cold-launch-tax"], "digest": True, "limit": 8}, ws)
     assert any(e["id"] == entry_id for e in q_res["entries"])
     assert "digest" in q_res
 
@@ -361,7 +367,7 @@ def test_evidence_gate_kb_record_feedback_and_query(isolated_mcp_env: Path, tmp_
     call_tool("parhelion_kb_feedback", {"entry_id": snip_id, "verdict": "fail", "problem": "PadV3Grad", "sha": sha, "delta_raw": -2.0}, ws)
     demoted = call_tool("parhelion_kb_feedback", {"entry_id": snip_id, "verdict": "fail", "problem": "PadV3Grad", "sha": sha, "delta_raw": -1.5}, ws)
     assert demoted["entry"]["status"] == "anti-pattern"
-    q_ap = call_tool("parhelion_kb_query", {"include_anti_patterns": True}, ws)
+    q_ap = call_tool("parhelion_kb_query", {"include_anti_patterns": True, "limit": 8}, ws)
     assert any(ap["id"] == snip_id for ap in q_ap["anti_patterns"])
 
 
@@ -424,7 +430,7 @@ def test_lazy_fast_feedback_and_test_and_submit_gate(isolated_mcp_env: Path, tmp
     plan = call_tool("parhelion_test_plan", {"problem": "PadV3Grad", "mode": "fast"}, ws)
     assert plan["executed"] is False
     assert plan["lane"]["queue"] == "Q0"
-    assert "--fast" in plan["command"]
+    assert plan["command"][-2:] == ["--level", "smoke"] and "--fast" not in plan["command"]
 
     # Submit gate: blocks when no NPU validation result exists
     gate_fail = call_tool("parhelion_submit_gate", {"problem": "PadV3Grad", "sha": sha, "enqueue": True}, ws)
@@ -457,9 +463,44 @@ def test_mcp_cli_subcommands(isolated_mcp_env: Path, tmp_path: Path, capsys: pyt
     args = parser.parse_args(["mcp", "list-tools", "--json"])
     assert args.func(args) == 0
     tools_out = json.loads(capsys.readouterr().out)
-    assert len(tools_out["tools"]) == 16
+    assert len(tools_out["tools"]) == 19
 
     args = parser.parse_args(["mcp", "call", "parhelion_status", "--args-json", '{"include_npu":false}', "--workspace", str(ws)])
     assert args.func(args) == 0
     call_out = json.loads(capsys.readouterr().out)
     assert call_out["contest"]["problem_count"] == 1
+
+
+def _out_of_order_requests() -> str:
+    return "".join(json.dumps({"jsonrpc": "2.0", "id": i, "method": "tools/call",
+                               "params": {"name": "parhelion_status", "arguments": {}}}) + "\n" for i in (1, 2))
+
+
+def _slow_first(msg):
+    import time
+    if msg["id"] == 1:
+        time.sleep(1.0)
+    return {"jsonrpc": "2.0", "id": msg["id"], "result": {"pad": "x" * 20000, "id": msg["id"]}}
+
+
+@pytest.mark.parametrize("worker", [False, True])
+def test_mcp_stdio_dispatches_concurrently(isolated_mcp_env: Path, tmp_path: Path, monkeypatch, worker) -> None:
+    import time
+    from opsb_core.mcp import server as mcp_server
+
+    seen: list[str] = []
+    if worker:
+        monkeypatch.setattr(mcp_server, "forward_worker_request",
+                            lambda ws, aid, msg: (seen.append(aid), _slow_first(msg))[1])
+    else:
+        monkeypatch.setattr(mcp_server, "handle_mcp_payload", lambda msg, **kw: _slow_first(msg))
+    stdout = io.StringIO()
+    started = time.monotonic()
+    rc = serve_stdio(tmp_path, role="worker" if worker else "orchestrator", agent_id="w-1" if worker else None,
+                     stdin=io.StringIO(_out_of_order_requests()), stdout=stdout, stderr=io.StringIO())
+    assert rc == 0 and time.monotonic() - started < 1.8
+    replies = [json.loads(ln) for ln in stdout.getvalue().splitlines()]
+    assert [r["id"] for r in replies] == [2, 1]
+    assert all(r["result"]["pad"] == "x" * 20000 for r in replies)
+    if worker:
+        assert seen == ["w-1", "w-1"]

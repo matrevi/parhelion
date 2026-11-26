@@ -2,37 +2,21 @@
 from __future__ import annotations
 
 import importlib
-import json
-import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
 from ..drivers.base import load_parhelion_config
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
-from ..services.contest_service import resolve_workspace_meta
+from ..services import test_runs
 from ..services.queue_service import compute_workspace_snapshot
 from ..services.sync_reconciler import has_pending_sync_error_for_commit
+from ..services.test_runs import _find_problem, _problem_commit
 
-
-def _find_problem(problems: list[dict[str, Any]], query: str) -> dict[str, Any] | None:
-    q = query.strip().lower()
-    return next((p for p in problems if str(p.get("title", "")).lower() == q), None)
-
-
-def _problem_commit(workspace: Path, problem: str, revision: str) -> tuple[str, str]:
-    prob = _find_problem(resolve_workspace_meta(workspace).get("problems") or [], problem)
-    if not prob:
-        raise ValueError(f"Unknown problem: {problem}")
-    repo = workspace / prob["path"]
-    if not (repo / ".git").exists():
-        raise ValueError(f"No local problem repository for {problem}")
-    ref = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options",
-                          revision + "^{commit}"], capture_output=True, text=True, timeout=3)
-    if ref.returncode:
-        raise ValueError(f"Cannot resolve {revision} for {problem}")
-    return prob["title"], ref.stdout.strip()
+STATUS_PROBLEM_COLUMNS = ("title", "status", "current_score", "best_score", "leader_score", "rank", "head_sha", "best_sha")
+STATUS_QUEUE_KEYS = ("title", "sha7", "status", "estimated_score", "delta_expected")
+WORKER_LEVEL_ONLY = "Workers select a level (smoke|standard|final); the platform owns the suite"
+EXPERIMENT_ARGS = ("profile", "experiment", "timing", "repeats", "bucket")
 
 
 def _latest_result_dir(workspace: Path, title: str, sha: str | None = None) -> Path | None:
@@ -48,6 +32,20 @@ def _latest_result_dir(workspace: Path, title: str, sha: str | None = None) -> P
     return dirs[0]
 
 
+def _round_score(value: Any) -> Any:
+    return round(value, 2) if isinstance(value, float) else value
+
+
+def _compact_queue_item(item: dict[str, Any]) -> dict[str, Any]:
+    est = item.get("estimate") if isinstance(item.get("estimate"), dict) else {}
+    out = {
+        "title": item.get("title"), "sha7": str(item.get("sha") or "")[:7], "status": item.get("status") or item.get("kind"),
+        "estimated_score": item.get("estimated_score", est.get("estimated_score")),
+        "delta_expected": item.get("delta_expected", est.get("delta_expected")),
+    }
+    return {k: _round_score(out[k]) for k in STATUS_QUEUE_KEYS}
+
+
 def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     cfg = load_parhelion_config()
     snap = compute_workspace_snapshot(workspace, cfg)
@@ -59,21 +57,12 @@ def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, An
         pass
     prob_filter = str(args.get("problem") or "").strip().lower()
     include_npu = bool(args.get("include_npu", False))
-    include_queue = bool(args.get("include_queue", True))
+    verbose = bool(args.get("verbose", False))
+    include_queue = bool(args.get("include_queue", verbose))
 
     problems = snap.get("problems") or []
     if prob_filter:
         problems = [p for p in problems if str(p.get("title", "")).lower() == prob_filter]
-    compact_problems = [
-        {
-            "title": p.get("title"), "difficulty": p.get("difficulty"), "status": p.get("status"),
-            "current_score": p.get("current_score"), "best_score": p.get("best_score"),
-            "leader_score": p.get("leader_score"), "rank": p.get("rank"), "wspt_tag": p.get("wspt_tag"),
-            "head_sha": str(p.get("head_sha") or "")[:12], "best_sha": str(p.get("best_sha") or "")[:12],
-            "escape_lock": bool((p.get("calibration") or {}).get("escape_lock")),
-        }
-        for p in problems
-    ]
 
     npu_state: dict[str, Any] = {"online": False, "skipped": True}
     if include_npu:
@@ -91,13 +80,34 @@ def tool_parhelion_status(args: dict[str, Any], workspace: Path) -> dict[str, An
         "contest": {k: snap["contest"].get(k) for k in ("title", "workspace", "weighted_score", "max_weighted_score", "raw_score", "passing_count", "problem_count")},
         "scheduler": {k: sched.get(k) for k in ("rate_ready", "cooldown_remaining_sec", "used_today_24h", "daily_quota_limit", "closing_reserve", "available_normal_shots", "noise_floor_delta", "actionable_count")},
         "npu": npu_state,
-        "problems": compact_problems,
     }
+    q_items = snap.get("submission_queue") or []
+    if prob_filter:
+        q_items = [q for q in q_items if str(q.get("title", "")).lower() == prob_filter]
+
+    if verbose:
+        out["problems"] = [
+            {
+                "title": p.get("title"), "difficulty": p.get("difficulty"), "status": p.get("status"),
+                "current_score": p.get("current_score"), "best_score": p.get("best_score"),
+                "leader_score": p.get("leader_score"), "rank": p.get("rank"), "wspt_tag": p.get("wspt_tag"),
+                "head_sha": str(p.get("head_sha") or "")[:12], "best_sha": str(p.get("best_sha") or "")[:12],
+                "escape_lock": bool((p.get("calibration") or {}).get("escape_lock")),
+            }
+            for p in problems
+        ]
+        if include_queue:
+            out["queue_preview"] = q_items[:12]
+        return out
+
+    # Compact default: one row per problem under shared column names keeps 14+ problems under 2KB.
+    rows = []
+    for p in problems:
+        row = {**p, "head_sha": str(p.get("head_sha") or "")[:7] or None, "best_sha": str(p.get("best_sha") or "")[:7] or None}
+        rows.append([_round_score(row.get(col)) for col in STATUS_PROBLEM_COLUMNS])
+    out["problems"] = {"columns": list(STATUS_PROBLEM_COLUMNS), "rows": rows}
     if include_queue:
-        q_items = snap.get("submission_queue") or []
-        if prob_filter:
-            q_items = [q for q in q_items if str(q.get("title", "")).lower() == prob_filter]
-        out["queue_preview"] = q_items[:12]
+        out["queue_preview"] = [_compact_queue_item(q) for q in q_items[:5] if isinstance(q, dict)]
     return out
 
 
@@ -111,6 +121,7 @@ def tool_parhelion_bench_diagnose(args: dict[str, Any], workspace: Path) -> dict
             raise ValueError(f"Unknown problem '{prob_q}' in workspace {workspace}")
         targets = [matched]
 
+    verbose = bool(args.get("verbose", False))
     diag_items: list[dict[str, Any]] = []
     observations = _cfg.read_json(workspace / "opsb.workspace.json", {}).get("bench_observations", {})
     for p in targets:
@@ -125,8 +136,8 @@ def tool_parhelion_bench_diagnose(args: dict[str, Any], workspace: Path) -> dict
             "escape_sha": cal.get("escape_sha"), "top_headroom_strata": strata[:3],
             "strong_positive_buckets": cal.get("strong_positive_buckets") or [],
             "misleading_anti_corr_buckets": cal.get("misleading_anti_corr_buckets") or [],
-            "high_residual_events": (cal.get("high_residual_events") or [])[-5:],
-            "coverage_grid": cal.get("coverage_grid"),
+            "high_residual_events": (cal.get("high_residual_events") or [])[-3:],
+            **({"coverage_grid": cal.get("coverage_grid")} if verbose else {}),
         })
     return diag_items[0] if (prob_q and diag_items) else {"workspace": str(workspace), "problem_count": len(diag_items), "problems": diag_items}
 
@@ -185,6 +196,59 @@ def tool_parhelion_elf_cold3_check(args: dict[str, Any], workspace: Path) -> dic
     }
 
 
+def _caller(args: dict[str, Any]) -> tuple[str, str | None]:
+    """(role, agent_id) for the calling session; orchestrator calls carry no agent_id."""
+    if args.get("_worker_request"):
+        return "worker", (str(args.get("_caller_agent_id") or "").strip() or None)
+    return "orchestrator", None
+
+
+def _plan_level(args: dict[str, Any], mode: str) -> str:
+    if args.get("level") is not None:
+        level = str(args["level"]).strip().lower()
+        if level not in test_runs.LEVELS:
+            raise ValueError("level must be smoke, standard or final")
+        return level
+    if args.get("suite") is not None:
+        suite = str(args["suite"]).strip().lower()
+        if suite not in ("adaptive", "all"):
+            raise ValueError("suite must be adaptive or all")
+        return {"adaptive": "smoke", "all": "standard"}[suite]
+    return {"build-only": "standard", "fast": "smoke", "full": "standard"}[mode]
+
+
+def tool_parhelion_test(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    problem = str(args.get("problem") or "").strip()
+    if not problem:
+        raise ValueError("'problem' is required for parhelion_test")
+    role, agent_id = _caller(args)
+    return test_runs.submit(
+        workspace, problem=problem, sha=str(args.get("sha") or "HEAD"), level=args.get("level") or "standard",
+        cases=args.get("cases") or [], remeasure=bool(args.get("remeasure", False)),
+        build_only=bool(args.get("build_only", False)), agent_id=agent_id, role=role,
+    )
+
+
+def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ValueError("'request_id' is required for parhelion_test_wait")
+    wait_sec = args.get("wait_sec")
+    return test_runs.wait(workspace, request_id, 30 if wait_sec is None else wait_sec)
+
+
+def tool_parhelion_test_cancel(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    request_id = str(args.get("request_id") or "").strip()
+    if not request_id:
+        raise ValueError("'request_id' is required for parhelion_test_cancel")
+    role, agent_id = _caller(args)
+    if role == "worker":
+        owner = test_runs.refresh(workspace, request_id).get("agent_id")
+        if not agent_id or owner != agent_id:
+            raise PermissionError("Workers can cancel only their own test requests")
+    return test_runs.cancel(workspace, request_id)
+
+
 def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     problem = str(args.get("problem") or "").strip()
     if not problem:
@@ -193,29 +257,42 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
     if mode not in ("build-only", "fast", "full"):
         raise ValueError("Invalid 'mode': must be 'build-only', 'fast', or 'full'.")
     execute = bool(args.get("execute", False))
+    role, agent_id = _caller(args)
+    experiment_args = [name for name in EXPERIMENT_ARGS if args.get(name) not in (None, "")]
+    if role == "worker" and experiment_args:
+        raise ValueError(WORKER_LEVEL_ONLY)
+    if execute and experiment_args:
+        raise ValueError("Experiment parameters are preview-only through MCP; execute=true selects a level only")
 
     title, sha = _problem_commit(workspace, problem, str(args.get("sha") or "HEAD"))
+    level = _plan_level(args, mode)
+    build_only = mode == "build-only"
+    case_ids = args.get("cases") or []
+    if not isinstance(case_ids, list) or not all(isinstance(k, str) and k for k in case_ids):
+        raise ValueError("cases must contain nonempty case IDs")
+
+    if execute:
+        view = test_runs.submit(workspace, problem=title, sha=sha, level=level, cases=case_ids,
+                                remeasure=bool(args.get("remeasure")), build_only=build_only,
+                                agent_id=agent_id, role=role)
+        flags = {k: True for k in ("joined", "reused") if view.get(k)}
+        if view.get("status") not in test_runs.TERMINAL:
+            view = test_runs.wait(workspace, view["request_id"], 40)
+        return {**view, **flags, "deprecated": "use parhelion_test + parhelion_test_wait"}
 
     lane = {
         "build-only": {"phase": "Phase A CPU Compile", "queue": "CPU", "estimated_die_lock_sec": 0, "flag": "--build-only"},
-        "fast": {"phase": "Fast validation", "queue": "Q0", "estimated_die_lock_sec": None, "flag": "--fast"},
+        "fast": {"phase": "Fast validation", "queue": "Q0", "estimated_die_lock_sec": None, "flag": None},
         "full": {"phase": "Full validation", "queue": "Q1", "estimated_die_lock_sec": None, "flag": None},
     }[mode]
     opsb_cmd = [_cfg.resolve_python_exe(workspace), str(_cfg.CLI_DIR / "opsb"), "test", title, "--workspace", str(workspace)]
     if sha and sha != "HEAD":
         opsb_cmd.extend(["--sha", sha])
+    opsb_cmd.extend(["--level", level])
     if lane["flag"]:
         opsb_cmd.append(str(lane["flag"]))
     if args.get("remeasure"):
         opsb_cmd.append("--remeasure")
-    if mode == "full":
-        suite = args.get("suite", "adaptive")
-        if suite not in ("adaptive", "all"):
-            raise ValueError("suite must be adaptive or all")
-        opsb_cmd.extend(["--suite", suite])
-    case_ids = args.get("cases", [])
-    if not isinstance(case_ids, list) or not all(isinstance(k, str) and k for k in case_ids):
-        raise ValueError("cases must contain nonempty case IDs")
     for case_id in case_ids:
         opsb_cmd.extend(["--case", case_id])
     for name in ("bucket", "experiment", "timing", "repeats"):
@@ -228,29 +305,8 @@ def tool_parhelion_test_plan(args: dict[str, Any], workspace: Path) -> dict[str,
             raise ValueError("Choose a profile in this contest workspace or this problem's bench specs")
         opsb_cmd.extend(["--profile", str(profile)])
 
-    plan: dict[str, Any] = {"ok": True, "title": title, "sha": sha, "mode": mode, "lane": lane, "executed": execute, "command": opsb_cmd}
-    if not execute:
-        return plan
-
-    # The device runner owns execution deadlines. Queueing may legitimately take longer.
-    env = dict(os.environ)
-    if args.get("_worker_request"):
-        env["PARHELION_MCP_ROLE"] = "worker"
-    proc = subprocess.run(opsb_cmd, cwd=str(workspace), stdin=subprocess.DEVNULL, capture_output=True, text=True, env=env)
-    plan.update({"exit_code": proc.returncode, "stdout": proc.stdout[-4000:], "stderr": proc.stderr[-2000:], "ok": proc.returncode == 0})
-    lines = proc.stdout.rstrip().splitlines()
-    if lines:
-        try:
-            report = json.loads(lines[-1])
-        except ValueError:
-            report = None
-        if isinstance(report, dict) and ("run_id" in report or report.get("deferred")):
-            plan.pop("stdout")
-            plan.update({k: report[k] for k in ("run_id", "reused", "joined", "deferred", "active_run",
-                         "reason", "selection", "selected", "formal", "summary", "timing_score_eligible", "finished_at") if k in report})
-            if report.get("run_id"):
-                plan["report"] = str(workspace / "results" / title / sha / "bench-runs" / report["run_id"] / "report.json")
-    return plan
+    return {"ok": True, "title": title, "sha": sha, "mode": mode, "level": level, "lane": lane,
+            "executed": False, "command": opsb_cmd}
 
 
 def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

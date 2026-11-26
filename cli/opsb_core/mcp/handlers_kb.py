@@ -14,6 +14,10 @@ from ..drivers.base import resolve_parhelion_home
 from ..services.breakthrough_service import load_catalog
 
 SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+KB_DEFAULT_LIMIT = 3
+KB_FULL_DEFAULT_LIMIT = 8
+KB_SUMMARY_LIMIT = 600
+_COMPACT_LISTS = ("results", "entries", "anti_patterns")
 
 
 def _slugify(text: str) -> str:
@@ -90,12 +94,46 @@ def _load_triad_kb_module() -> Any | None:
     return mod
 
 
+def _compact_kb_entry(entry: Any) -> Any:
+    """Keep id, pillar, title, confidence, tags and a summary of at most 600 characters."""
+    if not isinstance(entry, dict):
+        return entry
+    summary = str(entry.get("summary") or "").strip()
+    if not summary:
+        summary = str(entry.get("body") or entry.get("markdown") or entry.get("doc_markdown")
+                      or entry.get("transferable_rule") or entry.get("code") or "").strip()
+    summary = " ".join(summary.split())
+    if len(summary) > KB_SUMMARY_LIMIT:
+        summary = summary[:KB_SUMMARY_LIMIT - 3].rstrip() + "..."
+    tags = entry.get("tags")
+    if not isinstance(tags, list):
+        tags = []
+        for key in ("bottlenecks", "regimes", "dtypes"):
+            tags.extend(str(t) for t in (entry.get(key) or []) if str(t).strip() and str(t) not in tags)
+    return {"id": entry.get("id"), "pillar": entry.get("pillar"), "title": entry.get("title"),
+            "confidence": entry.get("confidence"), "tags": tags, "summary": summary}
+
+
+def _compact_kb_result(res: dict[str, Any]) -> dict[str, Any]:
+    out = {k: res[k] for k in ("result_count", "anti_pattern_count", "total_matched", "source", "digest") if k in res}
+    for key in _COMPACT_LISTS:
+        if key in res:
+            out[key] = [_compact_kb_entry(e) for e in (res.get(key) or [])]
+    out["full_hint"] = "full=true returns complete entries"
+    return out
+
+
 def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
+    res = _kb_query_full(args, workspace)
+    return res if bool(args.get("full", False)) else _compact_kb_result(res)
+
+
+def _kb_query_full(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     bottlenecks = [str(x) for x in (args.get("bottlenecks") or []) if str(x).strip()]
     regime, dtype, pillar = args.get("regime"), args.get("dtype"), args.get("pillar")
     text = str(args.get("text") or "")
     include_anti = bool(args.get("include_anti_patterns", True))
-    limit = int(args.get("limit") or 8)
+    limit = int(args.get("limit") or (KB_FULL_DEFAULT_LIMIT if args.get("full") else KB_DEFAULT_LIMIT))
     want_digest = bool(args.get("digest", False))
 
     if (kb_mod := _load_triad_kb_module()) is not None and callable(q_fn := getattr(kb_mod, "query_kb", None)):
