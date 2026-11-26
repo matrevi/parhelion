@@ -84,6 +84,16 @@ def compile_lane(cfg, units=None):
         record.unlink(missing_ok=True)
 
 
+def cpu_share(cfg, requested):
+    """Cores this process may use now without reserving them: what the compile budget leaves."""
+    directory = Path.home() / ".opsb/cpu_builds"
+    cores = os.cpu_count() or 1
+    budget = max(1, cores - max(2, cores // 10))
+    reserved = sum(int(r.get("jobs") or 1) for r in _live_records(directory)) if directory.is_dir() else 0
+    cap = max(1, int(cfg.get("jobs") or 16))
+    return max(2, min(requested, cap, budget - reserved))
+
+
 def ticket_directory():
     return Path(os.environ.get("OPSB_TICKET_DIR") or "/tmp/opsb-npu-tickets")
 
