@@ -163,12 +163,13 @@ def compose_session_brief(
     lines.extend([
         "Loop: parhelion_test (level, explicit sha) -> parhelion_test_wait request_id=... -> compare the digest "
         "with its baseline -> parhelion_submit_gate (preview, then enqueue=true). Verdicts: parhelion_agent_inbox.",
+        "Speculative shot: parhelion_submit_gate intent=probe; rollback: intent=restore.",
         "Levels: smoke = quick self-check; standard = correctness plus warm timing; final = once per candidate.",
         f"No ssh, flock or direct device access. CLI fallback: `opsb test {title} --sha <sha>`, "
         f"`opsb submit {title} <sha> --note \"<evidence>\"`.",
-        "parhelion_squad recipient: teammate agent_id, role name (axis/role_label) or all; no args lists "
-        "teammates. Send claim (<=280 chars) with refs (ledger ids) and evidence; a body above 1200 chars "
-        "becomes a file path, and messages merge at the teammate's next turn boundary.",
+        "parhelion_squad: teammate agent_id, role name (axis/role_label) or all; no args lists teammates. "
+        "Claim <=280 chars with refs (ledger ids) and evidence; a body over 1200 chars becomes a file path; "
+        "messages merge at the teammate's next turn boundary.",
         "When needed, call parhelion_kb_query (3 summaries by default).",
         "Report results, negative ones too, with parhelion_agent_report.",
         "Platform data (board, tbest, receipts, env) comes from parhelion_report views board/history/per_case/env, "
@@ -281,7 +282,7 @@ Each problem has one platform-versioned suite (opsb bench cases <op>); suite cha
 
 Each worker directly queues validation with parhelion_test (level smoke, standard or final) and parhelion_test_wait; finished results also reach its inbox. Parhelion schedules CPU and device time; nobody uses ssh or flock. Diagnose, fix and retest independently. Escalate only unresolved decisions.
 
-Workers enqueue their own candidates via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds and in-flight work. Quota is not a gate: S4 only decides dispatch timing, so a missing slot delays an approved candidate. Never use --force, --now or a direct uploader. Per problem, the first three distinct judge submission IDs are opening probes, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. From attempt four, apply the safety, gain and circuit gates; quota never blocks them.
+Workers enqueue their own candidates via opsb submit <op> <sha> --note "<evidence>". Parhelion dispatches every upload. Respect manual holds and in-flight work. Quota is not a gate: S4 only decides dispatch timing, so a missing slot delays an approved candidate. Never use --force, --now or a direct uploader. Per problem, distinct judge submission IDs are opening probes until the first scored Pass, at most 8, even after an early AC. Remote compile evidence suffices. Local rejections and HTTP 429 without a judge ID consume no probe. After that, apply the safety, gain and circuit gates; quota never blocks them. A speculative but reversible shot uses intent=probe (per-problem budget, needs a rollback); restoring a proven SHA uses intent=restore.
 
 Before changing a kernel, query opsb kb query --pillar bugs --text <problem> and inspect relevant receipts and prevention notes. Keep predictions separate from judged scores. Follow each queued SHA through its receipt and final verdict. Reproduce WA/TLE/RE and verify the fix before retrying an escape-locked candidate. Reprioritize after each verdict. Report official rank and weighted score changes, quota used, confirmed breakthroughs, pending and held SHAs, and the next experiment."""
     brief += ("\n\nMonitor strategic events. For an escape, ask the owner for a failure review and delegate a reusable "
