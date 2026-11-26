@@ -78,7 +78,7 @@
   ```bash
   PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
   ```
-  基线（4.1.0）：前者 686 passed / 19 skipped，后者 442 passed。改了 Swift 还要 `swift build` 通过。
+  基线（main，P12、P14、P18 合入后）：前者 716 passed / 19 skipped，后者 469 passed（4.1.0 时为 686/19 与 442）。改了 Swift 还要 `swift build` 通过。
 - 子计划里标「真机验收」的步骤，在单测全绿后执行，并把命令、耗时与输出摘要写进报告。
 
 ### 2.4 交付报告（子代理最终回复）
@@ -113,10 +113,10 @@
 | P09 | impl/P09-host-daemon | 已合入 | 7c279f9 | 判题版本的工具链主机上没有，编译检查默认跳过 |
 | P10 | impl/P10-profiler-ab | 已合入（随 P11） | bf8c08e | profiler 计时 CV 61%→0.9% |
 | P11 | impl/P11-batch-ui | 已合入 | bf8c08e | 合并批次无可测节省；R9 早停仅单测；界面截图待 daemon 重启后补 |
-| P12 | impl/P12-report-views | 待 DSH 开工，脚本聚类已完成（2ef788a） | | |
-| P13 | impl/P13-bound-output | 待 DSH 开工，等 P12 合入 | | |
-| P14 | impl/P14-peer-protocol | 待 DSH 开工 | | |
-| P15 | impl/P15-worker-boundary | 待 DSH 开工，等 P12 合入 | | |
+| P12 | impl/P12-report-views | 已合入 | 901c3b6 | 七个视图；真实数据 per_case 2.4–2.5KB、env 421B；queue 视图同源的 bridge status 会写门禁日志；跟进见 reviews/P12.md |
+| P13 | impl/P13-bound-output | 可开工（P12 已合入） | | queue/history 的分页并入本包，见 reviews/P12.md |
+| P14 | impl/P14-peer-protocol | 已合入 | f92efeb | 回放：peer 字节 −69%、result −81%，219 条 peer 合并成 135 次投递；跟进见 reviews/P14.md |
+| P15 | impl/P15-worker-boundary | 可开工（P12 已合入） | | |
 | P17 | impl/P17-v2-calibrate | 已合入 | 746e928 | 真机：已知通过 SHA 无误报；a2717b5 仍只在平局变体上失败 |
 | P16 | impl/P16-measure | 待 DSH 测量，等 P12、P13 合入 | | 主会话据报告决定 H/I/J |
-| P18 | impl/P18-cleanup | 待 DSH 开工 | | |
+| P18 | impl/P18-cleanup | 已合入 | efe11d7 | 可用额度不再扣收尾预留（门禁不变）；两条预算测试改虚拟时钟，负载下 20/20；缓存目录可配置，未在真机验证 |

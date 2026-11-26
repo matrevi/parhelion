@@ -84,16 +84,16 @@ git -C /Users/winbeau/Developer/personal/parhelion-wt/P12 rebase main
   不要运行 `opsb daemon reload`，不要安装插件或应用。
 - **P08 改 DSH 插件时不能写进 `~/.dsh`。** 写进去会立即作用于正在运行的 DSH 会话，包括总包自己。只用 node 伪造插件上下文来测。
 - **隐私。** 会话日志（`~/.parhelion/logs/sessions/mesh-dee-*.jsonl`、`~/.dsh/sessions/**`）与总线数据库只做聚合统计，以只读方式打开。报告里不出现 cookie、账号名、用户 ID、token 的值。
-- **模块与工具计数。** 新模块不超过 350 行；`manager.py`、`estimator.py`、`cli_bridge.py`、`handlers_bench.py` 这类大文件只加薄接入点。新增 MCP 工具会改变工具计数断言，在 `cli/tests/test_agent_mesh_http.py` 与 `cli/tests/test_mcp_server.py`，目前主控 26 个。
-- **测试基线（4.1.0）：**
+- **模块与工具计数。** 新模块不超过 350 行；`manager.py`、`estimator.py`、`cli_bridge.py`、`handlers_bench.py` 这类大文件只加薄接入点。新增 MCP 工具会改变工具计数断言，在 `cli/tests/test_agent_mesh_http.py` 与 `cli/tests/test_mcp_server.py`，目前主控 27 个（含 P12 的 `parhelion_report`）。
+- **测试基线（main，P12、P14、P18 合入后；新包从这里切）：**
   ```bash
   ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider
   ```
-  686 passed / 19 skipped。
+  716 passed / 19 skipped。
   ```bash
   PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
   ```
-  442 passed。改了 Swift 还要 `swift build`。
+  469 passed。改了 Swift 还要 `swift build`。
 
   `runtime/tests/test_device_broker.py` 的两条预算测试在机器高负载时偶发失败，单独重跑通过即可，报告里注明。
 - **提交信息**用英文祈使句，正文写原因。末尾署名实际执行的模型，例如 `Generated-by: DSH <模型名>`；不要写 Claude 的署名行。
@@ -139,6 +139,9 @@ git -C /Users/winbeau/Developer/personal/parhelion-wt/P12 rebase main
 - **回读。** 新工具 `parhelion_spill_read`：worker 只能读自己的文件，主控可读全部；回读结果不再二次落盘。
 - **两种格式。** `format=brief|full` 用于 `parhelion_status`、`parhelion_kb_query`、`parhelion_test_wait` 与测试结果消息。brief 的默认值就是现有上限（status 2KB；kb 3 条，每条 600 字符）。`parhelion_status` 的 `rev` / `if_rev` 语义不变。
 - **失败。** 工具失败时保留结果尾部。
+- **并入的跟进项（P12、P14 审查）：**
+  - 把 `mcp/handlers_report.py` 拆成两个按常规格式书写的模块，不改行为（`reviews/P12.md` 第 1 项）；
+  - `<workspace state>/peer/` 的附件、`quotes/`、`index.jsonl` 与 spill 一起进 `opsb doctor clean` 的列表，默认只列不删（`reviews/P14.md` 第 1、5 项）。
 
 **验收**：按子计划，并用 `opsb replay metrics` 估算全部返回都经过 `bound_output` 时省下的字节。
 
@@ -225,6 +228,7 @@ git -C /Users/winbeau/Developer/personal/parhelion-wt/P12 rebase main
 - **J 渐进披露：**
   - 按角色序列化 `list_tool_schemas`，测工具表本身的字节与估算 token；
   - 统计 `kb_query` 返回里正文的占比。
+- **P14 的 result claim：** P14 之后长 `result` 在总线上只留开头 280 字作 claim。用回放统计这 280 字里含结论（测得数字、SHA、判定词）的比例，与取最后一段对比，见 `reviews/P14.md` 第 4 项。
 
 每项给出数字、建议做或不做、预计工作量。
 
