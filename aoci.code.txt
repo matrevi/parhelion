@@ -243,7 +243,7 @@ REFACTOR_MODULAR_LAYOUT.md[SV6T]: F:模块化重构蓝图：单模块不超过35
 14-orchestration.md[SW7S]: F:工作包C：编排与token经济（席位、熔断、压缩阈值） | R:code:cli/opsb_core/agents/manager.py | A:- | S:-
 15-hygiene.md[SO7T]: F:工作包D：测试隔离、网关日志节流与doctor清理命令（agent沙箱、会话日志、trash） | R:code:cli/opsb_core/commands/doctor_cmd.py | A:- | S:文末划定清理边界：用户数据只进trash，error席位默认保留，只有--logs与--remote可按窗口删除
 16-e2e-release.md[SV7T]: F:工作包E：集成、端到端测试与发布流程 | R:code:scripts/bundle_app.sh | A:- | S:发版必须同时改__init__版本与bundle的两个版本字段并打tag，漏一处会让daemon握手或打包版本不一致
-RELEASE-NOTES.md[SV8T]: F:发布说明：4.0.2重建仓库认知索引、4.0.1卫生回收与4.0.0四大工作包变更 | R:code:docs/v4/00-OVERVIEW.md | A:- | S:4.0.1一节写明了实测回收数字与例外规则，改清理策略时要同步这里
+RELEASE-NOTES.md[SV8S]: F:发布说明：4.0.3修复清理误伤与索引校正、4.0.2重建仓库认知索引、4.0.1卫生回收与4.0.0四大工作包变更 | R:code:docs/v4/00-OVERVIEW.md | A:- | S:4.0.1一节写明了实测回收数字与例外规则，改清理策略时要同步这里
 
 ===/Users/winbeau/Developer/personal/parhelion/runtime/judge/===
 encrypt_password.py[IS6T]: F:用公钥把登录口令加密成判题站可解的密文，供无HTTPS的登录链路使用 | R:code:runtime/judge/judge_cli.py | A:- | S:只加密不落盘，私钥永远只在服务端；把私钥写进仓库等于公开所有账号口令

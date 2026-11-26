@@ -2,6 +2,22 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.0.3 — 修复清理误伤与索引校正
+
+### 修复
+- **厂商名清理的误伤。** 那次替换把 "cannot" 里的子串也换掉了，留下 28 处 `sdkot`，分布在 18 个文件的报错文本、注释、文档和测试里，现已还原。同一次清理还把 `fast_profiler.py` 里 profiler 的运行时追踪参数改成了 profiler 不认的名字，并把程序名写死为占位符。现在两者都和 `npu-test.py` 一样，从 `OPSB_DEVICE_PROFILER_BIN` 和 `OPSB_DEVICE_PROFILER_ACL_FLAG` 读取，也可以用新参数 `--profiler-bin` / `--acl-flag` 指定。
+- **`opsb doctor clean --agents` 不再回收 `error` 状态 worker 的沙箱。** 这类席位还能通过显式 followup 续跑，Codex 续跑还要用沙箱里的 `codex_home`。现在它们默认只列出（显示为 `agent error (resumable)`），加 `--include-errored` 才会回收。
+- **`AGENTS.md` 的冲刺启动段落与 4.0 默认值对齐。** 默认每题一个 solo 席位，`dual` / `full` 需要显式开启；没有校准席位时，官方回执投给提交该 SHA 的 worker。
+
+### 仓库认知索引
+- `services/test_runs.py` 是 `parhelion_test` / `parhelion_test_wait` 背后的登记表，但因为文件名以 `test_` 开头被归入了观察层。现在通过项目 scope 规则把它纳入索引，并补写了条目。
+- 修正了 4 条描述与源码不符的条目：
+  - `status_cmd`：`--compact` 只去掉缩进，2KB 上限在 MCP 那边；
+  - `__init__`：`bundle_app.sh` 的版本号写死在脚本里，需要手工同步；
+  - `bundle_app.sh`：默认只在仓库外构建，加 `--install` 才安装；
+  - `fast_profiler`：目前是手动工具，平台代码不调用。
+- 索引共 248 条；`check` 0 个问题，`guide` 为 aligned / complete。
+
 ## 4.0.2 — 重建仓库认知索引
 
 4.0.0 主动删除了旧的 AOCI 索引以便重建。本次按 AOCI 的正式流程从零建立仓库级认知层：`aoci init` → `aoci scan`（294 个受管文件，其中 247 个需要条目）→ 分批创作 → 对齐。
