@@ -28,6 +28,7 @@ import multiprocessing
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import time
 from typing import Any
@@ -327,6 +328,6 @@ def run(workspace: pathlib.Path | str, manifest: pathlib.Path | None = None,
             else:
                 os.environ[key] = value
         if keep_copy:
-            print(f"copy kept at {tmp}")
+            print(f"copy kept at {tmp}", file=sys.stderr)  # stdout stays parseable under --json
         else:
             shutil.rmtree(tmp, ignore_errors=True)
