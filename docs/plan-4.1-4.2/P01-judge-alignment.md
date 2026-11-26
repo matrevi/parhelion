@@ -29,7 +29,11 @@
    
    `score` 字段语义保持不变（兼容 GUI 与旧读者）。
 3. 把上面列出的读者全部改走 `receipts.*`。熔断器只认 `status`，WA/RE 的 `official_score=0`。
-4. 回填：`opsb bench receipts backfill [--apply]`，默认只列出。对缺少 `case_results` 的历史行，经现有的只读查询函数（`judge_score_fetch` / `runtime/judge/judge_cli.py` 的回执查询）按 `submission_id` 取 detail，每秒不超过 1 次，结果追加为新行并带 `source="receipt-backfill"`。去重仍按 `submission_id`，`_load_outcomes` 的择优规则要让规范行胜出。允许你对真实比赛执行带 `--apply` 的回填；严禁任何提交动作。
+4. 回填：`opsb bench receipts backfill [--apply]`，默认只列出。只使用磁盘上已有的数据，包括 outcome 行里的 `timing_score`、`results/<title>/<sha>/` 下的回执文件，以及 `results/scoring-evidence/` 的缓存。本包不发起任何网络请求；今后的新回执由常规轮询按第 2 条写全。
+   - 回填结果追加为新行，并带 `source="receipt-backfill"`。
+   - 去重仍按 `submission_id`；`_load_outcomes` 的择优规则要让规范行胜出。
+   - 本地补不全的行如实列为缺失。
+   - 单测全绿后，可以对真实比赛执行带 `--apply` 的回填。
 
 ## #5 本地用例与判题用例的对应关系
 
@@ -68,4 +72,4 @@
   - `receipt_predict` 的公式与 `judge_score_fetch.replay` 对同一组时间结果一致；
   - 重放同一批回执不重复写行。
 - 回测：用现有回执做留一回测，比较旧投影与新方法，给出 MAE、偏差和覆盖题数。写入 `docs/plan-4.1-4.2/reports/P01-backtest.md`，附各题的用例映射结论与 FFT 05 的解释。
-- 真实数据：在真实比赛上执行 `case-map --rebuild`，以及 `receipts backfill`（先列出，确认后 `--apply`），报告产出。
+- 真实数据：在真实比赛上执行 `case-map --rebuild` 与 `receipts backfill`（先列出，再 `--apply`），报告产出。
