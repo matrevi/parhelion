@@ -282,16 +282,19 @@ def test_squad_addresses_by_role_name_all_and_lists_teammates_on_error(env):
     sender = _spawn(mgr, ws, axis="algorithm")
     dataflow = _spawn(mgr, ws, axis="dataflow")
     author = _spawn(mgr, ws, axis="calibration", role="bench-author")
-    _spawn(mgr, ws, problem="Elsewhere", axis="dataflow")
+    elsewhere = _spawn(mgr, ws, problem="Elsewhere", axis="dataflow")
 
-    one = mgr.squad(ws, sender, recipient="DataFlow", message="repeat bucket small", request_id="r1")
+    ev = {"class": "local", "ref": "run-p14"}
+    one = mgr.squad(ws, sender, recipient="DataFlow", message="repeat bucket small", request_id="r1",
+                    evidence=ev)
     assert one["recipient"] == dataflow and not one["duplicate"]
     assert mgr.squad(ws, sender, recipient="sprint-dataflow", message="repeat bucket small",
-                     request_id="r1")["duplicate"]
-    assert mgr.squad(ws, sender, recipient="bench-author", message="check")["recipient"] == author
+                     request_id="r1", evidence=ev)["duplicate"]
+    assert mgr.squad(ws, sender, recipient="bench-author", message="check", evidence=ev)["recipient"] == author
 
-    everyone = mgr.squad(ws, sender, recipient="all", message="x" * 5000)
-    assert everyone["ok"] and set(everyone["recipients"]) == {dataflow, author}
+    # 4.3 P27: "all" is the whole workspace, not only this problem's mates.
+    everyone = mgr.squad(ws, sender, recipient="all", message="x" * 5000, evidence=ev)
+    assert everyone["ok"] and set(everyone["recipients"]) == {dataflow, author, elsewhere}
     assert everyone["hint"]  # 4.2 F: the body is attached and the sender is told to write a claim
     for target in everyone["recipients"]:
         mgr._flush_peer(ws, target)
@@ -301,11 +304,11 @@ def test_squad_addresses_by_role_name_all_and_lists_teammates_on_error(env):
     assert body.count("x") < 5000 and "x" * 5000 in Path(attachment).read_text(encoding="utf-8")
 
     with pytest.raises(ValueError) as missing:
-        mgr.squad(ws, sender, recipient="optimizer", message="hi")
+        mgr.squad(ws, sender, recipient="optimizer", message="hi", evidence={"class": "local", "ref": "r"})
     assert f"{dataflow}:dataflow:worker" in str(missing.value) and f"{author}:calibration:bench-author" in str(missing.value)
     with pytest.raises(ValueError, match="several"):
         _spawn(mgr, ws, axis="solo")
-        mgr.squad(ws, sender, recipient="worker", message="hi")
+        mgr.squad(ws, sender, recipient="worker", message="hi", evidence={"class": "local", "ref": "r"})
 
 
 # 6. state card -------------------------------------------------------------------------------

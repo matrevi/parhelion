@@ -18,6 +18,10 @@ Definitions (one place, so later sprints are measured the same way):
   shell segment naming files; after a cut it is a re-read when any of its paths was read
   before that cut. Reported against all reads and against post-cut reads.
 - re-tests: a ``parhelion_test`` after a cut whose ``(sha7, level)`` was requested before it.
+- comms (4.3 P27): ``parhelion_squad`` calls by worker seats, how many were workspace broadcasts
+  (``recipient``/``to`` == all) and the evidence class each message carried (``local``, ``paired``,
+  ``online_receipt``, or ``legacy`` for a pre-P27 envelope with a bare string evidence). One call is
+  one message: a broadcast counts once, because every recipient gets the same envelope class.
 """
 from __future__ import annotations
 
@@ -27,6 +31,7 @@ import statistics
 from pathlib import Path
 from typing import Any
 
+from .. import evidence as _evidence
 from ..metrics import shape
 from . import actions, sources
 from .loader import AgentLog, expand_sessions, epoch, load_agent
@@ -168,6 +173,31 @@ def tool_metrics(logs: list[AgentLog], hours: float) -> dict[str, Any]:
     return out
 
 
+def comms_metrics(logs: list[AgentLog], hours: float) -> dict[str, Any]:
+    """Peer messages: how many, how many were broadcasts, and the evidence class of each (4.3 P27)."""
+    by_class: collections.Counter[str] = collections.Counter()
+    broadcasts = sends = 0
+    for log in logs:
+        for call in log.tool_calls():
+            if not call.is_platform or call.name.removeprefix("parhelion_") != "squad":
+                continue
+            args = call.args if isinstance(call.args, dict) else {}
+            target = str(args.get("recipient") or args.get("to") or "").strip()
+            if not target:
+                continue  # a listing call is not a message
+            sends += 1
+            if target.lower() == "all":
+                broadcasts += 1
+            raw = args.get("evidence")
+            if isinstance(raw, dict):
+                by_class[_evidence.normalize(raw)["class"]] += 1
+            else:
+                by_class["legacy"] += 1
+    return {"squad_messages": sends, "broadcasts": broadcasts, "per_hour": _rate(sends, hours),
+            "evidence": {name: by_class.get(name, 0)
+                         for name in (*_evidence.CLASSES, "legacy")}}
+
+
 def orchestrator_metrics(sessions: list[dict[str, Any]], hours: float) -> dict[str, Any]:
     counts: collections.Counter[str] = collections.Counter()
     usage_by_session = {}
@@ -179,7 +209,10 @@ def orchestrator_metrics(sessions: list[dict[str, Any]], hours: float) -> dict[s
             "last_miss_reason", "model")} | {"reasons": {k: v for k, v in summ["reasons"].items() if v}}
     polls = {k: counts.get(k, 0) for k in sources.POLL_TOOLS}
     total = sum(polls.values())
+    # 4.3 P27: the DSH usage records carry tool names but not their arguments, so an orchestrator
+    # broadcast is counted here as a squad call; the class and the "all" target come from mesh logs.
     return {"sessions": [Path(s["path"]).parent.name for s in sessions], **polls,
+            "squad_calls": counts.get("squad", 0),
             "poll_total": total, "poll_per_hour": _rate(total, hours), "usage": usage_by_session}
 
 
@@ -197,6 +230,7 @@ def compute(paths: list[Path], *, workspace: Path | None = None, since: str | No
                    "sessions": [g.agent_id for g in logs]},
         "context": context_metrics(logs), **shell_metrics(logs, hours), "repeats": repeat_metrics(logs),
         "worker_polls": worker_poll_metrics(logs, hours), "tools": tool_metrics(logs, hours),
+        "comms": comms_metrics(logs, hours),
     }
     if workspace is not None:
         orch = sources.orchestrator_sessions(workspace, lo, hi, paths=orchestrator_paths)

@@ -408,6 +408,108 @@ def _rules(workspace: Path | str, problem: str | None, args: dict[str, Any], rol
     return _fit(out, RULES_BYTES, ("split", "tbest", "noise", "flips", "formula"))
 
 
+# ---------------------------------------------------------------- sweep (4.3 P27)
+
+SWEEP_BYTES = 4096
+SWEEP_METRICS = ("size", "compile", "cold", "pmu")
+SWEEP_COLUMNS: dict[str, str] = {
+    "size": "size_bytes", "compile": "compile_sec", "cold": "cold_tax_us", "pmu": "pmu",
+}
+_PMU_PIPES = ("aiv_vec_ratio", "aiv_mte2_ratio", "aiv_mte3_ratio", "aiv_scalar_ratio",
+              "bank_conflict_ratio")
+
+
+def _board_receipt(ws: Path, title: str, receipts: Any) -> dict[str, Any]:
+    """The receipt the board currently shows for this problem (empty when nothing is on the board)."""
+    sid = _board_sid(ws, title)
+    if not sid:
+        return {}
+    return next((r for r in receipts.canonical(receipts.read_rows(receipts.ledger_path(ws)))
+                 if str(r.get("submission_id") or "") == sid), {})
+
+
+def _formal_sha(ws: Path, title: str) -> str:
+    """SHA of this problem's newest formal bench run (``formal: true``), or ``""``."""
+    root = ws / "results" / title
+    newest: tuple[str, str] = ("", "")
+    for path in (root.glob("*/bench-runs/*/report.json") if root.is_dir() else []):
+        doc = _doc(path)
+        if doc.get("formal") is not True:
+            continue
+        stamp = str(doc.get("finished_at") or "")
+        if stamp >= newest[0]:
+            newest = (stamp, str(doc.get("sha") or path.parents[2].name))
+    return newest[1]
+
+
+def _sweep_value(card: dict[str, Any], metric: str) -> Any:
+    """The one number (or short string) this metric takes from a fast-feedback card."""
+    elf = ((card.get("elf_guard") or {}).get("metrics") or {})
+    cold = ((card.get("cold3") or {}).get("metrics") or {})
+    if metric == "size":
+        return elf.get("kernel_o_sum_bytes")
+    if metric == "compile":
+        return _round(elf.get("phase_a_cpu_sec"), 2)
+    if metric == "cold":
+        return _round(cold.get("cold_tax_us"), 2)
+    pmu = card.get("pmu") or {}
+    ratios = {name: _num(pmu.get(name)) for name in _PMU_PIPES}
+    ratios = {name: value for name, value in ratios.items() if value is not None}
+    if not ratios:
+        return None
+    pipe = max(ratios, key=lambda name: ratios[name])
+    return f"{(card.get('dominant_bottleneck') or pipe).replace('_ratio', '')} {ratios[pipe] * 100:.1f}%"
+
+
+def _sweep(workspace: Path | str, args: dict[str, Any], role: str) -> dict[str, Any]:
+    """Cross-problem metric sweep: one row per problem, read from stored runs and cards (4.3 P27).
+
+    Orchestrator only. Nothing is measured here: the numbers come from the bench-run reports and the
+    stored ``fast_feedback`` cards (ELF/size, cold3, PMU), so no device run is triggered. The public
+    case times are the online ones of the receipt the board shows, and are omitted when there is none.
+    """
+    if role != "orchestrator":
+        raise PermissionError("view=sweep is orchestrator only")
+    metric = str(args.get("metric") or "size").strip().lower()
+    if metric not in SWEEP_METRICS:
+        raise ValueError("metric must be one of " + ", ".join(SWEEP_METRICS))
+    _cfg.ensure_scheduler_path()
+    from ..fast_feedback import pmu_torch_card
+    from ..services.contest_service import resolve_workspace_meta
+    from scheduler import receipts
+
+    ws = Path(workspace)
+    journal = receipts.canonical(receipts.read_rows(receipts.ledger_path(ws)))
+    # The manifest names the problems; a workspace without one (an older contest layout) still has
+    # receipts, and a problem with a receipt is exactly what a cross-problem sweep is about.
+    titles = {str(p.get("title")) for p in resolve_workspace_meta(ws).get("problems") or [] if p.get("title")}
+    titles |= {str(r.get("title")) for r in journal if r.get("title")}
+    titles = sorted(titles)
+    rows: list[list[Any]] = []
+    for title in titles:
+        sid = _board_sid(ws, title)
+        board_row = next((r for r in journal if sid and str(r.get("submission_id") or "") == sid), {})
+        board_sha = _sha7(board_row.get("sha"))
+        board_score = _round(receipts.official_score(board_row), 2) if board_row else None
+        formal = _formal_sha(ws, title)
+        try:
+            card = pmu_torch_card.build_pmu_torch_card(ws, title, sha=formal or None, top_n=3)
+        except Exception:
+            card = {}
+        value = _sweep_value(card, metric) if card else None
+        basis = "formal" if formal and card.get("sha") == formal else ("latest" if card else "-")
+        public = [round(v, 2) for v in receipts.public_times(board_row)[0]][:5] if board_row else None
+        rows.append([title, board_sha, board_score, _sha7(formal), basis, value, public])
+    out: dict[str, Any] = {
+        "view": "sweep", "metric": metric,
+        "columns": ["title", "board_sha", "board_score", "run_sha", "basis", SWEEP_COLUMNS[metric],
+                    "public_us"],
+        "problems": rows,
+        "source": "stored bench-run reports and fast_feedback cards; no device run",
+    }
+    return _fit(out, SWEEP_BYTES, ("source",), rows="problems")
+
+
 def _env(workspace: Path | str) -> dict[str, Any]:
     ws = Path(workspace)
     state = _cfg.read_json(_cfg.DAEMON_STATE_PATH, {}) or {}

@@ -212,5 +212,6 @@ def test_pack_size_enters_the_p03_meter(problem):
     assert rows[-1]["result_bytes"] == len(json.dumps({"bytes": pack["bytes"], "tokens": pack["tokens"],
                                                        "budget_bytes": pack["budget_bytes"],
                                                        "sections": {k: v["bytes"] for k, v in pack["sections"].items()},
+                                                       "intel_bytes": pack.get("intel_bytes", 0),
                                                        "repo_map": pack["repo_map_source"]},
                                                       separators=(",", ":")).encode("utf-8"))

@@ -285,6 +285,14 @@ struct AgentMeshInspectorView: View {
                     .padding(.horizontal, 4.5)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(tint.opacity(0.15)))
+                if msg.isUnverified {
+                    Text(lang.tr("待验证", "UNVERIFIED"))
+                        .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 4.5)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.orange.opacity(0.15)))
+                }
                 if !msg.commitSha.isEmpty {
                     Text(msg.commitSha).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
                 }

@@ -56,8 +56,14 @@ def utf8_len(value: Any) -> int:
 
 def record_call(workspace: Path | str, *, agent_id: str | None, role: str, tool: str, args: Any,
                 result_text: str, ms: float, is_error: bool, spilled: bool = False,
-                bound_bytes: int | None = None, limit: int = ROTATE_BYTES) -> bool:
-    """Append one metering row; returns False (never raises) when it could not be written."""
+                bound_bytes: int | None = None, limit: int = ROTATE_BYTES,
+                extra: dict[str, Any] | None = None) -> bool:
+    """Append one metering row; returns False (never raises) when it could not be written.
+
+    ``extra`` carries the size breakdown a caller already knows (4.3 P27: ``intel_bytes`` of the
+    start-up pack). It is stored as-is and ignored by ``summarize``, so an old reader still parses
+    the row and the totals keep counting bytes, not fields.
+    """
     try:
         path = log_path(workspace)
         served = utf8_len(result_text)
@@ -68,6 +74,8 @@ def record_call(workspace: Path | str, *, agent_id: str | None, role: str, tool:
             "ms": round(float(ms), 1), "is_error": bool(is_error),
             "spilled": bool(spilled), "bound_bytes": served if bound_bytes is None else int(bound_bytes),
         }
+        if extra:
+            row["extra"] = dict(extra)
         _rotate_if_needed(path, limit)
         _cfg.append_jsonl_locked(_lock_path(path), path, row)
         return True

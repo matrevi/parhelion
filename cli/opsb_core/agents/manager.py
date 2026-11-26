@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config as _cfg
+from .. import evidence as _evidence
 from .. import worker_boundary
 from ..drivers.base import resolve_session_logs_dir, resolve_workspace_state_dir
 from ..drivers.brief import (
@@ -1034,26 +1035,55 @@ class AgentMeshManager:
         raise ValueError(f"Recipient '{key}' {problem}. Teammates (agent_id:axis:role_label): {roster or 'none'}")
 
     def squad(self, ws, sender, *, recipient="", to="", message="", request_id="", claim="", refs=None,
-              evidence="", ask=""):
-        """List teammates, or queue one peer envelope per target (4.2 F; ``to`` is ``recipient``)."""
+              evidence=None, ask=""):
+        """List teammates, or queue one peer envelope per target (4.2 F; ``to`` is ``recipient``).
+
+        4.3 P27: ``recipient="all"`` (or ``to="all"``) is a *workspace-wide* broadcast to every
+        running seat except the sender. A worker seat is limited to one broadcast per
+        ``peer.BROADCAST_MIN_SEC``; the orchestrator (no seat of its own) is never limited. The
+        evidence class is required on a send and decides the ``待验证`` mark the recipient reads.
+        """
         ws = Path(ws).expanduser().resolve()
         recipient = recipient or to
         store = self._store(ws)
         me = store.get_agent(sender)
-        if not me or not me["problem"] or me["status"] in ("stopped", "error"):
+        seated = bool(me and me.get("problem"))
+        if seated and me["status"] in ("stopped", "error"):
             raise ValueError("An active problem worker is required")
-        mates = {a["agent_id"]: a for a in store.list_agents(include_stopped=False, limit=-1)
-                 if a["problem"] == me["problem"] and a["agent_id"] != sender}
-        if not recipient and not any(str(v or "").strip() for v in (message, claim, evidence, ask)) and not refs:
-            return {"ok": True, "problem": me["problem"], "peers": [
-                {k: a[k] for k in ("agent_id", "role_label", "axis", "driver", "status")} for a in mates.values()]}
+        role = str((me or {}).get("role_label") or ("worker" if seated else "orchestrator")).strip().lower()
+        running = {a["agent_id"]: a for a in store.list_agents(include_stopped=False, limit=-1)
+                   if a["agent_id"] != sender}
+        mates = {aid: a for aid, a in running.items()
+                 if seated and a.get("problem") == me["problem"]}
+        if not recipient and not any(str(v or "").strip() for v in (message, claim, evidence, ask)) \
+                and not refs:
+            return {"ok": True, "problem": (me or {}).get("problem") or "", "role": role, "peers": [
+                {k: a[k] for k in ("agent_id", "role_label", "axis", "driver", "status", "problem")}
+                for a in (mates if seated else running).values()]}
         if len(request_id) > 128:
             raise ValueError("request_id is limited to 128 characters")
-        targets = self._squad_targets(mates, recipient)
-        out = peer.send(workspace=ws, sender=sender, problem=me["problem"], targets=targets,
-                        broadcast=recipient.strip().lower() == "all" and recipient.strip() not in mates,
-                        request_id=request_id, claim=claim, message=message, refs=refs, evidence=evidence,
-                        ask=ask, flush=lambda target: self._peer_poke(ws, target))
+        is_all = recipient.strip().lower() == "all" and "all" not in mates
+        if is_all:
+            targets = list(running)
+            gate = peer.broadcast_gate(ws, sender, role=role)
+            if not gate["allowed"]:
+                return {"ok": False, "broadcast": True, "limited": True, "delivered": False,
+                        "reason": (f"a {role} seat sends at most one workspace broadcast per "
+                                   f"{gate['window_sec'] // 60} minutes; retry in "
+                                   f"{int(gate['retry_after_sec'])}s or send to named seats"),
+                        "retry_after_sec": gate["retry_after_sec"], "recipients": []}
+            if not targets:
+                return {"ok": False, "broadcast": True, "limited": False, "delivered": False,
+                        "reason": "no other running seat in this workspace", "recipients": []}
+        else:
+            targets = self._squad_targets(mates if seated else running, recipient)
+        out = peer.send(workspace=ws, sender=sender, problem=str((me or {}).get("problem") or ""),
+                        targets=targets,
+                        broadcast=is_all, request_id=request_id, claim=claim, message=message, refs=refs,
+                        evidence=evidence, ask=ask, flush=lambda target: self._peer_poke(ws, target),
+                        problems={aid: str(a.get("problem") or "") for aid, a in running.items()})
+        if is_all and out.get("queued"):
+            peer.note_broadcast(ws, sender)
         if out.get("queued"):
             self._notify()
         return out
@@ -1073,9 +1103,13 @@ class AgentMeshManager:
             return 0
         items = peer.strip_repeats(items, peer.recent_bodies(ws, agent_id))
         body = peer.batch_body(items)
+        # 4.3 P27: the row carries the batch's weakest evidence class so the collaboration page can
+        # mark an unverified batch exactly like the recipient's body does.
+        batch_class = _evidence.weakest([item.get("evidence") for item in items])
         msg = store.append_message(agent_id, "squad_to_worker", "peer", body,
                                    problem=str(rec.get("problem") or ""),
-                                   event_key=f"peer-batch:{agent_id}:{items[0]['msg_id']}")
+                                   event_key=f"peer-batch:{agent_id}:{items[0]['msg_id']}",
+                                   evidence_class=batch_class)
         if msg:
             peer.remember_quotes(ws, agent_id, items)
             self._enqueue_to_worker(ws, rec, body, squad=True)

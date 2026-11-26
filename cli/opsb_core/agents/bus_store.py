@@ -128,6 +128,7 @@ class AgentBusStore:
                     ("problem", "TEXT NOT NULL DEFAULT ''"),
                     ("priority", "TEXT NOT NULL DEFAULT 'normal'"),
                     ("event_key", "TEXT"),
+                    ("evidence_class", "TEXT NOT NULL DEFAULT ''"),
                 ):
                     if col not in m_cols:
                         conn.execute(f"ALTER TABLE messages ADD COLUMN {col} {ddl}")
@@ -246,6 +247,7 @@ class AgentBusStore:
         priority: str = "normal",
         problem: str = "",
         event_key: str | None = None,
+        evidence_class: str = "",
     ) -> dict[str, Any]:
         now_iso = _cfg.utc_now().isoformat()
         now_ep = time.time()
@@ -262,15 +264,15 @@ class AgentBusStore:
                     """
                     INSERT INTO messages (
                         agent_id, problem, direction, kind, priority, body, artifacts_json, commit_sha,
-                        acked_by_orch, acked_by_worker, created_at, epoch, event_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING
+                        acked_by_orch, acked_by_worker, created_at, epoch, event_key, evidence_class
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_key) DO NOTHING
                     """,
                     (
                         agent_id, prob_val, direction, kind, str(priority or "normal"), str(body),
                         json.dumps(arts, ensure_ascii=False), str(commit_sha or ""),
                         int(direction != "worker_to_orch"),
                         int(direction not in ("orch_to_worker", "squad_to_worker")),
-                        now_iso, now_ep, event_key,
+                        now_iso, now_ep, event_key, str(evidence_class or ""),
                     ),
                 )
                 if not cur.rowcount:

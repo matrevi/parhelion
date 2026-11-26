@@ -127,7 +127,8 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
         other = next(s["agent_id"] for s in started if s["problem"] == "Other")
         with pytest.raises(ValueError, match="teammate"):
             call_tool("parhelion_squad", dict(recipient=other, message="test"), ws, role="worker", agent_id=author)
-        payload = dict(recipient=owners[0], message="Repeat the small bucket", request_id="m1")
+        payload = dict(recipient=owners[0], message="Repeat the small bucket", request_id="m1",
+                       evidence={"class": "local", "ref": "run-p14"})
         assert not call_tool("parhelion_squad", payload, ws, role="worker", agent_id=author)["duplicate"]
         assert call_tool("parhelion_squad", payload, ws, role="worker", agent_id=author)["duplicate"]
         res = ws / "results" / "PadV3Grad" / sha
@@ -243,7 +244,7 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
     assert init_resp["result"]["capabilities"] == {"tools": {}}
 
     tools = list_resp["result"]["tools"]
-    assert len(tools) == 29  # +3 ledger (P06), +3 escape (P07), +1 report (P12), +1 spill_read (P13), +1 peek (P08)
+    assert len(tools) == 30  # +3 ledger (P06), +3 escape (P07), +1 report (P12), +1 spill_read (P13), +1 peek (P08), +squad (P27)
     assert {t["name"] for t in tools} == {t["name"] for t in list_tool_schemas()}
 
     assert status_resp["result"]["isError"] is False
@@ -282,7 +283,7 @@ def test_tool_table_stays_within_the_context_budget() -> None:
         assert size < sizes["worker"] <= TOOL_TABLE_BUDGET["worker"], role
         sizes[role] = size
     assert sizes["recon"] < sizes["worker"] and sizes["knowledge"] < sizes["recon"]
-    assert len(list_tool_schemas(role="orchestrator")) == 29
+    assert len(list_tool_schemas(role="orchestrator")) == 30
     assert len(list_tool_schemas(role="worker")) == 24
 
 
@@ -491,7 +492,7 @@ def test_mcp_cli_subcommands(isolated_mcp_env: Path, tmp_path: Path, capsys: pyt
     args = parser.parse_args(["mcp", "list-tools", "--json"])
     assert args.func(args) == 0
     tools_out = json.loads(capsys.readouterr().out)
-    assert len(tools_out["tools"]) == 29  # +3 ledger (P06), +3 escape (P07), +1 report (P12), +1 spill_read (P13), +1 peek (P08)
+    assert len(tools_out["tools"]) == 30  # +3 ledger (P06), +3 escape (P07), +1 report (P12), +1 spill_read (P13), +1 peek (P08), +squad (P27)
 
     args = parser.parse_args(["mcp", "call", "parhelion_status", "--args-json", '{"include_npu":false}', "--workspace", str(ws)])
     assert args.func(args) == 0

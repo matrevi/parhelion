@@ -95,7 +95,8 @@ def _print_metrics(r: dict[str, Any]) -> None:
     if r.get("orchestrator"):
         o = r["orchestrator"]
         print(f"Orchestrator polls {o['poll_total']} ({o['poll_per_hour']}/h): agent_wait {o['agent_wait']}, "
-              f"test_wait {o['test_wait']}, agent_send {o['agent_send']}, status {o['status']}, wait {o['wait']}")
+              f"test_wait {o['test_wait']}, agent_send {o['agent_send']}, status {o['status']}, wait {o['wait']}; "
+              f"squad calls {o.get('squad_calls', 0)}")
     wp = r.get("worker_polls") or {}
     if wp:
         print(f"Worker polls {wp['poll_total']} ({wp['poll_per_hour']}/h): test_wait {wp['test_wait']}, "
@@ -103,6 +104,11 @@ def _print_metrics(r: dict[str, Any]) -> None:
         for sid, u in o.get("usage", {}).items():
             print(f"  orchestrator {sid[:16]}: hit {u['cache_hit_pct']}% miss {u['input_miss']} read {u['cache_read']} "
                   f"last miss {u['last_miss_reason'] or '-'}")
+    cm = r.get("comms") or {}
+    if cm:
+        ev = ", ".join(f"{k} {v}" for k, v in (cm.get("evidence") or {}).items())
+        print(f"Peer messages {cm['squad_messages']} ({cm['per_hour']}/h): broadcasts {cm['broadcasts']}; "
+              f"evidence {ev}")
     print(f"Re-reads {rep['rereads']}/{rep['reads']} ({rep['reread_ratio_all']}), after cut {rep['reread_ratio_after_cut']}; "
           f"re-tests {rep['retests']}/{rep['tests']}")
     for aid, u in (r.get("cache") or {}).items():

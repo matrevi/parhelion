@@ -4,7 +4,7 @@
 and ``diff`` live here because they compare stored runs of one problem, while ``history``,
 ``queue``, ``board``, ``bottleneck`` and ``env`` live in ``report_views``. Both modules share the
 shaping helpers of ``report_views`` (byte budget, rounding, report documents). A worker reads its
-own problem only; ``board`` and ``env`` also serve workers. Hard budgets: ``per_case``/``diff`` 4KB,
+own problem only; ``board`` and ``env`` also serve workers. Hard budgets: ``per_case``/``diff``/``sweep`` 4KB,
 ``env`` 1KB; list views page with ``offset``/``limit`` or ``cursor``.
 
 ``view="help"`` carries the per-column meanings that used to sit in the tool description (4.2 J-2):
@@ -22,6 +22,7 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     ENV_BYTES,
     LIMIT_MAX,
     RULES_BYTES,
+    SWEEP_BYTES,
     _board,
     _bottleneck,
     _bytes,
@@ -36,10 +37,11 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     _round,
     _rules,
     _sha7,
+    _sweep,
     _trim,
 )
 
-VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "env", "help")
+VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "sweep", "env", "help")
 PER_CASE_COLUMNS = ("case", "ours_us", "tbest_us", "gap_pct", "speedup", "band_pct", "verdict", "noisy",
                     "judge", "mapped", "local", "timer", "passed", "exit_code", "mismatch_n", "strict_fp32",
                     "cal", "wa", "run")
@@ -114,6 +116,12 @@ HELP: dict[str, dict[str, Any]] = {
                  "with verified{rows, public_cases, max_err}, and is absent when no receipt reproduces its own "
                  "judge score. Name a problem (a worker reads only its own) or omit it for the table "
                  "(columns: title, mode, cases, sigma_hat, fetched_at); <=2KB",
+        "sweep": "cross-problem metric sweep for the orchestrator, one row per problem: board_sha and board_score "
+                 "are the receipt the board shows, run_sha/basis name the newest formal run (basis=latest when the "
+                 "metric only exists on another stored run), the metric column is size_bytes (kernel .o sum), "
+                 "compile_sec (build wall seconds), cold_tax_us (3-run cold tax) or pmu (dominant pipe and its percent; "
+                 "dominant pipe), and public_us lists the online public-case times of that board receipt (absent "
+                 "without one). Read from stored reports and cards only, never a device run; <=4KB",
         "env": "platform version and root, daemon liveness, workspace/results/state dirs and free disk, <=1KB; "
                "no account, session or credential field",
     },
@@ -345,6 +353,8 @@ def tool_parhelion_report(args: dict[str, Any], workspace: Path) -> dict[str, An
     role, problem = _caller(args, ws)
     if view == "env":
         return _env(ws)
+    if view == "sweep":  # 4.3 P27: cross-problem, orchestrator only, no problem argument
+        return _sweep(ws, args, role)
     if view in ("board", "history", "queue", "rules"):
         return {"board": _board, "history": _history, "queue": _queue, "rules": _rules}[view](
             ws, problem, args, role)
