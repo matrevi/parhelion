@@ -54,7 +54,7 @@
    - `context_percent ≥ 70`。
 
    不再要求必须先有 `_stage_result`。
-5. 压缩的检查点文本按顺序拼接：`_stage_result`（没有就取 reply 的最后 1500 字符），加上 `state_card.build(ws, problem, agent_id)`，加上一句 `"Continue from the state card. Do not re-read files you already summarized."`。总长度不超过 4000 字符。
+5. 压缩的检查点文本（4.2 起，`ledger/checkpoint.py`）按顺序拼接：`state_card.build(ws, problem, agent_id)`，`_stage_result` 的**结尾**（没有就取 reply 的最后 3000 字符；超出预算时丢开头，标 `…`），加上一句 `"Continue from the state card. Do not re-read files you already summarized."`。总长度不超过 `agents.seed_budget_chars`（默认 8000，限制在 [3000, 20000]）。`worker_report` 登记的阶段结果超过 4000 字符时同样保留结尾。ACP 压缩还会让模型按固定五个标题写不超过 1500 字的交接叙述，再由 `ledger/handoff.py` 对照账本校验后拼进新会话的种子；Codex 在原生压缩后的下一回合前置同一份账本摘要。校验与回退规则见 `docs/plan-4.1-4.2/P05-ledger-core.md`。
 6. 压缩后把 `_context_tokens` 清零，状态写入方式不变（`compacting` → `idle`）。
 
 ## 6. 状态卡（`services/state_card.py`）

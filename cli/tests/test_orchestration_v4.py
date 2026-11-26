@@ -261,17 +261,17 @@ def test_runner_compacts_by_absolute_tokens_with_state_card(tmp_path, monkeypatc
     compactions, runner = _run_turn_with_usage(tmp_path, 300_000, 1_000_000)
     assert len(compactions) == 1 and runner._context_tokens == 0
     checkpoint = compactions[0]
-    assert len(checkpoint) <= 4000
-    assert "\nSTATE Demo" in checkpoint
+    assert len(checkpoint) <= 8000  # agents.seed_budget_chars
+    assert checkpoint.startswith("STATE Demo")  # the state card comes first, the stage tail after it
     assert checkpoint.endswith("Continue from the state card. Do not re-read files you already summarized.")
-    assert checkpoint.startswith("x")  # no stage result: the reply tail seeds the checkpoint
+    assert "x" * 3000 in checkpoint  # no stage result: the reply tail seeds the checkpoint
     assert len(_run_turn_with_usage(tmp_path, 120_000, 200_000)[0]) == 1
     assert _run_turn_with_usage(tmp_path, 119_999, 200_000)[0] == []
     override = {"agents": {"compact_tokens": 10_000}}  # clamped up to 80k
     assert _run_turn_with_usage(tmp_path, 79_999, 1_000_000, override)[0] == []
     assert len(_run_turn_with_usage(tmp_path, 80_000, 1_000_000, override)[0]) == 1
     staged, _ = _run_turn_with_usage(tmp_path, 700, 1_000, stage="Verified abc1234: +3% on bucket small")
-    assert staged[0].startswith("Verified abc1234")  # 70% of the window also triggers
+    assert "Verified abc1234: +3% on bucket small" in staged[0]  # 70% of the window also triggers
 
 
 # 5. squad addressing ------------------------------------------------------------------------

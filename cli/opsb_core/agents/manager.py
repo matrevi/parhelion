@@ -23,12 +23,15 @@ from ..drivers.brief import (
     resolve_problem_repo,
 )
 from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
+from ..ledger import auto as ledger_auto
+from ..ledger.checkpoint import CHECKPOINT_TAIL, STAGE_FALLBACK_CHARS, build as build_checkpoint, seed_budget  # noqa: F401
+from ..ledger.handoff import HandoffSession
 from ..metrics.store import UsageMonitor, orchestrator_target, worker_target
 from ..services.git_fast import read_head_fast
 from .adapters import BaseWorkerAdapter, create_worker_adapter, worker_runtime_dir
 from .bus_store import AgentBusStore
 from .event_hub import EventHub, inbox_predicate
-from .judge_feedback import calibration_evidence, judge_feedback
+from .judge_feedback import calibration_evidence, epoch_gains, judge_feedback
 from .ownership import claim_runner, owned_groups, reap_groups
 
 AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
@@ -42,8 +45,6 @@ PROVIDER_FAULT = re.compile(
 SUSPENDED_ERROR = "suspended: provider fault"
 DEFAULT_CONTEXT_WINDOW = 200_000
 COMPACT_PERCENT = 70
-CHECKPOINT_MAX_CHARS = 4000
-CHECKPOINT_TAIL = "Continue from the state card. Do not re-read files you already summarized."
 SQUAD_MAX_CHARS = 4000
 
 
@@ -215,18 +216,26 @@ class _WorkerRunner:
                 or (self._context_percent or 0) >= COMPACT_PERCENT)
 
     def _checkpoint(self, rec: dict[str, Any], reply: str) -> str:
-        """Stage result (or the reply tail), the platform state card and a continuation line."""
+        """State card, then the END of the stage result (or the reply tail), then a continuation line.
+
+        Sized by ``agents.seed_budget_chars``; see ``ledger.checkpoint``.
+        """
         from ..services import state_card
         card = state_card.build(self.adapter.workspace, str(rec.get("problem") or ""), self.agent_id)
-        stage = (self._stage_result or str(reply or "")[-1500:]).strip()
-        room = max(0, CHECKPOINT_MAX_CHARS - len(card) - len(CHECKPOINT_TAIL) - 2)
-        return "\n".join([stage[:room], card, CHECKPOINT_TAIL])[:CHECKPOINT_MAX_CHARS]
+        stage = (self._stage_result or str(reply or "")[-STAGE_FALLBACK_CHARS:]).strip()
+        return build_checkpoint(card, stage, seed_budget())
 
     def _compact(self, rec: dict[str, Any], reply: str) -> None:
         self.store.update_agent(self.agent_id, status="compacting")
         self._on_notify()
         checkpoint = self._checkpoint(rec, reply)
         self._context_percent = None
+        # The adapter validates the model's handoff against the ledger with this session (ledger.handoff).
+        try:
+            self.adapter.handoff = HandoffSession(self.adapter.workspace, str(rec.get("problem") or ""),
+                                                  self.agent_id, self.adapter.worktree, self.adapter.driver_kind)
+        except Exception:
+            self.adapter.handoff = None
         try:
             outcome = self.adapter.compact(checkpoint)
             if outcome:
@@ -317,6 +326,7 @@ class AgentMeshManager:
         self._cond = threading.Condition(self._lock)
         self._stores: dict[str, AgentBusStore] = {}
         self._feedback_versions = {}
+        self._ledger_receipts: set[tuple[str, str]] = set()
         self._runners: dict[str, _WorkerRunner] = {}
         self._doctor_cache: tuple[float, dict[str, Any]] = (0.0, {})
         self._native_cache: dict[str, tuple[float, tuple[dict[str, Any], list[dict[str, Any]]]]] = {}
@@ -422,6 +432,7 @@ class AgentMeshManager:
             agent_id = str(record.get("agent_id") or "")
             if not request_id or not agent_id:
                 continue
+            ledger_auto.guard(ledger_auto.on_test_settled, ws, record)  # idempotent backstop of the settle hook
             line = test_runs.compact_line(record)
             msg = store.append_message(agent_id, "orch_to_worker", "test_result", line,
                                        problem=str(record.get("problem") or ""), event_key=f"test:{request_id}")
@@ -458,10 +469,15 @@ class AgentMeshManager:
             cal = _cfg.read_json(ws / "results" / title / "calibration.json", {})
             gamma = float(cal.get("decay_factor_gamma") or 1.0)
             results = list(judge_feedback(rows, threshold, gamma))
+            gains = ledger_auto.guard(epoch_gains, rows, gamma) or {}
             calibration_seqs = []
             for row, events in results:
                 sha, sid = row.get("sha") or "", row["submission_id"]
                 agent = row.get("agent_id") or requests.get((title, sha, row.get("queued_at")))
+                if (title, sid) not in self._ledger_receipts:  # the ledger write is idempotent; this skips the I/O
+                    gain, prior = gains.get(sid, (None, None))
+                    if ledger_auto.guard(ledger_auto.on_receipt, ws, title, row, agent, gain=gain, prior=prior):
+                        self._ledger_receipts.add((title, sid))
                 body = f"{title} {sha[:7]} · {row['status']} · score {row.get('score')} · submission {sid}"
                 revision = ":unscored" if row["status"] == "Pass" and row.get("score") is None else ""
                 author = authors.get(title)
@@ -1072,7 +1088,7 @@ class AgentMeshManager:
             runner = self._runners.get(agent_id)
         if norm_kind in ("result", "breakthrough", "stagnation", "escape_zero"):
             if runner is not None:
-                runner._stage_result = summary.strip()[:4000]
+                runner._stage_result = summary.strip()[-4000:]  # the end holds the conclusions
         streak = int(rec.get("no_gain_streak") or 0)
         # Judged receipt analysis owns these automatic alerts. Workers can always
         # raise an explicit question when a decision is needed.

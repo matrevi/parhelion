@@ -374,8 +374,13 @@ def tool_parhelion_submit_gate(args: dict[str, Any], workspace: Path) -> dict[st
     gates = {key: stages.get(stage, False) for key, stage in (
         ("safety_ok", "SAFETY"), ("noise_ok", "NOISE_FLOOR"),
         ("circuit_ok", "CIRCUIT_BREAKER"), ("quota_ok", "QUOTA_RESERVE"))}
-    return {**verdict, "estimate": estimate, "gates": {**gates, "all_pass": verdict["approved"]},
-            "estimated_score": estimate.get("estimated_score"), "current_score": estimate.get("current_score"),
-            "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
-            "reasons": [s["reason"] for s in verdict["stages"] if not s["passed"]],
-            "enqueued": bool(reply.get("enqueued")), "dry_run": not enqueue}
+    result = {**verdict, "estimate": estimate, "gates": {**gates, "all_pass": verdict["approved"]},
+              "estimated_score": estimate.get("estimated_score"), "current_score": estimate.get("current_score"),
+              "delta_expected": estimate.get("delta_expected"), "wspt_priority": verdict["priority_score"],
+              "reasons": [s["reason"] for s in verdict["stages"] if not s["passed"]],
+              "enqueued": bool(reply.get("enqueued")), "dry_run": not enqueue}
+    if enqueue:  # a request, not a preview: the SHA gets a platform hypothesis unless it already has one
+        from ..ledger import auto
+        auto.guard(auto.on_gate_request, workspace, title, sha, args.get("_caller_agent_id"), note=note,
+                   estimate=estimate, enqueued=result["enqueued"])
+    return result

@@ -41,12 +41,11 @@ def calibration_evidence(ws, row):
     return json.dumps(data, ensure_ascii=False, separators=(",", ":")), artifacts
 
 
-def judge_feedback(rows, threshold, gamma):
+def _ordered_receipts(rows):
+    """Terminal receipts (one per submission) oldest first, as ``(stamp, row)``."""
     import sys
     if str(_cfg.SUPERVISOR_ROOT) not in sys.path:
         sys.path.insert(0, str(_cfg.SUPERVISOR_ROOT))
-    from scheduler import receipts as _receipts
-    from scheduler.estimator import ScoreEstimator
     from ..services.judge_score_fetch import TERMINAL_JUDGE_STATUSES
 
     receipts = {}
@@ -55,7 +54,38 @@ def judge_feedback(rows, threshold, gamma):
         stamp = _cfg.parse_iso(row.get("submitted_at") or row.get("finished_at"))
         if sid and stamp and row.get("status") in TERMINAL_JUDGE_STATUSES:
             receipts[sid] = (stamp, row)
-    ordered = sorted(receipts.values(), key=lambda item: (item[0], str(item[1]["submission_id"])))
+    return sorted(receipts.values(), key=lambda item: (item[0], str(item[1]["submission_id"])))
+
+
+def epoch_gains(rows, gamma):
+    """``{submission_id: (gain, prior)}``: each scored receipt against the best earlier score at its epoch.
+
+    Same arithmetic as the breakthrough test of ``judge_feedback`` (``score * gamma - prior``), so the
+    ledger's verdicts on hypotheses and the platform's breakthrough events use one gain.
+    """
+    from scheduler import receipts as _receipts
+    from scheduler.estimator import ScoreEstimator
+
+    previous, out = [], {}
+    for stamp, row in _ordered_receipts(rows):
+        score = _receipts.official_score(row)
+        if score is None:
+            continue
+        prior = max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp) for ts, s in previous),
+                    default=0.0)
+        previous.append((stamp, score))
+        out[row["submission_id"]] = (round(score * gamma - prior, 2), round(prior, 2))
+    return out
+
+
+def judge_feedback(rows, threshold, gamma):
+    import sys
+    if str(_cfg.SUPERVISOR_ROOT) not in sys.path:
+        sys.path.insert(0, str(_cfg.SUPERVISOR_ROOT))
+    from scheduler import receipts as _receipts
+    from scheduler.estimator import ScoreEstimator
+
+    ordered = _ordered_receipts(rows)
     previous = []
     last_rotation = 0
     for stamp, row in ordered:
@@ -64,8 +94,8 @@ def judge_feedback(rows, threshold, gamma):
             yield row, []
             continue
         def peak(history):
-            return max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp)
-                        for ts, s in history), default=0.0)
+            return max((ScoreEstimator.discount_draw_to_contemporary(s, ts, gamma, stamp) for ts, s in history),
+                       default=0.0)
         prior = peak(previous)
         previous.append((stamp, score))
         events = []

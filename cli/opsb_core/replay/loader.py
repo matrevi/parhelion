@@ -18,7 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-HANDOFF_PREFIX = "Write a short handoff"
+HANDOFF_PREFIX = "Write a short handoff"  # until 4.2 C; 4.2 prompts start "Write a structured handoff"
+HANDOFF_PREFIXES = (HANDOFF_PREFIX, "Write a structured handoff")
 SEED_PREFIX = "Preserve this checkpoint"
 PLATFORM_TOOL_PREFIX = "parhelion_"
 PEER_RE = re.compile(r"^\[[\w.-]+ → [\w.-]+\]")
@@ -100,7 +101,7 @@ def normalize_tool(title: Any) -> str:
 
 def classify_prompt(text: str, index: int) -> str:
     head = text.lstrip()
-    if head.startswith(HANDOFF_PREFIX):
+    if head.startswith(HANDOFF_PREFIXES):
         return "handoff"
     if head.startswith(SEED_PREFIX):
         return "seed"
