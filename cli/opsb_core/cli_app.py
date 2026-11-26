@@ -435,6 +435,10 @@ def build_parser() -> argparse.ArgumentParser:
     dm_st.add_argument("--json", action="store_true")
     dm_st.set_defaults(func=run_daemon)
 
+    dm_rl = dm_sub.add_parser("reload", help="Hot-reload the daemon's scheduling modules without a restart")
+    dm_rl.add_argument("--json", action="store_true")
+    dm_rl.set_defaults(func=run_daemon)
+
     register_kb_subcommands(sub)
 
     register_doctor_subcommands(sub)

@@ -26,6 +26,8 @@ def _safety_badge(stages: list[dict[str, Any]], default: str) -> str:
     code = next((str(s.get("code") or "") for s in stages if s.get("stage") == "SAFETY" and not s.get("passed")), "")
     if code == "ESCAPE_LOCK_ACTIVE":
         return "ESCAPE LOCK"
+    if code == "JUDGE_COMPILE_FAILED":
+        return "COMPILE FAILED"
     if code in ("NO_VALIDATION_RECORD", "VALIDATION_INCOMPLETE", "REFERENCE_SUITE_REQUIRED", "MISSING_LOG",
                 "MISSING_EXTENDED_PASSED", "MISSING_CROSS_CORE_STRESS", "FAST_LANE_ONLY"):
         return "NOT TESTED"

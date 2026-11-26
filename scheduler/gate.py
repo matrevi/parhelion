@@ -550,8 +550,12 @@ class SubmissionGate:
                     return StageResult(stage="SAFETY", passed=False, code="ESCAPE_LOCK_ACTIVE",
                                        reason="ESCAPE_LOCK: reproduce the failure or request an exact-SHA reviewed trial",
                                        metrics={"submission_id": sid, "bad_sha": bad})
+            from .judge_compile import stage1 as judge_compile_stage1
+            rejected, compile_note = judge_compile_stage1(self.workspace, title, sha)
+            if rejected:
+                return StageResult(stage="SAFETY", passed=False, **rejected)
             return StageResult(stage="SAFETY",passed=True,code="PASS",
-                               reason=f"Full reference suite passed ({len(report['cases'])} cases)",
+                               reason=f"Full reference suite passed ({len(report['cases'])} cases){compile_note}",
                                metrics={"run_id":report["run_id"],"extended_cases":len(report["cases"])})
 
         log_text = log_file.read_text(errors="replace")
