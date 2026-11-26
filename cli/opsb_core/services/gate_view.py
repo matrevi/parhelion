@@ -66,6 +66,8 @@ def lamps(verdict: dict[str, Any] | None) -> dict[str, Any]:
 def safety_badge(code: str) -> str:
     if code == "ESCAPE_LOCK_ACTIVE":
         return "ESCAPE LOCK"
+    if code == "JUDGE_COMPILE_FAILED":  # P09: the judge-toolchain compile check failed
+        return "COMPILE FAILED"
     if code in NOT_TESTED:
         return "NOT TESTED"
     if code.startswith("EXIT_CODE_") or code in TEST_FAILED:

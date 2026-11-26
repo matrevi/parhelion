@@ -69,6 +69,14 @@ struct ParhelionApp: App {
         .defaultSize(width: 1340, height: 840)
         .commands {
             CommandGroup(after: .newItem) {
+                // Same action as the "New Contest Chat" button, reachable when an overlay
+                // covers the toolbar.
+                Button(store.tr("新开比赛对话", "New Contest Chat")) {
+                    Task { await store.startContestChat() }
+                }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!store.canStartContestChat)
+
                 Button(store.tr("立即刷新全局遥测", "Refresh All Telemetry")) {
                     Task { await store.refreshAll() }
                 }

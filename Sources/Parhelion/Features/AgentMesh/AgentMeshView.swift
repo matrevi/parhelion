@@ -243,8 +243,13 @@ struct AgentMeshView: View {
                 agentId: agentId, problem: problem, sinceSeq: cursor, ack: false
             ), !Task.isCancelled, workspace == store.selectedWorkspace,
                scope == "\(workspace)::\(selectionKey)", messageScope == scope else { return }
-            let last = messages.last?.seq ?? 0
-            messages.append(contentsOf: resp.messages.filter { $0.seq > last })
+            if resp.restartsHistory(after: cursor) {
+                // A full cleanup emptied the bus and its sequence started again at 1.
+                messages = resp.messages
+            } else {
+                let last = messages.last?.seq ?? 0
+                messages.append(contentsOf: resp.messages.filter { $0.seq > last })
+            }
             diffStat = resp.diffStat ?? ""
             if resp.messages.count < 80 || (messages.last?.seq ?? 0) >= resp.latestSeq { return }
         }

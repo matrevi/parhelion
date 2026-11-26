@@ -30,6 +30,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -1427,7 +1428,8 @@ def _run_profiler(repo, build_dir, application, pmu, out_dir):
             'profiler_us_max': round(durations[-1], 3), 'profiler_samples': len(durations)}
 root = pathlib.Path(cfg['remote_root'])
 repo = root / title
-build_dir = repo / 'build-npu'
+# A compile check (judge toolchain) builds in its own directory and never touches build-npu.
+build_dir = repo / (cfg.get('build_dir') or 'build-npu')
 accel_env = cfg.get('accel_env') or ''
 soc = cfg.get('soc') or _dev.get('soc') or 'soc-a'
 device_id = cfg.get('device_id', 0)
@@ -1480,14 +1482,18 @@ with tempfile.TemporaryDirectory(prefix='git-auth-') as auth, (root / (title + '
     if build_dir.exists():
         shutil.rmtree(build_dir)
     t_a = time.monotonic()
+    extra_args = ''.join(' ' + shlex.quote(str(arg)) for arg in cfg.get('cmake_args') or [])
+    if cfg.get('compile_only'):
+        bash(f'echo "[TEMPLATE] toolchain ${{{toolchain_home_env}:-unset}}"', cwd=repo)
     with compile_lane(cfg, units=1):
         print('[TEMPLATE] cmake configure', flush=True)
-        bash(f'cmake -S . -B build-npu -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}', cwd=repo)
+        bash(f'cmake -S . -B {build_dir.name} -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_ASC_RUN_MODE=npu -DCMAKE_ASC_ARCHITECTURES={arch}{extra_args}', cwd=repo)
     with compile_lane(cfg, units=compilation_units(build_dir)) as jobs:
         print(f'[TEMPLATE] cmake build (-j{jobs})', flush=True)
-        bash(f'cmake --build build-npu --parallel {jobs}', cwd=repo)
-    print('[TEMPLATE] generating sample data', flush=True)
-    bash('python3 sample.py generate --directory build-npu', cwd=repo)
+        bash(f'cmake --build {build_dir.name} --parallel {jobs}', cwd=repo)
+    if not cfg.get('compile_only'):
+        print('[TEMPLATE] generating sample data', flush=True)
+        bash(f'python3 sample.py generate --directory {build_dir.name}', cwd=repo)
     phase_a = round(time.monotonic() - t_a, 3)
 
     metrics = {'layout': 'template', 'phase_a_cpu_sec': phase_a, 'soc': soc}
@@ -1676,6 +1682,13 @@ def run_3phase_validation(
         )
         for legacy_only in ("cold3", "mlfq", "branch_ref", "sync_only"):
             template_cfg.pop(legacy_only, None)
+        # Compile check (scheduler/judge_compile.py): another toolchain and CMake options, its own
+        # build directory and result files, no sample data; still the CPU lane only.
+        check = re.sub(r"[^a-z0-9-]", "", os.environ.get("OPSB_COMPILE_CHECK", "").lower())
+        if build_only and check:
+            template_cfg.update(build_dir=f"build-{check}", compile_only=True,
+                                cmake_args=json.loads(os.environ.get("OPSB_CMAKE_ARGS") or "[]"))
+            log_basename, res_basename = f"{check}-build", f"result-{check}-build.json"
         code, template_metrics = _stream_remote(
             REMOTE_TEMPLATE, template_cfg, destination, log_basename, stream_stdout
         )

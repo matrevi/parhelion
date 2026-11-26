@@ -183,6 +183,14 @@ extension ContestStore {
         await launchOperatorSession(problem: "ALL", driver: driver, mode: mode, preseed: preseed)
     }
 
+    /// "New Contest Chat": the toolbar button and the ⌘⇧N menu item both run exactly this,
+    /// the same as `opsb driver launch ALL --driver <active> --mode gui`.
+    var canStartContestChat: Bool { !isLaunchingSession && !selectedWorkspace.isEmpty }
+
+    func startContestChat() async {
+        await launchContestSubagentSession(mode: "gui")
+    }
+
     func launchOperatorSession(problem: String, driver: String? = nil, mode: String = "gui", preseed: Bool = false) async {
         guard !selectedWorkspace.isEmpty, !isLaunchingSession else { return }
         isLaunchingSession = true

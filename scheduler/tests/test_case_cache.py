@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -15,6 +16,7 @@ if str(RUNTIME) not in sys.path:
     sys.path.insert(0, str(RUNTIME))
 
 import case_batch  # noqa: E402
+import case_cache  # noqa: E402
 
 # Stand-in for reference_cases.py: writes one part per case and logs each invocation.
 STUB = textwrap.dedent(
@@ -107,6 +109,57 @@ class CaseCacheTest(unittest.TestCase):
         self._prepare("run1")
         self._prepare("run2")
         self.assertEqual(len(self._calls()), 8)
+
+    def _entries(self, title: str) -> dict[str, Path]:
+        root = Path(os.environ["OPSB_CASE_CACHE_DIR"]) / title
+        return {p.name: p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")} if root.is_dir() else {}
+
+    def _stats(self) -> list[dict]:
+        path = Path(os.environ["OPSB_CASE_CACHE_DIR"]) / case_cache.STATS_NAME
+        return [json.loads(line) for line in path.read_text().splitlines()]
+
+    def test_global_budget_evicts_least_recently_used_entries_across_problems(self) -> None:
+        self._prepare("run1")
+        first = self._entries("Demo_Op")
+        self.assertEqual(len(first), 4)
+        size = int(json.loads((next(iter(first.values())) / ".complete").read_text())["bytes"])
+        keys = [case_batch.CaseCache(self.repo, self.cfg).key(item) for item in self.cfg["selected"]]
+        now = time.time()
+        for rank, key in enumerate(keys):  # case0 was used most recently, case3 longest ago
+            os.utime(first[key], (now - 100 - 1000 * rank, now - 100 - 1000 * rank))
+
+        # Five entries fit: a second problem's four fresh entries keep only case0 of the first.
+        self.cfg.update(title="Other Op", case_cache_bytes=5 * size)
+        self._prepare("run2")
+        self.assertEqual(len(self._entries("Other_Op")), 4)
+        self.assertEqual(set(self._entries("Demo_Op")), {keys[0]})
+        stats = self._stats()
+        self.assertEqual([(s["title"], s["hits"], s["misses"], s["stored"]) for s in stats],
+                         [("Demo_Op", 0, 4, 4), ("Other_Op", 0, 4, 4)])
+        self.assertEqual(stats[1]["evicted"], 3)
+
+        # The surviving entry still serves a hit; evicted cases are regenerated.
+        self.cfg.update(title="Demo Op")
+        self._prepare("run3")
+        self.assertEqual((self._stats()[-1]["hits"], self._stats()[-1]["misses"]), (1, 3))
+
+    def test_host_override_and_default_budget(self) -> None:
+        self.assertEqual(case_cache.total_budget({}), 24 << 30)
+        self.assertEqual(case_cache.total_budget({"case_cache_bytes": "4096"}), 4096)
+        with mock.patch.dict(os.environ, {"OPSB_CASE_CACHE_TOTAL_BYTES": "2048"}):
+            self.assertEqual(case_cache.total_budget({"case_cache_bytes": 4096}), 2048)
+        self.assertEqual(case_cache.total_budget({"case_cache_bytes": "0"}), 24 << 30)
+
+    def test_report_counts_use_and_recent_hit_rate(self) -> None:
+        self._prepare("run1")
+        self._prepare("run2")
+        top = Path(os.environ["OPSB_CASE_CACHE_DIR"])
+        doc = case_cache.report(top, 1 << 20, recent=1)
+        self.assertEqual(doc["entries"], 4)
+        self.assertEqual(doc["problems"][0]["title"], "Demo_Op")
+        self.assertEqual(doc["problems"][0]["bytes"], doc["total_bytes"])
+        self.assertEqual(doc["recent"], {"runs": 1, "hits": 4, "misses": 0, "hit_rate": 1.0, "evicted": 0})
+        self.assertEqual(case_cache.report(top, 1 << 20, recent=5)["recent"]["hit_rate"], 0.5)
 
     def test_failed_generation_is_not_cached(self) -> None:
         (self.repo.parent / "reference_cases.py").write_text("import sys; sys.exit('oracle broke')\n")

@@ -33,7 +33,9 @@ from ..config import (
 )
 from ..agents.manager import AgentMeshManager
 from ..mcp.handlers_agents import bind_daemon_agent_manager
+from . import dispatch as _dispatch
 from .agent_routes import handle_agent_get, handle_agent_post
+from .hot_reload import daemon_reloader
 from .npu_stream import NpuStreamManager
 from .state_cache import WorkspaceStateCache
 from ..services.submit_runner import spawn_jump_submit
@@ -110,6 +112,24 @@ def probe_daemon_health(state: dict[str, Any] | None = None, timeout: float = 1.
     return None
 
 
+def request_daemon_reload(state: dict[str, Any] | None = None, timeout: float = 30.0) -> dict[str, Any]:
+    """Ask the running daemon to hot-reload its scheduling modules (`opsb daemon reload`)."""
+    st = state or read_daemon_state()
+    if not st or not _pid_alive(int(st.get("pid") or 0)):
+        return {"ok": False, "error": "daemon not running"}
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{int(st['port'])}/v1/daemon/reload",
+        data=b"{}", headers={"X-Opsb-Token": str(st["token"]), "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return {"ok": False, "error": f"reload request failed: {exc}"}
+    return body if isinstance(body, dict) else {"ok": False, "error": "unexpected reply"}
+
+
 def _write_daemon_state(state: dict[str, Any]) -> None:
     DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = DAEMON_STATE_PATH.with_name(f".{DAEMON_STATE_PATH.name}.{os.getpid()}.{threading.get_ident()}.tmp")
@@ -158,67 +178,58 @@ class OpsbDaemonRuntime:
         )
         self.agent_mesh = AgentMeshManager(on_change=self.notify_subscribers)
         bind_daemon_agent_manager(self.agent_mesh)
+        # Stateless scheduling modules reload between dispatch ticks (see hot_reload.py).
+        self.reloader = daemon_reloader()
+        self._tick_lock = threading.Lock()
 
     def dispatch_next(self, workspace: Path, snapshot: dict, backoff: dict) -> None:
-        now = time.monotonic()
-        queue = snapshot.get("submission_queue", [])
-        for item in queue:
-            if not item.get("gates", {}).get("all_pass"):
-                continue
-            promote = item.get("kind") == "candidate" and item.get("requested_submission")
-            if item.get("kind") != "pending" and not promote:
-                continue
-            title, sha = item["title"], item["sha"]
-            key = (workspace, title, sha)
-            if backoff.get(key, 0) > now:
-                continue
-            if promote:
-                args = ["--title", title, "--sha", sha, "--note", item.get("request_note") or ""]
-                if item.get("agent_id"):
-                    args.extend(["--agent-id", item["agent_id"]])
-                if item.get("speedup") is not None:
-                    args.extend(["--speedup", str(item["speedup"])])
-                reply = invoke_bridge(workspace, "submit", args) or {}
-                if reply.get("enqueued"):
-                    self.state_cache.invalidate(workspace)
-                    self.notify_subscribers()
-                    return
-                backoff[key] = now + 5
-                continue
-            result = spawn_jump_submit(CLI_DIR / "opsb", workspace, title, sha, item.get("note") or "",
-                                       enforce_operator_mutex=True)
-            if result.get("ok"):
-                backoff[key] = now + 10
-                self.state_cache.invalidate(workspace)
-                self.notify_subscribers()
-                return
-            if result.get("operator_inflight") or result.get("duplicate_inflight") or result.get("duplicate_terminal"):
-                backoff[key] = now + 5
-                continue
-            return
+        # Looked up on the module at call time, so a hot reload takes effect on the next tick.
+        _dispatch.dispatch_next(self, workspace, snapshot, backoff, bridge=invoke_bridge,
+                                launch=spawn_jump_submit, cli=CLI_DIR / "opsb")
+
+    def reload_modules(self, *, changed_only: bool = False) -> dict[str, Any]:
+        """Reload the scheduling modules between ticks; failures keep the previous code."""
+        with self._tick_lock:
+            result = self.reloader.poll() if changed_only else self.reloader.reload()
+        for row in (result or {}).get("modules", []):
+            state = f"reloaded ({row['rebound']} rebound)" if row["ok"] else f"FAILED, kept previous: {row['error']}"
+            print(f"hot reload {row['module']}: {state}", file=sys.stderr, flush=True)
+        if result and any(row["ok"] for row in result["modules"]):
+            try:
+                self.state_cache.invalidate(self.resolve_ws(ConfigRepository.load().get("active_workspace")))
+            except Exception as exc:
+                print(f"hot reload: state refresh failed: {exc}", file=sys.stderr, flush=True)
+            self.notify_subscribers()
+        return result or {"ok": True, "modules": []}
 
     def consume_queue(self, stop: threading.Event) -> None:
         backoff: dict = {}
         while not stop.wait(1):
-            try:
-                cfg = ConfigRepository.load()
-                ws = Path(cfg.get("active_workspace") or self.workspace).expanduser().resolve()
-                if not (ws / "results").is_dir():
-                    continue
-                self.agent_mesh.deliver_judgements(ws, float(cfg.get("scheduler", {}).get("breakthrough_threshold", 5.0)))
+            if os.environ.get("OPSB_DAEMON_HOT_RELOAD", "1") != "0":
                 try:
-                    self.agent_mesh.deliver_test_results(ws)
+                    self.reload_modules(changed_only=True)
                 except Exception as exc:
-                    print(f"test result delivery failed: {exc}", file=sys.stderr, flush=True)
-                if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
-                    continue
-                _, _, data = self.state_cache.get_snapshot(ws)
-                backoff = {key: until for key, until in backoff.items() if until > time.monotonic()}
-                if not stop.is_set():
-                    self.dispatch_next(ws, json.loads(data), backoff)
-            except Exception as exc:
-                print(f"queue dispatch failed: {exc}", file=sys.stderr, flush=True)
-                stop.wait(4)
+                    print(f"hot reload check failed: {exc}", file=sys.stderr, flush=True)
+            with self._tick_lock:
+                try:
+                    cfg = ConfigRepository.load()
+                    ws = Path(cfg.get("active_workspace") or self.workspace).expanduser().resolve()
+                    if not (ws / "results").is_dir():
+                        continue
+                    self.agent_mesh.deliver_judgements(ws, float(cfg.get("scheduler", {}).get("breakthrough_threshold", 5.0)))
+                    try:
+                        self.agent_mesh.deliver_test_results(ws)
+                    except Exception as exc:
+                        print(f"test result delivery failed: {exc}", file=sys.stderr, flush=True)
+                    if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
+                        continue
+                    _, _, data = self.state_cache.get_snapshot(ws)
+                    backoff = {key: until for key, until in backoff.items() if until > time.monotonic()}
+                    if not stop.is_set():
+                        self.dispatch_next(ws, json.loads(data), backoff)
+                except Exception as exc:
+                    print(f"queue dispatch failed: {exc}", file=sys.stderr, flush=True)
+                    stop.wait(4)
 
     def notify_subscribers(self) -> None:
         with self._sub_cond:
@@ -466,6 +477,12 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                 self._send_json(agent_resp[0], agent_resp[1])
                 return
 
+            if path == "/v1/daemon/reload":
+                # Admin token only (worker tokens are scoped to /v1/mcp/worker/<id>).
+                result = runtime.reload_modules()
+                self._send_json(200, {**result, "status": runtime.reloader.status()})
+                return
+
             if path == "/v1/invalidate":
                 etag = runtime.state_cache.invalidate(ws)
                 runtime.notify_subscribers()
@@ -704,6 +721,18 @@ def run_daemon(args: argparse.Namespace) -> int:
                     print(json.dumps(out, ensure_ascii=False) if as_json else f"Daemon already running (PID {existing['pid']}, port {existing['port']})")
                     return 0
         return run_daemon_server(workspace=ws, ssh_host=host, preferred_port=port)
+
+    if args.daemon_cmd == "reload":
+        res = request_daemon_reload()
+        if as_json:
+            print(json.dumps(res, ensure_ascii=False))
+        elif res.get("error"):
+            print(f"Daemon reload: {res['error']}")
+        else:
+            for row in res.get("modules", []):
+                state = "reloaded" if row.get("ok") else f"FAILED, previous code kept: {row.get('error')}"
+                print(f"{row.get('module')}: {state}")
+        return 0 if res.get("ok") else 1
 
     if args.daemon_cmd == "stop":
         res = stop_daemon()

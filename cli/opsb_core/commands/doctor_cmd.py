@@ -25,6 +25,8 @@ device tickets:
 * remote (`--remote`): admission tickets in `/tmp/opsb-npu-tickets/*.json` on the device
   host whose `pid` no longer exists. `--apply` deletes only those ticket files, never a
   lock file.
+* cases: `opsb doctor --cases [--remote]` reports the prepared-case cache (read-only);
+  `clean --purge-cases --apply` is the only path that deletes it (see `doctor_cases.py`).
 
 Without `--apply` the command only reports. The integrator registers it in `cli_app.py`
 via `register_doctor_subcommands(sub)`.
@@ -44,6 +46,7 @@ from typing import Any
 
 from ..config import ConfigRepository, workspace_id
 from ..device_env import parhelion_home
+from .doctor_cases import print_purge, purge_section, register_cases_flags, run_cases
 
 REMOTE_TICKET_DIR = "/tmp/opsb-npu-tickets"
 REMOTE_TIMEOUT_SEC = 30
@@ -421,13 +424,17 @@ def _print_table(report: dict[str, Any]) -> None:
         for hit in report["remote"]:
             state = "deleted" if hit.get("applied") else ("error: " + hit["error"] if hit.get("error") else "would delete")
             print(f"  {hit['path']:<52} pid={hit['pid']:<8} {state}")
+    if "case_purge" in report:
+        print_purge(report["case_purge"])
 
 
 def run_doctor(args: argparse.Namespace) -> int:
     action = getattr(args, "doctor_action", None)
     if action != "clean":
+        if getattr(args, "cases", False):
+            return run_cases(args, ConfigRepository.load())
         print("usage: opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] "
-              "[--purge-trash] [--json]", file=sys.stderr)
+              "[--purge-trash] [--purge-cases] [--json] | opsb doctor --cases [--remote]", file=sys.stderr)
         return 2
     apply = bool(getattr(args, "apply", False))
     home = parhelion_home()
@@ -461,6 +468,10 @@ def run_doctor(args: argparse.Namespace) -> int:
         if error:
             report["remote_error"] = error
             rc = 1
+    if getattr(args, "purge_cases", False):
+        report["case_purge"] = purge_section(cfg, bool(getattr(args, "remote", False)), apply)
+        if report["case_purge"].get("error"):
+            rc = 1
     for key in ("local", "agents", "logs", "trash_purge", "remote"):
         if any(h.get("error") for h in report.get(key) or []):
             rc = 1
@@ -493,4 +504,5 @@ def register_doctor_subcommands(sub: argparse._SubParsersAction[Any]) -> None:
     clean.add_argument("--purge-trash", action="store_true",
                        help="Also empty PARHELION_HOME/trash (destructive; --apply only)")
     clean.add_argument("--json", action="store_true")
+    register_cases_flags(doctor, clean)
     clean.set_defaults(func=run_doctor)

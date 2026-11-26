@@ -9,6 +9,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from case_cache import CaseCache
 from device_broker import SampleProcess, ensure_broker
 from lanes import case_series, device_lane
 
@@ -32,127 +33,6 @@ def _workdir(base, name):
 def _sum_parts(groups):
     """The r-th sample of a case is the sum of the r-th sample of every part."""
     return [sum(group) for group in zip(*groups)]
-
-
-# Inputs and goldens depend only on the oracle side of the checkout, the generated I/O schema
-# and the case item, never on the kernel. They are cached on the device host so that each
-# candidate of a problem pays for reference generation once.
-CACHE_FORMAT = 1
-KERNEL_SUFFIXES = {".asc", ".h", ".hpp", ".hh", ".c", ".cc", ".cpp", ".cxx", ".cu", ".cmake"}
-CACHE_BYTES_PER_PROBLEM = int(os.environ.get("OPSB_CASE_CACHE_BYTES") or 8 << 30)
-CACHE_MAX_AGE_SEC = 7 * 86400
-
-
-def _link_or_copy(src, dst):
-    """Hard-link (the cache sits on the run directory's filesystem); copy across filesystems."""
-    try:
-        os.link(src, dst)
-    except OSError:
-        import shutil
-        shutil.copy2(src, dst)
-
-
-def _oracle_digest(repo):
-    """Digest every checkout file that case generation can read; kernel sources are left out."""
-    import hashlib
-    h = hashlib.sha256()
-    files = []
-    for top, dirs, names in os.walk(repo):
-        dirs[:] = [d for d in dirs if not (d.startswith("build") or d in ("__pycache__", ".git"))]
-        files.extend(Path(top) / name for name in names)
-    for path in sorted(files):
-        if path.suffix.lower() in KERNEL_SUFFIXES or path.name == "CMakeLists.txt" or path.suffix == ".pyc":
-            continue
-        h.update(str(path.relative_to(repo)).encode() + b"\\0" + path.read_bytes() + b"\\0")
-    return h.hexdigest()
-
-
-class CaseCache:
-    def __init__(self, repo, cfg):
-        import hashlib
-        from importlib import metadata
-        self.enabled = cfg.get("case_cache", True) and os.environ.get("OPSB_CASE_CACHE", "1") != "0"
-        title = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(cfg.get("title") or "problem"))
-        # Next to the run's scratch directory, so cached files can be hard-linked rather than copied.
-        self.root = Path(os.environ.get("OPSB_CASE_CACHE_DIR") or repo.parent.parent / "opsb-case-cache") / title
-        try:
-            numpy_version = metadata.version("numpy")
-        except metadata.PackageNotFoundError:
-            numpy_version = "none"
-        engine = (repo.parent / "reference_cases.py").read_bytes()
-        schema = (repo.parent / "schema.json").read_bytes()
-        base = [CACHE_FORMAT, sys.version.split()[0], numpy_version, _oracle_digest(repo),
-                hashlib.sha256(engine).hexdigest(), hashlib.sha256(schema).hexdigest()]
-        self.base = json.dumps(base)
-
-    def key(self, item):
-        import hashlib
-        return hashlib.sha256((self.base + json.dumps(item, sort_keys=True)).encode()).hexdigest()[:40]
-
-    def restore(self, item, case):
-        """Copy a cached case into ``case``; return its parts with absolute paths, or None."""
-        import shutil
-        if not self.enabled:
-            return None
-        entry = self.root / self.key(item)
-        if not (entry / ".complete").is_file():
-            return None
-        try:
-            shutil.copytree(entry, case, dirs_exist_ok=True, ignore=shutil.ignore_patterns(".complete"),
-                            copy_function=_link_or_copy)
-            parts = json.loads((case / "parts.json").read_text())
-            for part in parts:
-                part["path"] = str(case / part["path"])
-            os.utime(entry)
-            return parts
-        except (OSError, ValueError, KeyError):
-            return None
-
-    def store(self, item, case, parts):
-        import shutil
-        if not self.enabled:
-            return
-        entry = self.root / self.key(item)
-        if entry.exists():
-            return
-        temp = self.root / f".{entry.name}.{os.getpid()}.tmp"
-        try:
-            self.root.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(case, temp, copy_function=_link_or_copy)
-            relative = [dict(part, path=str(Path(part["path"]).relative_to(case))) for part in parts]
-            (temp / "parts.json").unlink()
-            (temp / "parts.json").write_text(json.dumps(relative))
-            size = 0
-            for top, _, names in os.walk(temp):
-                for name in names:
-                    path = Path(top) / name
-                    # Shared by every run that restores it: inputs and goldens are read-only.
-                    path.chmod(0o444)
-                    size += path.stat().st_size
-            (temp / ".complete").write_text(json.dumps({"bytes": size}))
-            temp.rename(entry)
-        except (OSError, ValueError):
-            shutil.rmtree(temp, ignore_errors=True)
-
-    def prune(self):
-        """Keep the most recently used entries of this problem within the byte budget and age limit."""
-        import shutil
-        if not self.enabled or not self.root.is_dir():
-            return
-        now, kept = time.time(), 0
-        entries = sorted((p for p in self.root.iterdir() if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
-        for entry in entries:
-            age = now - entry.stat().st_mtime
-            if entry.name.startswith("."):
-                if age > 3600:
-                    shutil.rmtree(entry, ignore_errors=True)
-                continue
-            try:
-                kept += int(json.loads((entry / ".complete").read_text())["bytes"])
-            except (OSError, ValueError, KeyError, TypeError):
-                kept += 0 if age < 3600 else CACHE_BYTES_PER_PROBLEM
-            if kept > CACHE_BYTES_PER_PROBLEM or age > CACHE_MAX_AGE_SEC:
-                shutil.rmtree(entry, ignore_errors=True)
 
 
 def _generate(repo, cfg, index, case, threads):
@@ -190,6 +70,7 @@ def prepare(repo, cfg, root, update):
         else:
             missing.append(plan)
     done = total - len(missing)
+    stored = 0
     if missing:
         update(dict(missing[0]["progress"], index=done, cached=done))
     if missing:
@@ -206,8 +87,8 @@ def prepare(repo, cfg, root, update):
                     plan["parts"] = future.result()
                     if not plan["parts"]:
                         raise ValueError("Reference case produced no invocations")
-                    if cache:
-                        cache.store(item, plan["case"], plan["parts"])
+                    if cache and cache.store(item, plan["case"], plan["parts"]):
+                        stored += 1
                 except (OSError, ValueError, subprocess.SubprocessError) as exc:
                     plan["error"] = {"status": "ERROR", "detail": str(exc)}
                 done += 1
@@ -223,10 +104,7 @@ def prepare(repo, cfg, root, update):
             part["warm"] = [_workdir(base, f"warm-{k}") for k in range(warmup)]
             part["runs"] = [_workdir(base, f"run-{r}") for r in range(count)]
     if cache:
-        try:
-            cache.prune()
-        except OSError:
-            pass
+        cache.finish(cfg, hits=total - len(missing), misses=len(missing), stored=stored)
     return plans
 
 
