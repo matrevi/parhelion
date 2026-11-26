@@ -296,7 +296,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from . import receipt_predict, receipts
+from . import pairing, receipt_predict, receipts
 from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
@@ -1176,14 +1176,15 @@ class ScoreEstimator:
             restore_gap=true_restore_gain,
         )
 
-    def _case_bench_minima(self, title: str, sha: str | None, as_of: datetime.datetime | None = None):
-        """Best warm minimum per official case over this SHA's formal, timing-eligible runs.
+    def _case_bench_groups(self, title: str, sha: str | None,
+                           as_of: datetime.datetime | None = None) -> dict[str, list[dict[str, Any]]]:
+        """This SHA's formal, timing-eligible runs grouped by official-input identity (scheduler.pairing).
 
-        Returns ``(suite_version, {case_id: min_us}, runs)`` for the newest suite version, or None.
+        Suite edits that leave the official cases alone (final-only variants) keep one group.
         """
         if not sha:
-            return None
-        by_version: dict[Any, list[dict[str, Any]]] = {}
+            return {}
+        by_version: dict[str, list[dict[str, Any]]] = {}
         for path in (self.workspace / "results" / title / sha / "bench-runs").glob("*/report.json"):
             doc, _ = read_json_safe(path)
             if not (isinstance(doc, dict) and doc.get("formal") is True and doc.get("verified") is True
@@ -1194,26 +1195,48 @@ class ScoreEstimator:
                 done = _parse_iso(doc.get("finished_at"))
                 if done is None or done >= as_of:
                     continue
-            by_version.setdefault(doc.get("suite_version"), []).append(doc)
-        if not by_version:
-            return None
-        version = max(by_version, key=lambda v: max(d.get("finished_at") or "" for d in by_version[v]))
+            by_version.setdefault(pairing.pairing_key(doc), []).append(doc)
+        return by_version
+
+    @staticmethod
+    def _group_minima(docs: list[dict[str, Any]]) -> dict[str, float]:
         minima: dict[str, float] = {}
-        for doc in by_version[version]:
+        for doc in docs:
             for case in doc.get("cases") or []:
                 value = case.get("min_us")
                 if case.get("source") == "official" and isinstance(value, (int, float)) and value > 0:
                     minima[case["id"]] = min(minima.get(case["id"], value), float(value))
-        return (version, minima, len(by_version[version])) if minima else None
+        return minima
+
+    def _case_bench_minima(self, title: str, sha: str | None, as_of: datetime.datetime | None = None,
+                           key: str | None = None):
+        """Best warm minimum per official case over this SHA's formal, timing-eligible runs.
+
+        Returns ``(pairing_key, {case_id: min_us}, runs)`` for ``key`` or, without one, for the
+        official inputs of the newest run; None when there is no such run.
+        """
+        groups = self._case_bench_groups(title, sha, as_of)
+        if key is None and groups:
+            key = max(groups, key=lambda k: max(d.get("finished_at") or "" for d in groups[k]))
+        if key not in groups:
+            return None
+        minima = self._group_minima(groups[key])
+        return (key, minima, len(groups[key])) if minima else None
 
     def _case_bench_pair(self, title: str, cand_sha: str | None, base_sha: str | None,
                          as_of: datetime.datetime | None = None) -> dict[str, Any] | None:
         """Pair the candidate with the board SHA case by case on platform-run official cases."""
         if not cand_sha or not base_sha or cand_sha == base_sha:
             return None
-        cand = self._case_bench_minima(title, cand_sha, as_of)
-        base = self._case_bench_minima(title, base_sha, as_of)
-        if not cand or not base or cand[0] != base[0]:
+        # Pair on the newest official-input identity both SHAs were measured under.
+        cand_groups = self._case_bench_groups(title, cand_sha, as_of)
+        shared = set(cand_groups) & set(self._case_bench_groups(title, base_sha, as_of))
+        if not shared:
+            return None
+        key = max(shared, key=lambda k: max(d.get("finished_at") or "" for d in cand_groups[k]))
+        cand = self._case_bench_minima(title, cand_sha, as_of, key)
+        base = self._case_bench_minima(title, base_sha, as_of, key)
+        if not cand or not base:
             return None
         common = sorted(set(cand[1]).intersection(base[1]))
         if not common:

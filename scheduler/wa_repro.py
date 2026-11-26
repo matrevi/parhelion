@@ -90,7 +90,7 @@ def select_bases(ws, title, receipt, official, like=None) -> tuple[list[dict[str
         doc = case_map.current(ws, title, write=False)
         pairs = {p["judge"]: p for p in doc.get("pairs") or []} if case_map.usable(doc) else {}
         sha = str(receipt.get("sha") or "")
-        minima = case_map.local_minima(ws, title, sha, doc.get("suite_version"))[0] if sha else {}
+        minima = case_map.local_minima(ws, title, sha, doc.get("pairing_key"))[0] if sha else {}
         tbest, _, _ = judge_cases.tbest_now(ws, title)
         for case in failing:
             key = case["testcase_id"]
