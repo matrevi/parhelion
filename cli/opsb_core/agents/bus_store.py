@@ -428,6 +428,15 @@ class AgentBusStore:
                 for aid in ids:
                     conn.execute("DELETE FROM messages WHERE agent_id = ?", (aid,))
                     conn.execute("DELETE FROM agents WHERE agent_id = ?", (aid,))
+                if agent_id is None:
+                    # A full cleanup also drops messages whose agent record is already gone
+                    # (earlier dedup or manual removal); otherwise the bus history never
+                    # shrinks. Platform-level strategic notes go once no worker is left
+                    # that predates them.
+                    conn.execute("DELETE FROM messages WHERE agent_id NOT IN (SELECT agent_id FROM agents) "
+                                 "AND agent_id NOT IN ('platform', 'admin')")
+                    conn.execute("DELETE FROM messages WHERE agent_id IN ('platform', 'admin') AND created_at < "
+                                 "COALESCE((SELECT MIN(created_at) FROM agents), '9999')")
                 conn.commit()
                 return len(ids)
             finally:

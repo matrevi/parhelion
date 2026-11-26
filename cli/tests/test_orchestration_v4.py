@@ -484,3 +484,18 @@ def test_claude_workers_follow_the_config_flag(monkeypatch):
     assert mesh.claude_workers_allowed() is True
     monkeypatch.setattr("opsb_core.drivers.base.load_parhelion_config", lambda: {})
     assert mesh.claude_workers_allowed() is False
+
+
+def test_full_cleanup_drops_orphaned_messages(tmp_path):
+    from opsb_core.agents.bus_store import AgentBusStore
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    store = AgentBusStore(ws)
+    store.append_message("dee-gone", "worker_to_orch", "result", "left behind by an earlier dedup")
+    store.append_message("platform", "worker_to_orch", "error", "old platform note")
+    store.create_agent({"agent_id": "dee-live", "driver": "deepseek", "problem": "Demo", "worktree_mode": "readonly"})
+    store.update_agent("dee-live", status="working")
+    store.append_message("dee-live", "worker_to_orch", "result", "keep me")
+    store.cleanup_stopped()
+    kept = {m["agent_id"] for m in store.list_messages(limit=100)}
+    assert kept == {"dee-live"}
