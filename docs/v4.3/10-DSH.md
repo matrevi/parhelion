@@ -132,7 +132,7 @@ git -C /Users/winbeau/Developer/personal/parhelion worktree add /Users/winbeau/D
   - 或在工作树内运行 `cli/opsb …`。
 - **真机步骤**只做子计划写明的那些：只测不提交；设备不通时标为待补。
 
-### 测试基线（4.2.1）
+### 测试基线（4.2.1；新包以开工时的 main 为准，P21/P22/P26 合入后为 850/19 与 589）
 
 ```bash
 ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider

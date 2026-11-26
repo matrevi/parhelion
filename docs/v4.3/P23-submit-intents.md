@@ -79,6 +79,14 @@
   - `cli/opsb_core/services/gate_view.py` 为新阶段码给出 badge 与下一步。
   - Swift 侧确认未知 badge 有默认样式，不需要新增解码字段。
 
+### 6a. 每一发被拦都给下一步（P21 审查后补充）
+
+- **问题。** P21 回放显示，4.2.1 下只有 S1 的 `ESCAPE_LOCK_ACTIVE` 与 `TLE_SHA_REPEAT` 带结构化的 `next_step`。S2 与 S3 的拦截都没有，50 发里只有 6 发有下一步。
+- **要求。** 为 S2 与 S3 的每一种暂缓，在 `StageResult.metrics` 里写 `next_step`。内容按情形写，例如：
+  - 低于底线：「补一组配对测量」，或「用 intent=probe 发」；
+  - 熔断建议：「换一个机制方向」。
+- **验收。** G2 要求每一发被拦都有下一步，P21 的 `blocked_with_next_step` 应达到 100%。
+
 ### 7. 开关
 
 - 新增 `GateConfig` 字段，登记进 `GATE_SWITCHES`：
