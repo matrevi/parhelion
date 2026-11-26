@@ -106,15 +106,17 @@
 | P03 | impl/P03-metering-replay | 已合入 | 见 git log | 缓存命中已达 99.3–99.6%，成本杠杆在上下文大小；回放基线 current 覆盖 0.642 [0.568,0.716]；主控轮询实测 136/h（计划写约 560/h，日志无法复原） |
 | P04 | impl/P04-change-driven-wait | 已合入 | 见 git log | parhelion_wait 事件到返回 p50 262ms；主控投影 91–67 次/h（实测基线 136/h），单次返回从中位 6.7KB 降到约 200B；另修复两条日期相关测试 |
 | P05 | impl/P05-ledger-core | 已合入 | 见 git log | 回放 ledger_core 0.649 对 current 0.642，配对差 +0.007 [−0.015,+0.032] 不显著；只有平台写入时账本内容太少 |
-| P06 | impl/P06-ledger-seed | 进行中（Sonnet） | | |
-| P07 | impl/P07-gate-queue | 已完成，待按序合入；P07b 删除收尾预留进行中 | | |
-| P08 | impl/P08-startup-pack | 待开始 | | |
-| P09 | impl/P09-host-daemon | 已完成，待 P06 后按序合入 | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
-| P10 | impl/P10-profiler-ab | 已完成，待按序合入（叠在 P09 上） | | profiler 计时 CV 61%→0.9%；Edge 基线复测待真机 |
-| P11 | impl/P11-batch-ui | 已完成，待按序合入 | | 合并批次无可测节省；R9 早停仅单测 |
-| P12 | impl/P12-report-views | 待开始 | | |
-| P13 | impl/P13-bound-output | 待开始 | | |
-| P14 | impl/P14-peer-protocol | 待开始 | | |
-| P15 | impl/P15-worker-boundary | 待开始 | | |
-| P17 | impl/P17-v2 | 进行中（Sonnet） | | 首次在写 diff 规则筛查时被安全过滤中止；按用户决定去掉 diff 筛查后重试 |
-| P16 | — | 待测量 | | |
+> **2026-11-26 决定：只把代码留在分支，不执行合入；第 4 组暂缓。** 下表「已完成」都指分支上完成、未合入 `main`（`main` 停在 `9e504c6`）。详见 [RUNBOOK.md](RUNBOOK.md) §2。
+
+| P06 | impl/P06-ledger-seed | 已完成（分支，未合入） | 6460f8f | 3 提交；根 582 passed / 18 skipped、`cli+tests` 377 passed；回放 `ledger_full` 0.6419 与 `current` 打平（CI [−0.032,+0.032]），默认仍 `ledger_core`；新增 57 测试，MCP 工具 20→23 |
+| P07 | impl/P07-gate-queue | 已完成（分支，未合入） | | 门禁判定进队列卡 + 逃逸锁 MCP |
+| P08 | impl/P08-startup-pack | 暂缓（组 4 先不做） | | |
+| P09 | impl/P09-host-daemon | 已完成（分支，未合入） | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
+| P10 | impl/P10-profiler-ab | 已完成（分支，未合入；叠在 P09 上） | | profiler 计时 CV 61%→0.9%；Edge 基线复测待真机 |
+| P11 | impl/P11-batch-ui | 已完成（分支，未合入） | | 合并批次无可测节省；R9 早停仅单测 |
+| P12 | impl/P12-report-views | 前置聚类完成，实现暂缓（组 4） | 2ef788a | `reports/P12-script-clusters.md`：复现 672 次临时脚本 / 68·45·16 次 CLI 绕行；16 桶，A 组 441 次（65.6%）可被视图替代 |
+| P13 | impl/P13-bound-output | 暂缓（组 4 先不做） | | |
+| P14 | impl/P14-peer-protocol | 暂缓（组 4 先不做） | | |
+| P15 | impl/P15-worker-boundary | 暂缓（组 4 先不做） | | |
+| P17 | impl/P17-v2-calibrate | 已完成（分支，未合入） | 05ca090 | R1–R3 全部完成，真机两项检查通过；`impl/P17-v2` 与 `impl/P17-verify-calibrate` 收尾时删除 |
+| P16 | — | 待测量 | | 合入与组 4 完成后再决定 H/I/J |

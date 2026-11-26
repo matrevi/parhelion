@@ -27,23 +27,29 @@
 
 ## 2. 状态表（随进度更新）
 
+> **2026-11-26 决定：只把代码留在分支，不执行合入；组 4 暂缓。** 用户要求本阶段不合入任何包分支（`main` 停在 `9e504c6`），第 4 组（P12/P13/P14/P08/P15）先不做。下表的「已完成」一律指**分支上完成、未合入**。合并流程（§3）与 §4 收尾等用户指示后再启动。
+
 | 包 | 分支 | 状态 | 下一步 |
 |---|---|---|---|
 | P01 P02 P02b P03 P04 P05 | — | 已合入 | — |
-| P06 | impl/P06-ledger-seed | Sonnet 代理开工即被安全过滤中止，未留下提交。按规则改由 Opus 代理在做 | 交付后合入（第 3 步结束），随后按 §3 依次合入 P07 起各分支，并派组 4 |
-| P07 | impl/P07-gate-queue | 已完成 | P06 之后合入 |
-| P07b | impl/P07b-no-closing-reserve | 已完成（Opus）。另有一点：日配额用尽时仍判放行，只等待名额，与用户规则一致 | 随 P07 合入：先 P07，再 P07b。遗留：`available_normal_shots` 仍扣除预留，因此显示偏低；`drivers/brief.py:188` 仍写着 quota gates，留给 P08 |
-| P09 | impl/P09-host-daemon | 已完成，含主机检查报告 | P06 之后合入 |
-| P10 | impl/P10-profiler-ab（叠在 P09 上） | 已完成，Edge 复测已补（b10a8ff） | P09 之后合入 |
-| P11 | impl/P11-batch-ui（叠在 P10 上，已合并当时的 main） | 已完成，组 3 结束。合并批次在本主机上没有可测的节省（作业间切换约 1ms），开关保持开启 | P10 之后合入。界面截图要等 daemon 重启后补 |
-| P17 | impl/P17-v2-calibrate（05ca090，基于 be22f86，含 P07、P07b 与 main） | 已完成（Opus）：R1–R3 全部完成，真机两项检查通过，无误报 | P11 之后合入。`impl/P17-v2` 停在 be22f86 已无用，`impl/P17-verify-calibrate` 弃用，收尾时都删除 |
-| P12→P13 | impl/P12-report-views → impl/P13-bound-output | 未开始 | P06 合入后派一个 Sonnet 代理（组 4a） |
-| P14→P08→P15 | impl/P14-peer-protocol → impl/P08-startup-pack → impl/P15-worker-boundary | 未开始 | P06 合入后派另一个 Sonnet 代理（组 4b）；P15 等 P12 合入后再做 |
-| P16 | — | 未开始 | 全部合入后由主会话决定 H/I/J，依据 P03 基线：缓存命中已有 99.3–99.6%，H 价值低 |
+| P06 | impl/P06-ledger-seed | 已完成（3 提交：6460f8f / 166112f / 25ca29c），未合入。根目录 582 passed / 18 skipped，`cli+tests` 377 passed；回放 `ledger_full` 0.6419 与 `current` 打平（CI [−0.032,+0.032]），默认仍 `ledger_core`，报告 `reports/P06-replay.md` | 等合入指示 |
+| P07 | impl/P07-gate-queue | 已完成（分支），未合入 | 等合入指示 |
+| P07b | impl/P07b-no-closing-reserve | 已完成（分支），未合入。另有一点：日配额用尽时仍判放行，只等待名额，与用户规则一致 | 合入时先 P07 再 P07b。遗留：`available_normal_shots` 仍扣除预留，因此显示偏低；`drivers/brief.py:188` 仍写着 quota gates，留给 P08 |
+| P09 | impl/P09-host-daemon | 已完成（分支，含主机检查报告），未合入 | 等合入指示 |
+| P10 | impl/P10-profiler-ab（叠在 P09 上） | 已完成（分支），Edge 复测已补（b10a8ff），未合入 | 等合入指示 |
+| P11 | impl/P11-batch-ui（叠在 P10 上，已合并当时的 main） | 已完成（分支），组 3 结束。合并批次在本主机上没有可测的节省（作业间切换约 1ms），开关保持开启 | 合入后要补界面截图（需 daemon 重启） |
+| P17 | impl/P17-v2-calibrate（05ca090，基于 be22f86，含 P07、P07b 与 main） | 已完成（分支）：R1–R3 全部完成，真机两项检查通过，无误报 | 等合入指示。`impl/P17-v2` 停在 be22f86 已无用，`impl/P17-verify-calibrate` 弃用，收尾时都删除 |
+| P12→P13 | impl/P12-report-views → impl/P13-bound-output | 暂缓（用户要求组 4 先不做）。P12 只做完了前置聚类：2ef788a 加 `reports/P12-script-clusters.md`（672 次临时脚本、16 桶，A 组 441 次可被视图替代） | 等用户指示再开工 |
+| P14→P08→P15 | impl/P14-peer-protocol → impl/P08-startup-pack → impl/P15-worker-boundary | 暂缓（组 4 先不做） | 等用户指示 |
+| P16 | — | 未开始 | 合入与组 4 完成后再由主会话决定 H/I/J，依据 P03 基线：缓存命中已有 99.3–99.6%，H 价值低 |
 
 ## 3. 合入顺序（00-MASTER §1）
 
-P04 → P05 → P06 → P07 → P07b → P09 → P10 → P11 → P17 → P12 → P13 → P14 → P08 → P15
+已合入：P01 → P02 → P02b → P03 → P04 → P05。待合入（**当前暂停，见 §2 顶部决定**）：
+
+P06 → P07 → P07b → P09 → P10 → P11 → P17 → P12 → P13 → P14 → P08 → P15
+
+2026-11-26 曾按原计划试跑合入链：P07、P07b、P09 已合到临时分支、在 P10 冲突处停下；因用户改为「只把代码留在分支」，该临时分支与工作树已删除，`main` 未被触碰（仍在 `9e504c6`）。
 
 **预计会冲突的位置**
 - `scheduler/gate.py`：P07、P07b、P09（#20 编译检查钩子）、P10（S2 证据顺序）、P17 都改了它。
@@ -53,7 +59,9 @@ P04 → P05 → P06 → P07 → P07b → P09 → P10 → P11 → P17 → P12 →
 
 合并时逐个解决冲突，每合一个就跑两条全量测试。
 
-## 4. 收尾
+## 4. 收尾（未启动）
+
+> 按 §2 顶部决定，合入与收尾都等用户指示后再做。下列步骤保持原样。
 
 1. 全部合入后：
    - 重启 daemon：`opsb daemon stop`，再 `opsb daemon start --background --workspace /Users/winbeau/Competitions/mat-chem-sim-pred --host npu --port 18910`。追溯事件已预先登记（seq 2304）。
