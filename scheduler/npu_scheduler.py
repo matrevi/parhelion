@@ -551,7 +551,7 @@ print(json.dumps({
 def _render_remote_probe() -> str:
     """Substitute deployment paths into the single-file ssh probe payload.
 
-    The probe is shipped as one `python3 -c` source string, so it sdkot import
+    The probe is shipped as one `python3 -c` source string, so it cannot import
     `opsb_core`: the configured driver/toolchain directories and the work-root lock
     naming are rendered here instead of being baked in as literals.
     """

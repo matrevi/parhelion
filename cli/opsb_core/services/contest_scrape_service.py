@@ -26,7 +26,7 @@ _OBJECT_ID_RE = re.compile(r"^[0-9a-f]{24}$", re.IGNORECASE)
 
 
 class ContestScrapeError(RuntimeError):
-    """Raised when a contest link/id sdkot be resolved into a problem list."""
+    """Raised when a contest link/id cannot be resolved into a problem list."""
 
 
 def parse_contest_ref(ref: str, base_url: str = DEFAULT_BASE_URL) -> dict[str, str]:
@@ -47,13 +47,13 @@ def parse_contest_ref(ref: str, base_url: str = DEFAULT_BASE_URL) -> dict[str, s
         base = f"{parsed.scheme}://{parsed.netloc}" or base_url.rstrip("/")
         parts = [p for p in parsed.path.split("/") if p]
         if not parts:
-            raise ContestScrapeError(f"sdkot find a contest name in {raw!r}")
+            raise ContestScrapeError(f"cannot find a contest name in {raw!r}")
         if parts[0] == "public":
             parts = parts[1:]
         elif len(parts) >= 2:
             parts = parts[1:]  # drop the group token, keep the contest token
         if not parts:
-            raise ContestScrapeError(f"sdkot find a contest name in {raw!r}")
+            raise ContestScrapeError(f"cannot find a contest name in {raw!r}")
         token = parts[0]
         return {"base_url": base.rstrip("/"), "contest_name": "" if _OBJECT_ID_RE.match(token) else token,
                 "contest_id": token if _OBJECT_ID_RE.match(token) else ""}

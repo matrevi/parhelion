@@ -38,7 +38,7 @@ Invariants (proved in `SCHEDULER_DESIGN.md` §6)
    `(tier, prio, -created)` **descending**, so any waiting operator ticket outranks a
    backfill ticket unconditionally — `prio`/aging can only reorder *inside* a tier.
    On top of that the die itself is a kernel `flock(LOCK_EX)`: B0 only ever attempts
-   `LOCK_EX | LOCK_NB` when it observes no operator ticket, so it sdkot even queue
+   `LOCK_EX | LOCK_NB` when it observes no operator ticket, so it cannot even queue
    ahead of an operator in the VFS waitqueue.
 2. **Read-only w.r.t. operator artifacts.** No `git checkout`, no `build.sh`, no
    `results/` write, no repo lock: the session is a *Phase-B-only* run against the
@@ -328,7 +328,7 @@ class BackfillLedger:
 # Session planning helpers (pure functions — unit tested without any NPU access)
 # --------------------------------------------------------------------------------------
 #: Spec-side identifiers that name **no measurable case**, so the scheduler must never queue
-#: them: retrying sdkot help, only a `bench-specs` (or harness) fix can.  Three rules, in
+#: them: retrying cannot help, only a `bench-specs` (or harness) fix can.  Three rules, in
 #: precedence order:
 #:
 #:  1. `proxy_suffix`            — append-only spectrum padding, `t256_c1024_b16_proxy`;
@@ -358,7 +358,7 @@ def harness_names_case(harness_source: str | None, bucket_id: str | None) -> boo
     A quoted literal is the strong signal (every harness declares its case table as strings);
     a bare token match is accepted too so a synthesised/derived name is never demoted.  `None`
     ("unknown") is deliberately distinguishable from `False` so a repo whose `validation/` tree
-    is missing sdkot have its whole bucket list reclassified as placeholders.
+    is missing cannot have its whole bucket list reclassified as placeholders.
     """
     if not harness_source or not bucket_id:
         return None
@@ -993,7 +993,7 @@ emit(res)
 def _render_remote_backfill() -> str:
     """Substitute deployment settings into the single-file ssh payload.
 
-    The remote session is shipped as one `python3 -c` source string, so it sdkot
+    The remote session is shipped as one `python3 -c` source string, so it cannot
     import `opsb_core`: the configured work root/prefix, toolchain script, runtime
     library, SoC names and visible-device env var are rendered here instead of being
     baked in as literals.
@@ -1282,7 +1282,7 @@ class BackfillScheduler:
         return None
 
     def _deterministic_failures(self) -> set[str]:
-        """Keys whose failure sdkot change by retrying (spec/harness case-table mismatch)."""
+        """Keys whose failure cannot change by retrying (spec/harness case-table mismatch)."""
         out: set[str] = set()
         for rec in self.ledger.records():
             if rec.get("event") not in ("finished", "aborted"):
@@ -1539,7 +1539,7 @@ class BackfillScheduler:
             }
 
         # Guard admission-check + `started` append under a non-blocking single-flight lock
-        # so two concurrent dispatchers sdkot race into running the same B0 session.
+        # so two concurrent dispatchers cannot race into running the same B0 session.
         self.state_dir.mkdir(parents=True, exist_ok=True)
         dispatch_lock_path = self.state_dir / ".backfill_dispatch.lock"
         dispatch_lk = dispatch_lock_path.open("a", encoding="utf-8")

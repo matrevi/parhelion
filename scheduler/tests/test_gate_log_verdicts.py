@@ -7,7 +7,7 @@ print first 24 mismatched (t, s) coordinates on GATE_FAIL` — even though the l
 `VALIDATION_PASSED` and that source scored `52.85 -> 56.21 (+3.36)` online.
 
 The rule is now line-anchored and reflog-aware; a green tail is diagnostic only
-(`run-npu.sh` prints `VALIDATION_PASSED` unconditionally, so it sdkot override a verdict).
+(`run-npu.sh` prints `VALIDATION_PASSED` unconditionally, so it cannot override a verdict).
 
     python3 -m unittest discover -s scheduler/tests -v
 """

@@ -143,7 +143,7 @@ Declarative benchmark specifications in `ops-supervisor/bench-specs/<Problem>/{c
 
 | Stage | Name | Pass Predicate | Failure Tag / Action |
 |---|---|---|---|
-| **S1** | `SAFETY` | `result.json` `exit_code == 0`, 40-char SHA git tree verified, `FAST_LANE != 1`, `EXTENDED_PASSED` present, **line-anchored** log verdicts (`^EXTENDED_FAILED`, `^EXTENDED_CASES_FAILED`, `^VALIDATION_FAILED`, `^STRESS_CASE_FAIL`, `^NON_DETERMINISTIC`, `^GATE_FAIL`, `^Wrong Answer:`, `^EXTENDED_RC=[1-9]`) all absent, all `mismatched=0/N`, `GATE_DET ... identical=True`. Kernel commits touching `SetAtomicAdd`/`SyncAll` with no prior online `Pass` **must** carry `STRESS_DONE failures=0` or `DETERMINISTIC`. | `REJECTED_GATE` (never enqueued; even `override approve` sdkot bypass S1) |
+| **S1** | `SAFETY` | `result.json` `exit_code == 0`, 40-char SHA git tree verified, `FAST_LANE != 1`, `EXTENDED_PASSED` present, **line-anchored** log verdicts (`^EXTENDED_FAILED`, `^EXTENDED_CASES_FAILED`, `^VALIDATION_FAILED`, `^STRESS_CASE_FAIL`, `^NON_DETERMINISTIC`, `^GATE_FAIL`, `^Wrong Answer:`, `^EXTENDED_RC=[1-9]`) all absent, all `mismatched=0/N`, `GATE_DET ... identical=True`. Kernel commits touching `SetAtomicAdd`/`SyncAll` with no prior online `Pass` **must** carry `STRESS_DONE failures=0` or `DETERMINISTIC`. | `REJECTED_GATE` (never enqueued; even `override approve` cannot bypass S1) |
 | **S2** | `NOISE_FLOOR` | $\Delta_{\text{expected}} \ge +2.50\text{ pts}$ ($\approx 0.93\,\sigma_{\text{jitter}}$), **OR** $S_{p,\text{curr}} = 0$ / `status != "Pass"` (`CRITICAL_RESTORE`), **OR** explicit `force=True` with $\Delta_{\text{expected}} \ge 0$ (and `cand_sha != active_sha`). | `HOLD_LOW_GAIN` (parked in `held_items` to preserve daily quota) |
 | **S3** | `CIRCUIT_BREAKER` | Rolling $12\text{h}$ window compares **decay-adjusted contemporary scores** (`discount_draw_to_contemporary`) so 8-day-old peaks never penalize new-epoch passes; trips at $\ge 6$ consecutive non-improving shots or $\ge 2$ consecutive zeroing errors (`WA`/`TLE`/`RE`). `CRITICAL_RESTORE` passes via `HALF_OPEN`. | `CIRCUIT_OPEN` (`Switch Baseline` required) |
 | **S4** | `QUOTA_RESERVE` | Dual Token Bucket: ① Rate bucket ($1\text{ token} / 190\text{s}$ $\to$ `RATE_WAIT`); ② Beijing-day (`UTC+8` `00:00` reset) 50-shot budget reserves $\max(2, N_{\text{true\_restore}} + 1)$ slots strictly for problems with `true_restore_gain >= 2.5` or $S_p = 0$. Approved queue drains by `(CRITICAL_RESTORE desc, d_p * delta_expected desc)`. | `HOLD_LOW_GAIN` (if inside closing reserve) or `RATE_WAIT` |
@@ -437,7 +437,7 @@ artifacts `PReluGradUpdate:min/median`) that no harness can execute. Those are p
 `telemetry online` · `no die lock HELD` · `no ticket with tier >= 1` · `no active
 PROFILER/PRECISION/FAST-LANE/STRESS/BUILD task` — then the tier-0 ticket and `LOCK_EX|LOCK_NB`
 make the operator priority structural (§6.2). A manual “立即补测” additionally skips
-`min_interval_sec`/hourly cap/backoff but still sdkot take a die an operator is waiting for.
+`min_interval_sec`/hourly cap/backoff but still cannot take a die an operator is waiting for.
 
 **Degradation ladder** (never a silent failure — every rung emits a named `reason` that lands in
 `queued[].last_failure` and `status.last_run`):

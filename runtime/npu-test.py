@@ -1641,7 +1641,7 @@ def run_3phase_validation(
     t_start = datetime.datetime.now(datetime.timezone.utc)
 
     # Official-template layout (CMakeLists.txt + run.sh + kernel.asc, no build.sh): the judge
-    # scaffold is its own CMake project, so the legacy build.sh/examples pipeline sdkot run.
+    # scaffold is its own CMake project, so the legacy build.sh/examples pipeline cannot run.
     manifest_doc: dict = {}
     try:
         manifest_path = workspace / "opsb.workspace.json"

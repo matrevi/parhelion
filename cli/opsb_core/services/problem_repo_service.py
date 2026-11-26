@@ -34,7 +34,7 @@ PROBLEM_GITIGNORE = "build-npu/\nbuild-cpu/\n__pycache__/\n*.pyc\n.parhelion/\n.
 
 
 class ProblemBootstrapError(RuntimeError):
-    """Raised when a problem directory sdkot be bootstrapped."""
+    """Raised when a problem directory cannot be bootstrapped."""
 
 
 # --------------------------------------------------------------------------- template

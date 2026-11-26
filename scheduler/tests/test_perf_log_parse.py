@@ -64,7 +64,7 @@ MIXED_LOG = (
 
 
 def _aggregate_keys(pool: dict[str, float]) -> list[str]:
-    """Pool keys that sdkot be a harness case name: `*:stat` or `__sentinel__`."""
+    """Pool keys that cannot be a harness case name: `*:stat` or `__sentinel__`."""
     return [k for k in pool if ":" in k or k.startswith("__")]
 
 

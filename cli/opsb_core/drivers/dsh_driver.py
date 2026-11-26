@@ -457,7 +457,7 @@ class DeepSeekDriver(BaseDriver):
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
             )
         except Exception as exc:
-            return {"ok": False, "reason": f"sdkot start dsh --profile acp: {exc}"}
+            return {"ok": False, "reason": f"cannot start dsh --profile acp: {exc}"}
 
         from .antigravity_acp import AcpSessionClient
 

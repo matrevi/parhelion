@@ -736,7 +736,7 @@ class BenchmarkCalibrator:
             t_ref = float(observed_torch.get(bid) or b.get("torch_ref_us") or roof_us)
             prior_t = max(2.20, min(roof_us, eta_p * t_ref) if bid in observed_min_tau else max(roof_us, eta_p * t_ref))
             if bid in observed_min_tau and observed_min_tau[bid] > 0:
-                # Leaderboard axiom: site-wide tbest_k sdkot exceed our own fastest measured kernel!
+                # Leaderboard axiom: site-wide tbest_k cannot exceed our own fastest measured kernel!
                 prior_t = min(prior_t, observed_min_tau[bid] * 0.98)
             theta0.append(round(max(1.80, prior_t), 4))
         return theta0

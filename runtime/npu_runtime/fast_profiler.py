@@ -3,7 +3,7 @@
 
 Inside Phase B (holding device0.lock):
   - Launches `profiler` in a detached session with minimal low-overhead flags
-    (`--task-time=l0 --ai-core=off --aicpu=off --kernelcl=off --runtime-api=off`
+    (`--task-time=l0 --ai-core=off --aicpu=off <acl-flag>=off --runtime-api=off`
     by default, or `--task-time=l1 --ai-core=on --aic-metrics=PipeUtilization`
     when `--pmu` or `OPSB_PMU=1`).
   - When `OPSB_PHASE_C_QUEUE` is set, watches the profiler log until
@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--pmu", action="store_true", help="Enable PipeUtilization AI-Core PMU counters")
     ap.add_argument("--task-time", default="", help="Override --task-time (default l0, or l1 with --pmu)")
     ap.add_argument("--keep", action="store_true", help="Keep --out directory after parsing")
+    # The profiler binary and its runtime-API tracing flag are deployment facts, read the
+    # same way npu-test.py does: OPSB_DEVICE_* overrides, else neutral defaults.
+    ap.add_argument("--profiler-bin", default=os.environ.get("OPSB_DEVICE_PROFILER_BIN") or "profiler",
+                    help="Profiler executable (default $OPSB_DEVICE_PROFILER_BIN or 'profiler')")
+    ap.add_argument("--acl-flag", default=os.environ.get("OPSB_DEVICE_PROFILER_ACL_FLAG") or "--acl",
+                    help="Runtime-API tracing flag switched off (default $OPSB_DEVICE_PROFILER_ACL_FLAG or '--acl')")
     args = ap.parse_args(argv)
 
     out_dir = pathlib.Path(args.out)
@@ -69,12 +75,12 @@ def main(argv: list[str] | None = None) -> int:
     task_time = args.task_time or ("l1" if want_pmu else "l0")
 
     cmd = [
-        "profiler",
+        args.profiler_bin,
         f"--output={out_dir}",
         f"--task-time={task_time}",
         f"--ai-core={'on' if want_pmu else 'off'}",
         "--aicpu=off",
-        "--kernelcl=off",
+        f"{args.acl_flag}=off",
         "--runtime-api=off",
         f"--application={args.app}",
     ]

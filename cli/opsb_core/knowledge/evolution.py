@@ -112,7 +112,7 @@ def _extract_evidence_list(payload: dict[str, Any]) -> list[dict[str, Any]]:
     raw_ev = payload.get("evidence")
     if isinstance(raw_ev, list):
         if not raw_ev:
-            raise ValueError("Evidence list sdkot be empty.")
+            raise ValueError("Evidence list cannot be empty.")
         return [validate_evidence(item) for item in raw_ev]
     if isinstance(raw_ev, dict):
         return [validate_evidence(raw_ev)]

@@ -138,7 +138,7 @@ def host_case_tasks(home, tasks, now_epoch):
                 continue
             os.kill(pid, 0)
             # The run directory is part of the coordinator's cwd, so a recycled
-            # PID sdkot resurrect an abandoned progress record.
+            # PID cannot resurrect an abandoned progress record.
             if os.readlink(f"/proc/{pid}/cwd") != row["cwd"]:
                 continue
             tasks.append(dict(pid=pid, run_id=row["run_id"], die=None, state="CPU_BUILD",

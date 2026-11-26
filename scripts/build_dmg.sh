@@ -6,7 +6,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="$REPO_ROOT/dist"
 mkdir -p "$DIST_DIR"
 # Keep in sync with bundle_app.sh: the bundle is assembled outside the repo so
-# Spotlight/mdworker sdkot re-register it next to the installed app.
+# Spotlight/mdworker cannot re-register it next to the installed app.
 BUILD_DIR="${PARHELION_BUILD_DIR:-${TMPDIR:-/tmp}/parhelion-build}"
 APP_BUNDLE="$BUILD_DIR/Parhelion.app"
 
@@ -36,7 +36,7 @@ if [[ -z "$VERSION" ]]; then
 fi
 VERSION="${VERSION:-2.0.0}"
 if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "Error: sdkot resolve a valid semantic version (got '$VERSION'); pass it as \$1" >&2
+    echo "Error: cannot resolve a valid semantic version (got '$VERSION'); pass it as \$1" >&2
     exit 1
 fi
 

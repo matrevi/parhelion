@@ -2,7 +2,7 @@
 From https://git.invalid/bench-ctclossv2
    39fea6c..2b9d49d  main       -> origin/main
 Previous HEAD position was 39fea6c test(det_bad): print first 24 mismatched (t, s) coordinates on GATE_FAIL
-HEAD is now at 2b9d49d fix(CTCLossV2): pad lossBuf to 64 floats so Level-0 tail Exp/Adds sdkot overlap packBuf0
+HEAD is now at 2b9d49d fix(CTCLossV2): pad lossBuf to 64 floats so Level-0 tail Exp/Adds cannot overlap packBuf0
 Verified commit: 2b9d49de0f68d1396199557303c6017588ef800d
 [PHASE-A] Building KernelC package + examples on 32-core CPU (0s NPU lock)...
 # ... (build + extended + kperf output elided) ...

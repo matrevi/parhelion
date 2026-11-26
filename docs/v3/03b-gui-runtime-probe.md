@@ -220,7 +220,7 @@ Both observers were hands-on prototyped and benchmarked against the live databas
 Both `conversation_summaries.db` and `state_5.sqlite` / `thread_history_1.sqlite` operate in **WAL mode**:
 * **ALWAYS open with `sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)` + `PRAGMA query_only = ON;`**.
 * **NEVER default to `&immutable=1`**: In our isolated Codex probe, `immutable=1` skipped the uncheckpointed `-wal` file and saw **0 tables / 0 threads**, whereas `mode=ro` immediately read the newly created thread in `<1 ms` without blocking writers!
-* Only fall back to `mode=ro&immutable=1` if `mode=ro` raises `sqlite3.OperationalError` (e.g., inside a read-only sandbox where SQLite sdkot mmap `-shm`).
+* Only fall back to `mode=ro&immutable=1` if `mode=ro` raises `sqlite3.OperationalError` (e.g., inside a read-only sandbox where SQLite cannot mmap `-shm`).
 
 ### 4.2 Antigravity GUI Observer (`1.7 ms` measured)
 

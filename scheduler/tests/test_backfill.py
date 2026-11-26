@@ -394,7 +394,7 @@ class AdmissionTest(unittest.TestCase):
         self.assertIn("die_lock_held", adm["reasons"])
 
     def test_waiting_operator_ticket_blocks_even_forced(self) -> None:
-        """The core fairness invariant: the UI button sdkot jump an operator queue."""
+        """The core fairness invariant: the UI button cannot jump an operator queue."""
         npu = _free_npu()
         npu["npu_tickets"] = [{"tier": 1, "title": "ConcatD", "prio": 0.2, "created": 1.0}]
         adm = self.sched.admission(force=True, npu=npu)

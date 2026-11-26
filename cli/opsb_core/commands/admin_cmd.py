@@ -81,7 +81,7 @@ def run_workspace(args: argparse.Namespace) -> int:
             try:
                 scraped = fetch_contest_problems(scrape_ref)
             except ContestScrapeError as exc:
-                raise SystemExit(f"sdkot scrape contest {scrape_ref!r}: {exc}")
+                raise SystemExit(f"cannot scrape contest {scrape_ref!r}: {exc}")
             probs = scraped["problems"]
             title = title or str(scraped["contest"].get("title") or "")
             contest_id = contest_id or str(scraped["contest"].get("name") or scraped["contest"].get("id") or "")
@@ -135,7 +135,7 @@ def run_workspace(args: argparse.Namespace) -> int:
         try:
             scraped = fetch_contest_problems(ref)
         except ContestScrapeError as exc:
-            raise SystemExit(f"sdkot scrape contest {ref!r}: {exc}")
+            raise SystemExit(f"cannot scrape contest {ref!r}: {exc}")
         existing = {str(p.get("title")): p for p in (meta.get("problems") or []) if p.get("title")}
         merged, added = [], []
         for sp in scraped["problems"]:

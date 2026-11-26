@@ -203,7 +203,7 @@ extension ContestStore {
                 let clipNote = (res.clipboardCopied == true)
                     ? tr("（Brief 已写入并复制到剪贴板）", " (brief saved & copied)")
                     : ""
-                // DSH sdkot take a folder or an initial prompt through `dsh://open`, so the
+                // DSH cannot take a folder or an initial prompt through `dsh://open`, so the
                 // launcher seeds a real workspace + conversation inside DSH storage instead.
                 let dshNote: String = {
                     guard res.dshWorkspace?.ok == true else { return "" }
