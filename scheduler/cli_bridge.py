@@ -794,6 +794,10 @@ class SchedulerEngine:
                     "priority_score": verdict.priority_score,
                     "estimated_score": None if "no perf telemetry" in verdict.estimate.detail.lower() else verdict.estimate.estimated_score,
                     "delta_expected": verdict.estimate.delta_expected,
+                    "estimate_method": verdict.estimate.estimation_method,
+                    "sigma": verdict.estimate.confidence_sigma,
+                    "expected_improvement": verdict.estimate.expected_improvement,
+                    "calibration_trust": verdict.estimate.calibration_trust,
                 }
                 if speedup is not None:
                     q_rec["speedup"] = speedup

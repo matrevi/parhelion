@@ -9,7 +9,9 @@ Stages:
      - Cross-core / barrier static+dynamic safety check (`SetAtomicAdd`/`SyncAll` requires
        `STRESS_DONE` / `DETERMINISTIC` / `GATE_DET` unless already proven online)
   2. NOISE_FLOOR:
-     - Holds candidates with `delta_expected < noise_floor_pts` (default `+2.5` pts ~ `0.93 sigma`
+     - The board keeps the best score, so a candidate also passes when its expected improvement
+       E[max(0, gain)] under the calibrated sigma clears the floor and P(gain > 0) >= 0.2
+       (`EXPECTED_IMPROVEMENT`); otherwise it holds on `delta_expected < noise_floor_pts` (default `+2.5` pts ~ `0.93 sigma`
        for `sigma = 2.70` pts) as `HOLD_LOW_GAIN` (and yields `delta_expected = 0.0` when
        `candidate_sha == active_board_sha` under `tbest(t)` non-stationarity)
      - Bypassed automatically when board is `0` / `no-submission` (`CRITICAL_RESTORE`) or `force=True`
@@ -82,6 +84,10 @@ MIN_SUBMIT_GAP_SEC = 190
 @dataclasses.dataclass
 class GateConfig:
     noise_floor_pts: float = 2.5
+    # The board keeps each problem's best score, so a shot whose expected improvement
+    # E[max(0, gain)] clears the floor is worth taking even when the point estimate does not.
+    keep_best_board: bool = True
+    min_prob_positive: float = 0.2
     min_closing_reserve: int = 2
     circuit_limit_shots: int = 6
     circuit_window_hours: float = 12.0
@@ -948,6 +954,19 @@ class SubmissionGate:
             pass
         return verdict
 
+    def _s2_metrics(self, estimate: ScoreEstimate) -> dict[str, Any]:
+        return {
+            "delta_expected": estimate.delta_expected,
+            "expected_improvement": estimate.expected_improvement,
+            "prob_positive": estimate.prob_positive,
+            "ucb_delta": estimate.ucb_delta,
+            "sigma": estimate.confidence_sigma,
+            "calibration_trust": estimate.calibration_trust,
+            "calibration_samples": estimate.calibration_samples,
+            "calibration_bias": estimate.calibration_bias,
+            "threshold": self.config.noise_floor_pts,
+        }
+
     def _evaluate_impl(
         self,
         title: str,
@@ -1070,6 +1089,7 @@ class SubmissionGate:
 
         # Stage 2: NOISE_FLOOR (Uncertainty-Aware with `EXPLORE` Anti-Burial Channel)
         is_explore_pass = False
+        is_ei_pass = False
         if explicit_skip:
             s2 = StageResult(
                 stage="NOISE_FLOOR",
@@ -1239,23 +1259,39 @@ class SubmissionGate:
                         "threshold": self.config.noise_floor_pts,
                     },
                 )
+        elif (
+            self.config.keep_best_board
+            and estimate.expected_improvement >= self.config.noise_floor_pts
+            and estimate.prob_positive >= self.config.min_prob_positive
+        ):
+            is_ei_pass = True
+            s2 = StageResult(
+                stage="NOISE_FLOOR",
+                passed=True,
+                code="EXPECTED_IMPROVEMENT",
+                reason=(
+                    f"Expected improvement {estimate.expected_improvement:+.2f} pts >= "
+                    f"+{self.config.noise_floor_pts:.2f} pts (gain {estimate.delta_expected:+.2f}, "
+                    f"sigma={estimate.confidence_sigma:.2f}, P(gain>0)={estimate.prob_positive:.2f}, "
+                    f"confidence={estimate.calibration_trust:.2f} from {estimate.calibration_samples:g} receipt(s)); "
+                    f"the board keeps the best score"
+                ),
+                metrics=self._s2_metrics(estimate),
+            )
         else:
+            low_odds = estimate.prob_positive < self.config.min_prob_positive
             s2 = StageResult(
                 stage="NOISE_FLOOR",
                 passed=False,
                 code="BELOW_NOISE_FLOOR",
                 reason=(
-                    f"Expected gain {estimate.delta_expected:+.2f} pts < +{self.config.noise_floor_pts:.2f} pts "
-                    f"noise floor (sigma={estimate.confidence_sigma:.2f}, UCB={estimate.ucb_delta:+.2f}, "
-                    f"trust={estimate.calibration_trust:.2f}); holding to preserve daily quota"
+                    f"Expected improvement {estimate.expected_improvement:+.2f} pts < "
+                    f"+{self.config.noise_floor_pts:.2f} pts (gain {estimate.delta_expected:+.2f}, "
+                    f"sigma={estimate.confidence_sigma:.2f}, P(gain>0)={estimate.prob_positive:.2f}, "
+                    f"confidence={estimate.calibration_trust:.2f} from {estimate.calibration_samples:g} receipt(s))"
+                    + ("; gain is unlikely" if low_odds else "")
                 ),
-                metrics={
-                    "delta_expected": estimate.delta_expected,
-                    "ucb_delta": estimate.ucb_delta,
-                    "sigma": estimate.confidence_sigma,
-                    "calibration_trust": estimate.calibration_trust,
-                    "threshold": self.config.noise_floor_pts,
-                },
+                metrics=self._s2_metrics(estimate),
             )
 
         # Stage 3: CIRCUIT_BREAKER
@@ -1400,6 +1436,8 @@ class SubmissionGate:
         elif approved and is_explore_pass:
             # Ordered below high-confidence READY gains while still actionable
             priority_score = round(estimate.difficulty * max(0.5, 0.5 * estimate.ucb_delta), 2)
+        elif approved and is_ei_pass:
+            priority_score = round(estimate.difficulty * estimate.expected_improvement, 2)
         else:
             priority_score = round(estimate.weighted_delta, 2)
 

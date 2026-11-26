@@ -186,9 +186,28 @@ class ScoreEstimate:
     explore_evidence: dict[str, Any] = dataclasses.field(default_factory=dict)
     thermal_drift_us: float = 0.0
     binary_delta_pct: float | None = None
+    # E[max(0, X)] for X ~ N(delta_expected, sigma): the value of one shot when the board
+    # keeps the best score, so a lower result costs only the attempt.
+    expected_improvement: float = 0.0
+    calibration_samples: float = 0.0
+    calibration_bias: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def expected_improvement(mu: float, sigma: float) -> float:
+    if sigma <= 0:
+        return max(0.0, mu)
+    z = mu / sigma
+    return mu * _normal_cdf(z) + sigma * math.exp(-0.5 * z * z) / math.sqrt(2.0 * math.pi)
+
+
+# Case-bench predictions are calibrated against official receipts: the prior counts as this
+# many receipts, and receipts of other problems count half.
+CASE_BENCH_METHOD = "case_bench_paired"
+CONFIDENCE_PRIOR_WEIGHT = 3.0
+OTHER_PROBLEM_WEIGHT = 0.5
 
 
 def _normal_cdf(z: float) -> float:
@@ -1154,6 +1173,133 @@ class ScoreEstimator:
             restore_gap=true_restore_gain,
         )
 
+    def _case_bench_minima(self, title: str, sha: str | None, as_of: datetime.datetime | None = None):
+        """Best warm minimum per official case over this SHA's formal, timing-eligible runs.
+
+        Returns ``(suite_version, {case_id: min_us}, runs)`` for the newest suite version, or None.
+        """
+        if not sha:
+            return None
+        by_version: dict[Any, list[dict[str, Any]]] = {}
+        for path in (self.workspace / "results" / title / sha / "bench-runs").glob("*/report.json"):
+            doc, _ = read_json_safe(path)
+            if not (isinstance(doc, dict) and doc.get("formal") is True and doc.get("verified") is True
+                    and doc.get("exit_code") == 0 and doc.get("sha") == sha
+                    and doc.get("timing_score_eligible") is True):
+                continue
+            if as_of is not None:
+                done = _parse_iso(doc.get("finished_at"))
+                if done is None or done >= as_of:
+                    continue
+            by_version.setdefault(doc.get("suite_version"), []).append(doc)
+        if not by_version:
+            return None
+        version = max(by_version, key=lambda v: max(d.get("finished_at") or "" for d in by_version[v]))
+        minima: dict[str, float] = {}
+        for doc in by_version[version]:
+            for case in doc.get("cases") or []:
+                value = case.get("min_us")
+                if case.get("source") == "official" and isinstance(value, (int, float)) and value > 0:
+                    minima[case["id"]] = min(minima.get(case["id"], value), float(value))
+        return (version, minima, len(by_version[version])) if minima else None
+
+    def _case_bench_pair(self, title: str, cand_sha: str | None, base_sha: str | None,
+                         as_of: datetime.datetime | None = None) -> dict[str, Any] | None:
+        """Pair the candidate with the board SHA case by case on platform-run official cases."""
+        if not cand_sha or not base_sha or cand_sha == base_sha:
+            return None
+        cand = self._case_bench_minima(title, cand_sha, as_of)
+        base = self._case_bench_minima(title, base_sha, as_of)
+        if not cand or not base or cand[0] != base[0]:
+            return None
+        common = sorted(set(cand[1]).intersection(base[1]))
+        if not common:
+            return None
+        ratios = {cid: max(0.25, min(4.0, base[1][cid] / cand[1][cid])) for cid in common}
+        geo = math.exp(sum(math.log(r) for r in ratios.values()) / len(ratios))
+        return {
+            "geo": geo,
+            "matched": len(common),
+            "official": len(set(cand[1]) | set(base[1])),
+            "runs_cand": cand[2],
+            "runs_base": base[2],
+            "improved": sum(1 for r in ratios.values() if r > 1.03),
+            "regressed": [f"{cid}({r:.2f}x)" for cid, r in sorted(ratios.items()) if r < 0.95],
+        }
+
+    def _case_bench_projection(self, title, sha, ledger, anchor_score, anchor_pub, anchor_hid, as_of=None):
+        """Uncalibrated score projection of ``sha`` from case-bench pairing with the board SHA."""
+        base_sha = ledger.active_board_sha or ledger.historical_best_sha
+        pair = self._case_bench_pair(title, sha, base_sha, as_of)
+        if pair is None or anchor_score <= 0:
+            return None
+        coverage = pair["matched"] / max(1, pair["official"])
+        effective_speedup = max(0.35, min(2.5, 1.0 + coverage * (pair["geo"] - 1.0)))
+        # Local evidence quality: enough paired cases, and a best-of-runs minimum on both sides.
+        local_quality = min(1.0, pair["matched"] / 10.0) * (1.0 if min(pair["runs_cand"], pair["runs_base"]) >= 2 else 0.75)
+        projected = _project_score_from_speedup(anchor_score, anchor_pub, anchor_hid, effective_speedup,
+                                                ledger.frontier_top1)
+        return {"projected": projected, "pair": pair, "base_sha": base_sha,
+                "effective_speedup": round(effective_speedup, 4), "local_quality": local_quality}
+
+    def _receipt_residuals(self) -> list[dict[str, Any]]:
+        """(official score - case-bench projection) for every Pass receipt that had local evidence.
+
+        The projection is replayed as of the submission time, so only runs finished before it
+        count. Results never change once computed and are cached per receipt.
+        """
+        if getattr(self, "_residuals", None) is not None:
+            return self._residuals
+        cache_path = self.workspace / "results" / ".case-bench-residuals.json"
+        cache, _ = read_json_safe(cache_path)
+        cache = cache if isinstance(cache, dict) else {}
+        changed, out = False, []
+        for row in self.outcomes:
+            title = row.get("title")
+            score = row.get("score")
+            if score is None and isinstance(row.get("timing_score"), dict):
+                score = row["timing_score"].get("score")  # a receipt that did not beat the board
+            sha = str(row.get("canonical_sha") or row.get("sha") or "")
+            submitted = _parse_iso(row.get("submitted_at"))
+            if (row.get("status") != "Pass" or not isinstance(score, (int, float)) or score <= 0
+                    or submitted is None or not re.fullmatch(r"[0-9a-f]{40}", sha)):
+                continue
+            key = f"{title}:{sha}:{row.get('submitted_at')}"
+            if key not in cache:
+                cache[key], changed = None, True
+                if (self.workspace / "results" / title / sha / "bench-runs").is_dir():
+                    try:
+                        ledger = self.get_problem_ledger(title, as_of=submitted)
+                        cb = self._case_bench_projection(title, sha, ledger, ledger.current_score,
+                                                         ledger.public_score, ledger.hidden_score, submitted)
+                    except Exception:  # noqa: BLE001 - a replay failure only drops this sample
+                        cb = None
+                    if cb is not None:
+                        cache[key] = {"projected": cb["projected"], "local_quality": cb["local_quality"]}
+            if cache[key] is not None:
+                out.append({"title": title, "at": submitted, "residual": float(score) - cache[key]["projected"]})
+        if changed:
+            try:
+                atomic_write_json(cache_path, cache)
+            except OSError:
+                pass
+        self._residuals = out
+        return out
+
+    def prediction_confidence(self, title: str, as_of: datetime.datetime | None = None) -> dict[str, Any]:
+        """Effective receipt count, mean residual and residual variance (None below two samples).
+
+        Receipts of this problem count once, other problems' receipts half.
+        """
+        weights = [(1.0 if r["title"] == title else OTHER_PROBLEM_WEIGHT, r["residual"])
+                   for r in self._receipt_residuals() if as_of is None or r["at"] < as_of]
+        n_eff = sum(w for w, _ in weights)
+        if n_eff <= 0:
+            return {"n_eff": 0.0, "mean": 0.0, "var": None}
+        mean = sum(w * r for w, r in weights) / n_eff
+        var = (sum(w * (r - mean) ** 2 for w, r in weights) / (n_eff - 1.0)) if n_eff >= 2.0 else None
+        return {"n_eff": round(n_eff, 2), "mean": mean, "var": var}
+
     def _load_perf_for_sha(self, title: str, sha: str | None) -> dict[str, Any]:
         empty: dict[str, Any] = {
             "cases": {},
@@ -1302,10 +1448,13 @@ class ScoreEstimator:
         rows = self._filtered_outcomes(title, as_of=as_of)
         prior_same_sha_scores: list[tuple[datetime.datetime | None, float]] = []
         for r in rows:
-            if r.get("status") == "Pass" and isinstance(r.get("score"), (int, float)) and r["score"] > 0:
+            judged = r.get("score")
+            if judged is None and isinstance(r.get("timing_score"), dict):
+                judged = r["timing_score"].get("score")  # judged below the board: still a draw
+            if r.get("status") == "Pass" and isinstance(judged, (int, float)) and judged > 0:
                 if (r.get("canonical_sha") or r.get("sha")) == canonical_sha:
                     ts = _parse_iso(r.get("submitted_at") or r.get("finished_at"))
-                    prior_same_sha_scores.append((ts, float(r["score"])))
+                    prior_same_sha_scores.append((ts, float(judged)))
 
         cand_perf = self._load_perf_for_sha(title, canonical_sha)
         raw_base_sha = ledger.active_board_sha or ledger.historical_best_sha
@@ -1370,6 +1519,8 @@ class ScoreEstimator:
         thermal_drift_us = 0.0
         binary_delta_pct: float | None = None
         ucb_delta_override: float | None = None
+        calibration_samples = 0.0
+        calibration_bias = 0.0
 
         # Reference anchor when current board is 0 / no-submission
         anchor_score = ledger.current_score
@@ -1444,6 +1595,34 @@ class ScoreEstimator:
             detail = (
                 f"same-SHA {m} draw(s) raw=[{raw_str}] -> contemp=[{cnt_str}] "
                 f"(gamma={ledger.decay_factor_gamma:.4f}) => est={estimated_score:.2f}"
+            )
+
+        # 2c. Case-bench pairing: platform-run formal suites of the candidate and the board SHA,
+        #     official cases only, calibrated against earlier official receipts.
+        elif (cb := (None if pair_cand_cases else self._case_bench_projection(
+                title, canonical_sha, ledger, anchor_score, anchor_pub, anchor_hid, as_of))) is not None:
+            cb_pair = cb["pair"]
+            matched_cases = cb_pair["matched"]
+            improved_cases = cb_pair["improved"]
+            regressed_cases = cb_pair["regressed"]
+            effective_speedup = cb["effective_speedup"]
+            local_quality = cb["local_quality"]
+            prior_var = SIGMA_HIDDEN_JITTER ** 2 + (1.8 + 2.2 * (1.0 - local_quality)) ** 2
+            conf = self.prediction_confidence(title, as_of)
+            n_eff, k0 = conf["n_eff"], CONFIDENCE_PRIOR_WEIGHT
+            calibration_samples = n_eff
+            calibration_bias = round(n_eff / (n_eff + k0) * conf["mean"], 2)
+            var = prior_var if conf["var"] is None else (k0 * prior_var + n_eff * conf["var"]) / (k0 + n_eff)
+            sigma = round(math.sqrt(var), 2)
+            estimated_score = round(max(0.0, cb["projected"] + calibration_bias), 2)
+            cal_trust = local_quality * (0.3 + 0.7 * n_eff / (n_eff + k0))
+            base_sha = cb["base_sha"]
+            method = CASE_BENCH_METHOD
+            detail = (
+                f"{matched_cases}/{cb_pair['official']} official cases vs {(base_sha or '')[:7]} "
+                f"({cb_pair['runs_cand']}+{cb_pair['runs_base']} runs): geo={cb_pair['geo']:.3f}x, "
+                f"improved={improved_cases}, regressed={len(regressed_cases)}; projected "
+                f"{cb['projected']:.2f}, {n_eff:g} receipt(s) calibrate bias {calibration_bias:+.2f}"
             )
 
         # 3. Calibrated Pairwise Simplex-MAP Bucket Model -> Paired A/B Fallback
@@ -1604,4 +1783,7 @@ class ScoreEstimator:
             explore_evidence=explore_evidence,
             thermal_drift_us=round(thermal_drift_us, 3),
             binary_delta_pct=round(binary_delta_pct, 2) if binary_delta_pct is not None else None,
+            expected_improvement=round(expected_improvement(delta_expected, sigma), 2),
+            calibration_samples=round(calibration_samples, 2),
+            calibration_bias=calibration_bias,
         )
