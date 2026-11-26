@@ -10,6 +10,7 @@ from typing import IO, Any
 
 from .. import __version__ as _OPSB_VERSION
 from .. import config as _cfg
+from .. import worker_sandbox
 from .macos_gui import build_parhelion_mcp_command
 
 
@@ -59,6 +60,29 @@ def _strip_toml_sections(text: str, section_headers: set[str]) -> str:
     return "".join(out)
 
 
+def render_worker_permissions(worktree: Path | None = None, *,
+                             parhelion: Path | None = None, home: Path | None = None) -> tuple[list[str], list[str]]:
+    """``(top-level keys, tables)`` of the Codex profile denying the credential stores.
+
+    Codex profiles cannot express "no network" without the proxy, and older builds ignore this
+    block, so the platform's sandbox wrapper (``worker_sandbox.seatbelt_profile``) remains the
+    layer that always applies; this block is defence in depth when the build honours profiles.
+    TOML puts every key after a table header inside that table, so the caller splices the
+    top-level name in before any table and the profile tables after the provider scalars.
+    """
+    deny = worker_sandbox.read_deny_paths(parhelion=parhelion, home=home)
+    top = ['default_permissions = "parhelion_worker"']
+    tables = ["[permissions.parhelion_worker]",
+              'description = "Parhelion worker: platform credential stores are denied"',
+              'extends = ":workspace"',
+              "[permissions.parhelion_worker.filesystem]"]
+    for path in [*deny["dirs"], *deny["files"]]:
+        tables.append(f"{_toml_quote(path)} = \"deny\"")
+    if worktree is not None:
+        tables.append(f"{_toml_quote(str(worktree))} = \"write\"")
+    return top, tables
+
+
 def render_codex_config_toml(
     workspace: Path,
     mcp_url: str | None = None,
@@ -67,6 +91,7 @@ def render_codex_config_toml(
     agent_id: str | None = None,
     tool_timeout_sec: int = 120,
     host_config: Path | None = None,
+    worktree: Path | None = None,
 ) -> str:
     if mcp_url:
         lines = [
@@ -87,14 +112,19 @@ def render_codex_config_toml(
             "[mcp_servers.parhelion.env]",
             *(f"{k} = {_toml_quote(v)}" for k, v in env.items()),
         ]
+    head: list[str] = []
     if host_config is not None:
-        lines = [*(f"{k} = {_toml_value(v)}" for k, v in _provider_settings(host_config).items()), *lines]
+        head = [f"{k} = {_toml_value(v)}" for k, v in _provider_settings(host_config).items()]
+    tables: list[str] = []
     if role == "worker":
+        perm_top, perm_tables = render_worker_permissions(worktree)
+        head += perm_top
+        tables += perm_tables
         from ..mcp.schemas import TOOL_SCHEMAS
         for schema in TOOL_SCHEMAS:
             if "worker" in schema.get("roles", ("orchestrator", "worker")):
                 lines += [f"[mcp_servers.parhelion.tools.{schema['name']}]", 'approval_mode = "approve"']
-    return "\n".join(lines) + "\n"
+    return "\n".join([*head, *tables, *lines]) + "\n"
 
 
 def upsert_workspace_codex_toml(ws_toml_path: Path, workspace: Path, mcp_url: str | None = None) -> None:
@@ -375,7 +405,7 @@ def preseed_codex_thread(bin_path: str, real_wt: Path, name: str, c_home: Path) 
     """Pre-create a persisted Codex thread via `codex app-server` before opening the GUI deep link."""
     proc = subprocess.Popen(
         [bin_path, "app-server", "--listen", "stdio://"],
-        cwd=str(real_wt), env={**os.environ, "CODEX_HOME": str(c_home)},
+        cwd=str(real_wt), env=worker_sandbox.worker_env(os.environ, {"CODEX_HOME": str(c_home)}),
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
     )
     assert proc.stdin is not None and proc.stdout is not None
@@ -416,7 +446,7 @@ def run_codex_headless_turn(
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("a", encoding="utf-8") as lf:
         proc = subprocess.Popen(
-            cmd, cwd=str(worktree), env={**os.environ, **env},
+            cmd, cwd=str(worktree), env=worker_sandbox.worker_env(os.environ, env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
         )
         assert proc.stdin is not None and proc.stdout is not None

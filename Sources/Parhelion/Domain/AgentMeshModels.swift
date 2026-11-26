@@ -258,6 +258,8 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
     let elapsedSec: Int
     let lastMsgEpoch: Double
     let lastMsgDir: String
+    /// 4.2 K boundary classes this worker tripped (empty when clean); older daemons omit the field.
+    let boundaryFlags: [String]
     let cache: AgentCacheUsage?
 
     var isLive: Bool { status == "working" || status == "spawning" || status == "waiting_input" }
@@ -285,6 +287,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         case elapsedSec = "elapsed_sec"
         case lastMsgEpoch = "last_msg_epoch"
         case lastMsgDir = "last_msg_dir"
+        case boundaryFlags = "boundary_flags"
     }
 
     init(from decoder: Decoder) throws {
@@ -315,6 +318,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         elapsedSec = try c.decodeIfPresent(Int.self, forKey: .elapsedSec) ?? 0
         lastMsgEpoch = try c.decodeIfPresent(Double.self, forKey: .lastMsgEpoch) ?? 0
         lastMsgDir = try c.decodeIfPresent(String.self, forKey: .lastMsgDir) ?? ""
+        boundaryFlags = try c.decodeIfPresent([String].self, forKey: .boundaryFlags) ?? []
         cache = try AgentCacheUsage.decodeIfPresent(from: decoder)
     }
 }

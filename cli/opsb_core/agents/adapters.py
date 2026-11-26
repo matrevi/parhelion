@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config as _cfg
+from .. import worker_boundary, worker_sandbox
 from ..worker_access import prepare_worker_command
 from ..drivers.antigravity_acp import AcpSessionClient, build_acp_mcp_servers
 from ..drivers.base import resolve_parhelion_home, resolve_workspace_state_dir
@@ -97,6 +98,8 @@ class BaseWorkerAdapter:
         self._lock = threading.Lock()
         self._closed = False
         self.on_spawn: Callable[[int, int], None] | None = None
+        #: 4.2 K: called with the boundary class when a live tool call reaches the platform.
+        self.on_boundary: Callable[[str], None] | None = None
         #: Set by the runner before ``compact``: the ledger-backed handoff checks (``ledger.handoff.HandoffSession``).
         self.handoff: Any = None
 
@@ -108,7 +111,7 @@ class BaseWorkerAdapter:
 
     def _launch(self, cmd: list[str], env: dict[str, str]) -> subprocess.Popen[str]:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        child_env = {**os.environ, **env, "PARHELION_AGENT_ID": self.agent_id}
+        child_env = worker_sandbox.worker_env(os.environ, {**env, "PARHELION_AGENT_ID": self.agent_id})
         if self.driver_kind == "deepseek":
             # DSH filters indexed Git keys from its shell tool but retains COUNT.
             # Use the worker account's normal Git configuration and credential store.
@@ -135,6 +138,15 @@ class BaseWorkerAdapter:
             self.on_spawn(self.pid, self.pgid)
         threading.Thread(target=self._drain_stderr, args=(proc,), daemon=True).start()
         return proc
+
+    def _note_boundary(self, categories: list[str]) -> None:
+        """Report the most severe live boundary class to the runner (4.2 K, never stops the worker)."""
+        if not categories or not callable(self.on_boundary):
+            return
+        try:
+            self.on_boundary(categories[0])
+        except Exception:
+            pass
 
     def _drain_stderr(self, proc: subprocess.Popen[str]) -> None:
         if proc.stderr is None:
@@ -180,7 +192,7 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
 
     def _ensure_started(self, on_event: EventCallback | None) -> AcpSessionClient:
         if self._client is not None and self.proc is not None and self.proc.poll() is None:
-            self._client._on_event = lambda u: self._forward_event(u, on_event)
+            self._client._on_event = lambda u: self._on_update(u, on_event)
             return self._client
         drv = get_driver(self.driver_kind)
         diag = drv.discover()
@@ -196,7 +208,7 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
         self._log_fh = self.log_path.open("a", encoding="utf-8")
         client = AcpSessionClient(
             proc.stdin, proc.stdout, log_stream=self._log_fh,
-            on_event=lambda u: self._forward_event(u, on_event),
+            on_event=lambda u: self._on_update(u, on_event),
         )
         client.initialize()
         mcp_servers = build_acp_mcp_servers(
@@ -209,6 +221,11 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
             on_event("model", self.model)
         self._client = client
         return client
+
+    def _on_update(self, update: dict[str, Any], on_event: EventCallback | None) -> None:
+        """4.2 K boundary check on every ACP update, then the unchanged event forwarding."""
+        self._note_boundary(worker_boundary.classify_acp_update(update, worktree=self.worktree))
+        self._forward_event(update, on_event)
 
     @staticmethod
     def _forward_event(update: dict[str, Any], on_event: EventCallback | None) -> None:
@@ -292,7 +309,7 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
         toml_path.chmod(0o600)
         toml_path.write_text(
             render_codex_config_toml(self.workspace, role="worker", agent_id=self.agent_id,
-                                     host_config=host_home / "config.toml"),
+                                     host_config=host_home / "config.toml", worktree=self.worktree),
             encoding="utf-8",
         )
         host_auth = host_home / "auth.json"
@@ -306,7 +323,7 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
 
     def _ensure_started(self, on_event: EventCallback | None) -> CodexAppServerClient:
         if self._client is not None and self.proc is not None and self.proc.poll() is None:
-            self._client._on_event = lambda m: self._forward_event(m, on_event)
+            self._client._on_event = lambda m: self._on_message(m, on_event)
             return self._client
         drv = get_driver("codex")
         diag = drv.discover()
@@ -325,7 +342,7 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
         self._log_fh = self.log_path.open("a", encoding="utf-8")
         client = CodexAppServerClient(
             proc.stdin, proc.stdout, log_stream=self._log_fh,
-            on_event=lambda m: self._forward_event(m, on_event),
+            on_event=lambda m: self._on_message(m, on_event),
         )
         client.initialize()
         tid = client.open_thread(
@@ -337,6 +354,16 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
             on_event("model", self.model)
         self._client = client
         return client
+
+    def _on_message(self, msg: dict[str, Any], on_event: EventCallback | None) -> None:
+        """4.2 K boundary check on every Codex item, then the unchanged event forwarding."""
+        method = str(msg.get("method") or "")
+        if method in ("item/started", "item/completed"):
+            item = (msg.get("params") or {}).get("item") if isinstance(msg.get("params"), dict) else {}
+            if isinstance(item, dict):
+                self._note_boundary(worker_boundary.classify_tool(
+                    item.get("type") or item.get("name"), item, worktree=self.worktree))
+        self._forward_event(msg, on_event)
 
     @staticmethod
     def _forward_event(msg: dict[str, Any], on_event: EventCallback | None) -> None:

@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 from . import config
+from . import worker_sandbox
 from .drivers.base import resolve_workspace_state_dir
 
 
@@ -26,6 +27,13 @@ def worker_token(secret, workspace, agent_id):
 
 
 def prepare_worker_command(cmd, env, workspace, agent_id):
+    """Bind one worker to its own route and wrap its process in the worker sandbox profile.
+
+    The relay carries the *scoped* token, which only authenticates ``/v1/mcp/worker/<id>`` for
+    this workspace, so a worker cannot reach another seat's route or the orchestrator route.
+    The profile adds the judge credential stores to the SSH and daemon-token denies
+    (``worker_sandbox.read_deny_paths``) for the whole process tree, the MCP server included.
+    """
     state = json.loads(config.DAEMON_STATE_PATH.read_text())
     path = relay_file(workspace, agent_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -33,12 +41,12 @@ def prepare_worker_command(cmd, env, workspace, agent_id):
         json.dump({"port": state["port"], "token": worker_token(state["token"], workspace, agent_id)}, file)
     if sys.platform != "darwin":
         raise RuntimeError("Managed worker SSH isolation requires macOS")
-    profile = ['(version 1)', '(allow default)', '(deny network-outbound (remote tcp "*:22"))',
-               '(deny process-exec (regex #"/(ssh|scp|sftp)$"))',
-               '(deny file-read* file-write* (subpath ' + json.dumps(str(Path.home() / ".ssh")) + '))',
-               '(deny file-read* file-write* (literal ' + json.dumps(str(config.DAEMON_STATE_PATH.resolve())) + '))']
+    extra = [("subpath", str(Path.home() / ".ssh")),
+             ("literal", str(config.DAEMON_STATE_PATH.resolve()))]
+    profile = worker_sandbox.seatbelt_profile(extra=extra)
+    profile += ['(deny network-outbound (remote tcp "*:22"))', '(deny process-exec (regex #"/(ssh|scp|sftp)$"))']
     env.pop("SSH_AUTH_SOCK", None)
-    return ["/usr/bin/sandbox-exec", "-p", "\n".join(profile), *cmd]
+    return [worker_sandbox.SANDBOX_EXEC, "-p", "\n".join(profile), *cmd]
 
 
 def forward_worker_request(workspace, agent_id, payload):

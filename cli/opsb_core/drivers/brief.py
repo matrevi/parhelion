@@ -164,6 +164,8 @@ def compose_session_brief(
         "becomes a file path, and messages merge at the teammate's next turn boundary.",
         "When needed, call parhelion_kb_query (3 summaries by default).",
         "Report results, negative ones too, with parhelion_agent_report.",
+        "Platform data (board, tbest, receipts, env) comes from parhelion_report views board/history/per_case/env, "
+        "not from ~/.parhelion files, opsb_core imports or platform internals.",
     ])
     body = _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
     if not include_state_card:

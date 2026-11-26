@@ -176,6 +176,16 @@ struct AgentMeshInspectorView: View {
                                 .background(Capsule().fill(style.accent.opacity(0.14)))
                         }
                         SemanticPill(text: w.status.uppercased(), compact: true)
+                        if !w.boundaryFlags.isEmpty {
+                            // 4.2 K: platform-boundary classes this worker tripped.
+                            Text(lang.tr("边界 \(w.boundaryFlags.count)", "BOUNDARY \(w.boundaryFlags.count)"))
+                                .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4.5)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(Color.red))
+                                .help(w.boundaryFlags.joined(separator: " · "))
+                        }
                     }
                     HStack(spacing: 6) {
                         Button(w.problem) { onSelect(.squad(w.problem)) }

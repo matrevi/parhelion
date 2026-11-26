@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at TEXT NOT NULL,
     last_active_epoch REAL NOT NULL,
     last_msg_epoch REAL NOT NULL DEFAULT 0,
-    last_msg_dir TEXT NOT NULL DEFAULT ''
+    last_msg_dir TEXT NOT NULL DEFAULT '',
+    boundary_flags TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -116,6 +117,7 @@ class AgentBusStore:
                     ("axis", "TEXT NOT NULL DEFAULT ''"),
                     ("no_gain_streak", "INTEGER NOT NULL DEFAULT 0"),
                     ("context_percent", "INTEGER"),
+                    ("boundary_flags", "TEXT NOT NULL DEFAULT '[]'"),
                 ):
                     if col not in a_cols:
                         conn.execute(f"ALTER TABLE agents ADD COLUMN {col} {ddl}")
@@ -162,6 +164,7 @@ class AgentBusStore:
             "last_active_epoch": float(record.get("last_active_epoch") or now_ep),
             "last_msg_epoch": float(record.get("last_msg_epoch") or 0.0),
             "last_msg_dir": str(record.get("last_msg_dir") or ""),
+            "boundary_flags": str(record.get("boundary_flags") or "[]"),
         }
         cols = ", ".join(row.keys())
         placeholders = ", ".join("?" for _ in row)
@@ -189,6 +192,7 @@ class AgentBusStore:
             "role_label", "problem", "collab_mode", "axis", "worktree", "branch", "native_session_id", "status",
             "pid", "pgid", "turn_count", "no_gain_streak", "unread_for_orch", "last_tool", "last_summary",
             "last_commit_sha", "error", "last_active_epoch", "last_msg_epoch", "last_msg_dir", "context_percent",
+            "boundary_flags",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         updates["updated_at"] = _cfg.utc_now().isoformat()

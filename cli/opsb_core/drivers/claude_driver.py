@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .. import worker_sandbox
 from .base import (
     BaseDriver,
     DriverDiagnostic,
@@ -201,7 +202,7 @@ class ClaudeDriver(BaseDriver):
         log_path: Path,
     ) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        merged_env = {**os.environ, **env}
+        merged_env = worker_sandbox.worker_env(os.environ, env)
         in_msg = ClaudeStreamJsonClient.encode_user_message(brief)
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(json.dumps({"event": "launch", "driver": self.kind, "cmd": cmd}) + "\n")

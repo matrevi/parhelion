@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
+from .. import worker_sandbox
 from .antigravity_acp import build_acp_mcp_servers, run_acp_headless_turn
 from .base import (
     BaseDriver,
@@ -507,11 +508,10 @@ class DeepSeekDriver(BaseDriver):
             return {"ok": False, "reason": "dsh CLI not found"}
         wt = Path(os.path.realpath(worktree.expanduser()))
         home = dsh_home or _resolve_dsh_home()
-        env = {
-            **os.environ,
+        env = worker_sandbox.worker_env(os.environ, {
             "DSH_PERMISSION_MODE": "danger-full-access",
             "PARHELION_HOME": str(resolve_parhelion_home()),
-        }
+        })
         try:
             proc = subprocess.Popen(
                 [bin_path, "--profile", "acp"], cwd=str(wt), env=env,
