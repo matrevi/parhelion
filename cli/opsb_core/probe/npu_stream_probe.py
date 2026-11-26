@@ -89,8 +89,20 @@ def _device_settings() -> dict[str, Any]:
         pass
     for key in list(merged):
         raw_env = os.environ.get("OPSB_DEVICE_" + key.upper())
-        if raw_env:
-            merged[key] = raw_env
+        if not raw_env:
+            continue
+        default = merged.get(key)
+        if isinstance(default, (dict, list)):
+            # Structured settings (driver library maps, directory lists) travel as JSON
+            # so a remote standalone copy can be configured without a local config file.
+            try:
+                parsed = json.loads(raw_env)
+            except Exception:
+                continue
+            if isinstance(parsed, type(default)):
+                merged[key] = parsed
+            continue
+        merged[key] = raw_env
     return merged
 
 

@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Any, Callable
 
+from ..device_env import device_env_exports
 from ..services.npu_service import deploy_probe, enrich_npu_payload, read_mac_npu_waiters, sort_npu_payload
 
 PROBE_VERSION_MARKER = "OPSB_STREAM_PROBE_V5"
@@ -247,6 +248,7 @@ class NpuStreamManager:
                 interval = self._interval
 
             remote_cmd = (
+                device_env_exports() +
                 f"if grep -q {PROBE_VERSION_MARKER} ~/.opsb/npu_stream_probe.py 2>/dev/null; then "
                 f"exec python3 -u ~/.opsb/npu_stream_probe.py --stream --interval {interval:.2f}; "
                 f"else exit 42; fi"
@@ -340,7 +342,14 @@ class NpuStreamManager:
                 except Exception as exc:
                     stderr_lines.append(str(exc)[:180])
 
-            rc = proc.poll()
+            # stdout EOF can arrive before ssh has actually exited, so a bare poll()
+            # can return None and lose the real exit status. In particular the `42`
+            # stale-probe sentinel would be dropped, which makes the redeploy branch
+            # below unreachable and leaves the stream dead until a manual install.
+            try:
+                rc = proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                rc = proc.poll()
             self._terminate_active_proc()
             err_th.join(timeout=0.5)
 

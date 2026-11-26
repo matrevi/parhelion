@@ -2,6 +2,15 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.0.4 — 修复 NPU 遥测断流
+
+4.0.1–4.0.3 之后 `opsb npu status` 正常，但 daemon 的常驻遥测流一直连不上，界面显示 NPU 离线（`"error": "SSH stream closed (rc=None)"`）。两个缺陷叠加：
+
+- **远端探针版本标记过期。** daemon 用 `OPSB_STREAM_PROBE_V5` 标记判断远端副本是否可用，旧副本没有该标记，远端命令直接 `exit 42`。自动重部署分支因此不可达，因为它依赖退出码 42：读线程先看到 stdout EOF，主线程随即 `poll()` 拿到 `None`，42 被丢掉。现在改为先 `wait(timeout=2.0)` 收割真实退出码，超时才回退 `poll()`。
+- **设备事实没有随命令下发。** 探针是独立副本，读不到本机 `~/.parhelion/config.json`，`driver_root`、`dcmi_lib`、`driver_libs` 全为空，`libdcmi` 预载失败后退化成 `npu-smi`，SoC 变成占位值。现在 `device_env.device_env_exports()` 把所有标量与结构化设备设置渲染成 `OPSB_DEVICE_<KEY>` 前缀，随 ssh 命令下发；字典与列表走 JSON，探针侧的独立解析器同步支持 JSON 覆盖。仓库仍然零厂商字面量，设备值只存在于 `config.json` 与运行时环境。
+
+修复后 `probe_backend=dcmi`、`soc_name` 正确、`stream_connected=true`，采样约 40ms，热帧构建约 5ms。新增 `cli/tests/test_device_env_exports.py` 覆盖结构化设置的导出与探针侧解析。
+
 ## 4.0.3 — 修复清理误伤与索引校正
 
 ### 修复

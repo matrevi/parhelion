@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -110,8 +111,24 @@ def device_settings() -> dict[str, Any]:
         raw = os.environ.get(env_name)
         if raw is None or raw == "":
             continue
-        if isinstance(merged[key], list):
-            merged[key] = [part for part in raw.split(os.pathsep) if part]
+        default = merged[key]
+        if isinstance(default, dict):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                merged[key] = parsed
+        elif isinstance(default, list):
+            parsed: Any = None
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, list):
+                merged[key] = [str(part) for part in parsed]
+            else:
+                merged[key] = [part for part in raw.split(os.pathsep) if part]
         else:
             merged[key] = raw
     _CACHE["stamp"] = stamp
@@ -134,3 +151,32 @@ def device_text(key: str) -> str:
 def device_list(key: str) -> list[str]:
     value = device(key)
     return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def device_env_exports() -> str:
+    """Shell prefix forwarding the scalar device settings to a remote host.
+
+    The NPU probes are deployed as standalone copies, so they cannot read this
+    machine's ``config.json``; without the values they fall back to neutral
+    defaults, lose the driver library path, and silently degrade to ``npu-smi``
+    with an unknown SoC. Forwarding the settings as ``OPSB_DEVICE_<KEY>`` keeps
+    deployment facts out of the repository while still giving the remote probe
+    the real values. Returns ``""`` when nothing is configured, so an
+    unconfigured host behaves exactly as before.
+    """
+    assignments: list[str] = []
+    for key, value in sorted(device_settings().items()):
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (dict, list)):
+            if not value:
+                continue
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        elif isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if not text:
+                continue
+        else:
+            continue
+        assignments.append(f"OPSB_DEVICE_{key.upper()}={shlex.quote(text)}")
+    return f"export {' '.join(assignments)}; " if assignments else ""

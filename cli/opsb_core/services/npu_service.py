@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..device_env import device_env_exports
+
 PROBE_PATH = Path(__file__).resolve().parents[1] / "probe" / "npu_probe.py"
 STREAM_PROBE_PATH = Path(__file__).resolve().parents[1] / "probe" / "npu_stream_probe.py"
 SSH_CONTROL_OPTS = [
@@ -151,6 +153,7 @@ def sort_npu_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 def poll_npu_telemetry(host: str, problems_by_title: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     remote_cmd = (
+        device_env_exports() +
         "if [ -f ~/.opsb/npu_stream_probe.py ]; then python3 ~/.opsb/npu_stream_probe.py --once; "
         "elif [ -f ~/.opsb/npu_probe.py ]; then python3 ~/.opsb/npu_probe.py; "
         "else python3 -; fi"
@@ -201,7 +204,7 @@ def deploy_probe(host: str) -> dict[str, Any]:
         f"p = d / 'npu_probe.py'; p.write_bytes(base64.b64decode({p_b64!r})); os.chmod(p, 0o755)\n"
         f"s = d / 'npu_stream_probe.py'; s.write_bytes(base64.b64decode({s_b64!r})); os.chmod(s, 0o755)\n"
     )
-    install_sh = "python3 - && python3 ~/.opsb/npu_stream_probe.py --once"
+    install_sh = device_env_exports() + "python3 - && python3 ~/.opsb/npu_stream_probe.py --once"
     proc = subprocess.run(
         ["ssh", *SSH_CONTROL_OPTS, host, install_sh],
         input=remote_py,
