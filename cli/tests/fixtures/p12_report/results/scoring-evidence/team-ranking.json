@@ -1,0 +1,16 @@
+{
+  "target": [
+    "public",
+    "p12-fixture",
+    "",
+    "acct-fixture",
+    "user-fixture"
+  ],
+  "rank": 57,
+  "score": 44.5,
+  "total": 91,
+  "pass_count": 3,
+  "fetched_at": "2026-11-20T12:00:00+00:00",
+  "team_id": "team-fixture",
+  "team_name": "Fixture Team"
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 2,
+  "layout": "clean-agents-first",
+  "title": "P12 report fixture",
+  "contest_id": "p12fixture",
+  "contest_url": "https://judge.invalid/public/p12-fixture",
+  "problems": [
+    {
+      "title": "Op",
+      "slug": "op",
+      "path": "Op",
+      "problem_id": "p12-problem-1",
+      "difficulty": 2
+    },
+    {
+      "title": "Op2",
+      "slug": "op2",
+      "path": "Op2",
+      "problem_id": "p12-problem-2",
+      "difficulty": 2
+    }
+  ]
+}

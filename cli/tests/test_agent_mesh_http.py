@@ -170,7 +170,7 @@ class AgentMeshHttpControlPlaneTests(unittest.TestCase):
                     resp = conn.getresponse()
                     self.assertEqual(resp.status, 200)
                     orch_tools = {t["name"] for t in json.loads(resp.read().decode())["result"]["tools"]}
-                    self.assertEqual(len(orch_tools), 26)  # +3 ledger (P06), +3 escape (P07)
+                    self.assertEqual(len(orch_tools), 27)  # +3 ledger (P06), +3 escape (P07), +1 report (P12)
                     self.assertIn("parhelion_harness_pool", orch_tools)
 
                     # 9. Stop is idempotent enough to report a terminal record over HTTP.
