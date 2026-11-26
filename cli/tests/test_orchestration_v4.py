@@ -291,10 +291,14 @@ def test_squad_addresses_by_role_name_all_and_lists_teammates_on_error(env):
     assert mgr.squad(ws, sender, recipient="bench-author", message="check")["recipient"] == author
 
     everyone = mgr.squad(ws, sender, recipient="all", message="x" * 5000)
-    assert everyone["ok"] and set(everyone["recipients"]) == {dataflow, author} and len(everyone["seqs"]) == 2
+    assert everyone["ok"] and set(everyone["recipients"]) == {dataflow, author}
+    assert everyone["hint"]  # 4.2 F: the body is attached and the sender is told to write a claim
+    for target in everyone["recipients"]:
+        mgr._flush_peer(ws, target)
     body = next(m["body"] for m in store.list_messages(agent_id=author, limit=50, include_squad=True)
-                if m["seq"] == everyone["seqs"][everyone["recipients"].index(author)])
-    assert body.endswith("…[truncated]") and body.count("x") == 4000
+                if m["direction"] == "squad_to_worker" and m["kind"] == "peer")
+    attachment = body.split("full: ", 1)[1].split(" (", 1)[0]
+    assert body.count("x") < 5000 and "x" * 5000 in Path(attachment).read_text(encoding="utf-8")
 
     with pytest.raises(ValueError) as missing:
         mgr.squad(ws, sender, recipient="optimizer", message="hi")

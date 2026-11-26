@@ -33,6 +33,7 @@ from .bus_store import AgentBusStore
 from .event_hub import EventHub, inbox_predicate
 from .judge_feedback import calibration_evidence, epoch_gains, judge_feedback
 from .ownership import claim_runner, owned_groups, reap_groups
+from . import peer
 
 AdapterFactory = Callable[[Path, Path, str, str, Path], BaseWorkerAdapter]
 MAX_WAIT_SEC = 45.0
@@ -45,7 +46,8 @@ PROVIDER_FAULT = re.compile(
 SUSPENDED_ERROR = "suspended: provider fault"
 DEFAULT_CONTEXT_WINDOW = 200_000
 COMPACT_PERCENT = 70
-SQUAD_MAX_CHARS = 4000
+#: 4.2 F: how long an idle recipient's peer queue may coalesce before one merged wake.
+PEER_COALESCE_SEC = 0.4
 
 
 def compact_threshold(window: int | None = None, cfg: dict[str, Any] | None = None) -> int:
@@ -150,6 +152,9 @@ class _WorkerRunner:
         self._context_window: int | None = None
         self._on_fault = on_fault
         self._stage_result = ""
+        # 4.2 F: a peer batch flushes at this runner's turn boundary (never mid-turn).
+        self.busy = False
+        self.on_turn_end: Callable[[], None] | None = None
         # 4.2 C #7: the compaction boundary the platform just observed, consumed by the next decision.
         self._boundary = ""
         self._tools_running = 0
@@ -285,6 +290,7 @@ class _WorkerRunner:
             rec = self.store.get_agent(self.agent_id) or {}
             self.squad_turn = self.squad_turn or rec.get("role_label") == "bench-author"
             turn_n = int(rec.get("turn_count") or 0) + 1
+            self.busy = True
             self.store.update_agent(self.agent_id, status="working", turn_count=turn_n, error="")
             self._stage_result = ""
             self._on_notify()
@@ -303,11 +309,18 @@ class _WorkerRunner:
                     last_tool="",
                 )
                 if not self._stop_flag.is_set() and reply:
-                    self.store.append_message(
-                        self.agent_id, self._reply_direction, "result", reply, commit_sha=sha7
-                    )
+                    # 4.2 F: a long reply lands in peer/<msg_id>.md; the bus keeps claim plus path.
+                    peer.result_row(self.store, self.adapter.workspace, agent_id=self.agent_id, text=reply,
+                                    direction=self._reply_direction, commit_sha=sha7,
+                                    problem=str(rec.get("problem") or ""))
                     if self._should_compact():
                         self._compact(rec, reply)
+                self.busy = False
+                if not self._stop_flag.is_set() and callable(self.on_turn_end):
+                    try:
+                        self.on_turn_end()  # deliver a peer batch queued during this turn
+                    except Exception:
+                        pass
             except Exception as exc:
                 fault = ""
                 if not self._stop_flag.is_set():
@@ -323,6 +336,7 @@ class _WorkerRunner:
                         pass
                 return
             finally:
+                self.busy = False
                 self.squad_turn = False
                 self._on_notify()
 
@@ -353,6 +367,9 @@ class AgentMeshManager:
         self._ws_signals_cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._usage_monitor = UsageMonitor()
         self._hubs: dict[str, EventHub] = {}
+        # 4.2 F: one coalescing timer per recipient that holds a queued peer batch.
+        self._peer_timers: dict[str, threading.Timer] = {}
+        self._peer_stopped = threading.Event()
         # Set when this manager serves the daemon: legacy waits then block on the event hub.
         self.hub_enabled = False
 
@@ -408,8 +425,10 @@ class AgentMeshManager:
 
     def _make_runner(self, ws: Path, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter,
                      *, resume: bool = False) -> _WorkerRunner:
-        return _WorkerRunner(agent_id, store, adapter, self._notify, resume=resume,
-                             on_fault=lambda drv, err: self.suspend_driver(ws, drv, err))
+        runner = _WorkerRunner(agent_id, store, adapter, self._notify, resume=resume,
+                               on_fault=lambda drv, err: self.suspend_driver(ws, drv, err))
+        runner.on_turn_end = lambda: self._flush_peer(ws, agent_id)
+        return runner
 
     def suspend_driver(self, ws: Path, driver: str, reason: str) -> dict[str, Any]:
         """Pause every dispatch to `driver` after a provider (balance/quota/auth) fault."""
@@ -967,37 +986,77 @@ class AgentMeshManager:
         problem = "matches several teammates" if hits else "matches no active teammate"
         raise ValueError(f"Recipient '{key}' {problem}. Teammates (agent_id:axis:role_label): {roster or 'none'}")
 
-    def squad(self, ws, sender, *, recipient="", message="", request_id=""):
+    def squad(self, ws, sender, *, recipient="", to="", message="", request_id="", claim="", refs=None,
+              evidence="", ask=""):
+        """List teammates, or queue one peer envelope per target (4.2 F; ``to`` is ``recipient``)."""
+        ws = Path(ws).expanduser().resolve()
+        recipient = recipient or to
         store = self._store(ws)
         me = store.get_agent(sender)
         if not me or not me["problem"] or me["status"] in ("stopped", "error"):
             raise ValueError("An active problem worker is required")
         mates = {a["agent_id"]: a for a in store.list_agents(include_stopped=False, limit=-1)
                  if a["problem"] == me["problem"] and a["agent_id"] != sender}
-        if not recipient and not message:
+        if not recipient and not any(str(v or "").strip() for v in (message, claim, evidence, ask)) and not refs:
             return {"ok": True, "problem": me["problem"], "peers": [
                 {k: a[k] for k in ("agent_id", "role_label", "axis", "driver", "status")} for a in mates.values()]}
-        if not message.strip() or len(request_id) > 128:
-            raise ValueError("Send a non-empty message to a teammate; request_id is limited to 128 characters")
+        if len(request_id) > 128:
+            raise ValueError("request_id is limited to 128 characters")
         targets = self._squad_targets(mates, recipient)
-        text = message.strip()
-        if len(text) > SQUAD_MAX_CHARS:
-            text = text[:SQUAD_MAX_CHARS] + "…[truncated]"
-        sent: list[tuple[str, dict[str, Any]]] = []
-        for target in targets:
-            body = f"[{sender} → {target}] {text}"
-            msg = store.append_message(target, "squad_to_worker", "peer", body, problem=me["problem"],
-                                       event_key=f"peer:{sender}:{target}:{request_id}" if request_id else None)
-            if msg:
-                self._enqueue_to_worker(ws, mates[target], body, squad=True)
-            sent.append((target, msg))
-        if any(msg for _, msg in sent):
+        out = peer.send(workspace=ws, sender=sender, problem=me["problem"], targets=targets,
+                        broadcast=recipient.strip().lower() == "all" and recipient.strip() not in mates,
+                        request_id=request_id, claim=claim, message=message, refs=refs, evidence=evidence,
+                        ask=ask, flush=lambda target: self._peer_poke(ws, target))
+        if out.get("queued"):
             self._notify()
-        if recipient.strip().lower() == "all" and recipient.strip() not in mates:
-            return {"ok": True, "recipients": [t for t, _ in sent], "seqs": [m.get("seq") for _, m in sent],
-                    "duplicate": not any(m for _, m in sent)}
-        target, msg = sent[0]
-        return {"ok": True, "recipient": target, "duplicate": not bool(msg), "seq": msg.get("seq")}
+        return out
+
+    # ---- 4.2 F: merged peer delivery -----------------------------------------------------
+    def _flush_peer(self, ws: Path, agent_id: str) -> int:
+        """Deliver a recipient's queued peer envelopes as ONE bus row and ONE wake."""
+        if self._peer_stopped.is_set():
+            return 0
+        ws = Path(ws).expanduser().resolve()
+        store = self._store(ws)
+        rec = store.get_agent(agent_id)
+        if rec is None:
+            return 0
+        items = peer.take_pending(ws, agent_id)
+        if not items:
+            return 0
+        items = peer.strip_repeats(items, peer.recent_bodies(ws, agent_id))
+        body = peer.batch_body(items)
+        msg = store.append_message(agent_id, "squad_to_worker", "peer", body,
+                                   problem=str(rec.get("problem") or ""),
+                                   event_key=f"peer-batch:{agent_id}:{items[0]['msg_id']}")
+        if msg:
+            peer.remember_quotes(ws, agent_id, items)
+            self._enqueue_to_worker(ws, rec, body, squad=True)
+        self._notify()
+        return len(items)
+
+    def _peer_poke(self, ws: Path, agent_id: str) -> None:
+        """Flush now when the worker is between turns; a busy worker's runner flushes the batch."""
+        with self._lock:
+            runner = self._runners.get(agent_id)
+        if runner is not None and runner.busy:
+            return
+        with self._lock:
+            old = self._peer_timers.get(agent_id)
+            if old is not None and old.is_alive():
+                return
+            timer = threading.Timer(max(0.0, PEER_COALESCE_SEC), self._peer_timeout, args=(ws, agent_id))
+            timer.daemon = True
+            self._peer_timers[agent_id] = timer
+            timer.start()
+
+    def _peer_timeout(self, ws: Path, agent_id: str) -> None:
+        with self._lock:
+            self._peer_timers.pop(agent_id, None)
+        try:
+            self._flush_peer(ws, agent_id)
+        except Exception:
+            pass
 
     def wait_events(
         self,
@@ -1144,12 +1203,25 @@ class AgentMeshManager:
         if norm_kind == "question":
             store.update_agent(agent_id, status="waiting_input")
         local = rec["role_label"] == "bench-author" or bool(runner and runner.squad_turn)
+        problem = str(rec.get("problem") or "")
+        body, attachment, ledger_id = summary.strip(), "", ""
+        if norm_kind == "result" and body:
+            # 4.2 F: the whole stage result lands on disk; the bus keeps a claim plus that path.
+            item = peer.result_envelope(ws, agent_id=agent_id, text=body, problem=problem)
+            body, attachment = peer.result_body(item), item["full"]
+            ledger_id = peer.result_decision(ws, agent_id=agent_id, problem=problem, item=item, sha=sha7)
+        elif len(body) > 4000:
+            body = body[:4000]
         msg = store.append_message(
-            agent_id, "squad_note" if local and priority == "normal" else "worker_to_orch", norm_kind, summary.strip()[:4000],
-            artifacts=artifacts, commit_sha=sha7, priority=priority, problem=str(rec.get("problem") or ""),
+            agent_id, "squad_note" if local and priority == "normal" else "worker_to_orch", norm_kind, body,
+            artifacts=artifacts, commit_sha=sha7, priority=priority, problem=problem,
         )
         self._notify()
-        return {"ok": True, "seq": msg["seq"], "agent_id": agent_id, "kind": norm_kind, "priority": priority, "no_gain_streak": streak}
+        out = {"ok": True, "seq": msg["seq"], "agent_id": agent_id, "kind": norm_kind, "priority": priority,
+               "no_gain_streak": streak}
+        if attachment:
+            out.update({"attachment": attachment, "ledger_id": ledger_id})
+        return out
 
     def post_admin_directive(
         self,
@@ -1224,11 +1296,16 @@ class AgentMeshManager:
         return {"ok": True, "removed": removed}
 
     def stop_all(self) -> None:
+        self._peer_stopped.set()
         with self._lock:
             runners = list(self._runners.values())
             self._runners.clear()
             hubs = list(self._hubs.values())
             self._hubs.clear()
+            timers = list(self._peer_timers.values())
+            self._peer_timers.clear()
+        for timer in timers:
+            timer.cancel()
         for hub in hubs:
             hub.stop()
         for r in runners:

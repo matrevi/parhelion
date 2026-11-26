@@ -159,7 +159,9 @@ def compose_session_brief(
         "Levels: smoke = quick self-check; standard = correctness plus warm timing; final = once per candidate.",
         f"No ssh, flock or direct device access. CLI fallback: `opsb test {title} --sha <sha>`, "
         f"`opsb submit {title} <sha> --note \"<evidence>\"`.",
-        "parhelion_squad recipient: teammate agent_id, role name (axis/role_label) or all; no args lists teammates.",
+        "parhelion_squad recipient: teammate agent_id, role name (axis/role_label) or all; no args lists "
+        "teammates. Send claim (<=280 chars) with refs (ledger ids) and evidence; a body above 1200 chars "
+        "becomes a file path, and messages merge at the teammate's next turn boundary.",
         "When needed, call parhelion_kb_query (3 summaries by default).",
         "Report results, negative ones too, with parhelion_agent_report.",
     ])

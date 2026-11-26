@@ -2,7 +2,9 @@
 
 One entry is one JSON line of at most ``LINE_LIMIT`` bytes. Platform-owned fields are filled by
 code (``source=platform``, ``confidence=measured``, ``diff_hash``, outcomes, per-case numbers);
-``worker_fields`` strips them from anything a model writes. Types and their own fields:
+``worker_fields`` strips them from anything a model writes. ``unverified`` is the peer level: a
+teammate's claim (``source=peer``) that this worker has not measured itself. Types and their own
+fields:
 
 ``measurement`` platform only: key, value, unit, n_repeats, noise_band, env_id, test_level
 ``hypothesis``  status, predicted_effect, test_plan, priority (1 = most urgent .. 5), resolved_by, resolution_note
@@ -23,7 +25,7 @@ from typing import Any
 
 TYPES = ("measurement", "hypothesis", "experiment", "insight", "failure", "decision", "constraint")
 SOURCES = ("platform", "worker", "peer")
-CONFIDENCE = ("measured", "inferred", "speculative")
+CONFIDENCE = ("measured", "inferred", "speculative", "unverified")
 OPEN_STATUSES = ("open", "queued", "testing")
 HYPOTHESIS_STATUS = OPEN_STATUSES + ("confirmed", "refuted", "inconclusive", "abandoned")
 OUTCOMES = ("better", "worse", "neutral", "noise", "WA", "RE", "TLE", "compile_fail")
