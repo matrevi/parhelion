@@ -165,6 +165,9 @@ def test_platform_state_is_not_written(workspace: Path, isolated_home: Path) -> 
     assert result["copy"]["bench_specs"] is False  # nothing to copy, and nothing created
 
 
+# `cli/opsb` has no `if __name__ == "__main__"` guard, so the worker pool must use fork (spawn would
+# re-execute the CLI in every child). Forking a test process warns about the shared parent threads.
+@pytest.mark.filterwarnings("ignore:This process .* is multi-threaded:DeprecationWarning")
 def test_parallel_and_serial_runs_agree(workspace: Path) -> None:
     serial = gate_replay.run(workspace, jobs=1)
     parallel = gate_replay.run(workspace, jobs=4)
@@ -204,7 +207,7 @@ def test_rejects_unknown_switch_group_and_board_mode(workspace: Path) -> None:
     with pytest.raises(ValueError):
         gate_replay.run(workspace, board_mode="sideways")
     with pytest.raises(ValueError):
-        gate_replay.run(workspace, gate_switches=["not_a_switch=1"])
+        gate_replay.run(workspace, jobs=1, gate_switches=["not_a_switch=1"])
     with pytest.raises(ValueError):
         gate_replay.run(workspace / "missing")
 
