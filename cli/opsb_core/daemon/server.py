@@ -281,6 +281,10 @@ class OpsbDaemonRuntime:
                         self.agent_mesh.deliver_test_results(ws)
                     except Exception as exc:
                         print(f"test result delivery failed: {exc}", file=sys.stderr, flush=True)
+                    try:
+                        self.agent_mesh.guide_stuck_seats(ws)
+                    except Exception as exc:
+                        print(f"stuck guidance failed: {exc}", file=sys.stderr, flush=True)
                     if not cfg.get("scheduler", {}).get("auto_consumer_enabled"):
                         continue
                     _, _, data = self.state_cache.get_snapshot(ws)

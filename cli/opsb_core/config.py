@@ -155,6 +155,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 4.2 G worker start-up pack. ``tokens`` caps the whole pack (~6K tokens by default) and
     # ``repo_map`` stays off until a replay shows the generated map pays for itself (research R11).
     "startup_pack": {"tokens": 6000, "repo_map": False},
+    # 4.4 P30-P32 stuck guidance (docs/v4.4/stuck-guidance.md). ``enabled`` runs the detector and the
+    # dossier; ``cards`` delivers guide cards (test_wait reply, idle inbox). Thresholds per class.
+    "guidance": {
+        "enabled": True, "cards": True, "tick_sec": 30,
+        "build_loop_runs": 3, "wa_loop_runs": 3,
+        "plateau_runs": 8, "plateau_minutes": 40, "plateau_min_runs": 2, "plateau_noise": 0.03,
+        "no_candidate_minutes": 60,
+        "scale_ratio": 50, "scale_top_cases": 3, "scale_min_outliers": 1, "scale_small_change": 0.10,
+        "scale_recent_runs": 3,
+        "tier_bounds": [3, 50], "tier_factors": {"algorithm": 10, "datapath": 2, "tuning": 1.3},
+        "repeat_minutes": 30, "inbox_after_sec": 600, "outcome_window_minutes": 120,
+        "card_max_bytes": 800,
+    },
 }
 
 

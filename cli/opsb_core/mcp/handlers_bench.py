@@ -356,10 +356,13 @@ def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str,
         raise ValueError("'request_id' is required for parhelion_test_wait")
     wait_sec = 30 if args.get("wait_sec") is None else args.get("wait_sec")
     full = _format(args) == "full"
+    from ..guidance import monitor as guidance
     from .handlers_agents import _proxy_daemon, daemon_hub
+    _, agent_id = _caller(args)  # 4.4 P32: a worker's undelivered guide card rides on this reply
     hub = daemon_hub(workspace)
     if hub is not None:  # inside the daemon: sleep on the run's state changes
-        return test_runs.wait(workspace, request_id, wait_sec, block=hub.test_blocker(request_id), full=full)
+        reply = test_runs.wait(workspace, request_id, wait_sec, block=hub.test_blocker(request_id), full=full)
+        return guidance.attach(reply, workspace, agent_id)
     try:
         budget = min(float(test_runs.WAIT_MAX_SEC), max(1.0, float(wait_sec)))
     except (TypeError, ValueError):
@@ -367,7 +370,8 @@ def tool_parhelion_test_wait(args: dict[str, Any], workspace: Path) -> dict[str,
     proxied = _proxy_daemon("POST", "/v1/events/test_wait", workspace,
                             {"request_id": request_id, "wait_sec": budget, "full": full},
                             timeout=budget + 6.0, missing_ok=True)
-    return proxied if proxied is not None else test_runs.wait(workspace, request_id, wait_sec, full=full)
+    reply = proxied if proxied is not None else test_runs.wait(workspace, request_id, wait_sec, full=full)
+    return guidance.attach(reply, workspace, agent_id)
 
 
 def tool_parhelion_test_cancel(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

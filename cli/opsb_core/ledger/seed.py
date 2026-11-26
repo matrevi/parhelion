@@ -243,7 +243,8 @@ def build(workspace: Path | str, problem: str, agent_id: str, rows: list[dict[st
     block_min = _digest(rows, agent_id, MIN_LEDGER_CHARS)
     # "the last rounds verbatim": the stored replies of the last turns and the last stage report.
     tail = "\n\n".join(p for p in (recent_rounds(ws, agent_id), str(stage or "").strip()) if p)
-    return assemble(rules=fixed_rules, card=card or card_of(ws, problem, agent_id), ledger=block,
+    card = "\n".join(p for p in (card or card_of(ws, problem, agent_id), guide_line(ws, agent_id)) if p)
+    return assemble(rules=fixed_rules, card=card, ledger=block,
                     ledger_min=block_min, narrative=narrative, tail=tail,
                     worktree=worktree_state(worktree) if worktree else "", budget=budget)
 
@@ -252,6 +253,15 @@ def _digest(rows: list[dict[str, Any]], agent_id: str, max_chars: int) -> str:
     block = digest.render(rows, own=agent_id, max_chars=max_chars, header="")
     missing = digest.ids_missing(block, rows, agent_id)
     return block + ("\nAlso open: " + ", ".join(missing) if missing else "")
+
+
+def guide_line(workspace: Path | str, agent_id: str) -> str:
+    """4.4 P32: the seat's guide card as one line (id and status); the dossier itself never enters a seed."""
+    try:
+        from ..guidance.monitor import seed_line
+        return seed_line(workspace, agent_id) if agent_id else ""
+    except Exception:
+        return ""
 
 
 def card_of(workspace: Path, problem: str, agent_id: str = "") -> str:

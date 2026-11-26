@@ -198,6 +198,16 @@ struct AgentExternalWorkerCard: View {
                             .background(Capsule().fill(Color.red))
                             .help(worker.boundaryFlags.joined(separator: " · "))
                     }
+                    if let stuck = worker.stuck {
+                        // 4.4 P30: the platform's stuck class; the guide card id rides in the tooltip.
+                        Text(stuck.badge)
+                            .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.purple))
+                            .help(stuck.signal + (worker.guide.map { " · \($0.cardId) \($0.status)" } ?? ""))
+                    }
                     if worker.isStagnated {
                         Text("\(worker.noGainStreak)/6")
                             .font(.system(size: 8.5, weight: .heavy, design: .monospaced))

@@ -200,6 +200,17 @@ struct AgentMeshInspectorView: View {
                         Text("streak \(w.noGainStreak)/6")
                             .font(.system(size: 9.5, design: .monospaced))
                             .foregroundStyle(w.isStagnated ? .orange : .secondary)
+                        if let stuck = w.stuck {
+                            Text(lang.tr("卡住 \(stuck.badge)", "STUCK \(stuck.badge)"))
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.purple)
+                                .help(stuck.signal)
+                        }
+                        if let guide = w.guide {
+                            Text("\(guide.cardId) \(guide.status)")
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
                         if let percent = w.contextPercent {
                             Text(lang.tr("上下文 \(percent)%", "Context \(percent)%"))
                                 .font(.caption2.monospacedDigit())

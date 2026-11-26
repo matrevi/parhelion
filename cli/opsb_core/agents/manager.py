@@ -27,6 +27,7 @@ from ..drivers.brief import (
     resolve_problem_repo,
 )
 from ..drivers.registry import VALID_DRIVERS, doctor_drivers, get_active_driver_kind, get_driver
+from ..guidance import monitor as guidance_monitor
 from ..ledger import auto as ledger_auto
 from ..ledger.checkpoint import CHECKPOINT_TAIL, STAGE_FALLBACK_CHARS, build as build_checkpoint, seed_budget  # noqa: F401
 from ..ledger.handoff import HandoffSession
@@ -596,6 +597,16 @@ class AgentMeshManager:
                     self._enqueue_to_worker(ws, author_rec, note, squad=True)
                 self._notify()
         self._feedback_versions[ws] = version
+
+    def guide_stuck_seats(self, ws: Path, *, force: bool = False) -> dict[str, Any]:
+        """4.4 P30-P32: classify live seats, refresh their dossiers, issue and deliver guide cards.
+
+        Throttled to ``guidance.tick_sec`` inside ``guidance.monitor.tick``; it never raises.
+        """
+        result = guidance_monitor.tick(self, Path(ws).expanduser().resolve(), force=force)
+        if result.get("seats"):
+            self._notify()
+        return result
 
     def auto_replace_on_stagnation(self, workspace: Path, title: str) -> dict[str, Any]:
         """Run the seat replacement for a fresh stagnation event when the switch is on (00-PLAN D4).
@@ -1467,6 +1478,8 @@ class AgentMeshManager:
         usage_targets = [worker_target(w["agent_id"], str(w["driver"]).lower()) for w in workers]
         usage_fields = self._usage_monitor.fields(ws, usage_targets + ([orch_usage_target] if orch_usage_target else []))
 
+        guidance = guidance_monitor.hot_fields(ws)  # 4.4 P30/P32: stuck class and active guide card
+
         # Group workers into Problem Squads + collect 4 Strategic Alerts
         squad_groups: dict[str, list[dict[str, Any]]] = {}
         strategic_alerts: list[dict[str, Any]] = []
@@ -1517,6 +1530,7 @@ class AgentMeshManager:
                 "last_msg_dir": w.get("last_msg_dir") or "",
                 "boundary_flags": worker_boundary.flags_of(w),
                 **usage_fields.get(w["agent_id"], {}),
+                **guidance.get(w["agent_id"], {}),
             }
             worker_rows.append(row)
             squad_groups.setdefault(prob, []).append(row)

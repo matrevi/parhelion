@@ -261,6 +261,10 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
     /// 4.2 K boundary classes this worker tripped (empty when clean); older daemons omit the field.
     let boundaryFlags: [String]
     let cache: AgentCacheUsage?
+    /// 4.4 P30 stuck class (build_loop, wa_loop, scale_mismatch, plateau, no_candidate); nil when not stuck.
+    let stuck: AgentStuckHot?
+    /// 4.4 P32 the seat's active guide card (id, class, status); nil before the first card.
+    let guide: AgentGuideHot?
 
     var isLive: Bool { status == "working" || status == "spawning" || status == "waiting_input" }
     var isActive: Bool { status != "stopped" && status != "error" }
@@ -288,6 +292,7 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         case lastMsgEpoch = "last_msg_epoch"
         case lastMsgDir = "last_msg_dir"
         case boundaryFlags = "boundary_flags"
+        case stuck, guide
     }
 
     init(from decoder: Decoder) throws {
@@ -320,6 +325,59 @@ struct AgentWorkerHot: Codable, Identifiable, Hashable {
         lastMsgDir = try c.decodeIfPresent(String.self, forKey: .lastMsgDir) ?? ""
         boundaryFlags = try c.decodeIfPresent([String].self, forKey: .boundaryFlags) ?? []
         cache = try AgentCacheUsage.decodeIfPresent(from: decoder)
+        stuck = try? c.decodeIfPresent(AgentStuckHot.self, forKey: .stuck)
+        guide = try? c.decodeIfPresent(AgentGuideHot.self, forKey: .guide)
+    }
+}
+
+/// 4.4 P30: why the platform thinks a seat is stuck (older daemons omit it).
+struct AgentStuckHot: Codable, Hashable {
+    let stuckClass: String
+    let signal: String
+    let since: String?
+
+    enum CodingKeys: String, CodingKey {
+        case signal, since
+        case stuckClass = "class"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        stuckClass = try c.decodeIfPresent(String.self, forKey: .stuckClass) ?? ""
+        signal = try c.decodeIfPresent(String.self, forKey: .signal) ?? ""
+        since = try c.decodeIfPresent(String.self, forKey: .since)
+    }
+
+    /// Short badge text for the worker card.
+    var badge: String {
+        switch stuckClass {
+        case "build_loop": return "BUILD"
+        case "wa_loop": return "WA"
+        case "scale_mismatch": return "SCALE"
+        case "plateau": return "FLAT"
+        case "no_candidate": return "NO CAND"
+        default: return stuckClass.uppercased()
+        }
+    }
+}
+
+/// 4.4 P32: the seat's active guide card; the text stays in the dossier and the inbox.
+struct AgentGuideHot: Codable, Hashable {
+    let cardId: String
+    let cardClass: String
+    let status: String
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case cardId = "card_id"
+        case cardClass = "class"
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cardId = try c.decodeIfPresent(String.self, forKey: .cardId) ?? ""
+        cardClass = try c.decodeIfPresent(String.self, forKey: .cardClass) ?? ""
+        status = try c.decodeIfPresent(String.self, forKey: .status) ?? ""
     }
 }
 

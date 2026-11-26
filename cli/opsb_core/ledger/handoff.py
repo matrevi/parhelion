@@ -280,8 +280,10 @@ class HandoffSession:
         findings["seed_scheme"] = scheme
         if status == "ledger_only":
             from ..services import state_card
-            seed = seed_min.build(card=state_card.build(self.workspace, self.problem, self.agent_id), rows=self.rows(),
-                                  worktree=self.worktree, own=self.agent_id, rules=state_card.RULES_LINE)
+            card = "\n".join(p for p in (state_card.build(self.workspace, self.problem, self.agent_id),
+                                          _seed.guide_line(self.workspace, self.agent_id)) if p)
+            seed = seed_min.build(card=card, rows=self.rows(), worktree=self.worktree, own=self.agent_id,
+                                  rules=state_card.RULES_LINE)
             result = Result(seed, status, findings)
             self.record(kind, narrative, "", result)
             return result
@@ -307,7 +309,7 @@ class HandoffSession:
         parts = [seed_min.SEED_PREFIX, text]
         if carried:
             parts.append("Carried forward from the previous handoff:\n" + "\n".join(f"- {c}" for c in carried))
-        parts += [block, "Last reported result:\n" + checkpoint]
+        parts += [block, _seed.guide_line(self.workspace, self.agent_id), "Last reported result:\n" + checkpoint]
         result = Result("\n".join(p for p in parts if p), status, findings)
         self.record(kind, narrative, text, result)
         return result
@@ -330,7 +332,8 @@ class HandoffSession:
             self.record(kind, "", "", result)
             return result
         block = self.summary_block()
-        parts = [seed_min.SEED_PREFIX, block, "Last reported result:\n" + checkpoint]
+        parts = [seed_min.SEED_PREFIX, block, _seed.guide_line(self.workspace, self.agent_id),
+                 "Last reported result:\n" + checkpoint]
         result = Result("\n".join(p for p in parts if p), "ok", {"ledger_only_prefix": True, "seed_scheme": scheme})
         self.record(kind, "", "", result)
         return result

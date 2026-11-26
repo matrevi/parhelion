@@ -1,4 +1,4 @@
-"""CLI: ``opsb replay {bench, metrics}`` over session logs (read-only)."""
+"""CLI: ``opsb replay {bench, metrics, gate, stuck}`` over session logs and contest data (read-only)."""
 from __future__ import annotations
 
 import argparse
@@ -162,6 +162,21 @@ def run_replay_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_replay_stuck(args: argparse.Namespace) -> int:
+    """``opsb replay stuck``: the 4.4 P30 detector over a past sprint's ledgers (read only)."""
+    from ..replay import stuck_replay
+    ws = _workspace(args.workspace)
+    if ws is None:
+        print(json.dumps({"ok": False, "error": "workspace not found"}) if args.json
+              else f"Error: workspace {args.workspace!r} not found")
+        return 2
+    problems = [p.strip() for p in str(args.problems or "").split(",") if p.strip()] or None
+    result = stuck_replay.run(ws, since=args.since, until=args.until, step=float(args.step), problems=problems,
+                              sessions=args.sessions)
+    print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else stuck_replay.render(result))
+    return 0
+
+
 def _print_gate(r: dict[str, Any]) -> None:
     copy, shots = r["copy"], r["shots"]
     print(f"{r['workspace']}: {shots['replayed']} of {shots['canonical_rows']} journal rows replayed "
@@ -260,6 +275,15 @@ def register_replay_subcommands(sub: Any) -> None:
                    help="4.3 P29 block: Spearman, top-1 hit rate and the gain error, with bootstrap CIs")
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=run_replay_gate)
+    st = rp_sub.add_parser("stuck", help="Run the stuck detector over a past sprint's ledgers (read only)")
+    st.add_argument("--workspace", "-w", required=True, help="Contest workspace directory (read only)")
+    st.add_argument("--since", help="ISO-8601 lower bound, e.g. 2026-11-26T21:17Z")
+    st.add_argument("--until", help="ISO-8601 upper bound")
+    st.add_argument("--step", default=5, type=float, help="Minutes between evaluations (default 5)")
+    st.add_argument("--problems", help="Comma-separated problem titles (default: every problem)")
+    st.add_argument("--sessions", help="Session logs directory: add aggregate tool-call counts per episode")
+    st.add_argument("--json", action="store_true")
+    st.set_defaults(func=run_replay_stuck)
     for name, func, help_text in (
         ("bench", run_replay_bench, "Score seed schemes against probes cut from compaction points"),
         ("metrics", run_replay_metrics, "Recompute sprint metrics, cache hit rates and cost efficiency"),
