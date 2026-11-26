@@ -259,19 +259,29 @@ def test_mcp_stdio_handshake_and_error_handling(isolated_mcp_env: Path, tmp_path
 
 
 TOOL_TABLE_BUDGET = {"orchestrator": 15_000, "worker": 13_000}  # 4.2 J-2, UTF-8 bytes of tools/list
+#: 4.3 P26 worker subroles: their tables are strictly shorter; the budget stays the worker one.
+SUBROLE_TOOL_COUNT = {"recon": 18, "knowledge": 14}
 
 
 def test_tool_table_stays_within_the_context_budget() -> None:
     """The tool table rides on every model call, so its size is a budget, not an accident (4.2 J-2)."""
+    sizes = {}
     for role, budget in TOOL_TABLE_BUDGET.items():
         tools = list_tool_schemas(role=role)
         table = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
-        size = len(table.encode("utf-8"))
+        size = sizes[role] = len(table.encode("utf-8"))
         assert size <= budget, (
             f"the {role} tool table is {size} B, over its {budget} B budget: shorten a description in "
             f"opsb_core/mcp/schemas.py, move column docs into parhelion_report(view='help'), or record a new "
             f"budget here with the reason"
         )
+    for role, count in SUBROLE_TOOL_COUNT.items():
+        tools = list_tool_schemas(role=role)
+        size = len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        assert len(tools) == count, role
+        assert size < sizes["worker"] <= TOOL_TABLE_BUDGET["worker"], role
+        sizes[role] = size
+    assert sizes["recon"] < sizes["worker"] and sizes["knowledge"] < sizes["recon"]
     assert len(list_tool_schemas(role="orchestrator")) == 29
     assert len(list_tool_schemas(role="worker")) == 24
 

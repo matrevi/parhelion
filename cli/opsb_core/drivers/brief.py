@@ -135,6 +135,7 @@ def compose_session_brief(
     include_startup_pack: bool = False,
     driver: str = "",
     startup_pack_tokens: int | None = None,
+    handover: str = "",
 ) -> str:
     """Lean worker brief (<= MAX_BRIEF_BYTES) followed by the platform state card.
 
@@ -178,7 +179,7 @@ def compose_session_brief(
         from . import startup_pack
         pack = startup_pack.build(
             ws, title, contract=body, worktree=wt, branch=branch, role=role, agent_id=agent_id,
-            driver=driver, tokens=startup_pack_tokens,
+            driver=driver, tokens=startup_pack_tokens, handover=handover,
         )
         # P03's meter records the pack size so `opsb replay metrics` counts it (never raises).
         startup_pack.record_size(ws, pack, agent_id=agent_id, role=role)
@@ -187,6 +188,82 @@ def compose_session_brief(
         return body
     from ..services import state_card
     return body + "\n\n" + state_card.build(ws, title, agent_id)
+
+
+DATA_CHANNEL = ("Platform data (board, tbest, receipts, env) comes from parhelion_report views "
+                "board/history/per_case/env, not from ~/.parhelion files, opsb_core imports or platform internals.")
+#: Seat roles with their own contract; ``race``/``recon``/``integrator``/``knowledge`` ship in 4.3 (P26).
+SEAT_CONTRACTS = ("race", "recon", "integrator", "knowledge")
+
+
+def compose_seat_contract(workspace: Path, role: str, *, problem: str = "", worktree: Path | str | None = None,
+                          branch: str = "", goal: str = "") -> str:
+    """One role contract under the 1.5 KB cap; every contract names the five required fields.
+
+    The five fields are the one of research R2 §1.2: an exclusive directory and branch, the commands,
+    the deliverable, the recipient, and the condition that makes the seat stop. The data-channel line
+    stays last so a shorter contract never drops where platform facts come from.
+    """
+    ws = workspace.expanduser().resolve()
+    role = str(role or "").strip().lower()
+    if role not in SEAT_CONTRACTS:
+        raise ValueError(f"Unknown seat contract {role!r}: choose one of {', '.join(SEAT_CONTRACTS)}")
+    if role == "knowledge":
+        title = problem or ws.name
+        # A knowledge seat may be unbound (no problem): it then works in the shared workspace and has no branch.
+        wt = Path(worktree).expanduser().resolve() if worktree else ws
+        where = (f"Worktree `{wt}`" + (f" on branch `{branch}`" if branch else "") +
+                 "; write the documents you name there and commit only there.")
+        commands = ("parhelion_kb_query / parhelion_kb_record / parhelion_kb_feedback; evidence reads through "
+                    "parhelion_report views history/per_case/board. You cannot run parhelion_test and cannot enqueue "
+                    "a submission.")
+        deliverable = ("reusable KB entries (mechanism, trigger conditions, cost, applicable problems, evidence) "
+                       "plus the document paths you wrote. Your deliverable is not a score.")
+        recipient = "the problem owners via parhelion_squad (recipient all) and the orchestrator via parhelion_agent_report."
+        stop = ("the entries are recorded with their evidence, or the evidence is too thin to promote: report that "
+                "as a follow-up instead of guessing.")
+    else:
+        title, repo_dir, _ = resolve_problem_repo(ws, problem or ws.name)
+        wt = Path(worktree).expanduser().resolve() if worktree else repo_dir
+        where = (f"Worktree `{wt}`" + (f" on branch `{branch}`" if branch else "") +
+                 "; commit there and hand over full SHAs.")
+        if role == "race":
+            commands = ("parhelion_test (level smoke|standard|final, explicit sha) -> parhelion_test_wait "
+                        "request_id=... -> compare the digest with its baseline -> parhelion_submit_gate (preview, "
+                        "then enqueue=true). Levels: smoke self-check, standard correctness+warm timing, final once "
+                        f"per candidate. CLI fallback: `opsb test {title} --sha <sha>`.")
+            deliverable = ("a measured candidate SHA through the gate, plus the mechanism and its numbers with "
+                           "parhelion_note. You are one of N tracks on this goal and a rival seat works the same "
+                           "objective; there is no separate winner rule: the gate and the platform candidate "
+                           "archive (top-3) keep the best track.")
+            recipient = "the orchestrator (parhelion_agent_report kind=result) and your rivals via parhelion_squad."
+            stop = ("three measured rounds on one mechanism show no gain, the gate holds the candidate, or the "
+                    "orchestrator sends a handoff directive. No ssh, flock or direct device access.")
+        elif role == "recon":
+            commands = ("parhelion_report views board/per_case/bottleneck/history, parhelion_kb_query and "
+                        "parhelion_bench_diagnose. You cannot run parhelion_test; parhelion_submit_gate is preview-only "
+                        "for you.")
+            deliverable = ("one blueprint: the measured bottleneck split, 2-3 candidate mechanisms with the "
+                           "evidence that names them, and the implementation seat each one belongs to. Record it with "
+                           "parhelion_note and name the document path.")
+            recipient = ("the implementation seats (parhelion_squad recipient all, or impl-1..K) and the integrator; "
+                         "the orchestrator gets it via parhelion_agent_report.")
+            stop = ("the blueprint is delivered, the evidence you need does not exist locally (name the missing "
+                    "receipt), or the orchestrator stops the seat.")
+        else:  # integrator
+            commands = ("merge the implementation branches (`sprint-impl-*`) into your branch, parhelion_test "
+                        "level=final on the merged SHA, then parhelion_submit_gate (preview, then enqueue=true). "
+                        "Never use --force or --now.")
+            deliverable = ("one merged candidate SHA with its digest and merge order; report it with "
+                           "parhelion_note and parhelion_agent_report.")
+            recipient = ("the orchestrator (result) and the implementation seats (squad: which branch was kept and "
+                         "why).")
+            stop = ("the merged candidate is submitted and judged, the gate holds it, or a conflict needs an owner "
+                    "decision: ask the owning implementation seat, then the orchestrator.")
+    lines = [f"# {title} · {role}", f"Goal: {' '.join(goal.split()) or 'Raise the measured official score.'}", where]
+    lines.extend(["Commands: " + commands, "Deliverable: " + deliverable, "Recipient: " + recipient,
+                  "Stop when: " + stop, DATA_CHANNEL])
+    return _truncate_utf8("\n".join(lines), MAX_BRIEF_BYTES)
 
 
 def _clean_sprint_brief(ws: Path, probs: list[dict[str, Any]], goal: str) -> str:

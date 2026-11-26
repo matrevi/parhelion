@@ -372,12 +372,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_sprint_start",
-        "description": "On a contest start, launch or reuse one worker per problem on the active Harness; preview checks readiness without launching.",
+        "description": "Start or reuse seats per problem; preview only checks readiness and spawns nothing.",
         "roles": ("orchestrator",),
         "inputSchema": {"type": "object", "properties": {
             "driver": {"type": "string"}, "preview": {"type": "boolean"},
-            "mode": {"type": "string", "enum": ["solo", "dual", "full"], "description": "solo (default): 1 per problem; dual adds algorithm/dataflow; full adds bench-author"},
-            "problems": {"type": "array", "items": {"type": "string"}},
+            "mode": {"type": "string", "enum": ["solo", "dual", "full", "race", "pipeline"], "description": "solo default; dual +algorithm/dataflow; full +bench-author; race N tracks; pipeline recon+K impl+integrator+harness"},
+            "problems": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}},
+            "seats": {"type": "integer"},
+            "role": {"type": "string", "enum": ["worker", "knowledge"]},
+            "adjust": {"type": "boolean"},
+            "stop": {"type": "array", "items": {"type": "string"}},
+            "replace": {"type": "array", "items": {"type": "string"}},
             "enable_auto_submit": {"type": "boolean", "description": "only when the user asks for automatic submission"}
         }},
     },

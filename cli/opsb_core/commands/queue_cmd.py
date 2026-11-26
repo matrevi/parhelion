@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import CLI_DIR, ConfigRepository, append_jsonl_locked, invalidate_ttl_cache, resolve_python_exe, utc_now
-from ..device_env import device_text
+from ..device_env import contest_work_root, device_text
 from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
 from ..services.contest_service import resolve_workspace_meta
 from ..services.git_fast import resolve_commit_sha
@@ -363,7 +363,12 @@ def run_queue(args: argparse.Namespace) -> int:
 
 
 def _remote_problem_dir(workspace: Path, title: str) -> str:
-    """Remote checkout path for a problem: `<npu_remote_root>/<Title>` (legacy default unchanged)."""
+    """Remote checkout path for a problem: `<root>/<Title>`.
+
+    The root comes from the workspace manifest (`npu_remote_root`), else the per-contest root of the
+    device configuration, else `<work_root>/<work_prefix>`. The deployment path is a device setting,
+    so no host-specific directory is written here.
+    """
     try:
         manifest = json.loads((workspace / "opsb.workspace.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -374,7 +379,7 @@ def _remote_problem_dir(workspace: Path, title: str) -> str:
         if not root:
             contest = str(manifest.get("contest_id") or "").strip()
             if contest:
-                root = f"/home/developer/work/{contest}"
+                root = f"{contest_work_root()}/{contest}"
     if not root:
         root = device_text("work_root").rstrip("/") + "/" + device_text("work_prefix")
     return f"{root.rstrip('/')}/{title}"

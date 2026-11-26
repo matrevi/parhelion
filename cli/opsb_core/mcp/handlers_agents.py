@@ -106,12 +106,24 @@ def tool_parhelion_sprint_start(args: dict[str, Any], workspace: Path) -> dict[s
     if mode not in MODES:
         raise ValueError(f"mode must be one of: {', '.join(MODES)}")
     body = {"driver": args.get("driver") or "", "preview": args.get("preview") is True,
-            "enable_auto_submit": args.get("enable_auto_submit") is True, "mode": mode}
+            "enable_auto_submit": args.get("enable_auto_submit") is True, "mode": mode,
+            "adjust": args.get("adjust") is True, "role": str(args.get("role") or "")}
+    if args.get("seats") is not None:
+        body["seats"] = int(args["seats"])
     problems = args.get("problems")
     if problems is not None:
-        if not isinstance(problems, list) or not all(isinstance(p, str) and p.strip() for p in problems):
-            raise ValueError("problems must be a list of problem titles")
+        valid = isinstance(problems, list) and all(
+            (isinstance(p, str) and p.strip()) or isinstance(p, dict) for p in problems)
+        if not valid:
+            raise ValueError("problems must be a list of problem titles or {title, mode, seats} objects")
         body["problems"] = problems
+    for name in ("stop", "replace"):
+        value = args.get(name)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+            raise ValueError(f"{name} must be a list of seat names" if name == "stop" else f"{name} must be a list of problem titles")
+        body[name] = value
     if _ACTIVE_DAEMON_MANAGER is not None:
         return start_sprint(_ACTIVE_DAEMON_MANAGER, workspace, **body)
     result = _proxy_daemon("POST", "/v1/agents/sprint", workspace, body, timeout=180)

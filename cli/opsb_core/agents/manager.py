@@ -18,7 +18,9 @@ from .. import config as _cfg
 from .. import worker_boundary
 from ..drivers.base import resolve_session_logs_dir, resolve_workspace_state_dir
 from ..drivers.brief import (
+    SEAT_CONTRACTS,
     compose_bench_author_brief,
+    compose_seat_contract,
     compose_session_brief,
     prepare_session_worktree,
     resolve_problem_repo,
@@ -581,6 +583,8 @@ class AgentMeshManager:
                                                event_key=f"strategy:{sid}:{kind}")
                     if msg:
                         self._notify()
+                        if kind == "stagnation":
+                            self.auto_replace_on_stagnation(ws, title)
             if calibration_seqs:
                 note = (f"{len(calibration_seqs)} official calibration receipt(s) for {title}. Read your inbox "
                         f"starting at since_seq={calibration_seqs[0] - 1} through seq {calibration_seqs[-1]}. "
@@ -590,6 +594,25 @@ class AgentMeshManager:
                     self._enqueue_to_worker(ws, author_rec, note, squad=True)
                 self._notify()
         self._feedback_versions[ws] = version
+
+    def auto_replace_on_stagnation(self, workspace: Path, title: str) -> dict[str, Any]:
+        """Run the seat replacement for a fresh stagnation event when the switch is on (00-PLAN D4).
+
+        Off by default: the platform only prepares the handover and the executable call. When on, the
+        replacement still goes through ``start_sprint(replace=...)``, which is idempotent per stagnation
+        event, so replaying the same receipts cannot replace a problem twice.
+        """
+        cfg = _cfg.ConfigRepository.load()
+        agents = cfg.get("agents") if isinstance(cfg.get("agents"), dict) else {}
+        if not agents.get("auto_replace_on_stagnation"):
+            return {"ok": True, "skipped": "agents.auto_replace_on_stagnation is off"}
+        try:
+            from .sprint import start_sprint
+
+            slots = start_sprint(self, workspace, replace=[title]).get("replaced") or []
+            return {"ok": True, "replaced": slots}
+        except Exception as exc:  # a failed automatic replacement must not stop the feedback loop
+            return {"ok": False, "error": str(exc)[:300]}
 
     def _notify(self) -> None:
         with self._cond:
@@ -831,6 +854,8 @@ class AgentMeshManager:
         axis: str = "",
         worktree_mode: str = "isolated",
         track: str = "",
+        seat: str = "",
+        handover: str = "",
         _sprint: bool = False,
     ) -> dict[str, Any]:
         ws = workspace.expanduser().resolve()
@@ -887,15 +912,23 @@ class AgentMeshManager:
             f"{prob_title or ws.name} · {safe_role}\n{task.strip()}\n\n"
             "Use Parhelion for tests and candidate submissions. Use parhelion_squad to share findings with teammates."
         )
-        if safe_role == "bench-author" and prob_title:
+        if safe_role in SEAT_CONTRACTS and (prob_title or safe_role == "knowledge"):
+            # 4.3 P26 item 8: race/recon/integrator/knowledge seats get their own contract under the same
+            # 1.5 KB cap, instead of the generic worker brief.
+            worker_prompt = compose_seat_contract(ws, safe_role, problem=prob_title, worktree=wt, branch=branch,
+                                                  goal=task.strip())
+        elif safe_role == "bench-author" and prob_title:
             worker_prompt = compose_bench_author_brief(ws, prob_title) + "\n\n" + task.strip()
         elif prob_title:
             try:
                 worker_prompt = compose_session_brief(ws, prob_title, goal=task.strip(), worktree=wt, branch=branch,
                                                       role=safe_role, agent_id=agent_id,
-                                                      include_startup_pack=True, driver=drv_kind)
+                                                      include_startup_pack=True, driver=drv_kind,
+                                                      handover=handover)
             except Exception:
                 pass
+        if handover and safe_role in SEAT_CONTRACTS:
+            worker_prompt = worker_prompt + "\n\n" + str(handover).strip()
         rec = store.create_agent({
             "agent_id": agent_id,
             "driver": drv_kind,
@@ -903,6 +936,7 @@ class AgentMeshManager:
             "problem": prob_title or ws.name,
             "collab_mode": c_mode,
             "axis": clean_axis,
+            "seat": str(seat or clean_axis)[:28] if seat else "",
             "worktree": str(wt),
             "worktree_mode": mode,
             "branch": branch,
@@ -1335,11 +1369,11 @@ class AgentMeshManager:
         doc = self._cached_doctor()
         active = str(doc.get("active_driver") or get_active_driver_kind()).lower()
         store = self._store(ws)
-        from .sprint import sprint_seats
+        from .seat_plan import seat_of, sprint_seats
         all_workers = store.list_agents(limit=-1)
         seats = sprint_seats(all_workers)
         workers = [w for w in all_workers if w["status"] != "stopped" or
-                   seats.get((w["problem"], Path(w["worktree"]).name), w)["agent_id"] == w["agent_id"]]
+                   seats.get((w["problem"], seat_of(w)), w)["agent_id"] == w["agent_id"]]
         now = time.time()
         diag_by_kind = {str(d.get("kind") or "").lower(): d for d in (doc.get("diagnostics") or [])}
         orch_diag = diag_by_kind.get(active, {})

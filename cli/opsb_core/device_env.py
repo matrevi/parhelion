@@ -55,6 +55,9 @@ DEFAULTS: dict[str, Any] = {
     "judge_bot": "judge-bot",
     "work_root": "/srv/work",
     "work_prefix": "bench",
+    # Root of the per-contest checkouts on the device host (`<root>/<contest_id>/<Title>`). Empty keeps
+    # `work_root`, so an unconfigured host stays neutral and a configured one is unchanged.
+    "contest_work_root": "",
     "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
     "contest_org": "",
     "contest_track": "",
@@ -173,6 +176,11 @@ def device_text(key: str) -> str:
 def device_list(key: str) -> list[str]:
     value = device(key)
     return [str(item) for item in value] if isinstance(value, list) else []
+
+
+def contest_work_root() -> str:
+    """Remote root that holds one directory per contest: ``device.contest_work_root``, else ``work_root``."""
+    return (device_text("contest_work_root") or device_text("work_root")).rstrip("/")
 
 
 #: Settings the standalone NPU probes read (``device_text``/``DEVICE.get`` in
