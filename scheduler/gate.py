@@ -926,16 +926,21 @@ class SubmissionGate:
         """Public entry: evaluate, then durably record the verdict for later analysis."""
         verdict = self._evaluate_impl(*args, **kwargs)
         try:
-            from .feedback_log import log_feedback
+            from .feedback_log import log_feedback_on_change
 
-            log_feedback(
+            # Status refreshes re-evaluate the same candidate constantly; only a changed
+            # verdict is worth a log line.
+            stage_codes = [s.code for s in verdict.stages]
+            log_feedback_on_change(
                 self.workspace,
                 "gate",
+                f"{verdict.title}:{verdict.sha[:7]}",
+                json.dumps([verdict.status_tag, verdict.approved, stage_codes, verdict.gate_reason], sort_keys=True),
                 title=verdict.title,
                 sha=verdict.sha[:7],
                 status=verdict.status_tag,
                 approved=verdict.approved,
-                stages=[s.code for s in verdict.stages],
+                stages=stage_codes,
                 reason=verdict.gate_reason,
                 probe=next((s.metrics for s in verdict.stages if s.code == "PROBE_ALLOWANCE"), None),
             )
