@@ -96,6 +96,8 @@ def run_status(args: argparse.Namespace) -> int:
         f"Reserve {s['closing_reserve']} shown only) | "
         f"Noise Floor Δ>={s['noise_floor_delta']}"
     )
+    if s.get("slot_hint"):
+        print(f"Slot hint: {s['slot_hint']}")
     print("\nProblems:")
     for p in payload["problems"]:
         r_str = f"#{p['rank']}" if p["rank"] else "—"

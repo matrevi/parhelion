@@ -25,6 +25,7 @@ from .paging import paginate
 
 BIG, ENV_BYTES, LIMIT_MAX = 4096, 1024, 50
 RULES_BYTES = 2048
+CLOSE_BYTES = 3072
 RULES_FORMULA = "case = 100/(1+ln(t/tbest)/ln1.5); problem = mean over the roster"
 FORBIDDEN = ("account_id", "account_label", "user_id", "cookies", "cookie", "token", "session_file")
 
@@ -508,6 +509,45 @@ def _sweep(workspace: Path | str, args: dict[str, Any], role: str) -> dict[str, 
         "source": "stored bench-run reports and fast_feedback cards; no device run",
     }
     return _fit(out, SWEEP_BYTES, ("source",), rows="problems")
+
+CLOSE_COLUMNS = ("title", "mode", "board_sha", "board_score", "best_sha", "best_score", "gap",
+                 "sigma_hat", "restore", "merge", "tag")
+
+
+def _close(workspace: Path | str, problem: str | None, args: dict[str, Any], role: str) -> dict[str, Any]:
+    """4.3 P25 closing reconciliation: the three lists plus one row per problem, ``<=CLOSE_BYTES``.
+
+    The numbers come from ``scheduler.close_sweep``: the board is replayed as of the close, so a
+    post-contest re-score of the live snapshot does not move the G5 gap. A worker reads its own
+    problem only; the three lists are filtered with the same rule as the table.
+    """
+    _cfg.ensure_scheduler_path()
+    from scheduler import close_sweep
+    from scheduler.estimator import ScoreEstimator
+
+    ws = Path(workspace)
+    keep = {title.lower() for title in _titles(ws, problem, role)}
+    doc = close_sweep.sweep(ws, ScoreEstimator(ws))
+    rows = [row for row in doc["problems"] if str(row["title"]).lower() in keep]
+    listed = {key: {str(r["title"]).lower() for r in doc[key]} for key in ("restore", "merge", "tag")}
+    restore = [[r["title"], r["best_sha"], r["gap"], r["sigma_hat"]] for r in doc["restore"]
+               if str(r["title"]).lower() in keep]
+    merge = [[r["title"], r["best_sha"], r["branches"]] for r in doc["merge"] if str(r["title"]).lower() in keep]
+    tag = [[r["title"], r["tag"], r["target"]] for r in doc["tag"] if str(r["title"]).lower() in keep]
+    out: dict[str, Any] = {
+        "view": "close", "as_of": str(doc["as_of"])[:19] + "Z", "columns": list(CLOSE_COLUMNS),
+        "closing": {key: doc["closing"].get(key) for key in
+                    ("contest_end", "window_min", "restore_boost", "in_window", "minutes_left")},
+        "restore": restore, "merge": merge, "tag": tag,
+        "problems": [[r["title"], r["mode"], r["board_sha"], r["board_score"], r["best_sha"],
+                      r["best_score"], r["gap"], r["sigma_hat"],
+                      *[str(r["title"]).lower() in listed[key] for key in ("restore", "merge", "tag")]]
+                     for r in rows],
+        # totals cover what this caller may see: a worker's view must not count another problem
+        "totals": {"restore": len(restore), "restore_gap": round(sum(row[2] for row in restore), 2),
+                   "merge": len(merge), "tag": len(tag)},
+    }
+    return _fit(out, CLOSE_BYTES, ("closing", "merge", "tag"), rows="problems")
 
 
 def _env(workspace: Path | str) -> dict[str, Any]:

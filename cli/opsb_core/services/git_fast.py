@@ -1,4 +1,4 @@
-"""Zero-subprocess Git metadata reader (<0.1ms per repository)."""
+"""Git metadata reader: refs and HEAD straight from the files (<0.1ms), one bounded subprocess for ancestry."""
 from __future__ import annotations
 
 import subprocess
@@ -40,6 +40,83 @@ def read_head_fast(repo_dir: Path) -> tuple[str, int | None, str]:
         except Exception:
             pass
     return "", None, ""
+
+
+def read_refs(git_dir: Path) -> dict[str, str]:
+    """Every ``refs/*`` of a repository: loose ref files first, ``packed-refs`` fills the gaps."""
+    refs: dict[str, str] = {}
+    for base, prefix in ((git_dir / "refs" / "heads", "refs/heads/"),
+                         (git_dir / "refs" / "tags", "refs/tags/")):
+        if not base.is_dir():
+            continue
+        for entry in base.rglob("*"):
+            try:
+                sha = entry.read_text(encoding="utf-8").strip()[:40] if entry.is_file() else ""
+            except OSError:
+                continue
+            if len(sha) == 40:
+                refs[prefix + entry.relative_to(base).as_posix()] = sha
+    try:
+        lines = (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        if not line or line[0] in "#^":
+            continue
+        sha, _, name = line.partition(" ")
+        if len(sha) == 40 and name.strip() and name.strip() not in refs:
+            refs[name.strip()] = sha
+    return refs
+
+
+def main_head(git_dir: Path) -> str:
+    """The ``main`` commit, or the checked-out HEAD when the repository has no ``main``."""
+    refs = read_refs(git_dir)
+    if "refs/heads/main" in refs:
+        return refs["refs/heads/main"]
+    try:
+        head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    if head.startswith("ref: "):
+        return refs.get(head[5:].strip(), "")
+    return head[:40] if len(head) >= 40 else ""
+
+
+def best_tag_of(refs: dict[str, str]) -> dict[str, object]:
+    """The highest-scored ``best/*`` tag: ``{tag, tag_score, tag_sha, tag_on_best}``."""
+    tags: list[tuple[float, str, str]] = []
+    for name, sha in refs.items():
+        if not name.startswith("refs/tags/best/"):
+            continue
+        short = name[len("refs/tags/best/"):]
+        try:
+            score = float(short.split("-", 1)[0])
+        except ValueError:
+            score = 0.0
+        tags.append((score, short, sha))
+    if not tags:
+        return {"tag": "", "tag_score": None, "tag_sha": "", "tag_on_best": ""}
+    tags.sort(key=lambda row: (-row[0], row[1]))
+    score, short, sha = tags[0]
+    return {"tag": short, "tag_score": score, "tag_sha": sha[:7],
+            "tag_on_best": next((name for _s, name, one in tags if one == sha), "")}
+
+
+def branches_containing(repo_dir: Path, sha: str) -> tuple[list[str], str]:
+    """``(branches, error)`` holding ``sha`` through one bounded ``git branch --contains``."""
+    if not sha or not (repo_dir / ".git").exists():
+        return [], "no repository"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "branch", "--contains", sha, "--format=%(refname:short)"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return [], f"git unavailable: {type(exc).__name__}"
+    if proc.returncode != 0:
+        return [], (proc.stderr or "the SHA is not in this repository").strip()[:160]
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()], ""
 
 
 def resolve_commit_sha(repo_dir: Path, rev: str) -> str | None:

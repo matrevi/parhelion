@@ -53,6 +53,7 @@ from .estimator import (
     _parse_iso,
     resolve_sha,
 )
+from . import close_sweep
 from . import receipts
 from . import submit_intent
 from .parhelion_paths import list_eligible_account_slots
@@ -325,6 +326,12 @@ class QuotaStatus:
     rate_wait_sec: int
     beijing_date: str
     next_reset_utc: str
+    # 4.3 P25: per-slot daily usage by slot number only (never an account id or name), the share
+    # of the Beijing day already spent, and one display line when a slot sits under-used. Quota is
+    # never a threshold: `slot_hint` is display only and nothing below reads it.
+    per_slot: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    day_elapsed_pct: float = 0.0
+    slot_hint: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -1020,6 +1027,12 @@ class SubmissionGate:
 
         used_ids_by_aid: dict[str, set[str]] = {aid: set() for aid in slot_ids}
         last_ts_by_aid: dict[str, datetime.datetime | None] = {aid: None for aid in slot_ids}
+        # R5 §6: an account id the registry does not know (a slot added mid-sprint, a disabled one)
+        # used to be credited to the default slot, which made that slot look exhausted while the
+        # real one looked idle. Such rows now keep their own bucket and never pay a known slot.
+        unmapped = "\0unmapped"
+        used_ids_by_aid[unmapped] = set()
+        last_ts_by_aid[unmapped] = None
 
         def _map_aid(raw_aid: Any, raw_uid: Any = None) -> str:
             aid = str(raw_aid or "")
@@ -1027,6 +1040,8 @@ class SubmissionGate:
                 return aid
             if raw_uid and str(raw_uid) in uid_to_aid:
                 return uid_to_aid[str(raw_uid)]
+            if aid:
+                return unmapped
             return "primary" if "primary" in slot_id_set else slot_ids[0]
 
         for r in self.estimator.outcomes:
@@ -1070,8 +1085,9 @@ class SubmissionGate:
         used_per_aid = {aid: min(per_acc_limit, len(used_ids_by_aid[aid])) for aid in slot_ids}
         rem_per_aid = {aid: max(0, per_acc_limit - used_per_aid[aid]) for aid in slot_ids}
         total_daily_limit = per_acc_limit * len(slot_ids)
-        used_today = sum(used_per_aid.values())
-        remaining_today = sum(rem_per_aid.values())
+        used_per_aid_unmapped = min(per_acc_limit, len(used_ids_by_aid[unmapped]))
+        used_today = sum(used_per_aid.values()) + used_per_aid_unmapped
+        remaining_today = max(0, total_daily_limit - used_today)
 
         # Identify genuine closing restore targets using decay-discounted `true_restore_gain`!
         restore_targets: list[dict[str, Any]] = []
@@ -1139,6 +1155,10 @@ class SubmissionGate:
             since_last = max(0, int((ref_now - max(all_ts)).total_seconds())) if all_ts else None
             rate_wait = 0
 
+        day_pct = close_sweep.day_elapsed_pct(ref_now)
+        per_slot = [{"slot": index, "used": used_per_aid[aid], "limit": per_acc_limit,
+                     "utilization": round(100.0 * used_per_aid[aid] / per_acc_limit, 1) if per_acc_limit else 0.0}
+                    for index, aid in enumerate(slot_ids, start=1)]
         return QuotaStatus(
             daily_limit=total_daily_limit,
             used_today=used_today,
@@ -1152,6 +1172,9 @@ class SubmissionGate:
             rate_wait_sec=rate_wait,
             beijing_date=bj_now.strftime("%Y-%m-%d"),
             next_reset_utc=next_bj_midnight.astimezone(datetime.timezone.utc).isoformat(),
+            per_slot=per_slot,
+            day_elapsed_pct=day_pct,
+            slot_hint=close_sweep.slot_notice(per_slot, day_pct),
         )
 
     def _find_override(self, title: str, canonical_sha: str) -> dict[str, Any]:
@@ -1260,6 +1283,14 @@ class SubmissionGate:
             reason=f"{quota.remaining_today} submission slot(s) free today ({quota.used_today}/{quota.daily_limit} used)",
             metrics={"remaining": quota.remaining_today},
         )
+
+    def _closing_restore_boost(self) -> float:
+        """4.3 P25: the restore priority factor while the closing window is open (``1.0`` outside)."""
+        try:
+            window = close_sweep.window_state(close_sweep.closing_config(self.workspace))
+        except Exception:
+            return 1.0
+        return float(window.get("restore_boost") or 1.0) if window.get("in_window") else 1.0
 
     def _keeps_best(self, title: str) -> bool:
         """4.2.1: True when the board keeps the problem's best score (``best``), False under ``latest``."""
@@ -1861,6 +1892,12 @@ class SubmissionGate:
             priority_score = round(priority_score * 0.5, 2)
         if approved and health_warnings:
             priority_score = round(priority_score * float(self.config.health_penalty), 2)
+        if approved and intent_decision is not None and intent_decision.intent == "restore":
+            # 4.3 P25: inside the closing window a restore candidate moves up the same queue it
+            # already passed; the factor touches the order only, never a stage or a threshold.
+            boost = self._closing_restore_boost()
+            if boost != 1.0:
+                priority_score = round(priority_score * boost, 2)
 
         return GateVerdict(
             title=title,
