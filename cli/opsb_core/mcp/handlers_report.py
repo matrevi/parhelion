@@ -19,6 +19,7 @@ from typing import Any
 from .. import config as _cfg
 from .report_views import (  # noqa: F401 - the helpers are re-exported for the module's callers
     BIG,
+    CLOSE_BYTES,
     ENV_BYTES,
     LIMIT_MAX,
     RULES_BYTES,
@@ -27,6 +28,7 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     _bottleneck,
     _bytes,
     _clip,
+    _close,
     _doc,
     _env,
     _history,
@@ -41,7 +43,8 @@ from .report_views import (  # noqa: F401 - the helpers are re-exported for the 
     _trim,
 )
 
-VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "sweep", "env", "help")
+VIEWS = ("per_case", "diff", "history", "queue", "board", "bottleneck", "rules", "close", "sweep",
+         "env", "help")
 PER_CASE_COLUMNS = ("case", "ours_us", "tbest_us", "gap_pct", "speedup", "band_pct", "verdict", "noisy",
                     "judge", "mapped", "local", "timer", "passed", "exit_code", "mismatch_n", "strict_fp32",
                     "cal", "wa", "run")
@@ -116,6 +119,8 @@ HELP: dict[str, dict[str, Any]] = {
                  "with verified{rows, public_cases, max_err}, and is absent when no receipt reproduces its own "
                  "judge score. Name a problem (a worker reads only its own) or omit it for the table "
                  "(columns: title, mode, cases, sigma_hat, fetched_at); <=2KB",
+        "close": "closing reconciliation (4.3 P25): per-problem board vs best scores plus restore/merge/tag "
+                 "flags; board replayed as of the close (the G5 gap); merge lists branches, never merges; <=3KB",
         "sweep": "cross-problem metric sweep for the orchestrator, one row per problem: board_sha and board_score "
                  "are the receipt the board shows, run_sha/basis name the newest formal run (basis=latest when the "
                  "metric only exists on another stored run), the metric column is size_bytes (kernel .o sum), "
@@ -355,8 +360,9 @@ def tool_parhelion_report(args: dict[str, Any], workspace: Path) -> dict[str, An
         return _env(ws)
     if view == "sweep":  # 4.3 P27: cross-problem, orchestrator only, no problem argument
         return _sweep(ws, args, role)
-    if view in ("board", "history", "queue", "rules"):
-        return {"board": _board, "history": _history, "queue": _queue, "rules": _rules}[view](
+    if view in ("board", "history", "queue", "rules", "close"):
+        return {"board": _board, "history": _history, "queue": _queue, "rules": _rules,
+                "close": _close}[view](
             ws, problem, args, role)
     if not problem:
         raise PermissionError("the problem of this call is unknown: pass problem or use a bound worker")
