@@ -220,7 +220,8 @@ def _normalize_cases(cases: Any) -> list[str]:
 
 def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None = "standard",
            cases: list[str] | None = None, remeasure: bool = False, build_only: bool = False,
-           agent_id: str | None = None, role: str = "orchestrator", compare: str | None = None) -> dict[str, Any]:
+           agent_id: str | None = None, role: str = "orchestrator", compare: str | None = None,
+           result_format: str = "brief") -> dict[str, Any]:
     """Start (or join / reuse) a background `opsb test` run and return its public view immediately."""
     ws = Path(ws).expanduser().resolve()
     req_level = str(level or "standard").strip().lower()
@@ -253,6 +254,7 @@ def submit(ws: Path, *, problem: str, sha: str | None = None, level: str | None 
             "log": str(log_path), "status": "queued", "run_id": None, "exit_code": None, "digest": None,
             "report": None, "finished_at": None, "observed": False, "delivered": False,
             "progress": None, "joined": None, "reused": None, "deferred": None, "reason": None, "error": None,
+            "result_format": "full" if str(result_format).strip().lower() == "full" else "brief",
         }
         _write(ws, record)
         cmd = build_command(ws, title, full_sha, req_level, case_ids, bool(remeasure), bool(build_only), compare)
@@ -445,8 +447,12 @@ def _shrink_digest(digest: Any) -> Any:
     return out
 
 
-def public_view(record: dict[str, Any]) -> dict[str, Any]:
-    """Caller-facing projection of a registry record, at most ~2.5KB serialized."""
+def public_view(record: dict[str, Any], *, full: bool = False) -> dict[str, Any]:
+    """Caller-facing projection of a registry record, at most ~2.5KB serialized unless ``full``.
+
+    ``full=True`` is the brief's counterpart for ``format=full``: the complete digest and error,
+    left to ``mcp.bound_output`` to page or spill like every other reply (4.2 E).
+    """
     error = record.get("error")
     view: dict[str, Any] = {
         "request_id": record.get("request_id"), "problem": record.get("problem"),
@@ -454,8 +460,10 @@ def public_view(record: dict[str, Any]) -> dict[str, Any]:
         "run_id": record.get("run_id"), "exit_code": record.get("exit_code"), "progress": record.get("progress"),
         "digest": record.get("digest"), "report": record.get("report"), "joined": record.get("joined"),
         "reused": record.get("reused"), "reason": record.get("reason"),
-        "error": str(error)[-ERROR_LIMIT:] if error else None,
+        "error": (str(error) if full else str(error)[-ERROR_LIMIT:]) if error else None,
     }
+    if full:
+        return view
 
     def size() -> int:
         return len(json.dumps(view, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -473,7 +481,7 @@ def public_view(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def wait(ws: Path | str, request_id: str, wait_sec: float = 30,
-         block: Callable[[float], None] | None = None) -> dict[str, Any]:
+         block: Callable[[float], None] | None = None, full: bool = False) -> dict[str, Any]:
     """Wait on a run for at most `wait_sec` (clamped to [1, 45]) and return its public view.
 
     `block(remaining)` sleeps until the run may have changed; the daemon passes the event hub's
@@ -490,10 +498,10 @@ def wait(ws: Path | str, request_id: str, wait_sec: float = 30,
         if record.get("status") in TERMINAL:
             if not record.get("observed"):
                 record = _update(ws, request_id, observed=True)
-            return public_view(record)
+            return public_view(record, full=full)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return public_view(record)
+            return public_view(record, full=full)
         if block is None:
             time.sleep(min(POLL_SEC, remaining))
         else:
@@ -547,6 +555,18 @@ def _fmt_num(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.4g}"
     return str(value)
+
+
+def result_message(record: dict[str, Any], workspace: Path | str) -> str:
+    """The inbox message for a finished run: the brief line, or the line plus a bounded full view."""
+    line = compact_line(record)
+    if str(record.get("result_format") or "brief").strip().lower() != "full":
+        return line
+    from ..mcp import bound  # 4.2 E: a full digest is bounded like every other reply
+
+    text, _ = bound.bound_output("parhelion_test_result", public_view(record, full=True), workspace,
+                                 agent_id=str(record.get("agent_id") or "") or None)
+    return f"{line}\n{text}"
 
 
 def compact_line(record: dict[str, Any]) -> str:

@@ -6,7 +6,7 @@ from typing import Any
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_status",
-        "description": "Compact contest scores, quota and per-problem rows (under 2KB). verbose=true returns the full structure. Pass the last rev as if_rev to get {not_modified:true} when nothing changed; to wait for changes use parhelion_wait instead of calling status in a loop.",
+        "description": "Compact contest scores, quota and per-problem rows (brief: one row per problem under 2KB, the default). format=full returns the complete structure, the same as verbose=true. Pass the last rev as if_rev to get {not_modified:true} when nothing changed; to wait for changes use parhelion_wait instead of calling status in a loop.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -14,7 +14,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "if_rev": {"type": "string", "description": "rev from a previous status reply with the same arguments"},
                 "include_npu": {"type": "boolean", "description": "Probe live device telemetry via SSH (default false)"},
                 "include_queue": {"type": "boolean", "description": "Include up to 5 queue items (default false)"},
-                "verbose": {"type": "boolean", "description": "Return the full uncompacted structure (default false)"},
+                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact rows and a queue preview; full: the uncompacted structure, still subject to the output cap"},
+                "verbose": {"type": "boolean", "description": "Return the full uncompacted structure (default false); format=full is the preferred spelling"},
                 "detail": {"type": "boolean", "description": "Include the extended state card: the per-case speedup, gap to tbest, targets and last receipts (default false)"},
             },
         },
@@ -29,6 +30,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                        "board (cached board score/rank, frontier top1/top5, and per-case tbest with observed_at when a problem is named; reads cache only, no network); "
                        "bottleneck (R6: category, limited_resource_pct, top_metrics[3], fixes from the KB, raw report/log/run_dir paths); "
                        "env (platform version/root, daemon liveness, workspace/results/state dirs, free disk, <=1KB; no account, session or credential field). "
+                       "history and queue page: pass offset/limit or the next_cursor of the previous page. "
                        "A worker reads its own problem only; board and env are open to workers.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {
@@ -38,9 +40,28 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "problem": {"type": "string", "description": "Problem title; the orchestrator may name any, a worker is bound to its own"},
                 "sha": {"type": "string", "description": "per_case/diff candidate commit or run SHA (default: HEAD for per_case, the newest formal run for diff)"},
                 "base": {"type": "string", "description": "per_case/diff baseline SHA (default: the same-generation board SHA)"},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum rows per list: default 10 (queue 20, board 30)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum rows per page: default 10 (queue 20, board 30)"},
+                "offset": {"type": "integer", "minimum": 0, "description": "history: receipts to skip, counted from the newest; queue: items to skip"},
+                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
             },
             "required": ["view"],
+        },
+    },
+    {
+        "name": "parhelion_spill_read",
+        "roles": ("orchestrator", "worker"),
+        "description": "Read one window of a spilled tool result. A reply above the output cap returns "
+                       "{spilled:true, path, total_bytes, head, tail}; call this with that path and pass "
+                       "next_offset as offset to read the rest. Workers read only their own spill files, the "
+                       "orchestrator every file. The window is never spilled a second time.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "path from a spilled result (a path relative to the spill directory is also accepted)"},
+                "offset": {"type": "integer", "minimum": 0, "description": "Byte offset to start at (default 0, or the previous next_offset)"},
+                "limit": {"type": "integer", "minimum": 1, "description": "Bytes to read (default 3000, capped below the output cap)"},
+            },
+            "required": ["path"],
         },
     },
     {
@@ -82,7 +103,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_kb_query",
-        "description": "Query the 5-pillar KB by symptom, regime, dtype or text. Returns top 3 compact entries (600-char summaries); full=true returns complete entries.",
+        "description": "Query the 5-pillar KB by symptom, regime, dtype or text. brief (the default) returns 3 compact entries with 600-char summaries; format=full (or full=true) returns complete entries, still subject to the output cap. Pass offset/limit or next_cursor to walk the ranked list.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -92,9 +113,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "pillar": {"type": "string", "enum": ["breakthrough", "snippets", "hardware", "community", "bugs", "all"]},
                 "text": {"type": "string"},
                 "include_anti_patterns": {"type": "boolean"},
-                "limit": {"type": "integer", "description": "Maximum entries (default 3)"},
+                "limit": {"type": "integer", "description": "Entries per page (default 3 brief, 8 full)"},
+                "offset": {"type": "integer", "minimum": 0, "description": "Ranked entries to skip"},
+                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
                 "digest": {"type": "boolean"},
-                "full": {"type": "boolean", "description": "Return complete entries instead of compact summaries"},
+                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact summaries; full: complete entries"},
+                "full": {"type": "boolean", "description": "Legacy alias of format=full"},
             },
         },
     },
@@ -143,11 +167,12 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test",
-        "description": "Submit a platform test run and get a request_id within 2s. Then call parhelion_test_wait; the result also arrives in your inbox when it ends.",
+        "description": "Submit a platform test run and get a request_id within 2s. Then call parhelion_test_wait; the result also arrives in your inbox when it ends. format=brief (default) delivers the one-line summary, format=full delivers the complete digest bounded by the output cap.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "problem": {"type": "string"},
+                "format": {"type": "string", "enum": ["brief", "full"], "description": "How the delivered result message reads: brief (default) one line, full the complete digest (spilled when over the cap)"},
                 "sha": {"type": "string", "description": "Commit to test (default HEAD)"},
                 "level": {"type": "string", "enum": ["smoke", "standard", "final"], "description": "smoke: quick self-check; standard (default): all correctness cases plus warm timing; final: candidate validation"},
                 "cases": {"type": "array", "items": {"type": "string"}, "description": "Optional case IDs to restrict the run"},
@@ -162,12 +187,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_test_wait",
-        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the compact result digest. To wait for several runs or for messages at once, use parhelion_wait.",
+        "description": "Wait up to wait_sec (default 30, max 45) for a parhelion_test request; returns progress or the result digest. format=brief (default) is the compact digest (about 2.5KB); format=full is the complete record, still subject to the output cap. To wait for several runs or for messages at once, use parhelion_wait.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "request_id": {"type": "string"},
                 "wait_sec": {"type": "number", "minimum": 1, "maximum": 45},
+                "format": {"type": "string", "enum": ["brief", "full"], "description": "brief (default): compact digest; full: complete record"},
             },
             "required": ["request_id"],
         },
@@ -316,6 +342,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "problem": {"type": "string", "description": "Orchestrator only; a worker's problem is bound"},
                 "worker": {"type": "string", "description": "Orchestrator only: read this worker's ledger"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 40},
+                "offset": {"type": "integer", "minimum": 0, "description": "Matched entries to skip"},
+                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
             },
         },
     },
@@ -427,7 +455,9 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "agent_id": {"type": "string"},
                 "problem": {"type": "string", "description": "Optional Problem Squad filter"},
                 "since_seq": {"type": "integer"},
-                "limit": {"type": "integer"},
+                "limit": {"type": "integer", "description": "Messages per page (default 60)"},
+                "offset": {"type": "integer", "minimum": 0, "description": "Messages to skip in the same result set"},
+                "cursor": {"type": "string", "description": "next_cursor from the previous page; wins over offset"},
                 "ack": {"type": "boolean"},
             },
         },

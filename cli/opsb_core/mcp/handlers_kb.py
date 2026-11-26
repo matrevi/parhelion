@@ -12,11 +12,13 @@ from typing import Any
 from .. import config as _cfg
 from ..drivers.base import resolve_parhelion_home
 from ..services.breakthrough_service import load_catalog
+from .paging import PAGE_KEYS, page_window, paginate_keys
 
 SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 KB_DEFAULT_LIMIT = 3
 KB_FULL_DEFAULT_LIMIT = 8
 KB_SUMMARY_LIMIT = 600
+KB_PAGE_MAX = 50
 _COMPACT_LISTS = ("results", "entries", "anti_patterns")
 
 
@@ -123,9 +125,35 @@ def _compact_kb_result(res: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _format(args: dict[str, Any]) -> str:
+    """``brief`` (default) or ``full``; the legacy ``full=true`` boolean is the same request."""
+    raw = args.get("format")
+    if raw is None:
+        return "full" if bool(args.get("full", False)) else "brief"
+    mode = str(raw).strip().lower()
+    if mode not in ("brief", "full"):
+        raise ValueError("format must be brief or full")
+    return mode
+
+
 def tool_parhelion_kb_query(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    res = _kb_query_full(args, workspace)
-    return res if bool(args.get("full", False)) else _compact_kb_result(res)
+    """Ranked KB entries; brief keeps 3 entries of 600 characters, full keeps complete entries."""
+    mode = _format(args)
+    default = KB_FULL_DEFAULT_LIMIT if mode == "full" else KB_DEFAULT_LIMIT
+    offset, limit = page_window(args, default=default, maximum=KB_PAGE_MAX)
+    # One row beyond the page tells us whether another page exists without a count query.
+    res = _kb_query_full({**args, "limit": offset + limit + 1}, workspace)
+    out = res if mode == "full" else _compact_kb_result(res)
+    if isinstance(out.get("anti_patterns"), list):  # anti-patterns are not paged; keep the page size
+        out["anti_patterns"] = out["anti_patterns"][:limit]
+    total = offset + len(out.get("results") or [])
+    paginate_keys(out, PAGE_KEYS["parhelion_kb_query"], args, total=total,
+                  default=default, maximum=KB_PAGE_MAX)
+    if "result_count" in out:  # the counts describe the page the caller receives
+        out["result_count"] = len(out.get("results") or [])
+    if "anti_pattern_count" in out:
+        out["anti_pattern_count"] = len(out.get("anti_patterns") or [])
+    return out
 
 
 def _kb_query_full(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ledger import auto, budget, digest, model, note, recall, store, view
+from .paging import paginate
 
 VIEW_HELP = "open|unexploited|failures|case:<id>|since:<ref>"
 ROW_LIMIT = 40
@@ -96,16 +97,8 @@ def row_line(row: dict[str, Any], own: str = "") -> str:
     return f"{head}: {claim}{extra}"
 
 
-def _limited(rows: list[dict[str, Any]], limit: Any) -> list[dict[str, Any]]:
-    try:
-        n = int(limit)
-    except (TypeError, ValueError):
-        n = 20
-    return rows[: max(1, min(ROW_LIMIT, n))]
-
-
 def tool_parhelion_ledger(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    """A named view of one ledger, one line per entry (#4)."""
+    """A named view of one ledger, one line per entry (#4); offset/cursor walk long views."""
     led, problem, owner = _ledger(args, Path(workspace), write=False)
     rows = led.rows()
     spec = str(args.get("view") or "open").strip() or "open"
@@ -113,13 +106,14 @@ def tool_parhelion_ledger(args: dict[str, Any], workspace: Path) -> dict[str, An
         picked = view.query(rows, spec)
     except Exception as exc:  # noqa: BLE001 - a bad view is a caller error, reported as such
         return {"ok": False, "error": str(exc), "views": VIEW_HELP}
-    shown = _limited(picked, args.get("limit"))
-    return {
+    out = {
         "ok": True, "problem": problem, "worker": owner, "view": spec, "total": len(rows),
-        "matched": len(picked), "shown": len(shown),
-        "lines": [row_line(r, owner) for r in shown],
+        "matched": len(picked), "lines": [row_line(r, owner) for r in picked],
         "warnings": budget.warnings(rows),
     }
+    paginate(out, "lines", args, total=len(picked), default=20, maximum=ROW_LIMIT)
+    out["shown"] = len(out["lines"])
+    return out
 
 
 def tool_parhelion_note(args: dict[str, Any], workspace: Path) -> dict[str, Any]:

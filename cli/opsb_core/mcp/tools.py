@@ -34,6 +34,7 @@ from .handlers_ledger import (
     tool_parhelion_recall,
 )
 from .handlers_report import tool_parhelion_report
+from .spill_read import tool_parhelion_spill_read
 from .handlers_escape import (
     tool_parhelion_escape_rebind,
     tool_parhelion_escape_reproducer,
@@ -51,7 +52,7 @@ VALID_ROLES = ("orchestrator", "worker")
 WORKER_SCOPED_TEST_TOOLS = ("parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan")
 # Tools whose handler needs to know whether a worker or the orchestrator is calling.
 ROLE_AWARE_TOOLS = WORKER_SCOPED_TEST_TOOLS + ("parhelion_wait", "parhelion_note", "parhelion_ledger",
-                                               "parhelion_recall")
+                                               "parhelion_recall", "parhelion_spill_read")
 # Tools that check a worker acts on the problem its bus record names (escape locks, report views).
 WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebind", "parhelion_escape_reproducer",
                                "parhelion_report")
@@ -59,6 +60,7 @@ WORKER_SCOPED_PROBLEM_TOOLS = ("parhelion_escape_status", "parhelion_escape_rebi
 TOOL_HANDLERS: dict[str, ToolHandler] = {
     "parhelion_status": tool_parhelion_status,
     "parhelion_report": tool_parhelion_report,
+    "parhelion_spill_read": tool_parhelion_spill_read,
     "parhelion_bench_diagnose": tool_parhelion_bench_diagnose,
     "parhelion_pmu_card": tool_parhelion_pmu_card,
     "parhelion_elf_cold3_check": tool_parhelion_elf_cold3_check,
@@ -172,6 +174,7 @@ __all__ = [
     "tool_parhelion_pmu_card",
     "tool_parhelion_recall",
     "tool_parhelion_report",
+    "tool_parhelion_spill_read",
     "tool_parhelion_status",
     "tool_parhelion_submit_gate",
     "tool_parhelion_test",

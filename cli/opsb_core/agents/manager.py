@@ -493,7 +493,7 @@ class AgentMeshManager:
                 continue
             ledger_auto.guard(ledger_auto.on_test_settled, ws, record)  # idempotent backstop of the settle hook
             self._note_boundary(agent_id, "test_terminal")
-            line = test_runs.compact_line(record)
+            line = test_runs.result_message(record, ws)  # brief line, or the bounded full digest
             msg = store.append_message(agent_id, "orch_to_worker", "test_result", line,
                                        problem=str(record.get("problem") or ""), event_key=f"test:{request_id}")
             if msg and not record.get("observed"):

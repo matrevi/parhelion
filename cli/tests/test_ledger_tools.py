@@ -466,7 +466,8 @@ def test_tool_arguments_match_the_handlers(contest):
     schema = {s["name"]: s for s in TOOL_SCHEMAS}
     props = set(schema["parhelion_note"]["inputSchema"]["properties"])
     assert props <= set(handlers_ledger.FIELD_KEYS) | {"type", "id", "problem", "worker"}
-    assert {"view", "problem", "worker", "limit"} == set(schema["parhelion_ledger"]["inputSchema"]["properties"])
+    assert {"view", "problem", "worker", "limit", "offset", "cursor"} == set(
+        schema["parhelion_ledger"]["inputSchema"]["properties"])
     assert {"query", "limit", "problem", "worker", "refresh"} == set(
         schema["parhelion_recall"]["inputSchema"]["properties"])
     out = call_tool("parhelion_ledger", {"problem": "Op00", "worker": WORKER, "limit": 5}, ws)

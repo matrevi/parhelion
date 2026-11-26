@@ -4,8 +4,9 @@
 that read a list or the local environment, plus the shaping helpers both modules use (byte budget,
 rounding, clipping, report documents). Every view reuses the service that owns its calculation:
 the canonical receipt journal, the queue snapshot with its gate lamps, the board caches, the PMU
-card plus KB query, and the local environment. Hard budgets: ``per_case``/``diff`` 4KB, ``env``
-1KB; the list views take ``limit``.
+card plus KB query, and the local environment. ``history`` and ``queue`` page with
+``offset``/``limit`` or ``cursor``; a page above the MCP output cap is re-cut by
+``mcp.bound.page`` before anything is spilled.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from typing import Any
 
 from .. import __version__ as OPSB_VERSION
 from .. import config as _cfg
+from .paging import paginate
 
 BIG, ENV_BYTES, LIMIT_MAX = 4096, 1024, 50
 FORBIDDEN = ("account_id", "account_label", "user_id", "cookies", "cookie", "token", "session_file")
@@ -124,11 +126,12 @@ def _history(workspace: Path | str, problem: str | None, args: dict[str, Any], r
     _cfg.ensure_scheduler_path()
     from scheduler import receipts
 
-    ws, limit = Path(workspace), _limit(args)
+    ws = Path(workspace)
     titles = _titles(ws, problem, role)
     journal = receipts.canonical(receipts.read_rows(receipts.ledger_path(ws)))
     problems: list[dict[str, Any]] = []
     timeline: list[dict[str, Any]] = []
+    total = 0
     for title in titles:
         rows = [r for r in journal if str(r.get("title") or "") == title]
         judged = [r for r in rows if receipts.judged(r)]
@@ -142,13 +145,17 @@ def _history(workspace: Path | str, problem: str | None, args: dict[str, Any], r
         })
         if not problem:
             continue
-        timeline = [_receipt_entry(row, receipts) for row in rows[-limit:]]
+        total = len(rows)
+        # Newest first: offset walks back in time while the default page stays the latest receipts.
+        timeline = [_receipt_entry(row, receipts) for row in reversed(rows)]
     out = {
         "view": "history", "problems": problems, "receipts": timeline,
         "columns": ["sid", "sha", "status", "score", "beat_board", "at", "note", "cases", "mean_ratio"],
         "case_columns": ["case", "ours_us", "tbest_us", "ratio"],
     }
-    return _trim(out, "receipts", BIG, floor=0)
+    if problem:
+        paginate(out, "receipts", args, total=total, default=10, maximum=LIMIT_MAX)
+    return out
 
 
 # ---------------------------------------------------------------- queue
@@ -178,7 +185,7 @@ def _queue(workspace: Path | str, problem: str | None, args: dict[str, Any], rol
     from ..ipc_bridge import invoke_bridge, merge_bridge_enrichment
     from ..services.queue_service import compute_workspace_snapshot
 
-    ws, limit = Path(workspace), _limit(args, 20)
+    ws = Path(workspace)
     allowed = set(_titles(ws, problem, role))
     snap = compute_workspace_snapshot(ws, _cfg.ConfigRepository.load())
     try:
@@ -193,9 +200,9 @@ def _queue(workspace: Path | str, problem: str | None, args: dict[str, Any], rol
         "view": "queue", "allowed": sorted(allowed), "threshold": sched.get("breakthrough_threshold"),
         "count": len(items), "by_kind": dict(Counter(str(item.get("kind")) for item in items)),
         "active_submissions": len((sched.get("pipeline") or {}).get("active_submissions") or []),
-        "items": [_queue_item(item) for item in items[:limit]],
+        "items": [_queue_item(item) for item in items],
     }
-    return _trim(out, "items", BIG)
+    return paginate(out, "items", args, total=len(items), default=20, maximum=LIMIT_MAX)
 
 
 # ---------------------------------------------------------------- board / bottleneck / env

@@ -312,7 +312,9 @@ def test_mcp_tool_calls_are_metered_and_failures_never_break_the_call(tmp_path: 
     assert still["result"]["isError"] is False
     assert len(rows) == 2
     row = rows[0]
-    assert set(row) == {"ts", "agent_id", "role", "tool", "args_bytes", "result_bytes", "ms", "is_error"}
+    assert set(row) == {"ts", "agent_id", "role", "tool", "args_bytes", "result_bytes", "ms", "is_error",
+                        "spilled", "bound_bytes"}
+    assert row["spilled"] is False and row["bound_bytes"] == row["result_bytes"]
     assert row["tool"] == "parhelion_status" and row["agent_id"] == "orch-1" and row["role"] == "orchestrator"
     assert row["args_bytes"] == len(json.dumps({"problem": "P1"}, separators=(",", ":")))
     assert row["result_bytes"] == len(ok["result"]["content"][0]["text"].encode("utf-8"))
