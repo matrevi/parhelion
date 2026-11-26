@@ -111,10 +111,10 @@
 | P08 | impl/P08-startup-pack | 待开始 | | |
 | P09 | impl/P09-host-daemon | 已完成，待 P06 后按序合入 | | 设备主机 SSH 不可达，#16 远端检查与 #20 真机验收待补 |
 | P10 | impl/P10-profiler-ab | 已完成，待按序合入（叠在 P09 上） | | profiler 计时 CV 61%→0.9%；Edge 基线复测待真机 |
-| P11 | impl/P11-batch-ui | 待开始 | | |
+| P11 | impl/P11-batch-ui | 已完成，待按序合入 | | 合并批次无可测节省；R9 早停仅单测 |
 | P12 | impl/P12-report-views | 待开始 | | |
 | P13 | impl/P13-bound-output | 待开始 | | |
 | P14 | impl/P14-peer-protocol | 待开始 | | |
 | P15 | impl/P15-worker-boundary | 待开始 | | |
-| P17 | impl/P17-v2 | 待重派 | | 首次在写 diff 规则筛查时被安全过滤中止；按用户决定去掉 diff 筛查后重试 |
+| P17 | impl/P17-v2 | 进行中（Sonnet） | | 首次在写 diff 规则筛查时被安全过滤中止；按用户决定去掉 diff 筛查后重试 |
 | P16 | — | 待测量 | | |

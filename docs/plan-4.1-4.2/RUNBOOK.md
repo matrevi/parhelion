@@ -33,11 +33,11 @@
 | P05 | impl/P05-ledger-core | Sonnet 代理在做（组 2b） | 交付后合入，再 SendMessage 同一代理续做 P06 |
 | P06 | impl/P06-ledger-seed | 未开始 | P05 合入后由同一个 Sonnet 代理续做 |
 | P07 | impl/P07-gate-queue | 已完成 | P06 之后合入 |
-| P07b | impl/P07b-no-closing-reserve | Opus 代理在做（删除收尾预留，用户已批准） | 随 P07 一起合入：先 P07，再 P07b |
+| P07b | impl/P07b-no-closing-reserve | 已完成（Opus）。另有一点：日配额用尽时仍判放行，只等待名额，与用户规则一致 | 随 P07 合入：先 P07，再 P07b。遗留：`available_normal_shots` 仍扣除预留，因此显示偏低；`drivers/brief.py:188` 仍写着 quota gates，留给 P08 |
 | P09 | impl/P09-host-daemon | 已完成，含主机检查报告 | P06 之后合入 |
-| P10 | impl/P10-profiler-ab（叠在 P09 上） | 已完成；Edge 3f99cd8 复测由组 3 补跑 | P09 之后合入 |
-| P11 | impl/P11-batch-ui（叠在 P10 上） | 组 3 的 Opus 代理在做，含真机验收 | P10 之后合入 |
-| P17 | impl/P17-v2 | 待派（已去掉 diff 筛查） | P07b 交付后派 Sonnet 代理：从 `impl/P07-gate-queue` 切出，合并 main 与 `impl/P07b-no-closing-reserve`。旧的 `impl/P17-verify-calibrate` 只有一个 WIP 提交，不要用，合并完成后删除 |
+| P10 | impl/P10-profiler-ab（叠在 P09 上） | 已完成，Edge 复测已补（b10a8ff） | P09 之后合入 |
+| P11 | impl/P11-batch-ui（叠在 P10 上，已合并当时的 main） | 已完成，组 3 结束。合并批次在本主机上没有可测的节省（作业间切换约 1ms），开关保持开启 | P10 之后合入。界面截图要等 daemon 重启后补 |
+| P17 | impl/P17-v2 | Sonnet 代理在做（已含 P07b 与 main） | P11 之后合入。旧分支 `impl/P17-verify-calibrate` 弃用，收尾时删除 |
 | P12→P13 | impl/P12-report-views → impl/P13-bound-output | 未开始 | P06 合入后派一个 Sonnet 代理（组 4a） |
 | P14→P08→P15 | impl/P14-peer-protocol → impl/P08-startup-pack → impl/P15-worker-boundary | 未开始 | P06 合入后派另一个 Sonnet 代理（组 4b）；P15 等 P12 合入后再做 |
 | P16 | — | 未开始 | 全部合入后由主会话决定 H/I/J，依据 P03 基线：缓存命中已有 99.3–99.6%，H 价值低 |
