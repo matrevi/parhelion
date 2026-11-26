@@ -102,8 +102,8 @@ def handle_agent_post(path: str, body_obj: dict[str, Any], ws: Path, runtime: An
             if len(parts) == 2:
                 aid, action = parts
                 if action == "squad":
-                    return 200, runtime.agent_mesh.squad(ws, aid, **{
-                        k: str(body_obj.get(k) or "").strip() for k in ("recipient", "message", "request_id")})
+                    from ..mcp.handlers_agents import squad_body
+                    return 200, runtime.agent_mesh.squad(ws, aid, **squad_body(body_obj))
                 if action == "delete":
                     return 200, runtime.agent_mesh.cleanup_stopped(ws, aid)
                 if action == "send":

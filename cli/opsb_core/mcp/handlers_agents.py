@@ -250,11 +250,23 @@ def tool_parhelion_agent_inbox(args: dict[str, Any], workspace: Path) -> dict[st
     return _mgr().worker_inbox(workspace, agent_id, since_seq=since_seq, ack_seq=ack_seq)
 
 
+def squad_body(args: dict[str, Any]) -> dict[str, Any]:
+    """The envelope fields of one ``parhelion_squad`` call (shared by the MCP handler and the route)."""
+    body = {k: str(args.get(k) or "").strip()
+            for k in ("recipient", "to", "message", "request_id", "claim", "evidence", "ask")}
+    refs = args.get("refs")
+    if isinstance(refs, list):
+        body["refs"] = [str(ref).strip() for ref in refs if str(ref).strip()]
+    elif isinstance(refs, str) and refs.strip():
+        body["refs"] = refs
+    return body
+
+
 def tool_parhelion_squad(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
     sender = args.get("_caller_agent_id")
     if not sender:
         raise ValueError("A bound worker identity is required")
-    body = {k: str(args.get(k) or "").strip() for k in ("recipient", "message", "request_id")}
+    body = squad_body(args)
     if proxied := _proxy_daemon("POST", f"/v1/agents/{urllib.parse.quote(sender, safe='')}/squad", workspace, body):
         return proxied
     return _mgr().squad(workspace, sender, **body)

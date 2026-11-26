@@ -439,10 +439,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "parhelion_squad",
         "roles": ("worker",),
-        "description": "List teammates for your problem, or send one teammate a finding, report path or calibration update.",
+        "description": "List teammates for your problem, or send them a claim-first peer envelope: recipient/to, "
+                       "refs (ledger ids), claim (<= 280 chars), evidence (path#anchor, test run id or receipt id), "
+                       "ask?. A body above 1200 chars becomes an attachment at <workspace state>/peer/<msg_id>.md and "
+                       "only its claim and path travel. Peer messages reach a teammate merged at its next turn "
+                       "boundary; no arguments lists teammates.",
         "inputSchema": {"type": "object", "properties": {
-            "recipient": {"type": "string", "description": "agent_id, teammate role name (e.g. algorithm, dataflow, bench-author) or all; omit all arguments to list teammates"},
-            "message": {"type": "string"},
+            "recipient": {"type": "string", "description": "agent_id, teammate role name (e.g. algorithm, dataflow, bench-author) or all; omit all content arguments to list teammates"},
+            "to": {"type": "string", "description": "Envelope alias of recipient; recipient wins when both are given."},
+            "claim": {"type": "string", "description": "What the teammate should know, at most 280 characters, without the supporting text."},
+            "refs": {"type": "array", "items": {"type": "string"},
+                     "description": "Ledger ids this message cites (L-0001 or worker/L-0001); the recipient gets the ids, not a re-quote."},
+            "evidence": {"type": "string", "description": "One reference the recipient can open: a path#anchor, a test run id or a receipt id."},
+            "ask": {"type": "string", "description": "Optional explicit question or next step you want from the recipient."},
+            "message": {"type": "string", "description": "Legacy free text: up to 280 characters becomes the claim; a longer body is delivered inline up to 1200 characters and stored as an attachment above that."},
             "request_id": {"type": "string", "description": "Reuse on retries to deliver only once."},
         }},
     },
