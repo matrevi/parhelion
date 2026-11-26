@@ -20,6 +20,20 @@ from .services.sync_reconciler import recent_unreconciled_receipt_pairs
 from .services.contest_service import escape_advice
 
 
+
+def _safety_badge(stages: list[dict[str, Any]], default: str) -> str:
+    """Name the Stage 1 block so a held card says what to do next, not just "rejected"."""
+    code = next((str(s.get("code") or "") for s in stages if s.get("stage") == "SAFETY" and not s.get("passed")), "")
+    if code == "ESCAPE_LOCK_ACTIVE":
+        return "ESCAPE LOCK"
+    if code in ("NO_VALIDATION_RECORD", "VALIDATION_INCOMPLETE", "REFERENCE_SUITE_REQUIRED", "MISSING_LOG",
+                "MISSING_EXTENDED_PASSED", "MISSING_CROSS_CORE_STRESS", "FAST_LANE_ONLY"):
+        return "NOT TESTED"
+    if code.startswith("EXIT_CODE_") or code in ("NONZERO_MISMATCH", "LOG_FAILURE_MARKER", "STRESS_FAILURES",
+                                                 "NON_DETERMINISTIC_GATE", "GATE_BAD_LANES"):
+        return "TEST FAILED"
+    return default
+
 def _queue_fingerprint(workspace: Path) -> str:
     parts = [str(workspace)]
     for rel in ("results/submit-queue.jsonl", "results/submit-queue-outcome.jsonl", "results/score-snapshot.json",
@@ -228,6 +242,8 @@ def merge_bridge_enrichment(payload: dict[str, Any], bridge: dict[str, Any]) -> 
             "wspt_score": round(float(uc.get("priority_score") or 0.0), 2),
         }
         badge = badge_norm.get(raw_tag, raw_tag.replace("_", " "))
+        if raw_tag == "REJECTED_GATE":
+            badge = _safety_badge(uc.get("stages") or [], badge)
         note = " · ".join(x for x in (est_obj.get("detail"), uc.get("gate_reason")) if x)
         is_crit_rest = bool(uc.get("is_critical_restore", False))
         cand_bt = round(est_sc - cur_sc, 2) if (est_sc is not None and cur_sc > 0 and not is_crit_rest) else None

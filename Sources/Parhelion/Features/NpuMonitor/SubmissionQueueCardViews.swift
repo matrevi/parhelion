@@ -162,6 +162,8 @@ struct CandidateSubmissionCardView: View {
     private func readableCandidateBadge(_ item: SubmissionQueueItem, cdRem: Int) -> String {
         let u = item.badge.uppercased()
         if u.contains("ESCAPE") { return lang.tr("逃逸硬锁 · 禁止提交", "ESCAPE LOCK") }
+        if u.contains("TEST FAILED") { return lang.tr("本地用例未通过 · HELD", "LOCAL TEST FAILED") }
+        if u.contains("NOT TESTED") { return lang.tr("缺少测试记录 · HELD", "NOT TESTED") }
         if !item.gates.safetyOk { return lang.tr("缺少精度记录 · HELD", "SAFETY HELD") }
         if u.contains("REJECTED") { return lang.tr("门禁拒绝 · REJECTED", "REJECTED") }
         if u.contains("CRITICAL") { return lang.tr("榜上0分 · 建议恢复", "CRITICAL RESTORE") }
@@ -193,6 +195,9 @@ struct CandidateSubmissionCardView: View {
                 "🔒 逃逸硬锁激活：需先复现线上 WA/TLE 并通过 verify-escape 解锁",
                 "🔒 ESCAPE LOCK: add reproducer & pass verify-escape before submitting"
             )
+        }
+        if u.contains("TEST FAILED") {
+            return lang.tr("⚠ 本地用例未通过：修复失败用例后重测", "⚠ Local cases failed: fix them and re-test")
         }
         if !item.gates.safetyOk { return lang.tr("⚠ 缺少完整服务端精度测试记录", "⚠ Missing NPU extended validation") }
         if u.contains("CRITICAL") { return lang.tr("✓ 历史高分验证通过，可立即恢复", "✓ Validated best SHA ready to restore") }

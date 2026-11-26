@@ -229,8 +229,26 @@ def test_case_timeout_releases_lock_and_requeues_the_rest(env):
     assert [(c["id"], c["status"]) for c in client.of("case")] == [("01", "PASS"), ("02", "TLE"), ("03", "PASS")]
     assert [(r["segment"], r["requeued"]) for r in client.of("released")] == [(1, 1), (2, 0)]
     assert [s["segment"] for s in client.of("started")] == [1, 2]
-    assert "1s case budget" in client.of("case")[1]["detail"]
+    assert "1s per-run budget" in client.of("case")[1]["detail"]
     assert [row["segment"] for row in ledger(env)] == [1, 2]
+
+
+def test_case_budget_limits_each_execution_not_the_repeats(env):
+    # Five executions of 0.4 s each: 2 s per case, but every single run is inside the 1 s budget.
+    cases = [make_case(env, 1, "sleep-0.4_us-1", warmup=1, repeats=4)]
+    client = Client(start(env), make_job(env, "slow-io", cases, case_timeout=1))
+    client.wait_for("done")
+    assert [(c["id"], c["status"]) for c in client.of("case")] == [("01", "PASS")]
+
+
+def test_seconds_long_case_stops_after_one_warmup_and_two_runs(env, monkeypatch):
+    monkeypatch.setenv("OPSB_LONG_RUN_SEC", "0.2")
+    cases = [make_case(env, 1, "sleep-0.3_us-5", warmup=2, repeats=5), make_case(env, 2, "us-1", warmup=2, repeats=5)]
+    client = Client(start(env), make_job(env, "long", cases))
+    client.wait_for("done")
+    long_case, short_case = client.of("case")
+    assert (long_case["status"], len(long_case["cold"]), len(long_case["samples"])) == ("PASS", 1, 2)
+    assert (len(short_case["cold"]), len(short_case["samples"])) == (2, 5)
 
 
 def test_runtime_error_marks_remaining_cases_not_run(env):

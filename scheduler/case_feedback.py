@@ -57,6 +57,12 @@ def authorize_review_trial(repo, folder, bad, good, state, reason):
             and bad.get("environment") and bad["environment"] == good["environment"]
             and bad["settings"].get("strict_fp32") and good["settings"].get("strict_fp32")):
         return {"ok": False, "reason": "Need the active judge WA and matching full strict runs on both commits"}
+    # A reviewed trial skips local reproduction once. When the failing SHA was itself released by a
+    # reviewed trial, review has already missed this failure: the next fix must reproduce it.
+    for trial in folder.parent.glob("*/escape-trial-*.json"):
+        if read_doc(trial).get("good_sha") == folder.name:
+            return {"ok": False, "reason": "A reviewed trial already failed online for this problem; "
+                                           "reproduce the failure with a local case before the next submission"}
     diff = subprocess.run(["git", "-C", str(repo), "diff", "--quiet", folder.name, good["sha"],
                            "--", "kernel.asc", "op_host", "op_kernel"], check=False)
     if diff.returncode != 1:

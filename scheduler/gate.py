@@ -488,6 +488,16 @@ class SubmissionGate:
         exit_code = res_data.get("exit_code")
         if exit_code != 0:
             hint = " (SSH transport drop; re-run validation)" if exit_code == 255 else ""
+            rid = res_data.get("run_id")
+            if not hint and isinstance(rid, str) and re.fullmatch("[0-9a-f]{32}", rid):
+                try:
+                    report = json.loads((res_file.parent / "bench-runs" / rid / "report.json").read_text())
+                    failed = [f"{c['id']} {c['status']}" for c in report.get("cases") or []
+                              if c.get("status") not in ("PASS", "NOT_RUN")]
+                    if failed:
+                        hint = ": " + ", ".join(failed[:4]) + (" …" if len(failed) > 4 else "")
+                except (OSError, ValueError, KeyError, TypeError):
+                    pass
             return StageResult(
                 stage="SAFETY",
                 passed=False,

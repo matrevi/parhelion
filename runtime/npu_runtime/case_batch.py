@@ -232,7 +232,6 @@ def prepare(repo, cfg, root, update):
 
 def execute_case(sample, cfg, plan, update):
     """Fallback lane execution: warm paths run first and only feed ``cold``."""
-    deadline = time.monotonic() + cfg["timeout"]
     progress = dict(plan["progress"], phase="execute", started_epoch=time.time(), timeout_sec=cfg["timeout"])
     for index, part in enumerate(plan["parts"], 1):
         for stage, paths, sink in (("warm", part.get("warm") or [], plan.setdefault("cold", [])),
@@ -241,7 +240,8 @@ def execute_case(sample, cfg, plan, update):
             for repeat, path in enumerate(paths, 1):
                 update(dict(progress, part=index, parts=len(plan["parts"]), repeat=repeat, repeats=len(paths),
                             stage=stage))
-                result = sample.execute(path, plan["timed"], deadline)
+                # The budget limits each execution, as the judge does, not the sum of the repeats.
+                result = sample.execute(path, plan["timed"], time.monotonic() + cfg["timeout"])
                 if result["status"] != "PASS":
                     if result["status"] == "TLE":
                         result = dict(result, detail=result["detail"] + " (broker unavailable)")
@@ -290,7 +290,8 @@ def broker_job(repo, cfg, ready):
         "created": time.time(), "fast": bool(cfg.get("fast")),
         "executable": str(repo / "build-casebench/sample"), "device": str(cfg["device"]),
         "reuse_session": bool(cfg.get("reuse_session", True)), "case_timeout": cfg["timeout"],
-        "job_timeout": cfg.get("job_timeout") or min(1800, cfg["timeout"] * len(ready)),
+        "job_timeout": cfg.get("job_timeout") or min(1800, cfg["timeout"] * sum(
+            max(1, sum(len(part.get("warm") or []) + len(part["runs"]) for part in plan["parts"])) for plan in ready)),
         "cases": [{"index": plan["progress"]["index"], "id": plan["progress"]["id"], "timed": bool(plan["timed"]),
                    "warmup": len(plan["parts"][0].get("warm") or []) if plan["parts"] else 0,
                    "parts": [{"warm": [str(p) for p in part.get("warm") or []],

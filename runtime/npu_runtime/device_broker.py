@@ -24,6 +24,8 @@ from pathlib import Path
 
 IDLE_EXIT_SEC = 1800
 STARVATION_SEC = 1800
+LONG_RUN_SEC = float(os.environ.get("OPSB_LONG_RUN_SEC") or 2.0)
+LONG_RUN_REPEATS = 2
 START_WAIT_SEC = 5.0
 
 
@@ -136,7 +138,7 @@ class SampleProcess:
             detail = os.pread(self.log.fileno(), 1500, max(0, os.fstat(self.log.fileno()).st_size - 1500))
             result = {"status": "RE", "detail": detail.decode(errors="replace")}
         except TimeoutError:
-            result = {"status": "TLE", "detail": f"Device execution exceeded the {self.cfg['timeout']}s case budget"}
+            result = {"status": "TLE", "detail": f"One device execution exceeded the {self.cfg['timeout']}s per-run budget"}
         except (OSError, ValueError) as exc:
             result = {"status": "RE", "detail": str(exc)}
         self.close(kill=True)
@@ -397,17 +399,27 @@ class Broker:
         except OSError:
             pass
 
-    def _run_case(self, job, sample, case, record, deadline):
+    def _run_case(self, job, sample, case, record, job_deadline):
+        """Run every warmup and timed execution of a case.
+
+        Like the judge, the case budget limits each execution, not the sum of its repeats: a
+        case moving a gigabyte of I/O per run must not time out because it is measured seven times.
+        """
         parts = case["parts"]
         timed = bool(case.get("timed"))
         base = dict(index=case["index"], total=job.total, id=case["id"], phase="execute",
                     started_epoch=time.time(), timeout_sec=job.case_timeout)
         groups = {"warm": [], "run": []}
+        long_case = False
         for number, part in enumerate(parts, 1):
             for phase in ("warm", "run"):
                 paths = part.get("warm" if phase == "warm" else "runs") or []
                 values = []
                 for repeat, path in enumerate(paths, 1):
+                    # Seconds-long executions gain no timing precision from more repeats, and every
+                    # repeat holds the only device: one warmup and two timed runs are enough.
+                    if long_case and repeat > (1 if phase == "warm" else LONG_RUN_REPEATS):
+                        break
                     if job.cancelled:
                         return None
                     step = dict(index=case["index"], id=case["id"], part=number, parts=len(parts),
@@ -416,9 +428,11 @@ class Broker:
                                                    repeats=len(paths), stage=phase)
                     self._write_session(record)
                     job.send("progress", **step)
-                    result = sample.execute(path, timed, deadline)
+                    began = time.monotonic()
+                    result = sample.execute(path, timed, min(time.monotonic() + job.case_timeout, job_deadline))
                     if result["status"] != "PASS":
                         return result
+                    long_case = long_case or time.monotonic() - began >= LONG_RUN_SEC
                     values.append(result["us"])
                     if not job.reuse_session:
                         sample.close()
@@ -456,10 +470,11 @@ class Broker:
                     self._close_rest(job, "TLE", f"Job exceeded its {job.spec.get('job_timeout')}s device budget")
                     break
                 case = job.pending.popleft()
-                by_job = budget < job.case_timeout
-                result = self._run_case(job, sample, case, record, time.monotonic() + min(job.case_timeout, budget))
+                job_deadline = time.monotonic() + budget
+                result = self._run_case(job, sample, case, record, job_deadline)
                 if result is None or job.cancelled:
                     break
+                by_job = result["status"] == "TLE" and time.monotonic() >= job_deadline - 0.05
                 if result["status"] == "TLE" and by_job:
                     result["detail"] = f"Job exceeded its {job.spec.get('job_timeout')}s device budget"
                 job.send("case", index=case["index"], id=case["id"], status=result["status"],

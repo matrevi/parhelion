@@ -168,6 +168,12 @@ def test_review_trial_binds_changed_root_kernel_and_receipt(tmp_path):
     (tmp_path / "results" / "submit-queue.jsonl").write_text(
         json.dumps({"title": "Op", "sha": good_sha, "queued_at": "q"}) + "\n")
     assert trial_spent(folder, good_sha)
+    # When the trial-released repair itself fails online, review cannot release the next fix.
+    failed = tmp_path / "results" / "Op" / better
+    failed.mkdir()
+    again = dict(escape_lock=True, escape_sha=better, escape_submission_id="sid2", escape_status="Wrong Answer")
+    refused = authorize_review_trial(tmp_path, failed, dict(bad, sha=better), dict(good, sha=commit("next")), again, "x")
+    assert not refused["ok"] and "reproduce" in refused["reason"]
 
 
 def test_second_worker_uploads_while_first_is_polling(tmp_path, monkeypatch):
