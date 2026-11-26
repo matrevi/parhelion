@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .. import config as _cfg
+from .. import worker_boundary
 from ..drivers.base import resolve_session_logs_dir, resolve_workspace_state_dir
 from ..drivers.brief import (
     compose_bench_author_brief,
@@ -170,6 +171,8 @@ class _WorkerRunner:
                 self.lease.close()
                 raise
         self.adapter.on_spawn = lambda pid, pgid: store.update_agent(agent_id, pid=pid, pgid=pgid)
+        # 4.2 K: a live hit alerts the orchestrator and the administrator once per class; no auto-stop.
+        self.adapter.on_boundary = self._on_boundary
         self._thread = threading.Thread(target=self._loop, name=f"agent-{agent_id}", daemon=True)
         self._thread.start()
 
@@ -215,6 +218,15 @@ class _WorkerRunner:
                 updates["pid"] = self.adapter.pid
                 updates["pgid"] = self.adapter.pgid
             self.store.update_agent(self.agent_id, **updates)
+            self._on_notify()
+
+    def _on_boundary(self, category: str) -> None:
+        """One live boundary class from this worker's tool calls (4.2 K); alert, mark, keep running."""
+        try:
+            out = worker_boundary.report(self.store, self.adapter.workspace, self.agent_id, category)
+        except Exception:
+            return
+        if out.get("alerts") or out.get("ledger"):
             self._on_notify()
 
     @property
@@ -1408,6 +1420,7 @@ class AgentMeshManager:
                 "elapsed_sec": max(0, int(now - float(w.get("last_active_epoch") or now))),
                 "last_msg_epoch": float(w.get("last_msg_epoch") or 0.0),
                 "last_msg_dir": w.get("last_msg_dir") or "",
+                "boundary_flags": worker_boundary.flags_of(w),
                 **usage_fields.get(w["agent_id"], {}),
             }
             worker_rows.append(row)

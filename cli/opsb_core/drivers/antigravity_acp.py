@@ -11,6 +11,7 @@ from typing import IO, Any
 
 from .. import __version__ as _OPSB_VERSION
 from .. import config as _cfg
+from .. import worker_sandbox
 from .macos_gui import build_parhelion_mcp_command
 
 
@@ -291,7 +292,7 @@ def run_acp_headless_turn(
     mcp_servers = build_acp_mcp_servers(workspace)
     with log_path.open("a", encoding="utf-8") as lf:
         proc = subprocess.Popen(
-            cmd, cwd=str(worktree), env={**os.environ, **env},
+            cmd, cwd=str(worktree), env=worker_sandbox.worker_env(os.environ, env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
         )
         assert proc.stdin is not None and proc.stdout is not None

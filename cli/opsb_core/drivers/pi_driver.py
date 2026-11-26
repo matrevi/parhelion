@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .. import worker_sandbox
 from .base import (
     BaseDriver,
     DriverDiagnostic,
@@ -152,7 +153,7 @@ class PiDriver(BaseDriver):
         log_path: Path,
     ) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        merged_env = {**os.environ, **env}
+        merged_env = worker_sandbox.worker_env(os.environ, env)
         with log_path.open("a", encoding="utf-8") as lf:
             proc = subprocess.Popen(
                 cmd,

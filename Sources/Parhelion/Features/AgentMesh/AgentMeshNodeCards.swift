@@ -188,6 +188,16 @@ struct AgentExternalWorkerCard: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 2)
+                    if !worker.boundaryFlags.isEmpty {
+                        // 4.2 K: this worker reached platform internals or judge credentials.
+                        Text("K")
+                            .font(.system(size: 8.5, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4.5)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Color.red))
+                            .help(worker.boundaryFlags.joined(separator: " · "))
+                    }
                     if worker.isStagnated {
                         Text("\(worker.noGainStreak)/6")
                             .font(.system(size: 8.5, weight: .heavy, design: .monospaced))

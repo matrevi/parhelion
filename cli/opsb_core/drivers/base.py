@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import config as _cfg
+from .. import worker_sandbox
 from .macos_gui import (
     PARHELION_SKILLS_SUBDIR,
     build_parhelion_mcp_command,
@@ -217,7 +218,8 @@ class BaseDriver(ABC):
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(json.dumps({"event": "launch", "driver": self.kind, "cmd": cmd, "ts": _cfg.utc_now().isoformat()}) + "\n")
             lf.flush()
-            proc = subprocess.Popen(cmd, cwd=str(worktree), env={**os.environ, **env}, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(cmd, cwd=str(worktree), env=worker_sandbox.worker_env(os.environ, env),
+                                    stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT)
             rc = proc.wait()
             lf.write(json.dumps({"event": "exit", "driver": self.kind, "returncode": rc, "ts": _cfg.utc_now().isoformat()}) + "\n")
         return int(rc)
@@ -264,13 +266,17 @@ class BaseDriver(ABC):
                     "brief": brief, "session_id": session_id, "native_session_id": native_id,
                     "resume_id": resume_id, "cmd": cmd, "env": env_overrides, "log_path": str(log_path),
                 }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-                worker_env = {**os.environ, "PARHELION_HOME": str(resolve_parhelion_home())}
-                existing_pp = worker_env.get("PYTHONPATH", "")
-                worker_env["PYTHONPATH"] = f"{_cfg.CLI_DIR}:{existing_pp}" if existing_pp else str(_cfg.CLI_DIR)
+                job_env = {**os.environ, "PARHELION_HOME": str(resolve_parhelion_home())}
+                existing_pp = job_env.get("PYTHONPATH", "")
+                job_env["PYTHONPATH"] = f"{_cfg.CLI_DIR}:{existing_pp}" if existing_pp else str(_cfg.CLI_DIR)
                 with log_path.open("a", encoding="utf-8") as err_fh:
+                    # 4.2 K: the job runner needs the CLI on PYTHONPATH to start, so it is sandboxed
+                    # instead: the driver child inherits the credential read denies, and
+                    # ``_execute_headless_turn`` drops the platform paths from its environment again.
                     proc = subprocess.Popen(
-                        [_cfg.resolve_python_exe(ws), "-m", "opsb_core.drivers.registry", "--exec-job", str(job_path)],
-                        cwd=str(wt), env=worker_env, stdin=subprocess.DEVNULL, stdout=err_fh, stderr=subprocess.STDOUT,
+                        worker_sandbox.wrap_command(
+                            [_cfg.resolve_python_exe(ws), "-m", "opsb_core.drivers.registry", "--exec-job", str(job_path)]),
+                        cwd=str(wt), env=job_env, stdin=subprocess.DEVNULL, stdout=err_fh, stderr=subprocess.STDOUT,
                         start_new_session=True, close_fds=True,
                     )
                 pid = proc.pid
