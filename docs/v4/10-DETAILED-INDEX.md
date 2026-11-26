@@ -65,7 +65,8 @@ opsb test <Problem> --workspace <ws> [--sha <sha>] [--level smoke|standard|final
   "failures": [{"id": "07", "status": "WA", "detail": "≤200 字符"}],
   "timing": {"eligible": true, "source": "event_warm", "warmup": 2, "repeats": 5,
              "cases": {"01": {"min_us": 9.2, "median_us": 9.4, "cold_us": 558.8}}},
-  "public": {"efficiency": 0.83, "cases": {"01": 0.96}, "tbest_from": "<submission_id>"},
+  "public": {"efficiency": 0.83, "efficiency_raw": 0.25, "offset_us": 2.6, "offset_from": "<submission_id>",
+             "cases": {"01": 0.96}, "tbest_from": "<submission_id>"},
   "baseline": {"sha": "abc1234", "run_id": "...", "geomean_speedup": 1.07,
                "cases": {"01": 1.12}} ,
   "hint": "≤200 字符的下一步提示，可为空"
@@ -74,6 +75,7 @@ opsb test <Problem> --workspace <ws> [--sha <sha>] [--level smoke|standard|final
 
 - `failures` 最多 5 条，`timing.cases` 最多 20 条（按 min_us 从大到小），`public.cases` 最多 10 条，`baseline.cases` 最多 10 条（按偏离 1 的程度排序）。
 - 没有数据的字段写 `null`，不得省略键。
+- `offset_us` 是本地事件计时器的固定附加开销。如果官方测过同一个 SHA，取公开例上"本地热态最小值减官方时间"的中位数，写入 `results/.timing-offset.json` 缓存；之后测过其他 SHA 时沿用缓存值。`efficiency` 用扣除开销后的时间计算，`efficiency_raw` 是未校正值。真机实测：同一 SHA 上，10µs 量级的用例与官方相差约 2%，2–3µs 的用例约差 2.6µs。
 
 ### 3.3 远端运行配置（B1 写入、B2 读取）
 

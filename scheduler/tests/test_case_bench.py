@@ -341,7 +341,8 @@ def test_digest_reports_public_efficiency_and_baseline(device):
     ]
     ledger.write_text("".join(json.dumps(r) + "\n" for r in rows))
     first = bench.run(ws, "Op", repo, sha, "npu", stream=False)
-    assert first["digest"]["public"] == {"efficiency": 0.7, "cases": {"02": 0.5, "01": 0.9}, "tbest_from": "s1"}
+    assert first["digest"]["public"] == {"efficiency": 0.7, "efficiency_raw": 0.7, "offset_us": None,
+                                         "offset_from": None, "cases": {"02": 0.5, "01": 0.9}, "tbest_from": "s1"}
     assert first["digest"]["baseline"] is None and "ffffff" in first["digest"]["hint"]
     prior = ws / "results" / "Op" / base_sha / "bench-runs" / ("1" * 32) / "report.json"
     prior.parent.mkdir(parents=True)
@@ -351,6 +352,22 @@ def test_digest_reports_public_efficiency_and_baseline(device):
     second = bench.run(ws, "Op", repo, sha, "npu", stream=False, remeasure=True)
     baseline = second["digest"]["baseline"]
     assert baseline == {"sha": "fffffff", "run_id": "1" * 32, "geomean_speedup": 2.0, "cases": {"02": 2.0}}
+
+
+def test_public_estimate_subtracts_the_calibrated_timer_overhead(tmp_path):
+    rows = {"01": {"id": "01", "source": "official", "min_us": 10.0},
+            "02": {"id": "02", "source": "official", "min_us": 10.0}}
+    sha = "a" * 40
+    ledger = [{"title": "Op", "sha": "b" * 40, "submission_id": "s1", "public_tbest_us": [9.0, 5.0]},
+              {"title": "Op", "sha": sha, "submission_id": "s2", "public_times_us": [7.5, 7.0]}]
+    cache = tmp_path / ".timing-offset.json"
+    est = bench.public_estimate(ledger, "Op", rows, sha, cache=cache)
+    # Median local-minus-judged gap is 2.75 us; 7.25 us of kernel time remains per case.
+    assert est["offset_us"] == 2.75 and est["offset_from"] == "s2" and est["efficiency_raw"] == 0.7
+    assert est["cases"] == {"02": 0.69, "01": 1.241} and est["efficiency"] == 0.966
+    # A SHA the judge has not timed reuses the cached calibration.
+    later = bench.public_estimate(ledger[:1], "Op", rows, "c" * 40, cache=cache)
+    assert later["offset_us"] == 2.75 and later["offset_from"] == "s2"
 
 
 def test_failures_reach_the_digest(device, monkeypatch):

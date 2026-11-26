@@ -733,8 +733,48 @@ def _row_sha(row):
     return row.get("canonical_sha") or row.get("sha") or ""
 
 
-def public_estimate(ledger, title, rows):
-    """Ratio of the latest official public tbest to the local warm minimum per public case."""
+def _positive(value):
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def timing_offset(ledger, title, sha, rows, official, cache=None):
+    """Additive per-launch overhead of the local event timer, in microseconds.
+
+    Device events bracket the launch as well as the kernel, so tiny kernels read a few
+    microseconds slow while long ones agree with the judge. When the judge has timed this
+    exact SHA, the median of (local warm minimum - judged time) over the public cases is
+    that overhead. It is cached per workspace so later SHAs reuse the last calibration.
+    Returns ``(offset_us, submission_id)`` or ``(None, None)``.
+    """
+    calibration = None
+    for row in ledger:
+        times = row.get("public_times_us")
+        if row.get("title") == title and _row_sha(row) == sha and isinstance(times, list) and times:
+            calibration = row
+    if calibration is not None:
+        gaps = [rows[cid]["min_us"] - judged for cid, judged in zip(official, calibration["public_times_us"])
+                if _positive(judged) and _positive(rows[cid].get("min_us"))]
+        if gaps:
+            offset = round(max(0.0, statistics.median(gaps)), 3)
+            if cache is not None:
+                try:
+                    atomic_write_json(cache, {"offset_us": offset, "from": calibration.get("submission_id"),
+                                              "title": title, "sha": sha, "at": now()})
+                except OSError:
+                    pass
+            return offset, calibration.get("submission_id")
+    stored = read_doc(cache) if cache is not None else {}
+    if _positive(stored.get("offset_us")) or stored.get("offset_us") == 0:
+        return float(stored["offset_us"]), stored.get("from")
+    return None, None
+
+
+def public_estimate(ledger, title, rows, sha=None, cache=None):
+    """Ratio of the latest official public tbest to the local warm minimum per public case.
+
+    ``efficiency`` subtracts the calibrated timer overhead when one is known; the
+    uncorrected value stays in ``efficiency_raw``.
+    """
     latest = None
     for row in ledger:
         tbest = row.get("public_tbest_us")
@@ -743,13 +783,20 @@ def public_estimate(ledger, title, rows):
     if latest is None:
         return None
     official = sorted(r["id"] for r in rows.values() if r["source"] == "official")
-    ratios = {}
+    offset, offset_from = timing_offset(ledger, title, sha, rows, official, cache) if sha else (None, None)
+    raw, ratios = {}, {}
     for cid, tbest in zip(official, latest["public_tbest_us"]):
         mine = rows[cid].get("min_us")
-        if type(tbest) in (int, float) and tbest > 0 and mine:
-            ratios[cid] = round(min(tbest / mine, 1.5), 3)
+        if _positive(tbest) and _positive(mine):
+            raw[cid] = round(min(tbest / mine, 1.5), 3)
+            kernel = max(mine - offset, 0.1 * mine) if offset is not None else mine
+            ratios[cid] = round(min(tbest / kernel, 1.5), 3)
+    mean = lambda values: round(sum(values) / len(values), 3) if values else None
     return {
-        "efficiency": round(sum(ratios.values()) / len(ratios), 3) if ratios else None,
+        "efficiency": mean(list(ratios.values())),
+        "efficiency_raw": mean(list(raw.values())),
+        "offset_us": offset,
+        "offset_from": offset_from,
         "cases": dict(sorted(ratios.items(), key=lambda kv: kv[1])[:10]) or None,
         "tbest_from": latest.get("submission_id"),
     }
@@ -817,7 +864,8 @@ def build_digest(ws, report, rows, reasons=()):
     )[:5]
     timed = sorted((r for r in selected if r.get("min_us")), key=lambda r: -r["min_us"])[:20]
     ledger = _ledger(ws)
-    public = public_estimate(ledger, report["title"], rows)
+    public = public_estimate(ledger, report["title"], rows, report.get("sha"),
+                             cache=ws / "results" / ".timing-offset.json")
     baseline, missing = baseline_comparison(ws, ledger, report, rows)
     hints = list(reasons[:2])
     if failures:
