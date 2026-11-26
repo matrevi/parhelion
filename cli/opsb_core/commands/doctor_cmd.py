@@ -20,8 +20,11 @@ device tickets:
   budget (default 100 MB, newest kept first) — a busy day of agent sessions can outgrow
   any age window. These are platform-written telemetry, the same class as the remote dead
   tickets below, so `--apply` removes them instead of parking them in trash.
-* trash (`--purge-trash`): empties `PARHELION_HOME/trash/`. This is the only operation
-  that deletes data and it is opt-in, after the operator reviewed `trash/`.
+* retention: spill files of tool replies (`<workspace state>/spill`) and peer attachments,
+  quote histories and the request index (`<workspace state>/peer`) beyond the MCP retention
+  policy (7 days, 200 MB). Listed only; `--purge-retention --apply` deletes the listed files.
+* trash (`--purge-trash`): empties `PARHELION_HOME/trash/`. Together with `--purge-retention`
+  it is the only operation that deletes data and it is opt-in.
 * remote (`--remote`): admission tickets in `/tmp/opsb-npu-tickets/*.json` on the device
   host whose `pid` no longer exists. `--apply` deletes only those ticket files, never a
   lock file.
@@ -405,6 +408,15 @@ def _print_table(report: dict[str, Any]) -> None:
         for hit in report["logs"]:
             state = "removed" if hit.get("applied") else ("error: " + hit["error"] if hit.get("error") else "would remove")
             print(f"  {hit['name']:<40} {hit['reason']:<22} {hit['age_days']:>6}d  {state}")
+    if "retention" in report:
+        total = sum(hit.get("size_bytes") or 0 for hit in report["retention"])
+        print(f"\nSpill and peer retention ({len(report['retention'])}, {total / 1048576:.1f} MB):")
+        if not report["retention"]:
+            print("  (none)")
+        for hit in report["retention"]:
+            state = "deleted" if hit.get("applied") else ("error: " + hit["error"] if hit.get("error") else "would delete")
+            print(f"  {hit['section'] + '/' + Path(hit['path']).name:<40} {hit['reason']:<22} "
+                  f"{hit['age_days']:>6}d  {state}")
     if "trash" in report:
         print(f"  trash: {report['trash']}")
     if "trash_purge" in report:
@@ -434,7 +446,8 @@ def run_doctor(args: argparse.Namespace) -> int:
         if getattr(args, "cases", False):
             return run_cases(args, ConfigRepository.load())
         print("usage: opsb doctor clean [--apply] [--remote] [--agents] [--logs DAYS] "
-              "[--purge-trash] [--purge-cases] [--json] | opsb doctor --cases [--remote]", file=sys.stderr)
+              "[--purge-trash] [--purge-retention] [--purge-cases] [--json] | "
+              "opsb doctor --cases [--remote]", file=sys.stderr)
         return 2
     apply = bool(getattr(args, "apply", False))
     home = parhelion_home()
@@ -453,6 +466,12 @@ def run_doctor(args: argparse.Namespace) -> int:
         if apply:
             apply_logs(logs)
         report["logs"] = logs
+    from ..mcp.bound import purge_retention, scan_retention  # 4.2 E: spill and peer retention
+
+    retention = scan_retention(home)
+    if apply and getattr(args, "purge_retention", False):
+        purge_retention(retention)
+    report["retention"] = retention
     if getattr(args, "purge_trash", False):
         batches = scan_trash(home)
         if apply:
@@ -472,7 +491,7 @@ def run_doctor(args: argparse.Namespace) -> int:
         report["case_purge"] = purge_section(cfg, bool(getattr(args, "remote", False)), apply)
         if report["case_purge"].get("error"):
             rc = 1
-    for key in ("local", "agents", "logs", "trash_purge", "remote"):
+    for key in ("local", "agents", "logs", "retention", "trash_purge", "remote"):
         if any(h.get("error") for h in report.get(key) or []):
             rc = 1
     if getattr(args, "json", False):
@@ -503,6 +522,9 @@ def register_doctor_subcommands(sub: argparse._SubParsersAction[Any]) -> None:
                        help=f"Total budget for session logs, newest kept first (default {DEFAULT_LOG_MAX_MB}, 0 disables)")
     clean.add_argument("--purge-trash", action="store_true",
                        help="Also empty PARHELION_HOME/trash (destructive; --apply only)")
+    clean.add_argument("--purge-retention", action="store_true",
+                       help="With --apply, delete expired spill files and peer attachments listed by the "
+                            "retention policy (7 days / 200 MB); listed only without it")
     clean.add_argument("--json", action="store_true")
     register_cases_flags(doctor, clean)
     clean.set_defaults(func=run_doctor)

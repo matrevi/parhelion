@@ -1,6 +1,9 @@
 """Tests of the one MCP output bound (P13): cap, paging, spill, read-back, formats and retention."""
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -16,6 +19,7 @@ SUP_ROOT = CLI_DIR.parent
 if str(SUP_ROOT) not in sys.path:
     sys.path.insert(0, str(SUP_ROOT))
 
+from opsb_core.commands.doctor_cmd import register_doctor_subcommands, run_doctor  # noqa: E402
 from opsb_core.ledger.store import Ledger  # noqa: E402
 from opsb_core.mcp import bound, handlers_agents, handlers_kb, server  # noqa: E402
 from opsb_core.mcp.handlers_bench import tool_parhelion_status  # noqa: E402
@@ -411,6 +415,59 @@ def test_reap_drops_old_files_and_the_size_budget(ws: Path) -> None:
     assert sorted(bound.reap(ws, keep_days=7, max_bytes=1000)) == sorted(
         str(path) for path in [old, recent[0], recent[1]])
     assert recent[2].is_file() and not old.is_file()
+
+
+def _parse_doctor(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="opsb")
+    register_doctor_subcommands(parser.add_subparsers(dest="command"))
+    return parser.parse_args(argv)
+
+
+def _run_doctor(argv: list[str]) -> tuple[int, dict]:
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = run_doctor(_parse_doctor(argv))
+    return code, json.loads(buffer.getvalue())
+
+
+def test_doctor_lists_spill_and_peer_retention_then_purges_on_request(tmp_path: Path, monkeypatch) -> None:
+    from opsb_core import config as _cfg
+
+    monkeypatch.setenv("PARHELION_HOME", str(tmp_path))
+    monkeypatch.setenv("OPSB_HOME", str(tmp_path))
+    contest = tmp_path / "contest"
+    contest.mkdir()
+    (tmp_path / "config.json").write_text(
+        json.dumps({"workspaces": [str(contest)], "active_workspace": str(contest)}), encoding="utf-8")
+    data_dir = tmp_path / "workspaces" / _cfg.workspace_id(contest)
+    data_dir.mkdir(parents=True)
+    (data_dir / "meta.json").write_text(json.dumps({"workspace": str(contest)}), encoding="utf-8")
+    state = data_dir / "state"
+    spill = state / "spill" / "worker-1"
+    peer = state / "peer" / "quotes"
+    spill.mkdir(parents=True)
+    peer.mkdir(parents=True)
+    old_spill = spill / "old.json"
+    old_spill.write_text("{}", encoding="utf-8")
+    old_peer = peer / "worker-1.jsonl"
+    old_peer.write_text("{}\n", encoding="utf-8")
+    for path in (old_spill, old_peer):
+        os.utime(path, (time.time() - 15 * 86400,) * 2)
+    fresh = state / "peer" / "fresh.md"
+    fresh.write_text("keep\n", encoding="utf-8")
+    code, report = _run_doctor(["doctor", "clean", "--json"])
+    assert code == 0
+    hits = {Path(hit["path"]): hit for hit in report["retention"]}
+    assert set(hits) == {old_spill, old_peer}
+    assert all(hit["applied"] is False and hit["reason"].startswith("older than") for hit in hits.values())
+    assert old_spill.is_file() and old_peer.is_file() and fresh.is_file()
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        assert run_doctor(_parse_doctor(["doctor", "clean"])) == 0
+    assert "Spill and peer retention (2," in buffer.getvalue() and "would delete" in buffer.getvalue()
+    code, report = _run_doctor(["doctor", "clean", "--apply", "--purge-retention", "--json"])
+    assert code == 0 and all(hit["applied"] for hit in report["retention"])
+    assert not old_spill.exists() and not old_peer.exists() and fresh.is_file()
 
 
 def test_retention_settings_come_from_the_mcp_section(tmp_path: Path, monkeypatch) -> None:
