@@ -78,7 +78,7 @@
 2. `git merge --no-ff impl/Pxx-*`，解决冲突。
 3. 跑 §2.3 的两条全量测试（及 `swift build`），全绿后提交合并。
 4. `aoci_maintain`，按返回的批次创作条目并 `aoci_update_entry`，直至 aligned；索引变更单独提交。
-5. 在下表记录结果。
+5. 在下表记录结果，然后 `git push origin main`，让本地 `main` 与 `origin/main` 保持一致（工具按 `origin/main` 切新工作树）。
 
 ## 4. 进度
 
