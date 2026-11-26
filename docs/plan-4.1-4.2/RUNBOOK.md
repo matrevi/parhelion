@@ -38,7 +38,7 @@
 | P12 P14 P18 | — | 已合入 main（2026-11-26：901c3b6、f92efeb、efe11d7），随 4.2.0 发布 | 跟进项见 `reviews/P12.md`、`reviews/P14.md`、`reviews/P18.md` |
 | P13 P15 P08 | — | 已合入 main（2026-11-26：1f035b3、a419f41、f4e0219），随 4.2.0 发布 | 合入后在 main 上修了 P13 的翻页与确认已读、P08 的 peek 预算，见 `reviews/P13.md`、`reviews/P15.md`、`reviews/P08.md` |
 | P16 | — | 已合入 main（2026-11-26：302d58c）：H/I/J 测量 | H、I 不做；J-1（kb_query 去重键）已在 main 完成；J-2 进入 4.2.0，即 P20，见 `reviews/P16.md` |
-| P20 | impl/P20-tool-table | 待 DSH 开工：工具表瘦身（J-2），见 20-REMAINING §3.8 | 合入后做 4.2.0 收尾（§4） |
+| P20 | — | 已合入 main（2026-11-26：7572fc8）：工具表主控 25,007→14,601 字节、worker 22,066→12,507 字节 | 见 `reviews/P20.md` |
 | P19 | — | 已合入 main（2026-11-26：dfb51a4）：Antigravity 涨分归因调研，产出在 `docs/v4.3/research/antigravity/` | 据此写 4.3 计划；文中「4.3 现状」指当前 main，见 `reviews/P19.md` |
 
 **已知遗留**
@@ -56,7 +56,7 @@
 
 已合入（4.3 调研）：P19。
 
-待合入：P20（工具表瘦身）。P20 合入后做 4.2.0 收尾（§4）。
+4.2 的包已全部合入（含 P20）。下一步：4.2.0 发布，然后 4.2.1 门禁修复（§4）。
 
 **预计会冲突的位置**：`mcp/schemas.py`、`mcp/tools.py`（P12、P13、P08）；工具计数断言 `cli/tests/test_agent_mesh_http.py`、`cli/tests/test_mcp_server.py`（P12、P13、P08）；`agents/manager.py`（P14、P15）；`mcp/handlers_bench.py`（P13）。
 
@@ -68,7 +68,7 @@
 - 版本 4.1.0，发布说明见 `docs/v4/RELEASE-NOTES.md`；
 - 应用已重新打包安装并重新打开。
 
-**4.2.0**：全部包合入后，按 20-REMAINING §5 执行：
+**4.2.0（已完成，2026-11-26）**：787 passed / 19 skipped 与 540 passed，`swift build` 通过；版本 4.2.0（build 33），发布说明见 `docs/v4/RELEASE-NOTES.md`，tag `v4.2.0`；daemon 已重启，应用已重装。原步骤：
 1. 重启 daemon、重装应用；
 2. 版本升到 4.2.0，写发布说明，打 tag；
 3. 用 P03 的 `opsb replay metrics` / `opsb replay bench` 与下一场冲刺的指标做 4.2 前后对比。
