@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-26T05:42:13Z",
+  "updated_at": "2026-11-26T06:10:21Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -443,9 +443,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "2bccb1e887728bb93d2d29471a1abe1254d13a0c29b55fe4c2f383f4ad3055dd",
-      "size": 80086,
-      "normalized_sha256": "2bccb1e887728bb93d2d29471a1abe1254d13a0c29b55fe4c2f383f4ad3055dd"
+      "sha256": "801f798518364371c7274b445c977bfebf0ba74521e40cea4006e40a0772f0c7",
+      "size": 85175,
+      "normalized_sha256": "801f798518364371c7274b445c977bfebf0ba74521e40cea4006e40a0772f0c7"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1268,6 +1268,102 @@
       "sha256": "4e49b7f381b0aa8b582a30ffdf56a7ae62155731ff738a775c8ca1da065b82e0",
       "size": 53046,
       "normalized_sha256": "4e49b7f381b0aa8b582a30ffdf56a7ae62155731ff738a775c8ca1da065b82e0"
+    },
+    "docs/plan-4.1-4.2/00-MASTER.md": {
+      "role": "index",
+      "sha256": "b2a2270c33d372a32cc3303547679cc9c046e2f4a2dc4413b7958842c4834fe8",
+      "size": 9482,
+      "normalized_sha256": "b2a2270c33d372a32cc3303547679cc9c046e2f4a2dc4413b7958842c4834fe8"
+    },
+    "docs/plan-4.1-4.2/P01-judge-alignment.md": {
+      "role": "index",
+      "sha256": "7070a8cadd67b5fb14d55167ebf41d6c9c526af997bf765c62f18cf0b0e38101",
+      "size": 7334,
+      "normalized_sha256": "7070a8cadd67b5fb14d55167ebf41d6c9c526af997bf765c62f18cf0b0e38101"
+    },
+    "docs/plan-4.1-4.2/P02-wa-reproducers.md": {
+      "role": "index",
+      "sha256": "65984d78763126a8da7eec0f0b241f6150c992e736a222147edd07e8394be97d",
+      "size": 4023,
+      "normalized_sha256": "65984d78763126a8da7eec0f0b241f6150c992e736a222147edd07e8394be97d"
+    },
+    "docs/plan-4.1-4.2/P03-metering-replay.md": {
+      "role": "index",
+      "sha256": "459879ca480c0801f1f4cace1debf7f9c99313891df54f6a394c746ddb91eb16",
+      "size": 7001,
+      "normalized_sha256": "459879ca480c0801f1f4cace1debf7f9c99313891df54f6a394c746ddb91eb16"
+    },
+    "docs/plan-4.1-4.2/P04-change-driven-wait.md": {
+      "role": "index",
+      "sha256": "dfb9557f8b1ea6199b3b14073bfacbe5b80ba6fc94f26a1668f3e758294e8ff5",
+      "size": 3557,
+      "normalized_sha256": "dfb9557f8b1ea6199b3b14073bfacbe5b80ba6fc94f26a1668f3e758294e8ff5"
+    },
+    "docs/plan-4.1-4.2/P05-ledger-core.md": {
+      "role": "index",
+      "sha256": "58af51705afa1391d91fe606a93960edfb908f6f061207e69a59f61a19c5fb2a",
+      "size": 5513,
+      "normalized_sha256": "58af51705afa1391d91fe606a93960edfb908f6f061207e69a59f61a19c5fb2a"
+    },
+    "docs/plan-4.1-4.2/P06-ledger-seed.md": {
+      "role": "index",
+      "sha256": "5f246df86543fe82ce03fb0bc030472ad3f33d1fe9224b1a8491b10b2a40f73b",
+      "size": 4787,
+      "normalized_sha256": "5f246df86543fe82ce03fb0bc030472ad3f33d1fe9224b1a8491b10b2a40f73b"
+    },
+    "docs/plan-4.1-4.2/P07-gate-queue.md": {
+      "role": "index",
+      "sha256": "a4d8a1c1ef3bb338b304d974287d581100cd41b37e94a5b12500798d7c5dcef2",
+      "size": 3298,
+      "normalized_sha256": "a4d8a1c1ef3bb338b304d974287d581100cd41b37e94a5b12500798d7c5dcef2"
+    },
+    "docs/plan-4.1-4.2/P08-startup-pack.md": {
+      "role": "index",
+      "sha256": "3c11ee34f3f00839e98c053b188ad1e50a49441af144df7b1a36b75ce48ffcdb",
+      "size": 3485,
+      "normalized_sha256": "3c11ee34f3f00839e98c053b188ad1e50a49441af144df7b1a36b75ce48ffcdb"
+    },
+    "docs/plan-4.1-4.2/P09-host-daemon.md": {
+      "role": "index",
+      "sha256": "d9ee54ee4445351040fca6c9a5dbf2bb6b7fbb447e609549878ed34967a6e4f7",
+      "size": 3996,
+      "normalized_sha256": "d9ee54ee4445351040fca6c9a5dbf2bb6b7fbb447e609549878ed34967a6e4f7"
+    },
+    "docs/plan-4.1-4.2/P10-profiler-ab.md": {
+      "role": "index",
+      "sha256": "7baf48695d92e5e05ae0e406a86185c5aa527549f892af7f1a86c9f8bee00fe4",
+      "size": 3813,
+      "normalized_sha256": "7baf48695d92e5e05ae0e406a86185c5aa527549f892af7f1a86c9f8bee00fe4"
+    },
+    "docs/plan-4.1-4.2/P11-batch-ui.md": {
+      "role": "index",
+      "sha256": "f2dd3c67b9a4c831adf2560d042ce9a8c5508b9d28d0023c5c38d61f63e4d602",
+      "size": 2501,
+      "normalized_sha256": "f2dd3c67b9a4c831adf2560d042ce9a8c5508b9d28d0023c5c38d61f63e4d602"
+    },
+    "docs/plan-4.1-4.2/P12-report-views.md": {
+      "role": "index",
+      "sha256": "25e2b0b7e2e00faaa20942ad3b6d88c6e22d205722f26a66b6505814c761a820",
+      "size": 2927,
+      "normalized_sha256": "25e2b0b7e2e00faaa20942ad3b6d88c6e22d205722f26a66b6505814c761a820"
+    },
+    "docs/plan-4.1-4.2/P13-bound-output.md": {
+      "role": "index",
+      "sha256": "801af270e31675902e4fdf24800bd7ba16de8796d839c7a0e2f6359652b469d8",
+      "size": 2336,
+      "normalized_sha256": "801af270e31675902e4fdf24800bd7ba16de8796d839c7a0e2f6359652b469d8"
+    },
+    "docs/plan-4.1-4.2/P14-peer-protocol.md": {
+      "role": "index",
+      "sha256": "0573b58be120ecc815ec3720679d9213581ce16fa2a85affce30affb55988c60",
+      "size": 2086,
+      "normalized_sha256": "0573b58be120ecc815ec3720679d9213581ce16fa2a85affce30affb55988c60"
+    },
+    "docs/plan-4.1-4.2/P15-worker-boundary.md": {
+      "role": "index",
+      "sha256": "bdfe397c6a4bf1813b365c4040544ed931201385567d72f8d3e0e3a2eff65d11",
+      "size": 2600,
+      "normalized_sha256": "bdfe397c6a4bf1813b365c4040544ed931201385567d72f8d3e0e3a2eff65d11"
     },
     "docs/v3/01-fast-feedback-tools.md": {
       "role": "index",
