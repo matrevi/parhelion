@@ -10,6 +10,7 @@ final class HotTelemetryStore: ObservableObject {
     @Published var pipeline: LivePipelineState?
     @Published var schedulerHot: SchedulerHotState?
     @Published var agentMesh: AgentMeshHotState?
+    @Published var testRuns: [TestRunEntry] = []
     @Published var streamConnected: Bool = false
     @Published var daemonOnline: Bool = false
     @Published var probeBackend: String = "dcmi"
@@ -24,6 +25,9 @@ final class HotTelemetryStore: ObservableObject {
         schedulerHot = frame.schedulerHot
         if let mesh = frame.agentMesh {
             agentMesh = mesh
+        }
+        if let runs = frame.testRuns, runs != testRuns {
+            testRuns = runs
         }
         daemonOnline = true
         streamConnected = frame.daemonStats.streamConnected

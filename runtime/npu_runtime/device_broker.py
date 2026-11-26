@@ -27,6 +27,8 @@ STARVATION_SEC = 1800
 LONG_RUN_SEC = float(os.environ.get("OPSB_LONG_RUN_SEC") or 2.0)
 LONG_RUN_REPEATS = 2
 START_WAIT_SEC = 5.0
+#: Jobs of different problems that follow each other in WSPT order run under one lock hold.
+MERGE_LIMIT = 3
 
 
 def broker_dir():
@@ -257,6 +259,8 @@ class Job:
         # Profiler task timing (profiler_capture); needs a persistent session per executable.
         self.profiler = spec.get("profiler") if self.reuse_session else None
         self.collectors = []
+        self.merge = bool(spec.get("merge", True))
+        self.batch = None  # run IDs of the merged batch this job's current segment belongs to
         self.pending = deque(spec["cases"])
         for case in self.pending:
             int(case["index"]), str(case["id"]), list(case["parts"])
@@ -487,6 +491,9 @@ class Broker:
                       case_progress=dict(index=job.pending[0]["index"], total=job.total, id=job.pending[0]["id"],
                                          phase="execute") if job.pending else None,
                       holder_pid=os.getpid(), segment=job.segments)
+        if job.batch:
+            # Probe-visible: the lock holder names every member of the merged batch.
+            record["batch"] = job.batch
         self._write_session(record)
         job.send("started", wait_sec=round(waited, 3), segment=job.segments)
         capture = self._capture(job)
@@ -590,27 +597,63 @@ class Broker:
         with self.cond:
             job.finished = True
             self.last_active = time.monotonic()
-        job.send("done", wait_sec=round(job.wait, 3), hold_sec=round(job.hold, 3), segments=job.segments)
+        job.send("done", wait_sec=round(job.wait, 3), hold_sec=round(job.hold, 3), segments=job.segments,
+                 batch=job.batch)
         try:
             job.conn.shutdown(socket.SHUT_WR)
         except OSError:
             pass
 
+    def _take_batch(self):
+        """The WSPT head plus up to MERGE_LIMIT - 1 directly following jobs of other problems.
+
+        Merging stops at the first job that cannot join (same problem, or merging switched off),
+        so the execution order stays the WSPT order.
+        """
+        head = self._take()
+        if head is None:
+            return []
+        batch = [head]
+        with self.cond:
+            while head.merge and len(batch) < MERGE_LIMIT and self.queue:
+                self._prune()
+                if not self.queue:
+                    break
+                now = time.time()
+                nxt = max(self.queue, key=lambda j: j.key(now))
+                if not nxt.merge or nxt.spec.get("title") in {j.spec.get("title") for j in batch}:
+                    break
+                self.queue.remove(nxt)
+                self._drop_ticket(nxt)
+                nxt.position = None
+                batch.append(nxt)
+            if len(batch) > 1:
+                self._refresh()
+        return batch
+
     def serve_one(self):
         with open(self.lock_path, "a") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
             try:
-                job = self._take()
-                if job is None:
-                    return
-                try:
-                    record, requeue, profile = self._segment(job)
-                except Exception as exc:  # A broker bug must not strand the client or the lock.
-                    job.send("error", detail=f"Broker failure: {exc!r}")
-                    job.pending.clear()
-                    record, requeue, profile = None, False, None
+                batch = self._take_batch()
+                members = [j.run_id for j in batch] if len(batch) > 1 else None
+                for job in batch:
+                    # Each member keeps its own segment, TLE/requeue and wait/hold accounting.
+                    job.batch = members
+                    with self.cond:
+                        self.running = job
+                    try:
+                        record, requeue, profile = self._segment(job)
+                    except Exception as exc:  # A broker bug must not strand the client or the lock.
+                        job.send("error", detail=f"Broker failure: {exc!r}")
+                        job.pending.clear()
+                        record, requeue, profile = None, False, None
+                    self._after_segment(job, record, requeue, profile)
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _after_segment(self, job, record, requeue, profile):
+        """Ledger, release report, profile collection and requeue or finish for one member."""
         if profile is not None and profile[1]:
             with self.cond:
                 self.collecting += 1
@@ -625,7 +668,7 @@ class Broker:
             except OSError:
                 pass
             job.send("released", hold_sec=record["hold_sec"], segment=job.segments,
-                     requeued=len(job.pending) if requeue else 0)
+                     requeued=len(job.pending) if requeue else 0, batch=job.batch)
         if requeue:
             with self.cond:
                 self.running = None

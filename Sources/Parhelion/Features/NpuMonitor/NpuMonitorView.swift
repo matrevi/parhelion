@@ -12,8 +12,13 @@ struct NpuMonitorView: View {
                 Divider()
 
                 HSplitView {
-                    NpuServerQueueView(npu: snap.npu)
-                        .frame(minWidth: 430, idealWidth: 530)
+                    VSplitView {
+                        NpuServerQueueView(npu: snap.npu)
+                            .frame(minHeight: 260)
+                        TestRunRegistryView()
+                            .frame(minHeight: 140, idealHeight: 220)
+                    }
+                    .frame(minWidth: 430, idealWidth: 530)
 
                     SubmissionQueueView(items: snap.submissionQueue)
                         .frame(minWidth: 500, idealWidth: 650)

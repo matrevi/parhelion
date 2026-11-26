@@ -241,7 +241,7 @@ with tempfile.TemporaryDirectory(prefix='opsb-case-') as temp:
             archive.extract(member,target)
     engine = root/'reference_cases.py'
     engine.write_text(cfg.pop('engine'))
-    for name in ('lanes','case_batch','case_cache','device_broker','profiler_capture','case_pairs'):
+    for name in ('lanes','case_batch','case_cache','device_broker','profiler_capture','case_pairs','early_abort'):
         source = cfg.pop(name, None)
         if source is not None:
             (root/(name+'.py')).write_text(source)
@@ -470,7 +470,10 @@ def run(
         "lock": _dev("work_root") + "/" + _dev("work_prefix") + "-device0.lock",
         "case_cache_bytes": _dev("case_cache_bytes") or None,  # global LRU budget on the device host
         "profiler": profiler_settings(base),
+        "merge_batches": _dev("merge_batches") != "off",  # share one lock hold with other problems
     }
+    if base == "standard" and not custom and not base_sha:
+        cfg["early_abort"] = early_abort_config(ws, title, sha, cases)
     if base_sha:
         cfg["compare"] = base_sha  # rounds = repeats; each round runs every case once per arm
         # The device profiles one process at a time: with both arms' sessions alive only the
@@ -478,7 +481,8 @@ def run(
         cfg["profiler"] = None
         experiment = experiment or f"paired:{base_sha[:7]}"
     engine = (Path(runner) if runner else RUNNER).read_text()
-    modules = {name: RUNNER.with_name(name + ".py").read_text() for name in ("lanes", "case_batch", "case_cache")}
+    modules = {name: RUNNER.with_name(name + ".py").read_text()
+               for name in ("lanes", "case_batch", "case_cache", "early_abort")}
     for optional in ("device_broker", "profiler_capture", "case_pairs"):
         if RUNNER.with_name(optional + ".py").is_file():
             modules[optional] = RUNNER.with_name(optional + ".py").read_text()
@@ -682,6 +686,8 @@ def _execute_run(repo, cfg, report, engine, modules, runner, dest, stream):
         # Warmup executions absorb kernel load and session setup; only warm samples count.
         reasons = warm_timing(rows, report, cfg)
         report["timing_source"] = timing.run_source(rows, report)
+        if (report.get("device_batch") or {}).get("aborted_early"):
+            report["aborted_early"] = report["device_batch"]["aborted_early"]
         if report.get("compare"):
             pair_statistics(folder.parents[2], report, rows)
         report["timing_score_eligible"] = not reasons
@@ -927,6 +933,48 @@ def public_estimate(ledger, title, rows, sha=None, cache=None, doc=None):
     return out
 
 
+EARLY_ABORT = {"enabled": True, "factor": 1.25, "cases": 3, "min_us": 200.0}
+
+
+def best_pass_sha(ledger, title, sha):
+    """The judged Pass SHA with the best official score, other than ``sha``."""
+    best = None
+    for row in ledger:
+        if row.get("title") != title or row.get("status") != "Pass" or _row_sha(row) in ("", sha):
+            continue
+        score = row.get("score")
+        if type(score) in (int, float) and (best is None or score > best[0]):
+            best = (score, _row_sha(row))
+    return best[1] if best else None
+
+
+def early_abort_config(ws, title, sha, cases):
+    """R9 thresholds for a standard run: event minima of the best Pass SHA on the same inputs.
+
+    ``scheduler.early_abort`` in config.json overrides the defaults; ``{"enabled": false}``
+    turns it off. None when there is no measured baseline.
+    """
+    from .parhelion_paths import read_parhelion_scheduler_config
+    if os.environ.get("OPSB_EARLY_ABORT") == "off":  # measurement runs that must time every case
+        return None
+    try:
+        settings = {**EARLY_ABORT, **(read_parhelion_scheduler_config().get("early_abort") or {})}
+        base_sha = best_pass_sha(_ledger(ws), title, sha) if settings.get("enabled") else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not base_sha:
+        return None
+    key = pairing.official_key(cases)
+    docs = [read_doc(path) for path in (ws / "results" / title / base_sha).glob("bench-runs/*/report.json")]
+    docs = [d for d in docs if d.get("timing_score_eligible") is True and d.get("formal") is True
+            and (key is None or pairing.pairing_key(d) == key)]
+    baseline = timing.best_minima(docs, "event")
+    if not baseline:
+        return None
+    return {"baseline_us": baseline, "base_sha": base_sha, "factor": float(settings["factor"]),
+            "cases": int(settings["cases"]), "min_us": float(settings["min_us"])}
+
+
 def baseline_comparison(ws, ledger, report, rows):
     """Geometric-mean warm speedup against the best official Pass SHA; returns (baseline, missing_sha)."""
     title, sha = report["title"], report["sha"]
@@ -1040,6 +1088,9 @@ def build_digest(ws, report, rows, reasons=()):
                              doc=doc if case_map.usable(doc) else None)
     baseline, missing = baseline_comparison(ws, ledger, report, best_rows)
     hints = list(reasons[:2])
+    if report.get("aborted_early"):
+        hints.insert(0, "aborted early: slower than " + str(report["aborted_early"].get("base_sha", ""))[:7]
+                     + " on the first timed cases; the rest was not measured")
     if noisy:
         hints.append(f"timer read x{drift} slower than this SHA's best run; comparisons use the best run")
     if failures:

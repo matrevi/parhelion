@@ -130,6 +130,8 @@ struct DriverSettingsTab: View {
                         }
                     }
 
+                    DriverSuspensionBanner(driver: diag.kind)
+
                     Text(diag.detail)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)

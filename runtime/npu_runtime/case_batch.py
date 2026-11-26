@@ -174,6 +174,8 @@ def broker_job(repo, cfg, ready):
         "reuse_session": bool(cfg.get("reuse_session", True)), "case_timeout": cfg["timeout"],
         # Kernel task time from the device profiler on top of event timing (profiler_capture).
         "profiler": cfg.get("profiler") or None,
+        # Run back to back with other problems' ready jobs under one lock hold (device.merge_batches).
+        "merge": cfg.get("merge_batches", True) is not False,
         "job_timeout": cfg.get("job_timeout") or min(1800, cfg["timeout"] * sum(
             max(1, sum(len(part.get("warm") or []) + len(part["runs"]) for part in plan["parts"])) for plan in ready)),
         "cases": [{"index": plan["progress"]["index"], "id": plan["progress"]["id"], "timed": bool(plan["timed"]),
@@ -206,8 +208,11 @@ def _stream_job(path, job, on_event):
     return None
 
 
-def _execute_broker(path, repo, cfg, ready, update):
-    """Submit every ready plan as one job; return (done event or None, indices with a result)."""
+def _execute_broker(path, repo, cfg, ready, update, watch=None):
+    """Submit every ready plan as one job; return (done event or None, indices with a result).
+
+    ``watch`` (early_abort.Watch) may stop the job: closing the connection cancels it on the broker.
+    """
     by_index = {plan["progress"]["index"]: plan for plan in ready}
     reported = set()
     try:
@@ -231,6 +236,8 @@ def _execute_broker(path, repo, cfg, ready, update):
                         reported.add(msg["index"])
                         if msg["status"] == "PASS":
                             plan["samples"], plan["cold"] = [msg.get("samples") or []], [msg.get("cold") or []]
+                            if watch is not None and plan["timed"] and watch.observe(msg["id"], msg.get("samples")):
+                                return None, reported
                         else:
                             plan["error"] = {"status": msg["status"], "detail": msg.get("detail", "")}
                     elif kind == "profile":
@@ -267,12 +274,20 @@ def execute_batch(repo, cfg, plans, update=None):
     path = ensure_broker(cfg, Path(__file__).with_name("device_broker.py").read_text(encoding="utf-8"),
                          companions=_companions())
     result = {"wait_sec": 0.0, "hold_sec": 0.0, "segments": 0, "broker": path is not None}
+    from early_abort import Watch
+    watch = Watch(cfg.get("early_abort"))
     if path is not None and ready:
-        done, reported = _execute_broker(path, repo, cfg, ready, update)
+        done, reported = _execute_broker(path, repo, cfg, ready, update, watch)
         ready = [plan for plan in ready if plan["progress"]["index"] not in reported]
         if done is not None:
             result.update(wait_sec=done.get("wait_sec", 0.0), hold_sec=done.get("hold_sec", 0.0),
-                          segments=done.get("segments", 0))
+                          segments=done.get("segments", 0), batch=done.get("batch"))
+    if watch.aborted:
+        # R9: the candidate is clearly slower; the rest is not measured and the device is free.
+        for plan in ready:
+            plan["error"] = {"status": "SKIP", "detail": watch.skip_detail()}
+        ready = []
+        result["aborted_early"] = watch.aborted
     if ready:
         # Broker unavailable, or it went away mid-job: finish the unreported plans on the 3.6.2 lane.
         lane = _execute_lane(repo, cfg, ready)
@@ -281,7 +296,8 @@ def execute_batch(repo, cfg, plans, update=None):
                       segments=result["segments"] + lane["acquisitions"])
     return {"wait_sec": round(result["wait_sec"], 3), "hold_sec": round(result["hold_sec"], 3),
             "acquisitions": result["segments"], "segments": result["segments"], "broker": result["broker"],
-            "profiler": list(PROFILER_EVENTS)}
+            "profiler": list(PROFILER_EVENTS),
+            **{k: result[k] for k in ("aborted_early", "batch") if result.get(k)}}
 
 
 def verify(plan, cfg, compare):

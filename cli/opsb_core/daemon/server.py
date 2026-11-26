@@ -41,6 +41,7 @@ from .state_cache import WorkspaceStateCache
 from ..services.submit_runner import spawn_jump_submit
 from ..ipc_bridge import invoke_bridge
 from ..worker_access import worker_token
+from ..services import test_runs
 
 DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
@@ -128,6 +129,14 @@ def request_daemon_reload(state: dict[str, Any] | None = None, timeout: float = 
     except Exception as exc:
         return {"ok": False, "error": f"reload request failed: {exc}"}
     return body if isinstance(body, dict) else {"ok": False, "error": "unexpected reply"}
+
+
+def _test_registry(ws: Path) -> list[dict[str, Any]]:
+    """The hot frame's test registry rows; an unreadable registry never breaks the frame."""
+    try:
+        return test_runs.registry_view(ws)
+    except Exception:
+        return []
 
 
 def _write_daemon_state(state: dict[str, Any]) -> None:
@@ -364,6 +373,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                     uptime_sec=runtime.uptime_sec(),
                 )
                 frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
+                frame["test_runs"] = _test_registry(ws)
                 self._send_json(200, frame)
                 return
 
@@ -412,6 +422,7 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                             uptime_sec=runtime.uptime_sec(),
                         )
                         frame["agent_mesh"] = runtime.agent_mesh.build_hot_mesh(ws)
+                        frame["test_runs"] = _test_registry(ws)
                         first_frame = False
                         line = json.dumps(frame, ensure_ascii=False, separators=(",", ":"))
                         payload = f"event: hot\ndata: {line}\n\n".encode("utf-8")
@@ -424,6 +435,15 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                         self.close_connection = True
                         return
                     raise
+                return
+
+            if path.startswith("/v1/test-runs/"):
+                # On-demand detail of one registry row: the compact result and its <=2KB digest.
+                request_id = path.rsplit("/", 1)[-1]
+                try:
+                    self._send_json(200, {"ok": True, "run": test_runs.public_view(test_runs.refresh(ws, request_id))})
+                except (KeyError, ValueError, OSError) as exc:
+                    self._send_json(404, {"ok": False, "error": str(exc)})
                 return
 
             if agent_resp := handle_agent_get(path, q, ws, runtime):
@@ -475,6 +495,13 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
 
             if agent_resp := handle_agent_post(path, body_obj, ws, runtime):
                 self._send_json(agent_resp[0], agent_resp[1])
+                return
+
+            if path.startswith("/v1/drivers/") and path.endswith("/resume"):
+                # The administrator's explicit release of a provider-fault suspension.
+                driver = urllib.parse.unquote(path[len("/v1/drivers/"):-len("/resume")]).strip("/")
+                cleared = runtime.agent_mesh.clear_driver_suspension(ws, driver)
+                self._send_json(200, {"ok": True, "driver": driver.lower(), "cleared": cleared})
                 return
 
             if path == "/v1/daemon/reload":

@@ -49,6 +49,8 @@ DEFAULTS: dict[str, Any] = {
     "profiler_acl_flag": "--acl",
     # Suite levels whose timed executions run under the profiler (comma list, or "off").
     "profiler_levels": "standard,final",
+    # Different problems' ready device jobs share one lock hold ("off" disables).
+    "merge_batches": "on",
     "judge_base": "https://judge.invalid",
     "judge_bot": "judge-bot",
     "work_root": "/srv/work",

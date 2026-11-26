@@ -365,6 +365,8 @@ def _progress(record: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
             progress["cases_done"] += 1
         elif ev.get("event") == "device_batch" and ev.get("wait_sec") is not None:
             progress["wait_sec"] = ev.get("wait_sec")
+            if ev.get("hold_sec") is not None:
+                progress["hold_sec"] = ev.get("hold_sec")
     run_id = started.get("run_id")
     return progress, str(run_id) if run_id else None
 
@@ -391,6 +393,38 @@ def refresh(ws: Path | str, request_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- views
+
+REGISTRY_ROWS = 12
+
+
+def registry_view(ws: Path | str, limit: int = REGISTRY_ROWS) -> list[dict[str, Any]]:
+    """Newest runs for the app's test registry, without digests (fetched on demand by request ID).
+
+    Progress of a running record is read from its event log; queue, hold and end-to-end seconds
+    come from the run's device batch and its timestamps, so each problem keeps its own account.
+    """
+    rows = []
+    for rec in sorted(_all_records(ws), key=lambda r: str(r.get("created_at") or ""), reverse=True)[:limit]:
+        progress = rec.get("progress") or {}
+        if rec.get("status") == "running":
+            try:
+                progress, _ = _progress(rec)
+            except (OSError, ValueError):
+                pass
+        created = _age_sec(rec.get("created_at"))
+        finished = _age_sec(rec.get("finished_at"))
+        rows.append({
+            "request_id": rec.get("request_id"), "problem": rec.get("problem"),
+            "sha7": str(rec.get("sha") or "")[:7], "level": rec.get("level"), "status": rec.get("status"),
+            "run_id": rec.get("run_id"), "exit_code": rec.get("exit_code"), "agent_id": rec.get("agent_id"),
+            "compare": str(rec.get("compare") or "")[:7] or None,
+            "cases_done": progress.get("cases_done"), "cases": progress.get("selected"),
+            "phase": progress.get("phase"), "wait_sec": progress.get("wait_sec"), "hold_sec": progress.get("hold_sec"),
+            "e2e_sec": round(created - (finished or 0.0), 1) if created is not None else None,
+            "created_at": rec.get("created_at"), "has_digest": bool(rec.get("digest")),
+        })
+    return rows
+
 
 def _shrink_digest(digest: Any) -> Any:
     if not isinstance(digest, dict):
