@@ -601,8 +601,10 @@ def test_dry_run_launch_worktree_brief_and_session_persistence(isolated_env: Pat
         "opsb_core.services.triad_kb_service": fake_kb,
     }):
         enriched_brief = compose_session_brief(ws, "DemoOp", goal="Cut S_SMALL_CORE latency")
-    assert "SNP-1" in enriched_brief
-    assert "Bucket S1" in enriched_brief
+    # 4.0 briefs no longer inline KB digests or fast-feedback cards; workers query the KB on demand.
+    assert "SNP-1" not in enriched_brief
+    assert "Bucket S1" not in enriched_brief
+    assert "parhelion_kb_query" in enriched_brief
     assert len(enriched_brief.encode("utf-8")) < 3072
 
     res = launch_problem_session(ws, "DemoOp", driver_kind="claude", mode="dry-run", track_name="track-b", goal="Test dry run")

@@ -122,12 +122,14 @@ class AgentMeshAndMcpTests(unittest.TestCase):
             client.start_turn("thread", "test")
         self.assertNotIn("private credential", str(error.exception))
 
-    def test_stage_compaction_uses_current_window_and_requires_result(self):
+    def test_compaction_uses_token_threshold_or_high_percent_without_stage_result(self):
         from opsb_core.agents.adapters import CodexWorkerAdapter
         from opsb_core.agents.manager import _WorkerRunner
         state = tempfile.TemporaryDirectory()
         self.addCleanup(state.cleanup)
-        for percent, report, expected in [(59, True, False), (60, False, False), (60, True, True)]:
+        # (used tokens, window, stage report, expected compaction)
+        for used, window, report, expected in [(290_000, 1_000_000, True, False), (300_000, 1_000_000, False, True),
+                                               (69, 100, True, False), (70, 100, False, True)]:
             store = mock.Mock()
             store.db_path = Path(state.name) / "bus.db"
             store.get_agent.return_value = {}
@@ -137,8 +139,8 @@ class AgentMeshAndMcpTests(unittest.TestCase):
             runner = _WorkerRunner("worker", store, adapter, lambda: None)
             def turn(prompt, on_event):
                 CodexWorkerAdapter._forward_event({"method": "thread/tokenUsage/updated", "params": {
-                    "tokenUsage": {"last": {"totalTokens": percent}, "total": {"totalTokens": 9999},
-                                   "modelContextWindow": 100}}}, on_event)
+                    "tokenUsage": {"last": {"totalTokens": used}, "total": {"totalTokens": 9999},
+                                   "modelContextWindow": window}}}, on_event)
                 if report:
                     runner._stage_result = "Verified SHA and next experiment"
                 return "done"
@@ -149,12 +151,23 @@ class AgentMeshAndMcpTests(unittest.TestCase):
                     completed.set()
             runner._on_notify = notify
             try:
-                runner.enqueue("work")
-                self.assertTrue(completed.wait(3))
+                with mock.patch("opsb_core.config.ConfigRepository.load", return_value={}):
+                    runner.enqueue("work")
+                    self.assertTrue(completed.wait(3))
                 self.assertEqual(adapter.compact.called, expected)
+                if expected:
+                    self.assertIn("STATE", adapter.compact.call_args.args[0])
+                    self.assertEqual(runner._context_tokens, 0)
             finally:
                 runner.stop()
                 runner._thread.join(2)
+
+    def test_emit_context_reports_percent_tokens_and_window(self):
+        from opsb_core.agents.adapters import emit_context
+        events = []
+        emit_context(250_000, 1_000_000, lambda kind, label: events.append((kind, label)))
+        emit_context(None, 1_000_000, lambda kind, label: events.append((kind, label)))
+        self.assertEqual(events, [("context", "25"), ("context_tokens", "250000"), ("context_window", "1000000")])
 
     def test_wait_finds_target_after_unrelated_message_backlog(self):
         from opsb_core.agents.bus_store import AgentBusStore

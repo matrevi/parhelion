@@ -82,9 +82,12 @@ def tool_parhelion_harness_pool(args: dict[str, Any], workspace: Path) -> dict[s
 
 
 def tool_parhelion_sprint_start(args: dict[str, Any], workspace: Path) -> dict[str, Any]:
-    from ..agents.sprint import start_sprint
+    from ..agents.sprint import MODES, start_sprint
+    mode = str(args.get("mode") or "solo").strip().lower()
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of: {', '.join(MODES)}")
     body = {"driver": args.get("driver") or "", "preview": args.get("preview") is True,
-            "enable_auto_submit": args.get("enable_auto_submit") is True}
+            "enable_auto_submit": args.get("enable_auto_submit") is True, "mode": mode}
     if _ACTIVE_DAEMON_MANAGER is not None:
         return start_sprint(_ACTIVE_DAEMON_MANAGER, workspace, **body)
     result = _proxy_daemon("POST", "/v1/agents/sprint", workspace, body, timeout=180)

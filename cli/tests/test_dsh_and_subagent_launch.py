@@ -17,6 +17,7 @@ if str(CLI_DIR) not in sys.path:
 
 from opsb_core.drivers.brief import (  # noqa: E402
     MAX_BRIEF_BYTES,
+    MAX_ORCHESTRATOR_BRIEF_BYTES,
     compose_contest_subagent_brief,
     compose_bench_author_brief,
     compose_session_brief,
@@ -163,7 +164,7 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
                 encoding="utf-8",
             )
             brief = compose_contest_subagent_brief(ws)
-            self.assertLessEqual(len(brief.encode("utf-8")), MAX_BRIEF_BYTES)
+            self.assertLessEqual(len(brief.encode("utf-8")), MAX_ORCHESTRATOR_BRIEF_BYTES)
             self.assertIn("Subagent", brief)
             self.assertIn("PadV3Grad", brief)
             self.assertIn("ConcatD", brief)
@@ -250,8 +251,9 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("git push origin HEAD", single)
             self.assertNotIn("git push origin main", single)
             self.assertNotIn("申请测试槽", single)
-            self.assertIn("自行运行 `opsb submit", single)
-            self.assertLessEqual(len(single.encode("utf-8")), MAX_BRIEF_BYTES)
+            self.assertIn("opsb submit NeighborListPbcFixedK", single)
+            self.assertIn("parhelion_test_wait", single)
+            self.assertLessEqual(len(single.split("\n\nSTATE ")[0].encode("utf-8")), MAX_BRIEF_BYTES)
 
             bench = compose_bench_author_brief(ws, "NeighborListPbcFixedK")
             self.assertIn("cases_perf.json", bench)
@@ -268,7 +270,7 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             self.assertIn("Each worker directly queues validation", sprint)
             self.assertNotIn("SLOT-GRANT", sprint)
             self.assertIn("Workers enqueue their own candidates via opsb submit", sprint)
-            self.assertLessEqual(len(sprint.encode("utf-8")), MAX_BRIEF_BYTES)
+            self.assertLessEqual(len(sprint.encode("utf-8")), MAX_ORCHESTRATOR_BRIEF_BYTES)
 
     def test_new_contest_gui_stages_english_brief_before_templates_arrive(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -294,9 +296,9 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             problems = [{"title": f"Operator{i:04d}"} for i in range(300)]
             manifest.write_text(json.dumps({"problems": problems}), encoding="utf-8")
             self.assertEqual(compose_contest_subagent_brief(ws, goal="优先恢复零分"), brief + "\n\nUser goal: 优先恢复零分")
-            long_goal = compose_contest_subagent_brief(ws, goal="测试" * MAX_BRIEF_BYTES)
+            long_goal = compose_contest_subagent_brief(ws, goal="测试" * MAX_ORCHESTRATOR_BRIEF_BYTES)
             self.assertTrue(long_goal.startswith(brief))
-            self.assertLessEqual(len(long_goal.encode("utf-8")), MAX_BRIEF_BYTES)
+            self.assertLessEqual(len(long_goal.encode("utf-8")), MAX_ORCHESTRATOR_BRIEF_BYTES)
 
     def test_subagent_capacity_is_pinned_to_twenty_idempotently(self) -> None:
         from opsb_core.drivers.dsh_driver import ensure_subagent_capacity

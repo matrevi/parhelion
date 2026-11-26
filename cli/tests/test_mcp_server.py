@@ -109,7 +109,7 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
         dict(kind=driver, auth_ok=True, binary_path="dsh", installed=True)]})
     bind_daemon_agent_manager(mgr)
     def start(preview=False):
-        return call_tool("parhelion_sprint_start", dict(driver=driver, enable_auto_submit=True, preview=preview), ws)
+        return call_tool("parhelion_sprint_start", dict(driver=driver, enable_auto_submit=True, preview=preview, mode="full"), ws)
     try:
         assert not start(True)["auto_submit_enabled"]
         with ThreadPoolExecutor(2) as pool:
@@ -168,11 +168,11 @@ def test_sprint_replay_and_candidate_feedback(isolated_mcp_env, tmp_path, monkey
         store = observer._store(ws)
         assert len(store.list_agents(include_stopped=False, limit=-1)) == 6
         store.update_agent(author, branch="calibration-followup")
-        assert all(s["state"] == "existing" for s in start_sprint(observer, ws, driver=driver, preview=True)["assignments"])
+        assert all(s["state"] == "existing" for s in start_sprint(observer, ws, driver=driver, preview=True, mode="full")["assignments"])
         with pytest.raises(RuntimeError, match="owned by another"):
             observer._enqueue_to_worker(ws, store.get_agent(author), "follow-up")
         store.update_agent(author, status="error", error="insufficient balance")
-        plan = start_sprint(observer, ws, driver=driver)
+        plan = start_sprint(observer, ws, driver=driver, mode="full")
         held = [s for s in plan["assignments"] if s["state"] == "blocked"]
         assert len(held) == 1 and held[0]["agent_id"] == author and held[0]["reason"] == "insufficient balance"
         assert len(store.list_agents(limit=-1)) == 6
