@@ -210,8 +210,10 @@ def compose_seat_contract(workspace: Path, role: str, *, problem: str = "", work
         raise ValueError(f"Unknown seat contract {role!r}: choose one of {', '.join(SEAT_CONTRACTS)}")
     if role == "knowledge":
         title = problem or ws.name
-        where = (f"Worktree: the shared workspace `{ws}` (no isolated branch); write the documents you name "
-                 "under it and commit only there.")
+        # A knowledge seat may be unbound (no problem): it then works in the shared workspace and has no branch.
+        wt = Path(worktree).expanduser().resolve() if worktree else ws
+        where = (f"Worktree `{wt}`" + (f" on branch `{branch}`" if branch else "") +
+                 "; write the documents you name there and commit only there.")
         commands = ("parhelion_kb_query / parhelion_kb_record / parhelion_kb_feedback; evidence reads through "
                     "parhelion_report views history/per_case/board. You cannot run parhelion_test and cannot enqueue "
                     "a submission.")

@@ -10,12 +10,12 @@
 
 ```text
 $ git log --oneline main..HEAD
-<this-commit> Report P26: seat identity, race/pipeline modes and the remote checkout finding
+7f72919 Report P26: seat identity, race/pipeline modes and the remote checkout finding
 6caeb20 Test seat identity, race and pipeline seats, and seat replacement
 49248d1 Give a sprint seat an identity, a mode and a replacement path
 ```
 
-快照不含它自身这一笔之后的交付提交：分支最后一笔的标题以 `Deliver P26:` 开头（`git log` 末行）。
+快照之后还有一笔交付提交：分支最后一笔的标题以 `Deliver P26:` 开头（`git log` 末行）。
 工作树 `/Users/winbeau/Developer/personal/parhelion-wt/P26`；`main` 未合入、未推送、未 rebase。
 
 ## 2. 子计划逐项完成情况
@@ -46,10 +46,10 @@ $ git log --oneline main..HEAD
 
 ```text
 $ ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider
-817 passed, 19 skipped, 2 subtests passed in 76.74s
+817 passed, 19 skipped, 2 subtests passed in 79.65s
 
 $ PYTHONPATH=cli:. ~/.parhelion/venv/bin/python -m pytest -q -p no:cacheprovider cli/tests runtime/tests
-556 passed in 63.16s
+556 passed in 65.36s
 ```
 
 基线 4.2.1 为 801 passed / 19 skipped 与 540 passed；增量是 `cli/tests/test_sprint_seats_p26.py`

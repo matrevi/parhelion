@@ -33,7 +33,8 @@ TASKS = {
     "dataflow": "Explore tiling, memory traffic and kernel launch costs on measured buckets.",
     "calibration": ("Calibrate on a new candidate or official receipt. Reuse comparable baseline evidence and "
                     "measure only the cases needed to test your hypothesis. Share the run IDs and findings, "
-                    "then wait for new evidence."),
+                    "then wait for new evidence. The suite is platform-owned: propose case and bucket variants "
+                    "to the orchestrator, and do not write measurement scripts outside the platform suite."),
     "race": ("You are one of {tracks} tracks racing on this same goal; a rival seat is working the same objective. "
              "Pick a mechanism your rivals are not using, change one variable per round, and keep every candidate "
              "measured on the same baseline. There is no separate winner rule: each track goes through the same "
