@@ -1679,6 +1679,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_tst.add_argument("--profile")
     p_tst.add_argument("--experiment")
     p_tst.add_argument("--remeasure", action="store_true", default=None)
+    p_tst.add_argument("--cold", action="store_true", default=None, help="Fresh device session per case")
     p_tst.add_argument("--suite", choices=["adaptive", "all"], help="Deprecated: adaptive=--level smoke, all=--level standard")
     p_tst.add_argument("--level", choices=["smoke", "standard", "final"], default=None,
                        help="Suite level (default standard)")
@@ -1845,7 +1846,8 @@ def main(argv: list[str] | None = None) -> int:
                 pmu=getattr(args, "pmu", False),
                 case_options={k:v for k,v in dict(ids=args.case_ids,bucket=args.bucket,
                     profile_path=args.profile,experiment=args.experiment,timing=args.timing,
-                    repeats=args.repeats,runner=args.runner,remeasure=args.remeasure,suite=level,official_only=args.official_only).items() if v is not None},
+                    repeats=args.repeats,runner=args.runner,remeasure=args.remeasure,suite=level,official_only=args.official_only,
+                    cold=args.cold).items() if v is not None},
                 dry_run=args.dry_run,
                 stream_stdout=not args.dry_run,
             )

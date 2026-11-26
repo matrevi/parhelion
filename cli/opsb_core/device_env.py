@@ -54,6 +54,9 @@ DEFAULTS: dict[str, Any] = {
     "repo_url_template": "https://git.invalid/{prefix}-{slug}.git",
     "contest_org": "",
     "contest_track": "",
+    # Device peak memory bandwidth in GB/s: the physical floor of a case's time
+    # (scheduler.plausibility). Empty means unknown, and only the ratio checks apply.
+    "peak_bandwidth_gbps": "",
 }
 
 

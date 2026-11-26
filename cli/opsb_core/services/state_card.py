@@ -154,6 +154,29 @@ def _suite_line(ws: Path, title: str) -> str:
         return "suite: n/a"
 
 
+def _noise_line(ws: Path, title: str) -> str | None:
+    """Noisy cases of the newest run (CV over 3%, scheduler.verdicts) and the judge calibration labels."""
+    try:
+        verdicts = importlib.import_module("scheduler.verdicts")
+        calibration = importlib.import_module("scheduler.case_calibration")
+        pointers = [_cfg.read_json(p, {}) for p in (ws / "results" / title).glob("*/latest-bench.json")]
+        newest = max((p for p in pointers if isinstance(p, dict) and p.get("report")),
+                     key=lambda p: str(p.get("finished_at") or ""), default=None)
+        report = _cfg.read_json(Path(newest["report"]), {}) if newest else {}
+        noisy = verdicts.noisy_cases(report) if isinstance(report, dict) else []
+        stored = list(calibration.load(ws, title).values())
+        labels = calibration.table(ws, title, records=stored)["labels"] if stored else {}
+        if not noisy and not labels:
+            return None
+        parts = [f"noisy (CV>3%, no gain claims): {','.join(noisy[:6]) or 'none'}"]
+        if labels:
+            parts.append(f"judge calibration: trusted {len(labels['trusted'])} · noisy {len(labels['noisy'])} · "
+                         f"divergent {','.join(labels['divergent'][:6]) or 'none'}")
+        return _clip(" · ".join(parts), 300)
+    except Exception:
+        return None
+
+
 def _fit(lines: list[str]) -> str:
     text = "\n".join(lines)
     raw = text.encode("utf-8")
@@ -177,8 +200,9 @@ def build(ws: Path, title: str, agent_id: str | None = None) -> str:
             _public_gap_line(rows, ws, title),
             _tests_line(ws, title, agent_id),
             _suite_line(ws, title),
+            _noise_line(ws, title),
             RULES_LINE,
         ]
-        return _fit(lines)
+        return _fit([line for line in lines if line])
     except Exception:
         return f"STATE {title}: unavailable"

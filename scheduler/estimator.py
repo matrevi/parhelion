@@ -191,6 +191,8 @@ class ScoreEstimate:
     expected_improvement: float = 0.0
     calibration_samples: float = 0.0
     calibration_bias: float = 0.0
+    # Score interval with divergent cases treated as unknown (scheduler.predict_interval).
+    prediction_interval: dict[str, Any] = dataclasses.field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -296,7 +298,7 @@ _EXEC_ROW_RE = re.compile(
 _RUNTIME_SOC_RE = re.compile(r"^RUNTIME_SOC=(\S+)")
 
 
-from . import pairing, receipt_predict, receipts
+from . import pairing, plausibility, predict_interval, receipt_predict, receipts
 from .parhelion_paths import atomic_write_json, get_parhelion_home, load_problem_manifest, read_json_safe
 
 _FP_CACHE: dict[str, str | None] = {}
@@ -1201,10 +1203,12 @@ class ScoreEstimator:
     @staticmethod
     def _group_minima(docs: list[dict[str, Any]]) -> dict[str, float]:
         minima: dict[str, float] = {}
+        blocked = plausibility.unconfirmed(docs)  # implausible readings wait for a cold confirmation
         for doc in docs:
             for case in doc.get("cases") or []:
                 value = case.get("min_us")
-                if case.get("source") == "official" and isinstance(value, (int, float)) and value > 0:
+                if (case.get("source") == "official" and isinstance(value, (int, float)) and value > 0
+                        and plausibility.gate_minimum(doc, case, blocked)):
                     minima[case["id"]] = min(minima.get(case["id"], value), float(value))
         return minima
 
@@ -1575,6 +1579,7 @@ class ScoreEstimator:
         ucb_delta_override: float | None = None
         calibration_samples = 0.0
         calibration_bias = 0.0
+        receipt_rp = None
 
         # Reference anchor when current board is 0 / no-submission
         anchor_score = ledger.current_score
@@ -1671,6 +1676,7 @@ class ScoreEstimator:
             cal_trust = local_quality * (0.3 + 0.7 * n_eff / (n_eff + k0))
             base_sha = rp["base_sha"]
             method = receipt_predict.METHOD
+            receipt_rp = rp
             refresh = f", refreshes tbest on {len(rp['refresh_tbest'])}" if rp["refresh_tbest"] else ""
             detail = (
                 f"{rp['matched']}/{rp['timed']} judge cases via {rp['map_method']} map vs "
@@ -1834,6 +1840,8 @@ class ScoreEstimator:
             else round(delta_expected + (0.85 + 0.55 * (1.0 - cal_trust)) * sigma, 2)
         )
 
+        interval = predict_interval.build(self.workspace, title, receipt_rp, estimated_score, sigma,
+                                          shift=calibration_bias if receipt_rp else 0.0, as_of=as_of)
         return ScoreEstimate(
             title=title,
             sha=canonical_sha,
@@ -1868,4 +1876,5 @@ class ScoreEstimator:
             expected_improvement=round(expected_improvement(delta_expected, sigma), 2),
             calibration_samples=round(calibration_samples, 2),
             calibration_bias=calibration_bias,
+            prediction_interval=interval,
         )

@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 import fcntl
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -28,9 +29,10 @@ SUITE_FIELDS = {
     "case_timeout", "reuse_session", "variants", "buckets", "timed", "weights", "timing_scope",
 }
 TIMING_SCOPES = ("official", "perf")
-# Provenance of platform-generated variants (scheduler.wa_repro); never part of the input digest.
-VARIANT_ORIGIN_FIELDS = {"origin", "receipt", "judge_testcase_id", "mapped"}
-VARIANT_FIELDS = {"id", "base", "params", "seed", "name", "perf", "tier"} | VARIANT_ORIGIN_FIELDS
+# Provenance of platform-generated variants (scheduler.wa_repro, scheduler.hidden_final); never part
+# of the input digest. ``transform`` is input: a platform-side value scaling applied by the runner.
+VARIANT_ORIGIN_FIELDS = {"origin", "receipt", "judge_testcase_id", "mapped", "hidden_class"}
+VARIANT_FIELDS = {"id", "base", "params", "seed", "name", "perf", "tier", "transform"} | VARIANT_ORIGIN_FIELDS
 PROFILE_FIELDS = ("version", "variants", "buckets", "timing", "repeats", "case_timeout", "strict_fp32", "reuse_session")
 DEFAULTS = {"warmup": 2, "repeats": 5, "case_timeout": 15, "reuse_session": True}
 RANGES = {"warmup": (0, 10), "repeats": (1, 50), "case_timeout": (1, 600)}
@@ -99,7 +101,13 @@ def normalize_variant(variant, index=0) -> dict:
         raise ValueError(f"{where}.name must be a string")
     if "perf" in variant and not isinstance(variant["perf"], bool):
         raise ValueError(f"{where}.perf must be true or false")
-    for field in ("origin", "receipt"):
+    if "transform" in variant:
+        transform = variant["transform"]
+        scale = transform.get("scale") if isinstance(transform, dict) else None
+        if (not isinstance(transform, dict) or set(transform) != {"scale"} or type(scale) not in (int, float)
+                or not math.isfinite(scale) or scale == 0):
+            raise ValueError(f"{where}.transform must be {{\"scale\": <finite non-zero number>}}")
+    for field in ("origin", "receipt", "hidden_class"):
         if field in variant and not isinstance(variant[field], str):
             raise ValueError(f"{where}.{field} must be a string")
     if variant.get("judge_testcase_id") is not None and not isinstance(variant["judge_testcase_id"], str):
@@ -352,16 +360,23 @@ def add_variant(ws, title, variant, repo=None, rev="HEAD") -> dict:
     return add_variants(ws, title, [variant], repo, rev)
 
 
-def add_variants(ws, title, variants, repo=None, rev="HEAD") -> dict:
-    """Append validated local variants in one write: one suite version bump for the batch."""
-    suite = load_suite(ws, title)
+def extend(suite, variants) -> dict:
+    """The suite with validated variants appended, in memory: duplicates and bad fields raise.
+
+    ``add_variants`` writes the result; scheduler.hidden_final keeps it for one run only.
+    """
     entries = [normalize_variant(v, len(suite["variants"]) + i) for i, v in enumerate(variants)]
     known = {v["id"] for v in suite["variants"]}
     for entry in entries:
         if entry["id"] in known:
             raise ValueError(f"Variant {entry['id']} already exists")
         known.add(entry["id"])
-    trial = {**suite, "variants": [*suite["variants"], *entries]}
+    return {**suite, "variants": [*suite["variants"], *entries]}
+
+
+def add_variants(ws, title, variants, repo=None, rev="HEAD") -> dict:
+    """Append validated local variants in one write: one suite version bump for the batch."""
+    trial = extend(load_suite(ws, title), variants)
     if repo is not None:
         from .case_bench import catalog, committed
 
