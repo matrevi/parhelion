@@ -1,12 +1,14 @@
 """Opening probe allowance: first three acknowledged submissions per problem."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import pathlib
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SUP_ROOT = pathlib.Path(__file__).resolve().parents[2]
 if str(SUP_ROOT) not in sys.path:
@@ -73,6 +75,20 @@ class ProbeAllowanceTests(unittest.TestCase):
             self.assertEqual(verdict.status_tag, "PROBE")
             self.assertIn("Probe 1/3", verdict.gate_reason)
             self.assertEqual([s.code for s in verdict.stages], ["PROBE_ALLOWANCE"] * 4)
+
+    def test_probe_waits_for_a_slot_without_losing_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ws, title, sha = _make_workspace(pathlib.Path(td), exit_code=2, log=BUILD_OK_LOG)
+            gate = SubmissionGate(ws)
+            no_slot = dataclasses.replace(gate.get_quota_status(), used_today=50, remaining_today=0,
+                                          discretionary_remaining=0)
+            with mock.patch.object(gate, "get_quota_status", return_value=no_slot):
+                verdict = gate.evaluate(title, sha)
+            self.assertTrue(verdict.approved)
+            self.assertEqual(verdict.status_tag, "PROBE")
+            self.assertEqual([s.code for s in verdict.stages],
+                             ["PROBE_ALLOWANCE"] * 3 + ["DAILY_LIMIT_REACHED"])
+            self.assertFalse(verdict.stages[3].passed)
 
     def test_fourth_submission_requires_full_validation_even_when_unsolved(self) -> None:
         with tempfile.TemporaryDirectory() as td:

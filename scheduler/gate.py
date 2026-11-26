@@ -19,11 +19,12 @@ Stages:
      - Nygard 3-state machine (`CLOSED` / `OPEN` / `HALF_OPEN`) over rolling 12h window
      - Compares decay-adjusted contemporary scores (`gamma_p` + residual `-0.015 pts/hr`) rather
        than raw 8-day-old peaks so multi-day `tbest(t)` tightening never manufactures false streaks
-  4. QUOTA_RESERVE:
-     - Dual Token Bucket: 190s inter-submission rate limit (`RATE_WAIT`) + 50/day Beijing-day
-       (`UTC+8` 00:00 reset) hard cap reserving `N_restore` slots strictly for genuine
-       decay-discounted closing restores (`true_restore_gain >= noise_floor_pts` or `S_live == 0`);
-       a hard-cap hit yields `QUOTA_EXHAUSTED` (never `RATE_WAIT`)
+  4. QUOTA_RESERVE (dispatch slot, not a gate):
+     - Reports whether an account slot is free: 190s inter-submission pacing (`RATE_WAIT`) and the
+       50/day Beijing-day (`UTC+8` 00:00 reset) per-account cap. With every slot used the stage
+       fails and the verdict is `QUOTA_EXHAUSTED` (never `RATE_WAIT`), but the candidate stays
+       approved and waits. Daily allowance never enters approval, a hold or the ranking; the
+       closing-restore count in `QuotaStatus` is informational only.
      - Orders approved submissions by `(CRITICAL_RESTORE desc, difficulty * delta_expected desc)`
 """
 from __future__ import annotations
@@ -89,6 +90,7 @@ class GateConfig:
     # E[max(0, gain)] clears the floor is worth taking even when the point estimate does not.
     keep_best_board: bool = True
     min_prob_positive: float = 0.2
+    # Floor of the displayed closing-restore count; it never gates, holds or ranks a candidate.
     min_closing_reserve: int = 2
     circuit_limit_shots: int = 6
     circuit_window_hours: float = 12.0
@@ -784,7 +786,7 @@ class SubmissionGate:
         )
 
     def get_quota_status(self, as_of: datetime.datetime | None = None) -> QuotaStatus:
-        """Stage 4 helper: multi-account Beijing-day Token Bucket & decay-discounted closing reserve."""
+        """Stage 4 helper: multi-account Beijing-day slot counts and pacing (closing count is display-only)."""
         ref_now = as_of or datetime.datetime.now(datetime.timezone.utc)
         bj_now = ref_now.astimezone(BEIJING_TZ)
         bj_midnight = bj_now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -888,7 +890,8 @@ class SubmissionGate:
             )
         )
 
-        # Dynamic closing reserve: exact needed restores + 1 safety buffer (floored by min_closing_reserve)
+        # Closing-restore count for display (needed restores + 1, floored by min_closing_reserve).
+        # It never holds or reorders a candidate: daily allowance is not a gate threshold.
         reserve_cap = max(12, self.config.min_closing_reserve)
         reserved = min(reserve_cap, max(self.config.min_closing_reserve, len(restore_targets) + (1 if restore_targets else 0)))
         discretionary = max(0, remaining_today - reserved)
@@ -980,6 +983,31 @@ class SubmissionGate:
             pass
         return verdict
 
+    def _slot_stage(self, quota: QuotaStatus) -> StageResult:
+        """Stage 4: whether an account slot is free right now.
+
+        It is resource timing, not a threshold: a failed stage only delays dispatch (the queue
+        shows it as waiting for a slot) and never withholds approval or holds a candidate.
+        """
+        if quota.remaining_today <= 0:
+            return StageResult(
+                stage="QUOTA_RESERVE",
+                passed=False,
+                code="DAILY_LIMIT_REACHED",
+                reason=(
+                    f"no account slot is free until the reset at {quota.next_reset_utc} "
+                    f"({quota.used_today}/{quota.daily_limit} used today)"
+                ),
+                metrics={"remaining": 0},
+            )
+        return StageResult(
+            stage="QUOTA_RESERVE",
+            passed=True,
+            code="QUOTA_OK",
+            reason=f"{quota.remaining_today} submission slot(s) free today ({quota.used_today}/{quota.daily_limit} used)",
+            metrics={"remaining": quota.remaining_today},
+        )
+
     def _s2_metrics(self, estimate: ScoreEstimate) -> dict[str, Any]:
         return {
             "delta_expected": estimate.delta_expected,
@@ -1066,7 +1094,8 @@ class SubmissionGate:
 
         # Acknowledged submission IDs define the three opening probes.
         probe = self.probe_allowance(title, canonical_sha, unsolved=is_critical_restore)
-        if as_of is None and probe["allowed"] and not explicit_skip and quota.remaining_today > 0:
+        if as_of is None and probe["allowed"] and not explicit_skip:
+            slot = self._slot_stage(quota)
             stages = [
                 StageResult(
                     stage="SAFETY", passed=True, code="PROBE_ALLOWANCE",
@@ -1083,8 +1112,8 @@ class SubmissionGate:
                             reason="Circuit breaker is not armed for opening probes",
                             metrics={"remaining": probe["remaining"]}),
                 StageResult(stage="QUOTA_RESERVE", passed=True, code="PROBE_ALLOWANCE",
-                            reason="Opening probes bypass the closing reserve (server quota still applies)",
-                            metrics={"remaining": probe["remaining"]}),
+                            reason="Opening probes dispatch on the next free account slot",
+                            metrics={"remaining": probe["remaining"]}) if slot.passed else slot,
             ]
             return GateVerdict(
                 title=title,
@@ -1362,51 +1391,8 @@ class SubmissionGate:
                 metrics=cb.to_dict(),
             )
 
-        # Stage 4: QUOTA_RESERVE
-        if quota.remaining_today <= 0:
-            s4 = StageResult(
-                stage="QUOTA_RESERVE",
-                passed=False,
-                code="DAILY_LIMIT_REACHED",
-                reason=(
-                    f"{quota.daily_limit}/day hard limit reached ({quota.used_today}/{quota.daily_limit}); "
-                    f"next reset at {quota.next_reset_utc}"
-                ),
-                metrics={"remaining": 0, "reserved": quota.reserved_for_closing},
-            )
-        elif is_critical_restore or effective_force:
-            s4 = StageResult(
-                stage="QUOTA_RESERVE",
-                passed=True,
-                code="RESERVE_ELIGIBLE",
-                reason=(
-                    f"Eligible to use closing/emergency reserve ({quota.remaining_today} total remaining, "
-                    f"{quota.reserved_for_closing} reserved)"
-                ),
-                metrics={"remaining": quota.remaining_today, "reserved": quota.reserved_for_closing},
-            )
-        elif quota.discretionary_remaining <= 0:
-            s4 = StageResult(
-                stage="QUOTA_RESERVE",
-                passed=False,
-                code="RESERVED_FOR_CLOSING",
-                reason=(
-                    f"Only {quota.remaining_today} slot(s) left today — reserved for {quota.reserved_for_closing} "
-                    f"closing restores; holding discretionary submission"
-                ),
-                metrics={"remaining": quota.remaining_today, "reserved": quota.reserved_for_closing},
-            )
-        else:
-            s4 = StageResult(
-                stage="QUOTA_RESERVE",
-                passed=True,
-                code="QUOTA_OK",
-                reason=(
-                    f"{quota.discretionary_remaining} discretionary slot(s) available "
-                    f"({quota.used_today}/{quota.daily_limit} used, {quota.reserved_for_closing} reserved)"
-                ),
-                metrics={"remaining": quota.remaining_today, "reserved": quota.reserved_for_closing},
-            )
+        # Stage 4: dispatch slot (orders dispatch, never withholds approval)
+        s4 = self._slot_stage(quota)
 
         stages = [s1, s2, s3, s4]
 
@@ -1426,21 +1412,16 @@ class SubmissionGate:
             approved = False
             status_tag = "HOLD_LOW_GAIN"
             gate_reason = f"[S2:NOISE_FLOOR] {s2.reason}"
-        elif not s4.passed:
-            approved = False
-            # `RATE_WAIT` strictly means "approved, pacing the 190s inter-submit gap". A Beijing-day
-            # hard-cap hit (`DAILY_LIMIT_REACHED`) is NOT submittable until reset, so it gets its own
-            # tag; conflating it with RATE_WAIT made the UI treat an exhausted quota as a countdown.
-            if s4.code == "RESERVED_FOR_CLOSING":
-                status_tag = "HOLD_LOW_GAIN"
-            elif s4.code == "DAILY_LIMIT_REACHED":
-                status_tag = "QUOTA_EXHAUSTED"
-            else:
-                status_tag = "RATE_WAIT"
-            gate_reason = f"[S4:QUOTA_RESERVE] {s4.reason}"
         else:
+            # Slots and pacing only delay dispatch; the candidate stays approved while it waits.
             approved = True
-            if is_critical_restore:
+            if not s4.passed:
+                # `RATE_WAIT` strictly means "pacing the 190s inter-submit gap". With no account slot
+                # free until the Beijing-day reset there is no countdown to show, so it keeps its own
+                # tag; conflating the two made the UI treat a reset wait as a countdown.
+                status_tag = "QUOTA_EXHAUSTED"
+                gate_reason = f"Gate stages S1-S3 passed; waiting for a free submission slot ({s4.reason})"
+            elif is_critical_restore:
                 status_tag = "CRITICAL_RESTORE"
                 gate_reason = f"CRITICAL_RESTORE approved: {s2.reason}"
             elif is_explore_pass:

@@ -183,27 +183,30 @@ class QuotaExhaustedTagTest(unittest.TestCase):
             est = _stub_estimate("ConcatD", cand_sha, current=60.0, est=70.0)
             ledger = _stub_ledger("ConcatD", current=60.0, best_sha=shas["ConcatD"][0])
 
-            # 1. Daily limit reached (even with rate_wait_sec=0) -> QUOTA_EXHAUSTED, approved=False
+            # 1. No slot free until the reset (even with rate_wait_sec=0) -> QUOTA_EXHAUSTED, never
+            #    RATE_WAIT. The slot only delays dispatch: the candidate stays approved and waits.
             with (
                 mock.patch.object(gate.estimator, "estimate", return_value=est),
                 mock.patch.object(gate.estimator, "get_problem_ledger", return_value=ledger),
                 mock.patch.object(gate, "get_quota_status", return_value=_quota_stub(used_today=50, remaining_today=0, rate_wait_sec=0)),
             ):
                 v = gate.evaluate("ConcatD", sha=cand_sha)
-            self.assertFalse(v.approved)
+            self.assertTrue(v.approved)
             self.assertEqual(v.status_tag, "QUOTA_EXHAUSTED")
             s4 = next(s for s in v.stages if s.stage == "QUOTA_RESERVE")
             self.assertFalse(s4.passed)
             self.assertEqual(s4.code, "DAILY_LIMIT_REACHED")
+            self.assertIn("waiting for a free submission slot", v.gate_reason)
+            self.assertNotIn("reserve", v.gate_reason.lower())
 
-            # 2. Even with force=True when daily limit is exhausted -> still QUOTA_EXHAUSTED
+            # 2. force=True with no slot free -> the same wait, still QUOTA_EXHAUSTED
             with (
                 mock.patch.object(gate.estimator, "estimate", return_value=est),
                 mock.patch.object(gate.estimator, "get_problem_ledger", return_value=ledger),
                 mock.patch.object(gate, "get_quota_status", return_value=_quota_stub(used_today=50, remaining_today=0, rate_wait_sec=0)),
             ):
                 v_force = gate.evaluate("ConcatD", sha=cand_sha, force=True)
-            self.assertFalse(v_force.approved)
+            self.assertTrue(v_force.approved)
             self.assertEqual(v_force.status_tag, "QUOTA_EXHAUSTED")
 
             # 3. Quota available + cooldown active -> approved=True, status_tag=RATE_WAIT
@@ -220,19 +223,36 @@ class QuotaExhaustedTagTest(unittest.TestCase):
             self.assertTrue(v_rate.approved)
             self.assertEqual(v_rate.status_tag, "RATE_WAIT")
 
-            # 4. Remaining slots reserved for closing -> HOLD_LOW_GAIN (not RATE_WAIT / QUOTA_EXHAUSTED)
+    def test_discretionary_candidate_approved_when_closing_reserve_exhausted(self) -> None:
+        """Daily allowance is never a hold reason: slots the old closing reserve kept stay usable."""
+        with tempfile.TemporaryDirectory() as td:
+            ws, shas = _make_multi_problem_ws(pathlib.Path(td), ("ConcatD",))
+            cand_sha = shas["ConcatD"][1]
+            gate = SubmissionGate(ws, config=GateConfig(noise_floor_pts=2.5, min_closing_reserve=10,
+                                                        probe_submissions_per_problem=0))
+
+            est = _stub_estimate("ConcatD", cand_sha, current=60.0, est=70.0)
+            ledger = _stub_ledger("ConcatD", current=60.0, best_sha=shas["ConcatD"][0])
+            # Two slots left, ten "reserved" for closing restores: zero discretionary slots.
             with (
                 mock.patch.object(gate.estimator, "estimate", return_value=est),
                 mock.patch.object(gate.estimator, "get_problem_ledger", return_value=ledger),
                 mock.patch.object(
                     gate,
                     "get_quota_status",
-                    return_value=_quota_stub(used_today=48, remaining_today=2, reserved=2, discretionary=0, rate_wait_sec=0),
+                    return_value=_quota_stub(used_today=48, remaining_today=2, reserved=10, discretionary=0, rate_wait_sec=0),
                 ),
             ):
-                v_res = gate.evaluate("ConcatD", sha=cand_sha)
-            self.assertFalse(v_res.approved)
-            self.assertEqual(v_res.status_tag, "HOLD_LOW_GAIN")
+                v = gate.evaluate("ConcatD", sha=cand_sha)
+            self.assertFalse(v.is_critical_restore)
+            self.assertTrue(v.approved, v.gate_reason)
+            self.assertEqual(v.status_tag, "READY")
+            s4 = next(s for s in v.stages if s.stage == "QUOTA_RESERVE")
+            self.assertTrue(s4.passed)
+            self.assertNotIn("reserved", s4.metrics)
+            text = " ".join([v.gate_reason, *(s.reason for s in v.stages)]).lower()
+            self.assertNotIn("reserve", text)
+            self.assertNotIn("closing", text)
 
 
 class AtomicIOAndCorruptGuardTest(unittest.TestCase):
