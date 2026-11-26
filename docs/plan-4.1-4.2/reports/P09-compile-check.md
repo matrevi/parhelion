@@ -53,3 +53,16 @@ SgemmFp16Cube 10f21fd（submission `6b07bde1…`）的状态是 Runtime Error，
 1. 先在设备主机上确认或安装与判题一致的工具链版本，再配置 `judge_toolchain_root`。
 2. 本场 RE 和 WA 的主因不在编译阶段。建议另立一项：对本地通过、准备上传的候选，用判题版本工具链跑一次 `standard`，只比较正确性、不计时，把"版本差异导致的运行期失败"和"数据相关的 WA"（4.1 #5、#6）分开。
 3. 判题 harness 和本地 `main.asc` 不是同一个文件。如果判题模板接口（`/api/problems/{id}/template`）能拿到 harness 的源码，可以把它放进 oracle，让本地检查与判题编译的内容一致。
+
+## 6. 补充：主机恢复后的检查（2026-11-26 07:25–07:35 UTC）
+
+只做只读检查，加一次只编译检查验证链路，没有改 `~/.parhelion/config.json`。
+
+- **主机为何拒绝连接**：设备主机是一个容器，07:29 UTC 前后重启过（sshd 与 tmux 目录都在那一刻重新创建；`uptime` 显示的是宿主机的开机时间，所以不变）。容器根目录（含 `/tmp`）是 overlay，`/home` 是独立的持久盘。重启期间 sshd 在密钥交换阶段重置连接，与 §4 记录的现象一致。
+- **`opsb doctor --cases --remote`**（P09 分支，耗时 1.4 s）：`/tmp/opsb-case-cache` 不存在，0 条、0 B，没有统计。容器重启把 `/tmp` 整个清掉了，用例缓存、`/tmp/opsb-npu-tickets` 一并丢失；`~/.opsb`（broker 脚本、die ledger）在 `/home` 上，保留了下来。重启后的第一轮准备要重新生成参考用例（FFT 约 50 s）。
+  建议后续把用例缓存和 case-bench 的临时目录一起放到 `/home`（两者要在同一个文件系统上，才能用硬链接），例如经 `OPSB_CASE_CACHE_DIR` 再加一个临时目录选项。本次没有改。
+- **装了哪些工具链**：主机上只有一套工具链，`cann` 和 `ascend-toolkit/latest` 两个符号链接都指向它，版本号就是 §1 说的比判题新一个次版本的那个。`/usr/local/Ascend` 下只有驱动。另有一个同名的 `cann-tools` 目录，是工具脚本仓库，不是工具链。**没有与判题版本一致的安装。**
+- **启用检查还缺什么**：先在主机上并排装一套判题版本的 toolkit（例如装到 `~/Ascend/cann-<判题版本>`；`/home` 还有约 176 GB 空闲），再把 `device.judge_toolchain_root` 指向它，或者把 `device.judge_toolchain_env` 指向它的 `set_env.sh`。在此之前检查保持跳过，门禁只附一句提示。
+- **链路验证**：用环境变量 `OPSB_DEVICE_JUDGE_TOOLCHAIN_ENV` 临时指向主机自带的工具链，在一个临时工作区里对 SgemmFp16Cube 10f21fd 跑了一次 `check`，真实比赛的 `results/` 没有写入。
+  - 结果：`pass`，墙钟 19.4 s，其中远端 CPU 编译 17.1 s（-j1，只有一个编译单元）；不进设备锁，在独立的 `build-judge` 目录里构建，不生成样例数据。日志里有 `[TEMPLATE] toolchain …`、`cmake configure`、`cmake build`。
+  - 结论：只能证明链路可用，以及每个 SHA 的检查成本大约 20 s。它不能说明在判题版本下能否编译通过，那必须等判题版本装好之后再测。
