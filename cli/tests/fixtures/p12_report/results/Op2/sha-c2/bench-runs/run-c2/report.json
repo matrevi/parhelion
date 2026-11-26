@@ -1,0 +1,110 @@
+{
+  "version": 2,
+  "scheme": "reference",
+  "title": "Op2",
+  "sha": "sha-c2",
+  "run_id": "c2run0000000000000000000000000001",
+  "formal": true,
+  "exit_code": 0,
+  "finished_at": "2026-11-20T10:00:00+00:00",
+  "verified": true,
+  "settings": {
+    "strict_fp32": false
+  },
+  "environment": {
+    "soc": "soc-a"
+  },
+  "cases": [
+    {
+      "id": "01",
+      "base": "01",
+      "name": "case 01",
+      "source": "official",
+      "perf": true,
+      "seed": 0,
+      "dtype": "float32",
+      "key": "key-01",
+      "buckets": [
+        "small"
+      ],
+      "status": "PASS",
+      "params": {
+        "shape": [
+          8,
+          8
+        ]
+      },
+      "outputs": {
+        "elements": 64
+      },
+      "min_us": 50.0,
+      "median_us": 50.5,
+      "cold_us": 100.0,
+      "samples": 3,
+      "timing_source": "event",
+      "event_us": [
+        50.0,
+        51.0,
+        52.0
+      ],
+      "event_min_us": 50.0,
+      "event_median_us": 50.5,
+      "device_us": [
+        50.0,
+        51.0,
+        52.0
+      ]
+    },
+    {
+      "id": "02",
+      "base": "02",
+      "name": "case 02",
+      "source": "official",
+      "perf": false,
+      "seed": 0,
+      "dtype": "float32",
+      "key": "key-02",
+      "buckets": [
+        "small"
+      ],
+      "status": "PASS",
+      "params": {
+        "shape": [
+          8,
+          8
+        ]
+      },
+      "outputs": {
+        "elements": 64
+      },
+      "min_us": 80.0,
+      "median_us": 80.8,
+      "cold_us": 160.0,
+      "samples": 3,
+      "timing_source": "event",
+      "event_us": [
+        80.0,
+        82.0,
+        81.0
+      ],
+      "event_min_us": 80.0,
+      "event_median_us": 80.8,
+      "device_us": [
+        80.0,
+        82.0,
+        81.0
+      ]
+    }
+  ],
+  "summary": {
+    "total": 2,
+    "passed": 2,
+    "counts": {
+      "PASS": 2
+    },
+    "verified": true
+  },
+  "timing_source": "event_warm",
+  "timing_score_eligible": true,
+  "pairing_key": "suite-v1"
+}

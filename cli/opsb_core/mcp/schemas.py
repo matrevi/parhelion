@@ -20,6 +20,30 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "parhelion_report",
+        "description": "Read one platform report view; use this instead of ad-hoc scripts that open report.json, results/submit-queue-outcome.jsonl or `opsb queue list --json`, and instead of `opsb history`/`opsb --help` for column discovery. Views: "
+                       "per_case (<=4KB; columns: case, ours_us, tbest_us, gap_pct, speedup, band_pct, verdict, noisy, judge, mapped, local, timer, passed, exit_code, mismatch_n, strict_fp32, cal, wa, run - judge gap from the state card, three-state verdict and noise band from scheduler.verdicts, wa from the reproducer plan; sha/base default to the head and same-generation baseline); "
+                       "diff (columns: case, ratio, lo, hi, n, method, timer, bootstrap, verdict, plus git diff --stat; a stored P10 paired report is read as-is, else separate-run minima with a Welch interval); "
+                       "history (problems[] and receipts[]: sid, sha, status, score, beat_board, at, note, cases[case,ours_us,tbest_us,ratio], mean_ratio; from the canonical receipt journal); "
+                       "queue (same source as `opsb queue list --json`; threshold, count, by_kind, active_submissions, items[] with badge, raw_status, scores, gate lamps, note/detail/next_step; never an account field); "
+                       "board (cached board score/rank, frontier top1/top5, and per-case tbest with observed_at when a problem is named; reads cache only, no network); "
+                       "bottleneck (R6: category, limited_resource_pct, top_metrics[3], fixes from the KB, raw report/log/run_dir paths); "
+                       "env (platform version/root, daemon liveness, workspace/results/state dirs, free disk, <=1KB; no account, session or credential field). "
+                       "A worker reads its own problem only; board and env are open to workers.",
+        "roles": ("orchestrator", "worker"),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "view": {"type": "string", "enum": ["per_case", "diff", "history", "queue", "board", "bottleneck", "env"], "description": "Which report to read"},
+                "problem": {"type": "string", "description": "Problem title; the orchestrator may name any, a worker is bound to its own"},
+                "sha": {"type": "string", "description": "per_case/diff candidate commit or run SHA (default: HEAD for per_case, the newest formal run for diff)"},
+                "base": {"type": "string", "description": "per_case/diff baseline SHA (default: the same-generation board SHA)"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Maximum rows per list: default 10 (queue 20, board 30)"},
+            },
+            "required": ["view"],
+        },
+    },
+    {
         "name": "parhelion_bench_diagnose",
         "description": "Diagnose +corr headroom strata, residual gaps, calibration trust & ESCAPE_LOCK state.",
         "inputSchema": {

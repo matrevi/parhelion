@@ -1,0 +1,57 @@
+{
+  "scope": {
+    "target": [
+      "public",
+      "p12-fixture",
+      "",
+      "acct-fixture",
+      "user-fixture"
+    ],
+    "team_id": "team-fixture",
+    "team_name": "Fixture Team"
+  },
+  "schema_version": 1,
+  "fetched_at": "2026-11-20T12:00:00+00:00",
+  "attempt_at": "2026-11-20T12:00:00+00:00",
+  "problems": {
+    "Op": {
+      "listed": true,
+      "problem_id": "p12-problem-1",
+      "our_score": 15.4,
+      "our_rank": 57,
+      "ranking_total": 91,
+      "board_submission_id": "sub-cand",
+      "our_status": "Pass",
+      "tbest": [
+        1.2,
+        2.3,
+        3.4
+      ],
+      "our_public_times_us": [
+        5.0,
+        6.0,
+        7.0
+      ],
+      "frontier_top1": 88.0,
+      "frontier_top5": 70.0,
+      "total_testcase_count": 3
+    },
+    "Op2": {
+      "listed": true,
+      "problem_id": "p12-problem-2",
+      "our_score": 0.0,
+      "our_rank": null,
+      "ranking_total": 91,
+      "board_submission_id": null,
+      "our_status": "unranked",
+      "tbest": [
+        4.5,
+        5.5
+      ],
+      "our_public_times_us": [],
+      "frontier_top1": 90.0,
+      "frontier_top5": 75.0,
+      "total_testcase_count": 2
+    }
+  }
+}

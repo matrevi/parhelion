@@ -1,0 +1,183 @@
+{
+  "version": 1,
+  "scheme": "reference",
+  "title": "Op",
+  "sha": "sha-base",
+  "run_id": "baserun00000000000000000000000001",
+  "formal": true,
+  "oracle": "oracle-a",
+  "engine": "engine-a",
+  "profile": {
+    "name": "default"
+  },
+  "catalog": [
+    {
+      "id": "01"
+    },
+    {
+      "id": "02"
+    },
+    {
+      "id": "03"
+    }
+  ],
+  "selected": [
+    "01",
+    "02",
+    "03"
+  ],
+  "started_at": "2026-11-19T09:50:00+00:00",
+  "host": "npu",
+  "settings": {
+    "strict_fp32": true,
+    "arch": "arch-v1",
+    "device": "0"
+  },
+  "environment": {
+    "soc": "soc-a",
+    "arch": "arch-v1",
+    "host": "npu"
+  },
+  "cases": [
+    {
+      "id": "01",
+      "base": "01",
+      "name": "case 01",
+      "source": "official",
+      "perf": true,
+      "seed": 0,
+      "dtype": "float32",
+      "key": "key-01",
+      "buckets": [
+        "small"
+      ],
+      "status": "PASS",
+      "params": {
+        "shape": [
+          8,
+          8
+        ]
+      },
+      "outputs": {
+        "elements": 64
+      },
+      "device_us": [
+        112.0,
+        110.0,
+        111.0
+      ],
+      "min_us": 110.0,
+      "median_us": 112.0,
+      "cold_us": 224.0,
+      "samples": 3,
+      "timing_source": "event",
+      "event_us": [
+        112.0,
+        110.0,
+        111.0
+      ],
+      "event_min_us": 110.0
+    },
+    {
+      "id": "02",
+      "base": "02",
+      "name": "case 02",
+      "source": "official",
+      "perf": false,
+      "seed": 0,
+      "dtype": "float32",
+      "key": "key-02",
+      "buckets": [
+        "small"
+      ],
+      "status": "PASS",
+      "params": {
+        "shape": [
+          8,
+          8
+        ]
+      },
+      "outputs": {
+        "elements": 64
+      },
+      "device_us": [
+        201.0,
+        200.0,
+        202.0
+      ],
+      "min_us": 200.0,
+      "median_us": 201.0,
+      "cold_us": 404.0,
+      "samples": 3,
+      "timing_source": "event",
+      "event_us": [
+        201.0,
+        200.0,
+        202.0
+      ],
+      "event_min_us": 200.0
+    },
+    {
+      "id": "03",
+      "base": "03",
+      "name": "case 03",
+      "source": "official",
+      "perf": false,
+      "seed": 0,
+      "dtype": "float32",
+      "key": "key-03",
+      "buckets": [
+        "small"
+      ],
+      "status": "PASS",
+      "params": {
+        "shape": [
+          8,
+          8
+        ]
+      },
+      "outputs": {
+        "elements": 64
+      },
+      "device_us": [
+        311.0,
+        310.0,
+        309.0
+      ],
+      "min_us": 309.0,
+      "median_us": 311.0,
+      "cold_us": 622.0,
+      "samples": 3,
+      "timing_source": "event",
+      "event_us": [
+        311.0,
+        310.0,
+        309.0
+      ],
+      "event_min_us": 309.0
+    }
+  ],
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "counts": {
+      "PASS": 3
+    },
+    "verified": true
+  },
+  "built": true,
+  "remote_exit": 0,
+  "finished_at": "2026-11-19T10:00:00+00:00",
+  "exit_code": 0,
+  "verified": true,
+  "official": {
+    "total": 3,
+    "passed": 3,
+    "counts": {
+      "PASS": 3
+    },
+    "verified": true
+  },
+  "timing_score_eligible": true,
+  "pairing_key": "suite-v1"
+}

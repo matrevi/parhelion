@@ -1,0 +1,95 @@
+{
+  "version": 2,
+  "scheme": "reference",
+  "title": "Op",
+  "sha": "sha-cand",
+  "run_id": "pairrun00000000000000000000000001",
+  "formal": false,
+  "exit_code": 0,
+  "finished_at": "2026-11-20T11:00:00+00:00",
+  "compare": {
+    "base_sha": "sha-base",
+    "rounds": 3
+  },
+  "cases": [
+    {
+      "id": "01",
+      "source": "official",
+      "status": "PASS",
+      "pair": {
+        "ratio": 1.3262,
+        "lo": 0.4793,
+        "hi": 3.6695,
+        "n": 5,
+        "method": "log_t",
+        "source": "event",
+        "offset_us": 3.3
+      },
+      "pair_bootstrap": {
+        "lo": 0.6996,
+        "hi": 2.5141
+      }
+    },
+    {
+      "id": "02",
+      "source": "official",
+      "status": "PASS",
+      "pair": {
+        "ratio": 1.0512,
+        "lo": 1.001,
+        "hi": 1.104,
+        "n": 5,
+        "method": "log_t",
+        "source": "event",
+        "offset_us": 3.3
+      },
+      "pair_bootstrap": {
+        "lo": 1.0,
+        "hi": 1.12
+      }
+    },
+    {
+      "id": "03",
+      "source": "official",
+      "status": "PASS",
+      "pair": {
+        "ratio": 0.9712,
+        "lo": 0.95,
+        "hi": 0.99,
+        "n": 5,
+        "method": "log_t",
+        "source": "event",
+        "offset_us": 3.3
+      },
+      "pair_bootstrap": {
+        "lo": 0.95,
+        "hi": 1.0
+      }
+    }
+  ],
+  "digest": {
+    "paired": {
+      "base": "sha-base",
+      "source": "event",
+      "geomean_ratio": 1.0183,
+      "cases": {
+        "01": [
+          1.3262,
+          0.4793,
+          3.6695
+        ],
+        "02": [
+          1.0512,
+          1.001,
+          1.104
+        ],
+        "03": [
+          0.9712,
+          0.95,
+          0.99
+        ]
+      }
+    }
+  },
+  "pairing_key": "suite-v1"
+}
