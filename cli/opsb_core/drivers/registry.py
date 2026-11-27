@@ -278,7 +278,7 @@ def _run_worker_job(job_path: Path) -> int:
         # The contest orchestrator keeps its turn going while the sprint has seats (ACP drivers).
         drv.live_seats = lambda: _live_seat_count(ws)
         drv.resume_handoff = lambda: orchestrator_handoff(ws)  # 4.4.8: a fresh session gets the sprint
-        drv.session_model = worker_model(drv.kind)  # 4.4.8: the orchestrator follows `opsb driver model`
+        drv.session_model = worker_model(str(job["driver"]))  # 4.4.8: the orchestrator follows `opsb driver model`
 
     try:
         rc = drv._execute_headless_turn(
@@ -289,7 +289,7 @@ def _run_worker_job(job_path: Path) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(json.dumps({"event": "worker_error", "error": str(exc)}) + "\n")
-        _record_failure(ws, session_id, drv.kind, str(exc))
+        _record_failure(ws, session_id, str(job["driver"]), str(exc))
         return 1
 
     update_session(ws, session_id, status=("completed" if rc == 0 else "failed"), clear_pid=True)
