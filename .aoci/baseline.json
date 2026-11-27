@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T04:02:32Z",
+  "updated_at": "2026-11-27T04:33:01Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c954d6de20090a897216dca4d002940907c4a1e87e30203daadfb3e441374309",
-      "size": 215871,
-      "normalized_sha256": "c954d6de20090a897216dca4d002940907c4a1e87e30203daadfb3e441374309"
+      "sha256": "7696b1085bdf7c3c59c6ec1ba17eda5c9bc9efc698f7fd4ee7cec3e54550d5a4",
+      "size": 215892,
+      "normalized_sha256": "7696b1085bdf7c3c59c6ec1ba17eda5c9bc9efc698f7fd4ee7cec3e54550d5a4"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -1001,9 +1001,9 @@
     },
     "cli/opsb_core/ledger/auto.py": {
       "role": "index",
-      "sha256": "6abb6350a33e25b1560349a78ad60253bbdfe4173171dfe43f2b55bca484556b",
-      "size": 14610,
-      "normalized_sha256": "6abb6350a33e25b1560349a78ad60253bbdfe4173171dfe43f2b55bca484556b"
+      "sha256": "f84db3179b5f0e30aeddb5ce0fc27b31d7386ce23ef01ff216a5bb99cffd9476",
+      "size": 14947,
+      "normalized_sha256": "f84db3179b5f0e30aeddb5ce0fc27b31d7386ce23ef01ff216a5bb99cffd9476"
     },
     "cli/opsb_core/ledger/budget.py": {
       "role": "index",
@@ -1163,9 +1163,9 @@
     },
     "cli/opsb_core/mcp/schemas.py": {
       "role": "index",
-      "sha256": "6e45cfdf823c731d412d7f56a53b8ec17387dbd9be754114b50858667a7a9202",
-      "size": 24523,
-      "normalized_sha256": "6e45cfdf823c731d412d7f56a53b8ec17387dbd9be754114b50858667a7a9202"
+      "sha256": "1928526917bcbe05de67ff47973086fb924c89c681ccadae31ff1c01d11bd090",
+      "size": 24544,
+      "normalized_sha256": "1928526917bcbe05de67ff47973086fb924c89c681ccadae31ff1c01d11bd090"
     },
     "cli/opsb_core/mcp/server.py": {
       "role": "index",
@@ -1793,9 +1793,9 @@
     },
     "cli/tests/test_ledger_tools.py": {
       "role": "observe",
-      "sha256": "e5d14d80182c1212ed1397d4334b68662452935a758a483b2715bfdf2c3ba740",
-      "size": 28598,
-      "normalized_sha256": "e5d14d80182c1212ed1397d4334b68662452935a758a483b2715bfdf2c3ba740"
+      "sha256": "2f18f29997969eb2591d0f96d47f0f3cde79d7cf834e5beff1122d7cccbe2f8a",
+      "size": 29807,
+      "normalized_sha256": "2f18f29997969eb2591d0f96d47f0f3cde79d7cf834e5beff1122d7cccbe2f8a"
     },
     "cli/tests/test_mcp_server.py": {
       "role": "observe",
