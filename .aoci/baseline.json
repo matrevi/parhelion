@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T05:23:24Z",
+  "updated_at": "2026-11-27T05:28:13Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "929746d862e9d259ee5e03967b6495277030849d2ce95661fd3052f04fc9276a",
-      "size": 216785,
-      "normalized_sha256": "929746d862e9d259ee5e03967b6495277030849d2ce95661fd3052f04fc9276a"
+      "sha256": "c6bbab978e7bebd0bdc2277ab554c7405fa10a467695b94c8e1debb3981e7501",
+      "size": 216855,
+      "normalized_sha256": "c6bbab978e7bebd0bdc2277ab554c7405fa10a467695b94c8e1debb3981e7501"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -737,15 +737,15 @@
     },
     "cli/opsb_core/drivers/antigravity_acp.py": {
       "role": "index",
-      "sha256": "cfdc25df99634acfd6afdafa380591d8f5174c4055e570fe9f0ddea511827d93",
-      "size": 15232,
-      "normalized_sha256": "cfdc25df99634acfd6afdafa380591d8f5174c4055e570fe9f0ddea511827d93"
+      "sha256": "01c66e5972533ba3e7f823ebc791d023bb2c12905a01bedb7c4f9540acbb2145",
+      "size": 15321,
+      "normalized_sha256": "01c66e5972533ba3e7f823ebc791d023bb2c12905a01bedb7c4f9540acbb2145"
     },
     "cli/opsb_core/drivers/antigravity_driver.py": {
       "role": "index",
-      "sha256": "4f1984ba213928aa0e1147c3d6e069612e1dc99de3cc032daf4bd8ac147694a5",
-      "size": 17703,
-      "normalized_sha256": "4f1984ba213928aa0e1147c3d6e069612e1dc99de3cc032daf4bd8ac147694a5"
+      "sha256": "ebfbd3a8d7d2c8204a057e5b9ff78dd8cb89aaf2a009d571480917f22ce25e11",
+      "size": 17766,
+      "normalized_sha256": "ebfbd3a8d7d2c8204a057e5b9ff78dd8cb89aaf2a009d571480917f22ce25e11"
     },
     "cli/opsb_core/drivers/availability.py": {
       "role": "index",
@@ -755,9 +755,9 @@
     },
     "cli/opsb_core/drivers/base.py": {
       "role": "index",
-      "sha256": "550138ed27f122eb177b1488a8f1b4670e3515566697c993cd15bfe91b3fea7e",
-      "size": 15648,
-      "normalized_sha256": "550138ed27f122eb177b1488a8f1b4670e3515566697c993cd15bfe91b3fea7e"
+      "sha256": "b7bbccd71464086febf548d7938ec97abf8c7b6ccf224f1bc72716b259f6b1d4",
+      "size": 15861,
+      "normalized_sha256": "b7bbccd71464086febf548d7938ec97abf8c7b6ccf224f1bc72716b259f6b1d4"
     },
     "cli/opsb_core/drivers/brief.py": {
       "role": "index",
@@ -791,9 +791,9 @@
     },
     "cli/opsb_core/drivers/dsh_driver.py": {
       "role": "index",
-      "sha256": "0c0c41d7403921378a7150d2cf603a4d054c722132eda0162aeb8534d08526ac",
-      "size": 34583,
-      "normalized_sha256": "0c0c41d7403921378a7150d2cf603a4d054c722132eda0162aeb8534d08526ac"
+      "sha256": "700a099ca6659c6d2422ce720e32fe35470c44a30a57a56979970a631d9793e3",
+      "size": 34621,
+      "normalized_sha256": "700a099ca6659c6d2422ce720e32fe35470c44a30a57a56979970a631d9793e3"
     },
     "cli/opsb_core/drivers/dsh_parhelion_mcp.mjs": {
       "role": "index",
@@ -821,9 +821,9 @@
     },
     "cli/opsb_core/drivers/registry.py": {
       "role": "index",
-      "sha256": "4d1cd36b384d06eb9db9ae4150b4ecb54a54e8813aed2bca1f7d165f604223bd",
-      "size": 13287,
-      "normalized_sha256": "4d1cd36b384d06eb9db9ae4150b4ecb54a54e8813aed2bca1f7d165f604223bd"
+      "sha256": "810d12514f1697a28c8461cf1df474eae6db63e0b8d317eddece46901c7582c4",
+      "size": 13393,
+      "normalized_sha256": "810d12514f1697a28c8461cf1df474eae6db63e0b8d317eddece46901c7582c4"
     },
     "cli/opsb_core/drivers/repo_map.py": {
       "role": "index",
@@ -1841,9 +1841,9 @@
     },
     "cli/tests/test_outage_recovery.py": {
       "role": "observe",
-      "sha256": "6e7e8cd7c44dcaa8569d89373c1301fe5c3ca6c03ac1b475e5e57cea6b2bcb2c",
-      "size": 7206,
-      "normalized_sha256": "6e7e8cd7c44dcaa8569d89373c1301fe5c3ca6c03ac1b475e5e57cea6b2bcb2c"
+      "sha256": "165b1e2dc0bc95cd7151a6d21f6cad88dbf9439d55cb27637d2e83d4cf7edfaf",
+      "size": 7979,
+      "normalized_sha256": "165b1e2dc0bc95cd7151a6d21f6cad88dbf9439d55cb27637d2e83d4cf7edfaf"
     },
     "cli/tests/test_p27_intel_broadcast_sweep.py": {
       "role": "observe",
@@ -2681,9 +2681,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "d9e898058e249dfc09952250dffcd79a354e8a3542168b140ea0b7a0224b939c",
-      "size": 56985,
-      "normalized_sha256": "d9e898058e249dfc09952250dffcd79a354e8a3542168b140ea0b7a0224b939c"
+      "sha256": "feef31d58e797a99cbafeb55799f0005aa21bbb74952ec3abbf6b29ef4ee7dc1",
+      "size": 57197,
+      "normalized_sha256": "feef31d58e797a99cbafeb55799f0005aa21bbb74952ec3abbf6b29ef4ee7dc1"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
