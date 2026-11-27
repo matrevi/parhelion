@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T05:28:13Z",
+  "updated_at": "2026-11-27T05:35:15Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -821,9 +821,9 @@
     },
     "cli/opsb_core/drivers/registry.py": {
       "role": "index",
-      "sha256": "810d12514f1697a28c8461cf1df474eae6db63e0b8d317eddece46901c7582c4",
-      "size": 13393,
-      "normalized_sha256": "810d12514f1697a28c8461cf1df474eae6db63e0b8d317eddece46901c7582c4"
+      "sha256": "c363f833b48e07cf7561f1e0a181ce34355c0d1381087fee06e54ae64659399a",
+      "size": 13413,
+      "normalized_sha256": "c363f833b48e07cf7561f1e0a181ce34355c0d1381087fee06e54ae64659399a"
     },
     "cli/opsb_core/drivers/repo_map.py": {
       "role": "index",
