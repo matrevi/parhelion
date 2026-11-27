@@ -2,6 +2,13 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.4.9 — 设置页的 Worker 模型显示当前值
+
+- 设置页的 Harness 诊断以前只在第一次打开时加载，用 CLI（`opsb driver model`）改了模型后，界面仍显示旧值。现在每次打开设置页都会重新加载。
+- 点 ✓ 保存后，输入框显示保存下来的值，不再保留输入的文字；首尾空白会去掉。
+- 只改了应用，不需要重启守护进程。
+- 配置提示：DeepSeek Harness 走智谱 GLM 时，ACP 配置（`~/.dsh/profiles/acp/cordis.patch.yml`）的 `zhipu` 要写 `api: openai-completions`。写成 `openai-responses` 时，任何 GLM 模型都返回 404。
+
 ## 4.4.8 — 重启与供应商故障后自己恢复
 
 计划与根因见 `docs/v4.4/restart-outage-fixes.md`。

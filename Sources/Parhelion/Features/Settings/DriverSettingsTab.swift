@@ -18,9 +18,9 @@ struct DriverSettingsTab: View {
             }
         }
         .onAppear {
-            if store.driverDiagnostics.isEmpty {
-                Task { await store.reloadDriverDoctor() }
-            }
+            // 4.4.9: reload every time, so a model or Harness changed from the CLI shows here.
+            modelEdits = [:]
+            Task { await store.reloadDriverDoctor() }
         }
     }
 
@@ -147,10 +147,15 @@ struct DriverSettingsTab: View {
                             TextField("Model", text: model).textFieldStyle(.roundedBorder)
                                 .frame(maxWidth: 220)
                             Button {
-                                Task { await store.setWorkerModel(model.wrappedValue, driver: diag.kind) }
+                                let value = model.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                                Task {
+                                    await store.setWorkerModel(value, driver: diag.kind)
+                                    modelEdits[diag.kind] = nil  // show the saved value from the reloaded doctor
+                                }
                             } label: { Image(systemName: "checkmark") }
                             .help(lang.tr("保存模型", "Save model"))
-                            .disabled(model.wrappedValue == selected || model.wrappedValue.isEmpty)
+                            .disabled(model.wrappedValue == selected
+                                      || model.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                     }
 
