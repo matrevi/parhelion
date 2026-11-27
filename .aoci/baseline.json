@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T03:42:02Z",
+  "updated_at": "2026-11-27T03:42:50Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "4e3c256abd209af54d9d07472933a12795de63db3e7056a2c260e955cb6b0b84",
-      "size": 215572,
-      "normalized_sha256": "4e3c256abd209af54d9d07472933a12795de63db3e7056a2c260e955cb6b0b84"
+      "sha256": "2f318eee25a9d2f38e6ddccf77f350ac10d12615ec8594eef0823362d945043f",
+      "size": 215675,
+      "normalized_sha256": "2f318eee25a9d2f38e6ddccf77f350ac10d12615ec8594eef0823362d945043f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -491,9 +491,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "808087d9b877f89142c7877712cb3eb176afdd366e56d21c67f71946c0956b76",
+      "sha256": "935c60beb0b65a40aa728eb376886dd1c1099a817c0a81c414217e696a51d4fb",
       "size": 109,
-      "normalized_sha256": "808087d9b877f89142c7877712cb3eb176afdd366e56d21c67f71946c0956b76"
+      "normalized_sha256": "935c60beb0b65a40aa728eb376886dd1c1099a817c0a81c414217e696a51d4fb"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -905,9 +905,9 @@
     },
     "cli/opsb_core/guidance/dossier.py": {
       "role": "index",
-      "sha256": "feccc50004ee67c62840304cba82c0c75b7f2a5e0b2d6459eb305cadbf11db47",
-      "size": 16796,
-      "normalized_sha256": "feccc50004ee67c62840304cba82c0c75b7f2a5e0b2d6459eb305cadbf11db47"
+      "sha256": "03d609adc507b167fee0e32640f4a953187e1ae6faf01bbccdd5bad68d5bc787",
+      "size": 16830,
+      "normalized_sha256": "03d609adc507b167fee0e32640f4a953187e1ae6faf01bbccdd5bad68d5bc787"
     },
     "cli/opsb_core/guidance/gap.py": {
       "role": "index",
@@ -917,15 +917,15 @@
     },
     "cli/opsb_core/guidance/monitor.py": {
       "role": "index",
-      "sha256": "a19e069b65dc353070bdb331edd7fc794571e3a81bfb081ef460a7d1462c0f3d",
-      "size": 17378,
-      "normalized_sha256": "a19e069b65dc353070bdb331edd7fc794571e3a81bfb081ef460a7d1462c0f3d"
+      "sha256": "298eecefc2ace826d68c1fa3ff42547d464feded8020b1e38f9662159bd3cae9",
+      "size": 17525,
+      "normalized_sha256": "298eecefc2ace826d68c1fa3ff42547d464feded8020b1e38f9662159bd3cae9"
     },
     "cli/opsb_core/guidance/scout.py": {
       "role": "index",
-      "sha256": "3c7c3353f6eb3690cc9a0369640fe5e57335e5ba2c726bbdf0006538b600b7a5",
-      "size": 11853,
-      "normalized_sha256": "3c7c3353f6eb3690cc9a0369640fe5e57335e5ba2c726bbdf0006538b600b7a5"
+      "sha256": "2931144eb6448b021282dcdbc307cf1d1584712a048e4619c74a9900a48f16e8",
+      "size": 12379,
+      "normalized_sha256": "2931144eb6448b021282dcdbc307cf1d1584712a048e4619c74a9900a48f16e8"
     },
     "cli/opsb_core/guidance/stuck.py": {
       "role": "index",
@@ -2591,9 +2591,9 @@
     },
     "docs/v4.4/RUN-LOG-2026-11-27-e2e.md": {
       "role": "index",
-      "sha256": "6b0300717cbc76dc67cfbee4f9f2a990592dcb8c1dad73024bed508273a51468",
-      "size": 4189,
-      "normalized_sha256": "6b0300717cbc76dc67cfbee4f9f2a990592dcb8c1dad73024bed508273a51468"
+      "sha256": "46fea2eb6ceb232f7cbb56dc17cfa051abfc99261e606c2ccf117c1bc1e9d77c",
+      "size": 6850,
+      "normalized_sha256": "46fea2eb6ceb232f7cbb56dc17cfa051abfc99261e606c2ccf117c1bc1e9d77c"
     },
     "docs/v4.4/reports/P30-P32.md": {
       "role": "index",
@@ -2657,9 +2657,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "0cb57ccd59a69f24f4db0514a3c5109bbd6d166e878dacf77fc03ee23c150dae",
-      "size": 53683,
-      "normalized_sha256": "0cb57ccd59a69f24f4db0514a3c5109bbd6d166e878dacf77fc03ee23c150dae"
+      "sha256": "7cbb1bd1cb307ae2d4d75e4d1d13d9452007e481683ba2e5c6bf92d882ff9f7c",
+      "size": 54266,
+      "normalized_sha256": "7cbb1bd1cb307ae2d4d75e4d1d13d9452007e481683ba2e5c6bf92d882ff9f7c"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
@@ -3245,9 +3245,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "47b3a797fa62289b22ffd75dd9fce6a13c4c19837ee7e5613ffe93c4e6bc6435",
+      "sha256": "3ad6ef75311dd73078175f4e79eee717b87d8f2d7c7873f040e8217e62aa8a19",
       "size": 5102,
-      "normalized_sha256": "47b3a797fa62289b22ffd75dd9fce6a13c4c19837ee7e5613ffe93c4e6bc6435"
+      "normalized_sha256": "3ad6ef75311dd73078175f4e79eee717b87d8f2d7c7873f040e8217e62aa8a19"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
