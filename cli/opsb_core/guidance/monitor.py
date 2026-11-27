@@ -127,7 +127,8 @@ def refresh_dossier(ctx: Context, problem: str, agent_id: str, worktree: Path, t
     led = lstore.problem_dir(ctx.ws, problem)
     inputs = (cls, triage.get("focus"), meta.get("sha"), meta.get("observed_at"), tuple(sorted(ctx.scouts)),
               tuple(sorted((p.name, _fp(p)) for p in led.glob("*.jsonl"))) if led.is_dir() else (),
-              _fp(cards.root(ctx.ws) / "cards.jsonl"), round(float(_KB["at"]), 0))
+              _fp(cards.root(ctx.ws) / "cards.jsonl"), round(float(_KB["at"]), 0),
+              (_scout.mirror_status() or {}).get("files"))
     key = (str(worktree), problem)
     if _FINGERPRINTS.get(key) == inputs and (dossier.path_of(worktree) / "index.md").is_file():
         return []
@@ -138,7 +139,7 @@ def refresh_dossier(ctx: Context, problem: str, agent_id: str, worktree: Path, t
     terms = ctx.s.get("generic_terms") if isinstance(ctx.s.get("generic_terms"), dict) else None
     built = ctx.now.isoformat(timespec="seconds")
     files = {
-        "index.md": dossier.render_index(problem, _gap.summary_line(triage), built),
+        "index.md": dossier.render_index(problem, _gap.summary_line(triage), built, _scout.mirror_status()),
         "gap.md": dossier.render_gap(problem, triage, meta),
         "findings.md": dossier.render_findings(problem, rows, ctx.scouts),
         "dead-ends.md": dossier.render_dead_ends(problem, rows),

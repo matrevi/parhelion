@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import time
 from pathlib import Path
 from typing import Any
 
@@ -196,3 +197,21 @@ def step(manager: Any, ws: Path, s: dict[str, Any], now: datetime.datetime, rec:
     if made:
         mark_answered(ws, str(pending.get("key")), refs, made["card_id"])
     return made
+
+
+_MIRROR: dict[str, Any] = {"at": 0.0, "doc": None}
+
+
+def mirror_status() -> dict[str, Any] | None:
+    """The docs mirror (directory and file count), refreshed once a minute; ``web/`` is created so a
+    worker's first save succeeds."""
+    if time.monotonic() - float(_MIRROR["at"]) < 60 and _MIRROR["doc"] is not None:
+        return _MIRROR["doc"]
+    try:
+        from ..commands.docs_cmd import mirror_dir, status
+        (mirror_dir() / "web").mkdir(parents=True, exist_ok=True)
+        _MIRROR["doc"] = status()
+    except Exception:
+        _MIRROR["doc"] = None
+    _MIRROR["at"] = time.monotonic()
+    return _MIRROR["doc"]

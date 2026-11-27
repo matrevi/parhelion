@@ -2,6 +2,12 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.4.2 — worker 补充文档镜像，冲刺前清理
+
+- 本地文档镜像初始为空，由 worker 联网时补充。侦察席契约与每份卷宗的 `index.md` 写明镜像路径与文件数，要求先读镜像再联网，并把取到的官方页面存成 `<镜像>/web/<名字>.md`，第一行写 `source: <网址>`。worker 沙箱与越界检测都放行这个目录，守护进程会建好 `web/`。
+- 冲刺前清理（运维操作，不是代码改动）：结束一个失去控制的 Codex app-server 进程（属于总线里已经没有记录的 agent，挂了 1 天 15 小时）；停掉上一场留下的 17 个 error 席位；把 60 个已结束 agent 的沙箱和 5 个测试残留工作区移到 trash；总线备份后清空。两台设备主机上没有残留作业。
+- 需要重启一次守护进程。
+
 ## 4.4.1 — 可用 Harness 勾选与文档侦察席（P34）
 
 - **可用 Harness**：设置 › 驱动每行一个「可用」勾选框，对应 `opsb driver available --set deepseek,...`（`agents.available_drivers`）。开 worker、开冲刺席位、派发外部 worker 和开侦察席时，只能使用勾选的 Harness，其余一律拒绝并说明原因。部署配置目前只开 dsh（`deepseek`）。

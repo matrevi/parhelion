@@ -189,5 +189,5 @@ worker 的工具习惯：bash 占 40%，`read` 375 次，`parhelion_test_wait` 3
 - 侦察请求：`cli/opsb_core/guidance/scout.py`。守护进程的卡住引导 tick 判断是否需要侦察：`scale_mismatch`，或卡片送达 30 分钟后仍未采纳、仍卡住；每题每小时至多一次，同一问题只问一次。需要时给主控发一条 strategic 消息 `scout_request`，写明可用 Harness 与调用 `parhelion_sprint_start(problems=[...], role="scout", driver=...)`，由主控选驱动；`guidance.scout.auto_spawn` 打开后平台自己调用。问题由代码拼成，写进 `<state>/guidance/scouts.jsonl`，并进入侦察席的 brief。
 - 侦察席：角色 `scout` 的工具与 `recon` 相同，另外不能用 `parhelion_submit_gate`；契约要求先读本地镜像、至多 3 条 `parhelion_note` insight。同一题已有在线侦察席时，新问题作为跟进消息发给它，不另开席。侦察席的工作树也会生成卷宗。
 - 回答：侦察席在请求之后写下的 insight 或 constraint，进入 `findings.md` 最前面的「Doc scout findings」一节，并给卡住的席位生成一张 `scout` 卡，卡上只写引用号。有效的 scout 卡不会被卡住类别的新卡取代。
-- 本地文档镜像：`opsb docs status | add <路径> | fetch <网址>`，目录取 `guidance.scout.docs_dir`，没设时用 `<PARHELION_HOME>/docs-mirror`。仓库不写具体文档来源；镜像目前为空。
+- 本地文档镜像：目录取 `guidance.scout.docs_dir`，没设时用 `<PARHELION_HOME>/docs-mirror`，初始为空，由 worker 联网时补充（用户 2026-11-26 决定）。侦察席契约和每份卷宗的 `index.md` 都会写明镜像路径和文件数，要求先读镜像再联网，并把联网取到的官方页面存成 `<镜像>/web/<名字>.md`，第一行写 `source: <网址>`。worker 沙箱与越界检测都放行这个目录；守护进程会建好 `web/`。管理员可以用 `opsb docs status | add <路径> | fetch <网址>` 查看或补充；仓库不写具体文档来源。
 - 测试：`cli/tests/test_guidance_scout.py`（8 个）。

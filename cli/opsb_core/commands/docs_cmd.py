@@ -1,7 +1,10 @@
 """``opsb docs``: the local documentation mirror the doc scout reads first (4.4 P34).
 
-The mirror is ``guidance.scout.docs_dir`` when set, else ``<PARHELION_HOME>/docs-mirror``. Workers never
-refresh it; the platform does:
+The mirror is ``guidance.scout.docs_dir`` when set, else ``<PARHELION_HOME>/docs-mirror``. It starts
+empty and grows as workers use the network: every seat is told (scout contract, dossier index) to save an
+official page it fetched as ``<mirror>/web/<name>.md`` with ``source: <url>`` on the first line, so the
+next seat reads it locally. The worker sandbox and the boundary detector allow that directory. The
+commands below are for the administrator:
 
 ``opsb docs status``          the directory, file count and size;
 ``opsb docs add <path>...``   copy local files or directories in (an existing file is replaced);
@@ -29,6 +32,9 @@ def mirror_dir() -> Path:
     from ..guidance import settings
     configured = str((settings().get("scout") or {}).get("docs_dir") or "").strip()
     return Path(configured).expanduser() if configured else Path(_cfg._resolve_parhelion_home()) / "docs-mirror"
+
+
+SAVE_HINT = "save each official page you fetch as {dir}/web/<short-name>.md with `source: <url>` on line 1"
 
 
 def status() -> dict[str, Any]:

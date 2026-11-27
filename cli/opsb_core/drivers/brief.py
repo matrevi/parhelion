@@ -244,11 +244,12 @@ def compose_seat_contract(workspace: Path, role: str, *, problem: str = "", work
             stop = ("three measured rounds on one mechanism show no gain, the gate holds the candidate, or the "
                     "orchestrator sends a handoff directive. No ssh, flock or direct device access.")
         elif role == "scout":
-            from ..commands.docs_cmd import status as _mirror
+            from ..commands.docs_cmd import SAVE_HINT, status as _mirror
             mirror_doc = _mirror()
             mirror = (f"the local docs mirror `{mirror_doc['docs_dir']}` first (read and grep it), the web only "
                       "for pages it lacks" if mirror_doc["files"]
                       else "the official documentation on the web (the local mirror is still empty)")
+            mirror += "; " + SAVE_HINT.format(dir=mirror_doc["docs_dir"])
             commands = (f"read {mirror}; parhelion_report views per_case/history/board and parhelion_kb_query for "
                         "context; the dossier .parhelion/dossier/ in your worktree states the gap. You cannot run "
                         "tests or enqueue a submission, and you do not edit the kernel.")

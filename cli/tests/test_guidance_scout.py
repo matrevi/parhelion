@@ -191,3 +191,19 @@ def test_a_live_scout_card_is_not_superseded_by_the_stuck_class(ws, monkeypatch)
     monitor.tick(mgr, ws, force=True)
     seat = cards.read_seats(ws)[AGENT]
     assert seat["class"] == "wa_loop" and seat["card"]["class"] == "scout"
+
+
+def test_every_seat_is_told_to_grow_the_docs_mirror(ws):
+    from opsb_core.commands import docs_cmd
+    from opsb_core.drivers import brief
+    from opsb_core import worker_boundary
+    (ws / "Op").mkdir()
+    mirror = docs_cmd.status()
+    index = dossier.render_index("Op", "gap line", "2026-11-26T21:00:00+00:00", mirror)
+    assert f"`{mirror['docs_dir']}` (0 files)" in index and f"{mirror['docs_dir']}/web/" in index
+    assert len(index.encode("utf-8")) <= dossier.INDEX_MAX
+    contract = brief.compose_seat_contract(ws, "scout", problem="Op", worktree=ws / "Op", goal="answer")
+    assert f"{mirror['docs_dir']}/web/<short-name>.md" in contract
+    assert len(contract.encode("utf-8")) <= brief.MAX_BRIEF_BYTES
+    # a worker writing a fetched page into the mirror is not a boundary hit
+    assert worker_boundary.classify_text(f"cat > {mirror['docs_dir']}/web/a.md") == []

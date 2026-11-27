@@ -258,9 +258,13 @@ def render_cards(problem: str, history: list[dict[str, Any]]) -> str:
     return "\n".join(out) + "\n"
 
 
-def render_index(problem: str, gap_line: str, built_at: str) -> str:
+def render_index(problem: str, gap_line: str, built_at: str, mirror: dict[str, Any] | None = None) -> str:
     head = f"# {problem} dossier (built by the platform {built_at[:16]} UTC; regenerated, do not edit)"
     files = [f"- {name} — {DESCRIBE[name]}" for name in FILES if name in DESCRIBE]
+    if mirror and mirror.get("docs_dir"):  # 4.4 P34: the official docs mirror every seat reads and grows
+        from ..commands.docs_cmd import SAVE_HINT
+        files.append(f"- official docs mirror `{mirror['docs_dir']}` ({mirror.get('files', 0)} files): read it "
+                     "before searching the web; " + SAVE_HINT.format(dir=mirror["docs_dir"]))
     fixed = len("\n".join([head, "", "", *files, ""]).encode("utf-8"))
     room = max(40, INDEX_MAX - fixed)
     line = clip(gap_line, room)
