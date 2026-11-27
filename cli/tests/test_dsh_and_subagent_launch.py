@@ -298,7 +298,8 @@ class DshDriverAndSubagentLaunchTests(unittest.TestCase):
             manifest.write_text(json.dumps({"problems": problems}), encoding="utf-8")
             self.assertEqual(compose_contest_subagent_brief(ws, goal="优先恢复零分"), brief + "\n\nUser goal: 优先恢复零分")
             long_goal = compose_contest_subagent_brief(ws, goal="测试" * MAX_ORCHESTRATOR_BRIEF_BYTES)
-            self.assertTrue(long_goal.startswith(brief))
+            # 4.4.3: a goal that does not fit follows the title instead of being cut off at the end.
+            self.assertTrue(long_goal.startswith(brief.split("\n", 1)[0] + "\nUser goal: 测试"))
             self.assertLessEqual(len(long_goal.encode("utf-8")), MAX_ORCHESTRATOR_BRIEF_BYTES)
 
     def test_subagent_capacity_is_pinned_to_twenty_idempotently(self) -> None:

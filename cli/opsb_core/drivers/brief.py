@@ -13,6 +13,7 @@ from ..services.contest_service import index_submission_history, load_slim_board
 
 MAX_BRIEF_BYTES = 1500  # worker briefs; the appended state card is not counted
 MAX_ORCHESTRATOR_BRIEF_BYTES = 2950
+GOAL_MAX_BYTES = 1500
 
 
 def resolve_problem_repo(workspace: Path, problem: str) -> tuple[str, Path, dict[str, Any] | None]:
@@ -312,7 +313,14 @@ Before changing a kernel, query opsb kb query --pillar bugs --text <problem> and
               "recovers, rerun parhelion_sprint_start.")
     brief += f"\n\nLaunch workspace: {ws}"
     if goal.strip():
-        brief += f"\n\nUser goal: {goal.strip()}"
+        tail = f"\n\nUser goal: {goal.strip()}"
+        if len((brief + tail).encode("utf-8")) > MAX_ORCHESTRATOR_BRIEF_BYTES:
+            # 4.4.3: a long goal used to be cut after ~100 bytes (it came last). It now follows the title,
+            # capped at GOAL_MAX_BYTES, and the cap trims the generic guidance instead.
+            head, _, rest = brief.partition("\n")
+            goal_block = _truncate_utf8(f"User goal: {goal.strip()}", GOAL_MAX_BYTES)
+            return _truncate_utf8(f"{head}\n{goal_block}\n\n{rest}", MAX_ORCHESTRATOR_BRIEF_BYTES)
+        brief += tail
     if ranked:
         roster = ", ".join(f"{p['title']} (x{p.get('difficulty') or 2})" for p in ranked)
         with_roster = f"{brief}\n\nManifest problems: {roster}"

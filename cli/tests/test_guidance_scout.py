@@ -207,3 +207,16 @@ def test_every_seat_is_told_to_grow_the_docs_mirror(ws):
     assert len(contract.encode("utf-8")) <= brief.MAX_BRIEF_BYTES
     # a worker writing a fetched page into the mirror is not a boundary hit
     assert worker_boundary.classify_text(f"cat > {mirror['docs_dir']}/web/a.md") == []
+
+
+def test_a_long_orchestrator_goal_survives_the_brief_cap(ws):
+    """4.4.3: the 4.4.2 run's goal was cut after 'QuantScaleCali' because it came last in a full brief."""
+    from opsb_core.drivers import brief
+    goal = ("Work only on four problems: FFT3DBatchComplex, QuantScaleCalib, NeighborListPbcFixedK, "
+            "EdgeIndexCoalesce. Start with parhelion_sprint_start(mode=\"race\", seats=3). " * 4)
+    text = brief._clean_sprint_brief(ws, [], goal)
+    assert len(text.encode("utf-8")) <= brief.MAX_ORCHESTRATOR_BRIEF_BYTES
+    assert text.startswith("# Parhelion Contest Orchestrator\nUser goal: Work only on four problems")
+    assert 'NeighborListPbcFixedK, EdgeIndexCoalesce. Start with parhelion_sprint_start(mode="race", seats=3)' in text
+    short = brief._clean_sprint_brief(ws, [], "Raise QuantScaleCalib")
+    assert short.endswith("\n\nUser goal: Raise QuantScaleCalib")  # a short goal keeps its old place
