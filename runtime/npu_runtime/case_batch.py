@@ -236,6 +236,7 @@ def _execute_broker(path, repo, cfg, ready, update, watch=None):
                         reported.add(msg["index"])
                         if msg["status"] == "PASS":
                             plan["samples"], plan["cold"] = [msg.get("samples") or []], [msg.get("cold") or []]
+                            keep_executed(plan, msg.get("samples") or [])
                             if watch is not None and plan["timed"] and watch.observe(msg["id"], msg.get("samples")):
                                 return None, reported
                         else:
@@ -298,6 +299,21 @@ def execute_batch(repo, cfg, plans, update=None):
             "acquisitions": result["segments"], "segments": result["segments"], "broker": result["broker"],
             "profiler": list(PROFILER_EVENTS),
             **{k: result[k] for k in ("aborted_early", "batch") if result.get(k)}}
+
+
+def keep_executed(plan, samples):
+    """Verify only the runs the broker executed.
+
+    The broker stops an execution of two seconds or more after one warmup and two timed runs
+    (``device_broker.LONG_RUN_REPEATS``); the run directories it never reached stay empty. ``samples``
+    holds one value per executed timed run, so the run lists are cut to that length. Without this,
+    every long case failed with "missing or unexpected output files" on repeat 3 (FFT case 05).
+    """
+    if not samples:
+        return
+    for part in plan["parts"]:
+        if len(part["runs"]) > len(samples):
+            part["runs"] = part["runs"][:len(samples)]
 
 
 def verify(plan, cfg, compare):
