@@ -46,6 +46,7 @@ from ..services import test_runs
 
 DAEMON_CONFIG_DIR = PARHELION_HOME
 DEFAULT_PORT = 18910
+DAEMON_INSTANCE_LOCK_PATH = DAEMON_CONFIG_DIR / "daemon.instance.lock"
 
 
 def _is_expected_disconnect(exc: BaseException | None) -> bool:
@@ -560,7 +561,10 @@ def _make_handler(runtime: OpsbDaemonRuntime, stop_event: threading.Event):
                 # The administrator's explicit release of a provider-fault suspension.
                 driver = urllib.parse.unquote(path[len("/v1/drivers/"):-len("/resume")]).strip("/")
                 cleared = runtime.agent_mesh.clear_driver_suspension(ws, driver)
-                self._send_json(200, {"ok": True, "driver": driver.lower(), "cleared": cleared})
+                resumed = (getattr(runtime.agent_mesh, "last_outage_resume", None) or {}) if cleared else {}
+                self._send_json(200, {"ok": True, "driver": driver.lower(), "cleared": cleared,
+                                      "resumed_seats": resumed.get("resumed_seats", []),
+                                      "orchestrator": resumed.get("orchestrator", "")})
                 return
 
             if path == "/v1/daemon/reload":
@@ -607,12 +611,34 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
     ensure_parhelion_migrated()
     DAEMON_CONFIG_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     DAEMON_LOG_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    # One daemon per home. The lock is held for the daemon's whole lifetime; a second starter
+    # exits here instead of letting ``_bind_server`` slide to the next free port and run a twin.
+    instance_fh = DAEMON_INSTANCE_LOCK_PATH.open("a")
+    try:
+        fcntl.flock(instance_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another daemon owns this home; exiting", file=sys.stderr, flush=True)
+        instance_fh.close()
+        return 0
     token = secrets.token_urlsafe(32)
     stop_event = threading.Event()
     runtime = OpsbDaemonRuntime(workspace=workspace, ssh_host=ssh_host, port=preferred_port, token=token)
     handler_cls = _make_handler(runtime, stop_event)
     server, actual_port = _bind_server(preferred_port, handler_cls)
     runtime.port = actual_port
+    # Announce ourselves before the slow warm-up so a concurrent starter sees a live pid and waits.
+    _write_daemon_state(
+        {
+            "pid": os.getpid(),
+            "port": actual_port,
+            "token": token,
+            "started_at": runtime.started_at,
+            "workspace": str(runtime.workspace),
+            "ssh_host": ssh_host,
+            "version": 1,
+            "starting": True,
+        }
+    )
     runtime.agent_mesh.recover_workers(workspace)
 
     # Warm cold cache before accepting traffic so the first snapshot & hot frame are ready immediately.
@@ -655,7 +681,22 @@ def run_daemon_server(workspace: Path, ssh_host: str, preferred_port: int = DEFA
         runtime.stop_device_streams()
         server.server_close()
         _remove_daemon_state(expected_pid=os.getpid())
+        instance_fh.close()
     return 0
+
+
+def _instance_lock_held() -> bool:
+    """Whether a daemon process holds the instance lock (a live pid in a stale state file may be reused)."""
+    try:
+        with DAEMON_INSTANCE_LOCK_PATH.open("a") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                return True
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return False
+    except OSError:
+        return False
 
 
 def start_daemon(
@@ -680,6 +721,27 @@ def start_daemon(
                     "pid": int(existing["pid"]),
                     "port": int(existing["port"]),
                     "health": health,
+                }
+
+            if existing and _pid_alive(int(existing.get("pid") or 0)) and _instance_lock_held():
+                # Alive but not yet healthy: the lock holder is still warming up. Wait for it
+                # instead of spawning a second daemon on this home.
+                pid = int(existing["pid"])
+                deadline = time.monotonic() + 30.0
+                while time.monotonic() < deadline:
+                    hl = probe_daemon_health(existing, timeout=0.8)
+                    if hl:
+                        return {
+                            "ok": True,
+                            "already_running": True,
+                            "pid": pid,
+                            "port": int(existing["port"]),
+                            "health": hl,
+                        }
+                    time.sleep(0.2)
+                return {
+                    "ok": False,
+                    "error": f"Daemon pid {pid} is starting but not healthy after 30s (see {DAEMON_LOG_PATH})",
                 }
 
             if not background:
@@ -710,7 +772,7 @@ def start_daemon(
                     close_fds=True,
                 )
 
-            deadline = time.monotonic() + 6.0
+            deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
                 st = read_daemon_state()
                 if st and int(st.get("pid") or 0) == proc.pid:
@@ -727,7 +789,7 @@ def start_daemon(
                     break
                 time.sleep(0.08)
 
-            return {"ok": False, "error": f"Daemon failed to become healthy within 6s (see {DAEMON_LOG_PATH})"}
+            return {"ok": False, "error": f"Daemon failed to become healthy within 30s (see {DAEMON_LOG_PATH})"}
         finally:
             fcntl.flock(lf, fcntl.LOCK_UN)
 
@@ -746,7 +808,7 @@ def stop_daemon() -> dict[str, Any]:
     except OSError as exc:
         return {"ok": False, "error": str(exc)}
 
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline and _pid_alive(pid):
         time.sleep(0.05)
 

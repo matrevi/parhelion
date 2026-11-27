@@ -149,6 +149,12 @@ class SessionRecord:
     brief_path: str = ""
     observed_steps: int = 0
     tokens_used: int = 0
+    #: 4.4.8: why the session ended (first 300 chars), ``provider`` when it was a provider fault
+    #: (``provider-resumed`` once the platform relaunched it), and whether ``--resume`` reloaded the
+    #: old conversation (``loaded``) or fell back to a fresh session with a handoff (``fresh``).
+    error: str = ""
+    fault: str = ""
+    resume: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -167,6 +173,8 @@ class SessionRecord:
             deep_link=str(data.get("deep_link") or ""), project_id=str(data.get("project_id") or ""),
             brief_path=str(data.get("brief_path") or ""),
             observed_steps=int(data.get("observed_steps") or 0), tokens_used=int(data.get("tokens_used") or 0),
+            error=str(data.get("error") or ""), fault=str(data.get("fault") or ""),
+            resume=str(data.get("resume") or ""),
         )
 
 
@@ -184,6 +192,9 @@ class BaseDriver(ABC):
     #: Set for the contest orchestrator's background job: how many sprint seats are live. An ACP
     #: driver keeps the orchestrator's turn going while it is positive (``antigravity_acp.continue_turns``).
     live_seats: Callable[[], int] | None = None
+    #: Set for the orchestrator's background job (4.4.8): the sprint handoff a fresh ACP session is
+    #: prompted with when ``session/load`` could not reload the old conversation.
+    resume_handoff: Callable[[], str] | None = None
 
     def __init__(self) -> None:
         self.last_launch_meta: dict[str, Any] = {}

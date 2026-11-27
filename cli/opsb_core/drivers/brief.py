@@ -421,3 +421,45 @@ def compose_contest_subagent_brief(workspace: Path, goal: str = "") -> str:
         "6. **Never dispatch `claude` workers** unless an admin prompt explicitly allows it (`PARHELION_ALLOW_CLAUDE_WORKERS=1`); the pool hides them by default.",
     ])
     return _truncate_utf8("\n".join(lines), MAX_ORCHESTRATOR_BRIEF_BYTES)
+
+
+HANDOFF_MAX_BYTES = 1200
+HANDOFF_HEAD = ("Your previous orchestrator session could not be reloaded; this is a new session. "
+                "The sprint is still running.")
+
+
+def orchestrator_handoff(ws: Path) -> str:
+    """4.4.8: what a fresh orchestrator needs when ``session/load`` failed — seat counts and open questions.
+
+    Only counts and agent ids: ledger and message bodies stay on the bus for the orchestrator to read.
+    """
+    from collections import Counter
+
+    lines = [HANDOFF_HEAD]
+    try:
+        from ..agents.bus_store import AgentBusStore
+
+        store = AgentBusStore(ws)
+        seats: dict[str, Counter] = {}
+        for row in store.list_agents(limit=-1):
+            if row.get("status") == "stopped" or row.get("role_label") == "orchestrator":
+                continue
+            seats.setdefault(str(row.get("problem") or "?"), Counter())[str(row.get("status") or "?")] += 1
+        for problem in sorted(seats):
+            counts = seats[problem]
+            lines.append(f"{problem}: {sum(counts.values())} seats ("
+                         + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())) + ")")
+        asked = [m for m in store.list_messages(direction="worker_to_orch", limit=500)
+                 if m.get("kind") == "question" and not m.get("acked_by_orch")]
+        if asked:
+            ids = list(dict.fromkeys(str(m.get("agent_id") or "") for m in asked))
+            lines.append(f"Unacknowledged worker questions: {len(asked)} ({', '.join(ids[:6])})")
+        lines.append("Read them with parhelion_agent_messages before acting.")
+    except Exception:
+        return HANDOFF_HEAD
+    out: list[str] = []
+    for line in lines:
+        if len("\n".join([*out, line]).encode("utf-8")) > HANDOFF_MAX_BYTES:
+            break
+        out.append(line)
+    return "\n".join(out)

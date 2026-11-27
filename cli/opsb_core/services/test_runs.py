@@ -34,6 +34,9 @@ ERROR_LIMIT = 600
 LINE_LIMIT = 600
 STARTED_PREFIX = "OPSB_RUN_STARTED "
 CMD_OVERRIDE_ENV = "OPSB_TEST_CMD_OVERRIDE"
+STALL_SEC = 45 * 60
+REAP_INTERVAL_SEC = 60.0
+_REAPED: dict[str, float] = {}
 _FINAL_KEYS = ("run_id", "exit_code", "digest", "report", "reused", "joined", "deferred", "reason")
 
 
@@ -180,6 +183,16 @@ def _group_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _stall_sec() -> float:
+    """Stall window in seconds: ``test_runs.stall_minutes`` from the user config, else ``STALL_SEC``."""
+    try:
+        section = _cfg.ConfigRepository.load().get("test_runs") or {}
+        minutes = float(section["stall_minutes"])
+    except Exception:
+        return float(STALL_SEC)
+    return minutes * 60.0 if minutes > 0 else float(STALL_SEC)
 
 
 # ---------------------------------------------------------------- submission
@@ -343,17 +356,38 @@ def _ledger_settled(ws: Path | str, record: dict[str, Any]) -> None:
     auto.guard(auto.on_test_settled, Path(ws), record)
 
 
-def _progress(record: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    started = None
+def _started_info(record: dict[str, Any]) -> dict[str, Any] | None:
+    """Latest ``OPSB_RUN_STARTED`` payload in the record's log, if its command announced one."""
     for line in reversed(_log_text(record).splitlines()):
         if line.startswith(STARTED_PREFIX):
             try:
                 started = json.loads(line[len(STARTED_PREFIX):])
             except ValueError:
-                started = None
-            if isinstance(started, dict):
-                break
-            started = None
+                return None
+            return started if isinstance(started, dict) else None
+    return None
+
+
+def _last_activity(record: dict[str, Any]) -> float | None:
+    """Newest mtime of the run's log and its ``events.jsonl``; missing files are ignored."""
+    paths: list[Path] = []
+    log = str(record.get("log") or "").strip()
+    if log:
+        paths.append(Path(log))
+    started = _started_info(record) or {}
+    if started.get("dir"):
+        paths.append(Path(str(started["dir"])) / "events.jsonl")
+    stamps = []
+    for path in paths:
+        try:
+            stamps.append(path.stat().st_mtime)
+        except OSError:
+            continue
+    return max(stamps) if stamps else None
+
+
+def _progress(record: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    started = _started_info(record)
     if started is None:
         return {"phase": "starting", "cases_done": 0, "selected": None, "wait_sec": None}, None
     progress: dict[str, Any] = {"phase": "started", "cases_done": 0, "selected": started.get("selected"), "wait_sec": None}
@@ -508,33 +542,81 @@ def wait(ws: Path | str, request_id: str, wait_sec: float = 30,
             block(remaining)
 
 
+def _kill_group(pid: Any) -> None:
+    """SIGTERM the process group, SIGKILL 5 s later; no-op for a missing or already dead group."""
+    if not isinstance(pid, int) or pid <= 0 or not _group_alive(pid):
+        return
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGTERM)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and _group_alive(pid):
+        time.sleep(0.05)
+    if _group_alive(pid):
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pid, signal.SIGKILL)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and _group_alive(pid):
+            time.sleep(0.05)
+
+
 def cancel(ws: Path | str, request_id: str) -> dict[str, Any]:
     """SIGTERM the run's process group, SIGKILL after 5 s, and record it as cancelled."""
     record = _load(ws, request_id)
     if record.get("status") in TERMINAL:
         return public_view(record)
     record = _update(ws, request_id, cancel_requested=True)
-    pid = record.get("pid")
-    if isinstance(pid, int) and pid > 0 and _group_alive(pid):
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and _group_alive(pid):
-            time.sleep(0.05)
-        if _group_alive(pid):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(pid, signal.SIGKILL)
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline and _group_alive(pid):
-                time.sleep(0.05)
+    _kill_group(record.get("pid"))
     record = _update(ws, request_id, status="cancelled", finished_at=record.get("finished_at") or _now_iso())
     return public_view(record)
+
+
+# ---------------------------------------------------------------- stalled runs
+
+def reap_stalled(ws: Path | str, *, stall_sec: float | None = None,
+                 now: float | None = None) -> list[str]:
+    """Stop runs whose process is alive but has produced no output for the stall window.
+
+    A detached run that stops progressing holds its problem's experiment flock until its process
+    exits; the group is killed here and the record settled as failed (written to the ledger like
+    ``_finalize``) so the slot is released. Returns the request ids it stopped.
+    """
+    threshold = float(stall_sec) if stall_sec is not None else None
+    current = time.time() if now is None else float(now)
+    stopped: list[str] = []
+    for rec in _all_records(ws):
+        if rec.get("status") != "running" or not _pid_alive(rec.get("pid")):
+            continue
+        activity = _last_activity(rec)
+        if activity is None:
+            continue
+        if threshold is None:
+            threshold = _stall_sec()
+        if current - activity < threshold:
+            continue
+        request_id = rec["request_id"]
+        with _flock(_record_path(ws, request_id).with_suffix(".lock")):
+            record = _read(ws, request_id)
+            if record is None or record.get("status") != "running":
+                continue
+            _kill_group(record.get("pid"))
+            minutes = max(1, int(round((current - activity) / 60.0)))
+            record.update({"status": "failed", "exit_code": None, "finished_at": _now_iso(),
+                           "error": f"stalled: no output for {minutes} min; "
+                                    f"the platform stopped it - resubmit"})
+            _write(ws, record)
+        _ledger_settled(ws, record)
+        stopped.append(request_id)
+    return stopped
 
 
 # ---------------------------------------------------------------- delivery (consumed by orchestration)
 
 def list_undelivered(ws: Path | str) -> list[dict[str, Any]]:
-    """Ended records with an owning agent that have not been delivered yet (stale runs are settled first)."""
+    """Ended records with an owning agent that have not been delivered yet (stale and stalled runs settle first)."""
+    if time.monotonic() - _REAPED.get(str(ws), -1e9) >= REAP_INTERVAL_SEC:
+        _REAPED[str(ws)] = time.monotonic()  # the scan reads every running log: once a minute is enough
+        with contextlib.suppress(Exception):
+            reap_stalled(ws)
     out = []
     for rec in _all_records(ws):
         if not rec.get("agent_id") or rec.get("delivered"):
@@ -630,6 +712,7 @@ __all__ = [
     "list_undelivered",
     "mark_delivered",
     "public_view",
+    "reap_stalled",
     "refresh",
     "registry_dir",
     "submit",

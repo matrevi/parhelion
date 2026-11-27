@@ -88,6 +88,9 @@ def update_session(
     pid: int | None = None,
     clear_pid: bool = False,
     native_session_id: str | None = None,
+    error: str | None = None,
+    fault: str | None = None,
+    resume: str | None = None,
 ) -> SessionRecord | None:
     ws = workspace.expanduser().resolve()
     lock_p = _lock_file_path(ws)
@@ -109,6 +112,9 @@ def update_session(
                         rec.pid = pid
                     if native_session_id:
                         rec.native_session_id = native_session_id
+                    for name, value in (("error", error), ("fault", fault), ("resume", resume)):
+                        if value is not None:
+                            setattr(rec, name, str(value))
                     rec.updated_at = _cfg.utc_now().isoformat()
                     rows[idx] = rec.to_dict()
                     updated_rec = rec

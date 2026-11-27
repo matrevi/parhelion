@@ -99,7 +99,8 @@ class RouteTest(unittest.TestCase):
                 self.assertEqual((status, detail["run"]["digest"]["summary"]["passed"]), (200, 3))
                 self.assertEqual(call("GET", "/v1/test-runs/" + "9" * 32)[0], 404)
                 self.assertEqual(call("POST", "/v1/drivers/deepseek/resume"),
-                                 (200, {"ok": True, "driver": "deepseek", "cleared": True}))
+                                 (200, {"ok": True, "driver": "deepseek", "cleared": True,
+                                        "resumed_seats": [], "orchestrator": ""}))
                 self.assertEqual(cleared, ["deepseek"])
                 self.assertEqual(call("POST", "/v1/drivers/deepseek/resume", token="worker")[0], 401)
             finally:

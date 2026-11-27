@@ -19,6 +19,7 @@ from .brief import (
     MAX_BRIEF_BYTES,
     compose_contest_subagent_brief,
     compose_session_brief,
+    orchestrator_handoff,
     prepare_session_worktree,
     resolve_problem_repo,
 )
@@ -276,6 +277,7 @@ def _run_worker_job(job_path: Path) -> int:
     if job.get("problem") == ORCHESTRATOR_PROBLEM:
         # The contest orchestrator keeps its turn going while the sprint has seats (ACP drivers).
         drv.live_seats = lambda: _live_seat_count(ws)
+        drv.resume_handoff = lambda: orchestrator_handoff(ws)  # 4.4.8: a fresh session gets the sprint
 
     try:
         rc = drv._execute_headless_turn(
@@ -286,11 +288,29 @@ def _run_worker_job(job_path: Path) -> int:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as lf:
             lf.write(json.dumps({"event": "worker_error", "error": str(exc)}) + "\n")
-        update_session(ws, session_id, status="failed", clear_pid=True)
+        _record_failure(ws, session_id, drv.kind, str(exc))
         return 1
 
     update_session(ws, session_id, status=("completed" if rc == 0 else "failed"), clear_pid=True)
     return int(rc)
+
+
+def _record_failure(ws: Path, session_id: str, driver: str, error: str) -> None:
+    """4.4.8: a provider fault of a background session suspends its driver like a mesh seat's would.
+
+    Without this the orchestrator died alone on Insufficient Balance: no banner, and lifting a
+    suspension could not know there was an orchestrator to bring back.
+    """
+    from ..agents.manager import PROVIDER_FAULT, AgentMeshManager
+
+    text = " ".join(error.split())[:300]
+    fault = "provider" if PROVIDER_FAULT.search(text) else ""
+    update_session(ws, session_id, status="failed", clear_pid=True, error=text, fault=fault)
+    if fault:
+        try:
+            AgentMeshManager().suspend_driver(ws, driver, text)
+        except Exception:
+            pass
 
 
 def _main(argv: list[str] | None = None) -> int:

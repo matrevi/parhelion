@@ -229,6 +229,51 @@ def test_invalid_inputs_list_recent_commits(env):
         test_runs.wait(ws, "b" * 32, 1)
 
 
+def _run_dir(record: dict) -> Path:
+    for line in test_runs._log_text(record).splitlines():
+        if line.startswith(test_runs.STARTED_PREFIX):
+            return Path(json.loads(line[len(test_runs.STARTED_PREFIX):])["dir"])
+    raise AssertionError("the run never announced its directory")
+
+
+def _group_gone(pid: int) -> bool:
+    try:
+        os.killpg(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def test_reap_stalled_settles_silent_runs(env):
+    ws, sha, ctl = env["ws"], env["sha"], env["ctl"]
+    view = test_runs.submit(ws, problem="Demo", sha=sha, agent_id="w-1", role="worker")
+    record = test_runs._load(ws, view["request_id"])
+    _wait_for(lambda: test_runs.STARTED_PREFIX in test_runs._log_text(record))
+    run_dir = _run_dir(record)
+    _wait_for(lambda: (run_dir / "events.jsonl").exists())
+
+    stale = time.time() - 50 * 60
+    for path in (Path(record["log"]), run_dir / "events.jsonl"):
+        os.utime(path, (stale, stale))
+
+    pending = test_runs.list_undelivered(ws)
+    stopped = [r for r in pending if r["request_id"] == view["request_id"]]
+    assert stopped and stopped[0]["status"] == "failed"
+    assert "stalled" in stopped[0]["error"] and stopped[0]["exit_code"] is None
+
+    settled = test_runs._load(ws, view["request_id"])
+    assert settled["status"] == "failed" and settled["finished_at"]
+    _wait_for(lambda: _group_gone(settled["pid"]))
+    test_runs.mark_delivered(ws, view["request_id"])
+
+    fresh = test_runs.submit(ws, problem="Demo", sha=sha, level="smoke", agent_id="w-2", role="worker")
+    _wait_for(lambda: len(_invocations(ctl)) == 2)
+    assert test_runs.reap_stalled(ws) == []
+    assert test_runs._load(ws, fresh["request_id"])["status"] == "running"
+
+
 def test_gc_removes_old_records_hourly(env):
     ws = env["ws"]
     old = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=4)).isoformat()

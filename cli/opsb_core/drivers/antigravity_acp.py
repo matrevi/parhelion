@@ -317,6 +317,7 @@ def run_acp_headless_turn(
     env: dict[str, str],
     log_path: Path,
     live_seats=None,
+    handoff=None,
 ) -> int:
     from .session_store import update_session
 
@@ -331,9 +332,17 @@ def run_acp_headless_turn(
         client = AcpSessionClient(proc.stdin, proc.stdout, log_stream=lf)
         try:
             client.initialize()
-            active_id, _ = client.open_session(cwd=worktree, mcp_servers=mcp_servers, resume_id=resume_id)
+            active_id, resumed = client.open_session(cwd=worktree, mcp_servers=mcp_servers, resume_id=resume_id)
             if active_id:
                 update_session(workspace, session_id, native_session_id=active_id)
+            if resume_id:
+                # 4.4.8: a harness without session/load starts fresh; say so and hand the sprint over.
+                update_session(workspace, session_id, resume="loaded" if resumed else "fresh")
+                if not resumed and callable(handoff):
+                    try:
+                        brief = f"{handoff()}\n\n{brief}"
+                    except Exception:
+                        pass
             client.send_prompt(active_id or native_session_id, brief)
             if live_seats is not None:
                 continue_turns(lambda text: client.send_prompt(active_id or native_session_id, text), live_seats)

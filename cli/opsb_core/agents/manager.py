@@ -366,6 +366,7 @@ class AgentMeshManager:
         self._lock = threading.Lock()
         self.sprint_lock = threading.Lock()
         self._suspend_lock = threading.Lock()
+        self.last_outage_resume: dict[str, Any] = {}
         self._cond = threading.Condition(self._lock)
         self._stores: dict[str, AgentBusStore] = {}
         self._feedback_versions = {}
@@ -430,7 +431,52 @@ class AgentMeshManager:
             doc.pop(drv, None)
             self._write_suspensions(ws, doc)
         self._notify()
+        try:
+            self.last_outage_resume = self.resume_after_outage(ws, drv)
+        except Exception as exc:  # recovery must never turn a lifted suspension into an error
+            self.last_outage_resume = {"resumed_seats": [], "orchestrator": "", "error": str(exc)[:200]}
         return True
+
+    OUTAGE_FOLLOWUP = "The provider is available again. Resume your current experiment where you left it."
+    OUTAGE_GOAL = ("Administrator: your last turn stopped on a provider fault and the provider is back. "
+                   "The sprint is still running and only the administrator ends it. Do not stop seats and do "
+                   "not write a wrap-up. Read the pending worker questions first and answer each under the "
+                   "platform rules.")
+
+    def resume_after_outage(self, ws: Path, driver: str) -> dict[str, Any]:
+        """4.4.8: wake what a provider fault stopped once its suspension is lifted.
+
+        Seats in ``error`` from the outage get a follow-up (stopped seats were stopped on purpose). The
+        orchestrator's background session, when the outage ended it, is relaunched once with --resume.
+        """
+        ws = Path(ws).expanduser().resolve()
+        drv = str(driver or "").strip().lower()
+        store = self._store(ws)
+        resumed = []
+        for row in store.list_agents(limit=-1):
+            err = str(row.get("error") or "")
+            if (str(row.get("driver") or "").lower() != drv or row.get("status") != "error"
+                    or not (err == SUSPENDED_ERROR or PROVIDER_FAULT.search(err))):
+                continue
+            try:
+                self.send_message(ws, row["agent_id"], self.OUTAGE_FOLLOWUP)
+                resumed.append(row["agent_id"])
+            except Exception:
+                pass
+        from ..drivers import registry, session_store
+        from ..drivers.base import ORCHESTRATOR_PROBLEM
+
+        sessions = session_store.list_sessions(ws, problem=ORCHESTRATOR_PROBLEM)
+        relaunched = ""
+        if not any(s.status == "running" for s in sessions):
+            last = next((s for s in sessions if s.driver.lower() == drv), None)  # newest first
+            if last is not None and last.status == "failed" and last.fault == "provider":
+                session_store.update_session(ws, last.session_id, fault="provider-resumed")
+                res = registry.launch_problem_session(ws, "ALL", driver_kind=drv, mode="background",
+                                                      resume_id=last.native_session_id or None,
+                                                      goal=self.OUTAGE_GOAL)
+                relaunched = str((res.get("session") or {}).get("session_id") or "")
+        return {"resumed_seats": resumed, "orchestrator": relaunched}
 
     def _make_runner(self, ws: Path, agent_id: str, store: AgentBusStore, adapter: BaseWorkerAdapter,
                      *, resume: bool = False) -> _WorkerRunner:
