@@ -278,6 +278,7 @@ def _run_worker_job(job_path: Path) -> int:
         # The contest orchestrator keeps its turn going while the sprint has seats (ACP drivers).
         drv.live_seats = lambda: _live_seat_count(ws)
         drv.resume_handoff = lambda: orchestrator_handoff(ws)  # 4.4.8: a fresh session gets the sprint
+        drv.session_model = worker_model(drv.kind)  # 4.4.8: the orchestrator follows `opsb driver model`
 
     try:
         rc = drv._execute_headless_turn(

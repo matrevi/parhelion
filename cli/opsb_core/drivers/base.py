@@ -195,6 +195,9 @@ class BaseDriver(ABC):
     #: Set for the orchestrator's background job (4.4.8): the sprint handoff a fresh ACP session is
     #: prompted with when ``session/load`` could not reload the old conversation.
     resume_handoff: Callable[[], str] | None = None
+    #: The model the orchestrator's ACP session binds (``worker_models`` of its driver); None keeps the
+    #: harness default. Set by the background job, like ``live_seats``.
+    session_model: str | None = None
 
     def __init__(self) -> None:
         self.last_launch_meta: dict[str, Any] = {}

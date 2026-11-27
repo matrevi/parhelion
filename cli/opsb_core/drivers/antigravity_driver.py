@@ -346,4 +346,5 @@ class AntigravityDriver(BaseDriver):
         resume_id: str | None, cmd: list[str], env: dict[str, str], log_path: Path,
     ) -> int:
         return run_acp_headless_turn(workspace, worktree, brief, session_id, native_session_id, resume_id, cmd, env, log_path,
-                                     live_seats=self.live_seats, handoff=self.resume_handoff)
+                                     live_seats=self.live_seats, handoff=self.resume_handoff,
+                                     model=self.session_model)

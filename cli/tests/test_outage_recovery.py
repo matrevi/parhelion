@@ -145,3 +145,21 @@ def test_the_handoff_counts_seats_and_open_questions_without_bodies(tmp_path, mo
     assert "could not be reloaded" in text and "OpA: 2 seats" in text
     assert "Unacknowledged worker questions: 1 (dee-a00001)" in text and "SECRET" not in text
     assert len(text.encode("utf-8")) <= 1200
+
+
+def test_the_orchestrator_session_binds_the_configured_model(tmp_path, monkeypatch):
+    ws = _ws(tmp_path, monkeypatch)
+    _orchestrator(ws, "deepseek-new", "running")
+    seen: dict = {}
+
+    class _Client(_FakeClient):
+        def open_session(self, **kw):
+            seen.update(kw)
+            return "sid", False
+
+    monkeypatch.setattr(antigravity_acp, "AcpSessionClient", _Client)
+    monkeypatch.setattr(antigravity_acp.subprocess, "Popen", _FakeProc)
+    monkeypatch.setattr(antigravity_acp, "build_acp_mcp_servers", lambda _ws: [])
+    antigravity_acp.run_acp_headless_turn(ws, ws, "BRIEF", "deepseek-new", "native", None, ["dsh"], {},
+                                          tmp_path / "log.jsonl", model="glm-5.4")
+    assert seen["model"] == "glm-5.4"
