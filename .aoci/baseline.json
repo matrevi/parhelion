@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T04:33:01Z",
+  "updated_at": "2026-11-27T04:36:09Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "7696b1085bdf7c3c59c6ec1ba17eda5c9bc9efc698f7fd4ee7cec3e54550d5a4",
-      "size": 215892,
-      "normalized_sha256": "7696b1085bdf7c3c59c6ec1ba17eda5c9bc9efc698f7fd4ee7cec3e54550d5a4"
+      "sha256": "5c745a01bb55866716aa36f640b972c5f0d129ccc06f3f87970d5168c9845a6f",
+      "size": 215809,
+      "normalized_sha256": "5c745a01bb55866716aa36f640b972c5f0d129ccc06f3f87970d5168c9845a6f"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -491,9 +491,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "8a374fa64d250a000fcb8977b0c3366dd75a2d976a582e08dc81539d919fc18f",
+      "sha256": "4483cef8ad363e67c04b38be7f7f8c284d6aac7a9c77da8ae54e92bafbbb341d",
       "size": 109,
-      "normalized_sha256": "8a374fa64d250a000fcb8977b0c3366dd75a2d976a582e08dc81539d919fc18f"
+      "normalized_sha256": "4483cef8ad363e67c04b38be7f7f8c284d6aac7a9c77da8ae54e92bafbbb341d"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -2663,9 +2663,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "3eab44f119cbb54b6040c91b10a9dcc0c6809dd2dea6599279a262edbc11df37",
-      "size": 55029,
-      "normalized_sha256": "3eab44f119cbb54b6040c91b10a9dcc0c6809dd2dea6599279a262edbc11df37"
+      "sha256": "16c410f1b3739cda143e99d0003e74edc9126607d4ad7b6128c3a04e78f7a27f",
+      "size": 55629,
+      "normalized_sha256": "16c410f1b3739cda143e99d0003e74edc9126607d4ad7b6128c3a04e78f7a27f"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
@@ -3251,9 +3251,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "9824e710d199a80318c0881ea52a10633fc7d3bc7e50f0da635e3a20b57b23a0",
+      "sha256": "61843cf483ffa7d36ce5e0e33754c5ec8867837310db713a03b58e8ce5c0c327",
       "size": 5102,
-      "normalized_sha256": "9824e710d199a80318c0881ea52a10633fc7d3bc7e50f0da635e3a20b57b23a0"
+      "normalized_sha256": "61843cf483ffa7d36ce5e0e33754c5ec8867837310db713a03b58e8ce5c0c327"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
