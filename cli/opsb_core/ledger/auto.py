@@ -84,11 +84,13 @@ def apply_link(led: Any, sha: str, hypothesis_id: str = "", predicted_effect: An
     """``{id, auto, note}`` of the hypothesis a submission request names, or of the generated one."""
     from . import note as _note
     rows = led.rows()
-    unknown = ""
+    unknown, kind = "", ""
     if hypothesis_id:
         head = view.head(rows, hypothesis_id)
         if head is None:  # a stale id must not refuse the submission: generate and say so
             unknown, hypothesis_id = str(hypothesis_id), ""
+        elif head.get("type") != "hypothesis":  # 4.4.7: an insight or a card's lead ref is not one to update
+            unknown, kind, hypothesis_id = str(hypothesis_id), str(head.get("type") or "entry"), ""
     if hypothesis_id:
         head = view.head(led.rows(), hypothesis_id)
         changes: dict[str, Any] = {}
@@ -107,7 +109,8 @@ def apply_link(led: Any, sha: str, hypothesis_id: str = "", predicted_effect: An
     row = created or (view.for_sha(led.rows(), "hypothesis", sha) or [{}])[-1]
     if not row.get("id"):
         return {"id": "", "auto": False, "note": "no hypothesis could be generated for this SHA"}
-    note = (f"{unknown} is not in this ledger; the platform generated {row['id']} instead" if unknown
+    note = (f"{unknown} is a {kind}, not a hypothesis; the platform generated {row['id']} for this SHA" if kind
+            else f"{unknown} is not in this ledger; the platform generated {row['id']} instead" if unknown
             else f"no hypothesis_id given: the platform generated {row['id']} from the submission note"
             if created else f"this SHA already has {row['id']}")
     return {"id": row["id"], "auto": bool(created or unknown), "unknown_id": unknown, "note": note}

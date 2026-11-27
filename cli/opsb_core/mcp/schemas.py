@@ -234,7 +234,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "parhelion_submit_gate",
-        "description": "The 4-stage submission gate: a call previews; enqueue=true queues the SHA when it passes. Give hypothesis_id and "
+        "description": "The 4-stage submission gate: a call previews; enqueue=true queues the SHA when it passes. Give hypothesis_id (a hypothesis entry) and "
                        "predicted_effect, else derived from the commit. intent=probe: budgeted, undoable; intent=restore: roll back.",
         "roles": ("orchestrator", "worker"),
         "inputSchema": {

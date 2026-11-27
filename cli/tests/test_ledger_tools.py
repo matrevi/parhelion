@@ -221,6 +221,27 @@ def test_gate_link_never_refuses_a_submission(contest):
     assert created and created[0]["id"] == link["id"]
 
 
+@pytest.mark.parametrize("entry", [
+    {"type": "insight", "claim": "case 05 is bound by the matrix unit"},
+    {"type": "constraint", "claim": "inputs stay under 4 MiB"},
+])
+def test_gate_link_with_a_non_hypothesis_id_generates_one(contest, entry):
+    """4.4.7: a worker that names an insight or constraint (a card's lead ref) as its hypothesis lost the link.
+
+    The platform superseded that row with hypothesis fields, the ledger refused them, and the guard
+    swallowed the error: no hypothesis was recorded for the SHA and the reply said nothing.
+    """
+    ws, sha = contest["ws"], contest["tile"]
+    lead = _note(entry, ws)
+    link = auto.on_gate_link(ws, "Op00", sha, WORKER, hypothesis_id=lead["id"], note="cand", enqueued=True,
+                             predicted_effect={"delta_mu": 1.0, "delta_sigma": 0.5})
+    assert link and link["id"] != lead["id"] and lead["id"] in link["note"] and entry["type"] in link["note"]
+    rows = store.Ledger(ws, "Op00", WORKER).rows()
+    assert view.head(rows, lead["id"])["type"] == entry["type"]  # the cited row is left as it was
+    (hyp,) = [r for r in rows if r["type"] == "hypothesis"]
+    assert hyp["id"] == link["id"] and hyp["sha"] == sha
+
+
 def test_submit_gate_handler_reports_the_auto_generated_id(contest):
     ws, sha = contest["ws"], contest["tile"]
     verdict = {"approved": True, "priority_score": 1.0, "stages": [
