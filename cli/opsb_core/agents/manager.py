@@ -1423,11 +1423,20 @@ class AgentMeshManager:
         # A daemon shutdown is not an administrator stopping the seat: `stopped` refuses follow-ups and
         # blocks sprint_start, so a restart used to end every worker of a running sprint (4.3 run 2).
         # The seat stays resumable, as after a crash (`recover_workers`).
+        # 4.4.6: read the status before stopping. Stopping a runner mid-turn makes its loop write `stopped`
+        # itself, and the old check (after the stop) then left every live seat stopped; only a seat the
+        # administrator had already stopped stays stopped.
         for r in runners:
             try:
+                before = (r.store.get_agent(r.agent_id) or {}).get("status")
+            except Exception:
+                before = None
+            try:
                 r.stop()
-                rec = r.store.get_agent(r.agent_id)
-                if rec and rec["status"] not in ("error", "stopped"):
+            except Exception:
+                pass
+            try:
+                if before and before != "stopped":
                     r.store.update_agent(r.agent_id, status="error", pid=None, pgid=None, error=DAEMON_STOPPED)
             except Exception:
                 pass
