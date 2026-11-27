@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-11-26T02:13:09Z",
-  "updated_at": "2026-11-27T05:35:15Z",
+  "updated_at": "2026-11-27T05:54:57Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -437,9 +437,9 @@
     },
     "Sources/Parhelion/Features/Settings/DriverSettingsTab.swift": {
       "role": "index",
-      "sha256": "1c43b27edbbf8c3b3724c1b7f7af16186f9bb3f2321d447ec84ec9f475838fe0",
-      "size": 9014,
-      "normalized_sha256": "1c43b27edbbf8c3b3724c1b7f7af16186f9bb3f2321d447ec84ec9f475838fe0"
+      "sha256": "2ec385d50dc4fe8215f83b680444456b69350266da96d38974b7bc5fc371ee0e",
+      "size": 9438,
+      "normalized_sha256": "2ec385d50dc4fe8215f83b680444456b69350266da96d38974b7bc5fc371ee0e"
     },
     "Sources/Parhelion/Features/Settings/SSHSettingsTab.swift": {
       "role": "index",
@@ -467,9 +467,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "c6bbab978e7bebd0bdc2277ab554c7405fa10a467695b94c8e1debb3981e7501",
-      "size": 216855,
-      "normalized_sha256": "c6bbab978e7bebd0bdc2277ab554c7405fa10a467695b94c8e1debb3981e7501"
+      "sha256": "dc84ec5ee1d0d821688c0c3143a47f41e4df2ccf2c5ec387722ce3b9dba7730e",
+      "size": 217038,
+      "normalized_sha256": "dc84ec5ee1d0d821688c0c3143a47f41e4df2ccf2c5ec387722ce3b9dba7730e"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -491,9 +491,9 @@
     },
     "cli/opsb_core/__init__.py": {
       "role": "index",
-      "sha256": "f2b40e3e1c97bf95f33b23d062ca71737aab5161b5cfb853516de3b05e529abe",
+      "sha256": "e6378db80c3971f53ccef70a962e49d61fb6f47bfa37c027e989767133b6d218",
       "size": 109,
-      "normalized_sha256": "f2b40e3e1c97bf95f33b23d062ca71737aab5161b5cfb853516de3b05e529abe"
+      "normalized_sha256": "e6378db80c3971f53ccef70a962e49d61fb6f47bfa37c027e989767133b6d218"
     },
     "cli/opsb_core/agents/__init__.py": {
       "role": "index",
@@ -2681,9 +2681,9 @@
     },
     "docs/v4/RELEASE-NOTES.md": {
       "role": "index",
-      "sha256": "feef31d58e797a99cbafeb55799f0005aa21bbb74952ec3abbf6b29ef4ee7dc1",
-      "size": 57197,
-      "normalized_sha256": "feef31d58e797a99cbafeb55799f0005aa21bbb74952ec3abbf6b29ef4ee7dc1"
+      "sha256": "48b28ca7b0be234225556500d2cd67f8efce5afc5f7cabb0115a1e4d1079a536",
+      "size": 57830,
+      "normalized_sha256": "48b28ca7b0be234225556500d2cd67f8efce5afc5f7cabb0115a1e4d1079a536"
     },
     "docs/v4/RUN-LOG-2026-11-26.md": {
       "role": "index",
@@ -3269,9 +3269,9 @@
     },
     "scripts/bundle_app.sh": {
       "role": "index",
-      "sha256": "e64c34cbde4e74bd185e3852a235c38491085a2bb5190292cefa3b737bf65dbf",
+      "sha256": "5015c5e4136175b21d80812e1218f982b61b90d45b10f784e2640a1801e3a141",
       "size": 5102,
-      "normalized_sha256": "e64c34cbde4e74bd185e3852a235c38491085a2bb5190292cefa3b737bf65dbf"
+      "normalized_sha256": "5015c5e4136175b21d80812e1218f982b61b90d45b10f784e2640a1801e3a141"
     },
     "scripts/generate_icon.swift": {
       "role": "index",
