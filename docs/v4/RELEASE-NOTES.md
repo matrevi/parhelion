@@ -2,6 +2,30 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.4.0 — 卡住检测、题目卷宗与引导卡
+
+设计与实现见 `docs/v4.4/stuck-guidance.md`，交付报告见 `docs/v4.4/reports/P30-P32.md`。不新增 MCP 工具。
+
+### 卡住检测（P30）
+- 守护进程每 30 秒给每个在线实现席位打一个类别：`build_loop`（连续编译失败，或同一编译错误重复）、`wa_loop`（同一用例连续 WA/RE）、`scale_mismatch`（前几位差距用例 ≥50 倍 tbest，而最近改动都 <10%）、`plateau`（本地最好在噪声带内不动，或 40 分钟没有新最好）、`no_candidate`（60 分钟没有可交候选）。数据全部来自账本、测试登记、判题回执和差距分诊。
+- 热帧的 worker 行新增 `stuck` 与 `guide` 字段；协作页 worker 卡片显示紫色类别徽标，检查器显示卡号与状态。
+- `opsb replay stuck -w <比赛> [--since --until --sessions]` 在过去冲刺的数据上只读回放检测器。4.3 冲刺里，运行日志点名的五道卡住题有 27% 的席位时间被判为卡住，其余题为 11%。
+
+### 题目卷宗（P31）
+- 每个席位工作树下的 `.parhelion/dossier/` 由代码生成，共七个文件。`gap.md` 按判题公式逐例列出与 tbest 的倍数、得分、加权空间，以及提速 2、10、100 倍各能多得几分，并分三档：算法或执行单元、数据通路、微调。`findings.md` 把各席位自己搜到、测到的发现排在知识库前面。另有 `dead-ends.md`、`hardware.md`、`prior-art.md`、`cards.md` 与 `index.md`。
+- 目录自带内容为 `*` 的 `.gitignore`，不会进提交，打包时也不会被带上。卷宗原样引用知识库条目的文字。
+
+### 引导卡（P32）
+- 席位出现新类别时，平台生成一张不超过 800 字节的卡：假设、只改一处、预期效果、判定方法、出处。卡片随这个 worker 的下一次 `parhelion_test_wait` 回复送出；worker 空闲时走收件箱。每个席位同时只有一张有效卡，同一类别 30 分钟内不重复。
+- 压缩与交接种子只保留一行卡号与状态。下发、送达、采纳、拒绝和送达后的下一次本地最好，都记进 `<工作区 state>/guidance/cards.jsonl`。
+- 开关：`guidance.cards=false` 只检测、不推送；`guidance.enabled=false` 全部关闭。阈值见 `config.DEFAULT_CONFIG["guidance"]`。
+
+### 设计
+- P34 改成「文档侦察席」：由平台按卡住类别触发一个只读席位，查官方文档，把带出处的发现交给刷题 worker（设计第七节，尚未实现）。
+
+### 升级
+- 需要重启一次守护进程，`server.py` 与 `manager.py` 不会热重载。
+
 ## 4.3.2 — 多台设备、只代交干净的候选、重启不丢冲刺
 
 来自 4.3.1 端到端冲刺第二轮（`docs/v4.3/RUN-LOG-2026-11-26-e2e.md`，问题 11–18）。
