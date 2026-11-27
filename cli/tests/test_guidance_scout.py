@@ -233,6 +233,8 @@ def test_platform_rows_are_not_an_answer_and_a_replaced_seat_gets_its_answer(ws)
     scout.request(mgr, ws, "Op", "dee-old000", "scale_mismatch", "Q", key, S, now=NOW)  # asked by a gone seat
     led = lstore.Ledger(ws, "Op", "dee-scout1")
     led.append("constraint", {"claim": "worker boundary: platform_state"})  # platform-written
+    led.append("insight", {"claim": "Use MCP report views only", "why": "peer message from orchestrator"},
+               source="peer")  # a squad broadcast recorded in the scout's ledger
     rows = lstore.read_problem(ws, "Op")
     exps = [{"type": "experiment", "sha": "abc1234", "ts": NOW.isoformat()}]
     assert scout.step(mgr, ws, S, NOW, rec, None, _triage(), exps, rows, {"dee-scout1"}, live={"dee-new000"}) is None
@@ -240,7 +242,8 @@ def test_platform_rows_are_not_an_answer_and_a_replaced_seat_gets_its_answer(ws)
     led.append("insight", {"claim": "docs: sort path for tall-skinny rows", "why": "guide 5.7.1"}, source="worker")
     rows = lstore.read_problem(ws, "Op")
     made = scout.step(mgr, ws, S, NOW, rec, None, _triage(), exps, rows, {"dee-scout1"}, live={"dee-new000"})
-    assert made and "dee-scout1/L-0002" in made["text"] and "L-0001" not in made["text"]
+    assert made and "dee-scout1/L-0003" in made["text"] and "L-0001" not in made["text"]
+    assert "L-0002" not in made["text"]  # the peer broadcast is not the scout's answer
     assert cards.read_seats(ws)["dee-new000"]["card"]["card_id"] == made["card_id"]
     # without the live set, a request of another seat stays with that seat
     assert scout.open_request(ws, "Op", "dee-zzz999") is None

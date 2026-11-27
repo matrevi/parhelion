@@ -160,10 +160,10 @@ def open_request(ws: Path | str, problem: str, agent_id: str, live: set[str] | N
 def answers(rows: list[dict[str, Any]], scouts: set[str], since: str) -> list[dict[str, Any]]:
     """Scout insight and constraint rows written after ``since``, oldest first (the first is the lead)."""
     from ..ledger import view
-    # Only what the scout wrote: the platform also writes into a scout's ledger (a boundary constraint, for one),
-    # and the 4.4.4 run took that row for the answer and closed the request before the findings came.
+    # Only what the scout wrote itself (source=worker): the platform writes boundary constraints into its
+    # ledger and squad broadcasts land there as source=peer; the 2026-11-27 run took each for an answer.
     hit = [r for r in view.current(rows) if r.get("worker") in scouts and r.get("type") in ("insight", "constraint")
-           and r.get("source") != "platform" and str(r.get("ts") or "") >= since]
+           and r.get("source") == "worker" and str(r.get("ts") or "") >= since]
     return sorted(hit, key=view.order_key)
 
 
