@@ -75,6 +75,15 @@ def run_driver(args: argparse.Namespace) -> int:
                 )
             return 0
 
+        if sub == "available":  # 4.4 P34: the Harnesses the user ticked for workers and scouts
+            from ..drivers import availability
+            if getattr(args, "set", None) is not None:
+                res = availability.set_available([k for k in str(args.set).split(",") if k.strip()])
+            else:
+                res = {"ok": True, "available_drivers": availability.available()}
+            print(json.dumps(res, ensure_ascii=False) if as_json else ", ".join(res["available_drivers"]) or "none")
+            return 0
+
         if sub == "model":
             res = select_worker_model(args.kind, args.model)
             print(json.dumps(res, ensure_ascii=False) if as_json else res["worker_model"])
@@ -229,6 +238,9 @@ def register_driver_and_mcp_subcommands(sub: argparse._SubParsersAction) -> None
     d_sel.add_argument("--json", action="store_true")
     d_sel.set_defaults(func=run_driver)
 
+    d_av = drv_sub.add_parser("available", help="Show or set the Harnesses workers and scouts may use")
+    d_av.add_argument("--set", help="Comma-separated driver kinds to enable, e.g. deepseek (others off)")
+    d_av.add_argument("--json", action="store_true")
     d_model = drv_sub.add_parser("model", help="Set the explicit model for new managed workers")
     d_model.add_argument("kind", choices=WORKER_MODELS)
     d_model.add_argument("model")
@@ -272,19 +284,19 @@ def register_driver_and_mcp_subcommands(sub: argparse._SubParsersAction) -> None
 
     m_srv = mcp_sub.add_parser("serve", help="Run line-delimited JSON-RPC 2.0 MCP server on stdio")
     m_srv.add_argument("--workspace", "-w")
-    m_srv.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge"], default="orchestrator")
+    m_srv.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge", "scout"], default="orchestrator")
     m_srv.add_argument("--agent-id", default=None)
     m_srv.set_defaults(func=run_mcp)
 
     m_ls = mcp_sub.add_parser("list-tools", help="List all Parhelion MCP tool schemas")
-    m_ls.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge"], default="orchestrator")
+    m_ls.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge", "scout"], default="orchestrator")
     m_ls.add_argument("--json", action="store_true")
     m_ls.set_defaults(func=run_mcp)
 
     m_ca = mcp_sub.add_parser("call", help="Invoke a Parhelion MCP tool directly from CLI")
     m_ca.add_argument("tool_name")
     m_ca.add_argument("--args-json", default="{}")
-    m_ca.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge"], default="orchestrator")
+    m_ca.add_argument("--role", choices=["orchestrator", "worker", "recon", "knowledge", "scout"], default="orchestrator")
     m_ca.add_argument("--agent-id", default=None)
     m_ca.add_argument("--workspace", "-w")
     m_ca.add_argument("--json", action="store_true")

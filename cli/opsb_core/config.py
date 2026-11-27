@@ -167,6 +167,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "tier_bounds": [3, 50], "tier_factors": {"algorithm": 10, "datapath": 2, "tuning": 1.3},
         "repeat_minutes": 30, "inbox_after_sec": 600, "outcome_window_minutes": 120,
         "card_max_bytes": 800,
+        # 4.4 P34 doc scout: requested from the orchestrator, which picks a ticked Harness
+        # (agents.available_drivers); docs_dir is the local docs mirror the scout reads first.
+        "scout": {"enabled": True, "after_minutes": 30, "min_interval_minutes": 60, "auto_spawn": False,
+                  "docs_dir": "", "driver": ""},
     },
 }
 

@@ -197,7 +197,7 @@ def compose_session_brief(
 DATA_CHANNEL = ("Platform data (board, tbest, receipts, env) comes from parhelion_report views "
                 "board/history/per_case/env, not from ~/.parhelion files, opsb_core imports or platform internals.")
 #: Seat roles with their own contract; ``race``/``recon``/``integrator``/``knowledge`` ship in 4.3 (P26).
-SEAT_CONTRACTS = ("race", "recon", "integrator", "knowledge")
+SEAT_CONTRACTS = ("race", "recon", "integrator", "knowledge", "scout")
 
 
 def compose_seat_contract(workspace: Path, role: str, *, problem: str = "", worktree: Path | str | None = None,
@@ -243,6 +243,22 @@ def compose_seat_contract(workspace: Path, role: str, *, problem: str = "", work
             recipient = "the orchestrator (parhelion_agent_report kind=result) and your rivals via parhelion_squad."
             stop = ("three measured rounds on one mechanism show no gain, the gate holds the candidate, or the "
                     "orchestrator sends a handoff directive. No ssh, flock or direct device access.")
+        elif role == "scout":
+            from ..commands.docs_cmd import status as _mirror
+            mirror_doc = _mirror()
+            mirror = (f"the local docs mirror `{mirror_doc['docs_dir']}` first (read and grep it), the web only "
+                      "for pages it lacks" if mirror_doc["files"]
+                      else "the official documentation on the web (the local mirror is still empty)")
+            commands = (f"read {mirror}; parhelion_report views per_case/history/board and parhelion_kb_query for "
+                        "context; the dossier .parhelion/dossier/ in your worktree states the gap. You cannot run "
+                        "tests or enqueue a submission, and you do not edit the kernel.")
+            deliverable = ("at most three findings, each one parhelion_note type=insight: claim (what the docs "
+                           "say that applies here), why (document and section or URL), actionable_next (one "
+                           "experiment: the single change, expected effect, how to judge it), cases.")
+            recipient = ("the problem's seats via parhelion_squad (recipient all); the platform turns your first "
+                         "finding into a guide card for the stuck seat.")
+            stop = ("the findings are recorded, or the docs say nothing that applies: record one insight that names "
+                    "what you searched, then stop.")
         elif role == "recon":
             commands = ("parhelion_report views board/per_case/bottleneck/history, parhelion_kb_query and "
                         "parhelion_bench_diagnose. You cannot run parhelion_test; parhelion_submit_gate is preview-only "

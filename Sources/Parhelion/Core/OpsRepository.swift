@@ -317,6 +317,10 @@ struct OpsRepository: Sendable {
         try await decodeCLI(["driver", "select", kind, "--json"], timeout: 8.0, allowNonZeroExit: true)
     }
 
+    func setAvailableDrivers(_ kinds: [String]) async throws -> DriverAvailableResponse {
+        try await decodeCLI(["driver", "available", "--set", kinds.joined(separator: ","), "--json"], timeout: 8.0)
+    }
+
     func setWorkerModel(_ model: String, driver: String) async throws -> DriverSelectResponse {
         try await decodeCLI(["driver", "model", driver, model, "--json"], timeout: 8.0)
     }

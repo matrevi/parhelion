@@ -2,6 +2,13 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.4.1 — 可用 Harness 勾选与文档侦察席（P34）
+
+- **可用 Harness**：设置 › 驱动每行一个「可用」勾选框，对应 `opsb driver available --set deepseek,...`（`agents.available_drivers`）。开 worker、开冲刺席位、派发外部 worker 和开侦察席时，只能使用勾选的 Harness，其余一律拒绝并说明原因。部署配置目前只开 dsh（`deepseek`）。
+- **文档侦察席**：席位按卡住类别仍然卡住时（`scale_mismatch`，或卡片送达 30 分钟后未采纳），平台给主控发一条 `scout_request`，附上可用的 Harness 和调用 `parhelion_sprint_start(problems=[题], role="scout", driver=...)`。侦察席只读：先读本地文档镜像，必要时再联网，最后写下至多 3 条带出处的发现。卡住的 worker 会收到一张指向这些发现的引导卡，这些发现也排在 `findings.md` 最前面。侦察的发现和其他发现同等对待，不另设证据等级。
+- **本地文档镜像**：`opsb docs status | add | fetch` 管理 `<PARHELION_HOME>/docs-mirror`（也可用 `guidance.scout.docs_dir` 指定）。目前镜像为空，待确定要收录哪些文档。
+- 需要重启一次守护进程。
+
 ## 4.4.0 — 卡住检测、题目卷宗与引导卡
 
 设计与实现见 `docs/v4.4/stuck-guidance.md`，交付报告见 `docs/v4.4/reports/P30-P32.md`。不新增 MCP 工具。

@@ -261,6 +261,14 @@ def build(cls: str, problem: str, stuck: dict[str, Any], gap: dict[str, Any] | N
                  "Unsure which stage holds the time? Probe first: time that case with one stage stubbed and note "
                  "the split as an insight." if cls == "scale_mismatch" else ""]
         sources += ["gap.md", *(list(kb or [])[:2] or ["prior-art.md", "hardware.md"])]
+    elif cls == "scout":  # 4.4 P34: a doc scout answered; the findings are cited by ref only
+        refs = list(ev.get("refs") or [])[:3]
+        lines = [head, f"A doc scout answered the question about your stuck state ({ev.get('reason') or 'stuck'}).",
+                 f"Findings: {', '.join(refs) or 'see findings.md'} (findings.md, section Doc scout findings).",
+                 "Hypothesis: the first finding applies to your focus cases as its conditions say.",
+                 "Change one thing: run the first finding's suggested experiment exactly as written there.",
+                 "Judge: as the finding states; if it does not hold, record a dead end citing G-? and the ref."]
+        sources += ["findings.md", *refs]
     else:  # no_candidate
         lines = [head, str(stuck.get("signal") or ""),
                  "Hypothesis: the working tree mixes a working part and a broken part.",

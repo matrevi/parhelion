@@ -92,7 +92,9 @@ def select_active_driver(kind: str) -> dict[str, Any]:
 
 
 def doctor_drivers(kind: str | None = None) -> dict[str, Any]:
+    from .availability import available
     active = get_active_driver_kind()
+    ticked = available()
     targets = [kind.strip().lower()] if kind else list(VALID_DRIVERS)
     diagnostics: list[dict[str, Any]] = []
     for k in targets:
@@ -100,8 +102,9 @@ def doctor_drivers(kind: str | None = None) -> dict[str, Any]:
         row = diag.to_dict()
         row["active"] = (k == active)
         row["worker_model"] = worker_model(k)
+        row["available"] = k in ticked  # 4.4 P34: ticked for workers and scouts in Settings > Drivers
         diagnostics.append(row)
-    return {"active_driver": active, "diagnostics": diagnostics}
+    return {"active_driver": active, "diagnostics": diagnostics, "available_drivers": ticked}
 
 
 def sync_driver_workspace(

@@ -166,6 +166,15 @@ struct DriverSettingsTab: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 6) {
+                    // 4.4 P34: only ticked Harnesses may run workers and doc scouts.
+                    Toggle(lang.tr("可用", "Available"), isOn: Binding(
+                        get: { diag.available },
+                        set: { on in Task { await store.setDriverAvailable(diag.kind, on) } }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .controlSize(.small)
+                    .help(lang.tr("勾选后主控才能用这个 Harness 开 worker 与文档侦察席",
+                                  "Only ticked Harnesses may run workers and doc scouts"))
                     if !isActive {
                         Button(lang.tr("设为默认", "Select")) {
                             Task { await store.selectHarnessDriver(diag.kind) }

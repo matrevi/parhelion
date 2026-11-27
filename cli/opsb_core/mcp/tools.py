@@ -52,13 +52,18 @@ ToolHandler = Callable[[dict[str, Any], Path], dict[str, Any]]
 VALID_ROLES = ("orchestrator", "worker")
 #: Worker subroles (4.3 P26 item 3). They narrow the worker table and are the only permission boundary:
 #: every ``parhelion_*`` call passes through this registry, whatever the driver.
-WORKER_SUBROLES = ("recon", "knowledge")
+WORKER_SUBROLES = ("recon", "knowledge", "scout")
 WORKER_ROLES = ("worker",) + WORKER_SUBROLES
 #: Tools a subrole does not get at all. ``recon`` keeps ``parhelion_submit_gate`` for previews only.
 SUBROLE_DENIED: dict[str, frozenset[str]] = {
     "recon": frozenset({
         "parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan",
         "parhelion_escape_rebind", "parhelion_escape_reproducer",
+    }),
+    # 4.4 P34: a doc scout reads documents and the platform views; it measures and submits nothing.
+    "scout": frozenset({
+        "parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan",
+        "parhelion_escape_rebind", "parhelion_escape_reproducer", "parhelion_submit_gate",
     }),
     "knowledge": frozenset({
         "parhelion_test", "parhelion_test_wait", "parhelion_test_cancel", "parhelion_test_plan",

@@ -122,6 +122,18 @@ extension ContestStore {
         }
     }
 
+    /// 4.4 P34: tick or untick one Harness for workers and scouts; the others keep their state.
+    func setDriverAvailable(_ kind: String, _ on: Bool) async {
+        var kinds = driverDiagnostics.filter { $0.available && $0.kind != kind }.map(\.kind)
+        if on { kinds.append(kind) }
+        do {
+            _ = try await repository.setAvailableDrivers(kinds)
+            await reloadDriverDoctor()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func selectHarnessDriver(_ kind: String) async {
         do {
             let res = try await repository.selectDriver(kind)

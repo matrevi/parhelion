@@ -145,7 +145,7 @@ worker 的工具习惯：bash 占 40%，`read` 375 次，`parhelion_test_wait` 3
 
 `config.json` 的 `guidance` 段（默认值在 `config.DEFAULT_CONFIG`，只写一部分键时其余用默认）：`enabled` 控制检测与卷宗，`cards` 控制卡片送达（关掉后只检测、不推送），以及 §3.1 的各项阈值、`repeat_minutes`（30）、`inbox_after_sec`（600）、`outcome_window_minutes`（120）、`card_max_bytes`（800）。
 
-## 七、P34 修订：文档侦察席（2026-11-26 用户提议）
+## 七、P34 修订：文档侦察席（2026-11-26 用户提议，4.4.1 已实现）
 
 用户提出：静态的平台知识库不够，应该有专门探索官方文档的 agent，把分析结果和指导交给刷题的 agent。这一节把原 L3「强模型教练」改成「文档侦察席」，尽量复用已有部件。
 
@@ -182,3 +182,12 @@ worker 的工具习惯：bash 占 40%，`read` 375 次，`parhelion_test_wait` 3
 1. 侦察席的驱动由主控从用户勾选的「可用 Harness」里选；开发阶段只开 dsh。
 2. 保留本地文档镜像。
 3. 不为文档来源的发现单设证据等级，与其他发现同等对待。
+
+### 6. 实现（4.4.1）
+
+- 可用 Harness：`cli/opsb_core/drivers/availability.py`，配置项 `agents.available_drivers`。这个键缺省时，除 Claude 外所有驱动可用（4.3 行为）；部署配置已经写成只开 `deepseek`。`spawn_agent`、`parhelion_harness_pool`、热帧 `ready_drivers` 与 `start_sprint` 都按它过滤；`opsb driver available [--set ...]`；设置 › 驱动每行一个「可用」勾选框；doctor 的每一行带 `available` 字段。
+- 侦察请求：`cli/opsb_core/guidance/scout.py`。守护进程的卡住引导 tick 判断是否需要侦察：`scale_mismatch`，或卡片送达 30 分钟后仍未采纳、仍卡住；每题每小时至多一次，同一问题只问一次。需要时给主控发一条 strategic 消息 `scout_request`，写明可用 Harness 与调用 `parhelion_sprint_start(problems=[...], role="scout", driver=...)`，由主控选驱动；`guidance.scout.auto_spawn` 打开后平台自己调用。问题由代码拼成，写进 `<state>/guidance/scouts.jsonl`，并进入侦察席的 brief。
+- 侦察席：角色 `scout` 的工具与 `recon` 相同，另外不能用 `parhelion_submit_gate`；契约要求先读本地镜像、至多 3 条 `parhelion_note` insight。同一题已有在线侦察席时，新问题作为跟进消息发给它，不另开席。侦察席的工作树也会生成卷宗。
+- 回答：侦察席在请求之后写下的 insight 或 constraint，进入 `findings.md` 最前面的「Doc scout findings」一节，并给卡住的席位生成一张 `scout` 卡，卡上只写引用号。有效的 scout 卡不会被卡住类别的新卡取代。
+- 本地文档镜像：`opsb docs status | add <路径> | fetch <网址>`，目录取 `guidance.scout.docs_dir`，没设时用 `<PARHELION_HOME>/docs-mirror`。仓库不写具体文档来源；镜像目前为空。
+- 测试：`cli/tests/test_guidance_scout.py`（8 个）。

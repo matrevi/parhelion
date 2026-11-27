@@ -379,7 +379,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "mode": {"type": "string", "enum": ["solo", "dual", "full", "race", "pipeline"], "description": "solo|dual(+algorithm,dataflow)|full(+bench-author)|race(N)|pipeline(recon+K impl+integrator+harness)"},
             "problems": {"type": "array", "items": {"anyOf": [{"type": "string"}, {"type": "object"}]}},
             "seats": {"type": "integer"},
-            "role": {"type": "string", "enum": ["worker", "knowledge"]},
+            "role": {"type": "string", "enum": ["worker", "knowledge", "scout"]},
             "adjust": {"type": "boolean"},
             "stop": {"type": "array", "items": {"type": "string"}},
             "replace": {"type": "array", "items": {"type": "string"}},

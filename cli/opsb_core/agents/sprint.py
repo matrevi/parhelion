@@ -15,6 +15,7 @@ from subprocess import SubprocessError
 from typing import Any
 
 from ..config import ConfigRepository
+from ..drivers import availability
 from ..drivers.registry import get_active_driver_kind
 from ..services.contest_service import resolve_workspace_meta
 from . import seat_plan
@@ -60,6 +61,25 @@ def _select(problems: list[dict[str, Any]], specs: list[dict[str, Any]], mode: s
         chosen[title.lower()] = {**spec, "title": title,
                                  "role": spec.get("role") or role or "worker"}
     return [(chosen[p["title"].lower()], p) for p in problems if p["title"].lower() in chosen], unbound
+
+
+def scout_seat(ws: Path, title: str, occupied: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any]:
+    """The scout seat of one problem: ``scout`` while it is live, else the next free ``scout-N``.
+
+    Its task is the scout contract goal plus the platform's latest question for the problem.
+    """
+    name, n = "scout", 1
+    while (title, name) in occupied and occupied[(title, name)]["status"] in ("stopped", "error"):
+        n += 1
+        name = f"scout-{n}"
+    try:
+        from ..guidance import scout as _scout
+        question = _scout.pending_question(ws, title)
+    except Exception:
+        question = ""
+    task = seat_plan.TASKS["scout"] + ("\n\nQuestion from the platform:\n" + question if question else "")
+    return {"seat": name, "role": "scout", "task": task, "collab": "solo", "track": track_name(name),
+            "mode": "scout"}
 
 
 def _stop_seats(manager, ws: Path, names: list[str], *, preview: bool) -> list[dict[str, Any]]:
@@ -202,9 +222,17 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
     if mode not in MODES:
         raise ValueError(f"Unknown sprint mode '{mode}'. Choose one of: {', '.join(MODES)}")
     role = str(role or "").strip().lower()
-    if role not in ("", "worker", "knowledge"):
-        raise ValueError("role must be worker or knowledge")
-    driver = driver or get_active_driver_kind()
+    if role not in ("", "worker", "knowledge", "scout"):
+        raise ValueError("role must be worker, knowledge or scout")
+    if role == "scout" and not problems:
+        raise ValueError("role=scout needs the problems to scout (the platform's scout request names them)")
+    # 4.4 P34: seats use only the Harnesses the user ticked; without a choice, the orchestrator's own
+    # driver when it is ticked, else the first ticked one.
+    if driver and availability.refusal(driver):
+        raise ValueError(availability.refusal(driver))
+    driver = driver or availability.choose(get_active_driver_kind())
+    if not driver:
+        raise ValueError("No Harness is available: tick at least one in Settings > Drivers")
     catalogue = resolve_workspace_meta(ws)["problems"]
     if not catalogue:
         raise ValueError("No problems discovered in the selected contest")
@@ -244,6 +272,9 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
             occupied = sprint_seats(manager._store(ws).list_agents(limit=-1))
         plans: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for spec, problem in rows:
+            if spec.get("role") == "scout":  # 4.4 P34: one read-only doc scout per problem and request
+                plans.append((spec, {**scout_seat(ws, problem["title"], occupied), "problem": problem}))
+                continue
             for seat in expand_seats(spec["mode"], spec.get("seats")):
                 if spec.get("role") == "knowledge":
                     seat = {"seat": "knowledge", "role": "knowledge", "task": seat_plan.TASKS["knowledge"],
@@ -258,7 +289,12 @@ def start_sprint(manager, workspace: Path, *, driver: str = "", preview: bool = 
             assignments.append(slot)
             existing = occupied.get((title, seat))
             successor = _live_replacement(occupied, title, existing)
-            if successor:
+            if plan["role"] == "scout" and existing and existing["status"] not in ("stopped", "error"):
+                # A live scout takes the new question as a follow-up instead of a second seat.
+                if not preview:
+                    manager.send_message(ws, existing["agent_id"], plan["task"])
+                slot.update(state="existing", agent_id=existing["agent_id"], asked=not preview)
+            elif successor:
                 slot.update(state="existing", agent_id=successor["agent_id"], live_seat=seat_of(successor),
                             replaces=existing["agent_id"])
             elif existing and existing["status"] in ("stopped", "error"):

@@ -9,6 +9,7 @@ from .commands.close_cmd import register_close_subcommands
 from .commands.breakthrough_cmd import run_breakthrough, run_queue_list
 from .commands.driver_mcp_cmd import register_driver_and_mcp_subcommands
 from .commands.doctor_cmd import register_doctor_subcommands
+from .commands.docs_cmd import register_docs_subcommands
 from .commands.kb_cmd import register_kb_subcommands
 from .commands.npu_cmd import run_npu
 from .commands.queue_cmd import run_queue, run_submit, run_test
@@ -535,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     register_close_subcommands(sub)
 
     register_doctor_subcommands(sub)
+    register_docs_subcommands(sub)
     register_driver_and_mcp_subcommands(sub)
 
     return p

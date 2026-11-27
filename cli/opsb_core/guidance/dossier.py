@@ -122,12 +122,16 @@ def _row_line(row: dict[str, Any], extra: str = "") -> str:
             f"{clip(row.get('claim'))}" + (f" — {tail}" if tail else ""))
 
 
-def render_findings(problem: str, rows: list[dict[str, Any]]) -> str:
+def render_findings(problem: str, rows: list[dict[str, Any]], scouts: set[str] | None = None) -> str:
     from ..ledger import view
     cur = view.current(rows)
     order = lambda r: view.order_key(r)  # noqa: E731
-    unexploited = sorted(view.unexploited_insights(rows), key=order, reverse=True)[:10]
-    seen = {view.ref(r) for r in unexploited}
+    scouted = sorted((r for r in cur if r.get("worker") in (scouts or set())
+                      and r.get("type") in ("insight", "constraint")), key=order, reverse=True)[:8]
+    seen = {view.ref(r) for r in scouted}
+    unexploited = [r for r in sorted(view.unexploited_insights(rows), key=order, reverse=True)
+                   if view.ref(r) not in seen][:10]
+    seen |= {view.ref(r) for r in unexploited}
     constraints = sorted((r for r in cur if r.get("type") == "constraint" and r.get("source") != "platform"
                           and r.get("rule_source") != "seed"), key=order, reverse=True)[:8]
     hyps = view.open_hypotheses(rows)[:8]
@@ -138,6 +142,7 @@ def render_findings(problem: str, rows: list[dict[str, Any]]) -> str:
            "What the workers of this problem searched, probed and measured themselves, newest first. "
            "Teammate rows are unverified until you reproduce them; cite a row by its ref.", ""]
     for title, items, extra in (
+            ("Doc scout findings", scouted, "actionable_next"),
             ("Unexploited insights", unexploited, "actionable_next"), ("Constraints found", constraints, "why"),
             ("Open hypotheses", hyps, "test_plan"), ("Decisions", decisions, "reason"),
             ("Other insights", other, "actionable_next")):

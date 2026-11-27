@@ -15,9 +15,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import cards, dossier, gap as _gap, settings, stuck
+from . import cards, dossier, gap as _gap, scout as _scout, settings, stuck
 
-NON_IMPLEMENTER = frozenset({"bench-author", "recon", "knowledge"})
+NON_IMPLEMENTER = frozenset({"bench-author", "recon", "knowledge", "scout"})
 KB_TTL_SEC = 300.0
 _LAST: dict[str, float] = {}
 _FINGERPRINTS: dict[tuple[str, str], tuple[Any, ...]] = {}
@@ -44,6 +44,7 @@ class Context:
         self._rows: dict[str, list[dict[str, Any]]] = {}
         self._gap: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         self._errors: dict[str, dict[str, str]] | None = None
+        self.scouts: set[str] = set()  # agent ids of doc-scout seats (any status)
 
     def rows(self, problem: str) -> list[dict[str, Any]]:
         if problem not in self._rows:
@@ -124,7 +125,7 @@ def refresh_dossier(ctx: Context, problem: str, agent_id: str, worktree: Path, t
                     meta: dict[str, Any], cls: str) -> list[str]:
     from ..ledger import store as lstore
     led = lstore.problem_dir(ctx.ws, problem)
-    inputs = (cls, triage.get("focus"), meta.get("sha"), meta.get("observed_at"),
+    inputs = (cls, triage.get("focus"), meta.get("sha"), meta.get("observed_at"), tuple(sorted(ctx.scouts)),
               tuple(sorted((p.name, _fp(p)) for p in led.glob("*.jsonl"))) if led.is_dir() else (),
               _fp(cards.root(ctx.ws) / "cards.jsonl"), round(float(_KB["at"]), 0))
     key = (str(worktree), problem)
@@ -139,7 +140,7 @@ def refresh_dossier(ctx: Context, problem: str, agent_id: str, worktree: Path, t
     files = {
         "index.md": dossier.render_index(problem, _gap.summary_line(triage), built),
         "gap.md": dossier.render_gap(problem, triage, meta),
-        "findings.md": dossier.render_findings(problem, rows),
+        "findings.md": dossier.render_findings(problem, rows, ctx.scouts),
         "dead-ends.md": dossier.render_dead_ends(problem, rows),
         "hardware.md": dossier.render_hardware(problem, dossier.rank_hardware(problem, entries, words, tier), terms),
         "prior-art.md": dossier.render_prior_art(problem, dossier.rank_prior(problem, entries, words, tier), tier,
@@ -231,8 +232,9 @@ def seat(manager: Any, ctx: Context, rec: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             _warn(f"dossier {problem}/{agent_id}", exc)
     card = state.get("card") if isinstance(state.get("card"), dict) else None
-    if found and ctx.s.get("cards", True) and (not card or card.get("class") != cls
-                                               or card.get("status") not in cards.LIVE):
+    scout_live = bool(card and card.get("class") == "scout" and card.get("status") in cards.LIVE)
+    if found and ctx.s.get("cards", True) and not scout_live and (
+            not card or card.get("class") != cls or card.get("status") not in cards.LIVE):
         tier = "algorithm" if cls == "scale_mismatch" else str(triage.get("focus") or "")
         text, meta_card = cards.build(cls, problem, found, triage, lead=lead_of(rows, agent_id),
                                       kb=kb_refs(ctx, problem, tier), limit=int(ctx.s.get("card_max_bytes") or 800))
@@ -245,7 +247,19 @@ def seat(manager: Any, ctx: Context, rec: dict[str, Any]) -> dict[str, Any]:
         deliver(manager, ctx, rec, card)
         fresh = (cards.read_seats(ctx.ws).get(agent_id) or {}).get("card") or card
         follow(ctx, agent_id, fresh, own, exps)
+    scouting(manager, ctx, rec, found, triage, exps, rows, worktree)
     return {"agent_id": agent_id, "class": cls}
+
+
+def scouting(manager: Any, ctx: Context, rec: dict[str, Any], found: dict[str, Any] | None,
+             triage: dict[str, Any], exps: list[dict[str, Any]], rows: list[dict[str, Any]],
+             worktree: Path | None) -> None:
+    """4.4 P34: the doc-scout step of one seat (``guidance.scout.step``)."""
+    lead = lead_of(rows, str(rec["agent_id"]))
+    made = _scout.step(manager, ctx.ws, ctx.s, ctx.now, rec, found, triage, exps, rows, ctx.scouts,
+                       lead_ref=(lead or {}).get("ref", ""))
+    if made and worktree is not None:
+        _FINGERPRINTS.pop((str(worktree), str(rec.get("problem") or "")), None)
 
 
 def tick(manager: Any, ws: Path | str, *, force: bool = False, now: datetime.datetime | None = None) -> dict[str, Any]:
@@ -259,8 +273,11 @@ def tick(manager: Any, ws: Path | str, *, force: bool = False, now: datetime.dat
             return {"skipped": "throttled"}
         _LAST[str(root)] = time.monotonic()
         ctx = Context(root, s, now or datetime.datetime.now(datetime.timezone.utc))
-        recs = [r for r in manager._store(root).list_agents(include_stopped=False, limit=-1)
-                if r.get("problem") and r.get("role_label") not in NON_IMPLEMENTER]
+        every = manager._store(root).list_agents(include_stopped=False, limit=-1)
+        recs = [r for r in every if r.get("problem") and r.get("role_label") not in NON_IMPLEMENTER]
+        ctx.scouts = {str(r["agent_id"]) for r in manager._store(root).list_agents(limit=-1)
+                      if r.get("role_label") == "scout"}
+        scout_recs = [r for r in every if r.get("problem") and r.get("role_label") == "scout"]
     except Exception as exc:
         _warn("tick", exc)
         return {"error": str(exc)[:200]}
@@ -270,6 +287,15 @@ def tick(manager: Any, ws: Path | str, *, force: bool = False, now: datetime.dat
             out.append(seat(manager, ctx, rec))
         except Exception as exc:
             _warn(f"seat {rec.get('agent_id')}", exc)
+    for rec in scout_recs:  # a doc scout reads the same dossier as the seat it answers
+        try:
+            problem = str(rec.get("problem") or "")
+            tree = valid_worktree(ctx.ws, problem, str(rec.get("worktree") or ""))
+            if tree is not None:
+                triage, meta = ctx.gap(problem)
+                refresh_dossier(ctx, problem, str(rec["agent_id"]), tree, triage, meta, "")
+        except Exception as exc:
+            _warn(f"scout dossier {rec.get('agent_id')}", exc)
     return {"seats": out}
 
 

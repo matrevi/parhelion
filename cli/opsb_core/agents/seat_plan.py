@@ -19,7 +19,7 @@ DEVICE_HINT = " Device work: parhelion_test, then parhelion_test_wait."
 #: column is still recognised through them.
 LEGACY_SEATS = ("solo", "algorithm", "dataflow", "calibration")
 #: Seats that may run the platform suite; recon and knowledge seats deliver documents instead.
-NON_TEST_ROLES = frozenset({"recon", "knowledge"})
+NON_TEST_ROLES = frozenset({"recon", "knowledge", "scout"})
 MAX_TRACKS = 8
 DEFAULT_TRACKS = {"race": 2, "pipeline": 2}
 MODES = ("solo", "dual", "full", "race", "pipeline")
@@ -52,6 +52,11 @@ TASKS = {
                    "run parhelion_test level=final on the merged SHA, and submit one candidate through "
                    "parhelion_submit_gate. Ask the implementation seats which branch carries the measured gain "
                    "before merging, and report the merged SHA to the orchestrator."),
+    "scout": ("Doc scout (4.4 P34): read-only. Answer the platform's question about this problem from the official "
+              "documentation: the local docs mirror first, the web only for pages the mirror lacks. Record at most "
+              "three findings with parhelion_note (type insight: claim, why = document and section, actionable_next = "
+              "one experiment with the single change, expected effect and how to judge it, cases), share them with "
+              "parhelion_squad, then stop. Do not edit the kernel and run no tests."),
     "knowledge": ("Knowledge seat: run no tests and enqueue no submissions. Turn measured findings into reusable "
                   "entries with parhelion_kb_record (mechanism, trigger conditions, cost, applicable problems, "
                   "evidence), and write the supporting documents in the workspace. Deliverable: KB entries plus "
@@ -73,6 +78,8 @@ def seat_role(seat: str) -> str:
         return "bench-author"
     if seat.startswith("race-"):
         return "race"
+    if seat == "scout" or seat.startswith("scout-"):
+        return "scout"
     return seat if seat in ("recon", "knowledge", "integrator", "race") else "worker"
 
 

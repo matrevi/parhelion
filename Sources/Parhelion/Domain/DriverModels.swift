@@ -29,6 +29,8 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
     let urlScheme: String
     let active: Bool
     let workerModel: String?
+    /// 4.4 P34: ticked as available for workers and scouts; older daemons omit it (treated as available).
+    let available: Bool
 
     var guiAppName: String? {
         guard guiInstalled, !guiAppPath.isEmpty else { return nil }
@@ -44,7 +46,7 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case kind, installed, version, detail, active
+        case kind, installed, version, detail, active, available
         case workerModel = "worker_model"
         case displayName = "display_name"
         case binaryPath = "binary_path"
@@ -74,6 +76,19 @@ struct DriverDiagnosticModel: Codable, Identifiable, Hashable {
         guiVersion = try c.decodeIfPresent(String.self, forKey: .guiVersion) ?? ""
         urlScheme = try c.decodeIfPresent(String.self, forKey: .urlScheme) ?? ""
         active = try c.decodeIfPresent(Bool.self, forKey: .active) ?? false
+        available = try c.decodeIfPresent(Bool.self, forKey: .available) ?? true
+    }
+}
+
+/// `opsb driver available --json`: the Harnesses workers and scouts may use.
+struct DriverAvailableResponse: Codable {
+    let ok: Bool?
+    let availableDrivers: [String]?
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok, error
+        case availableDrivers = "available_drivers"
     }
 }
 
