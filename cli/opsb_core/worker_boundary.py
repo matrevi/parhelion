@@ -143,9 +143,21 @@ def _category_of_path(path: Path, ph: Path, home: Path) -> str:
     return ""
 
 
+def _own_spill(path: Path, agent_id: str | None) -> bool:
+    """``<state>/spill/<agent_id>/...``: the worker's own spilled tool results (4.2 E), handed to it by path."""
+    if not agent_id:
+        return False
+    parts = path.parts
+    return any(parts[i:i + 3] == ("state", "spill", agent_id) for i in range(len(parts) - 2))
+
+
 def classify_text(text: Any, *, worktree: Path | str | None = None, parhelion: Path | str | None = None,
-                  home: Path | str | None = None) -> list[str]:
-    """Boundary classes matched by one tool input, most severe first."""
+                  home: Path | str | None = None, agent_id: str | None = None) -> list[str]:
+    """Boundary classes matched by one tool input, most severe first.
+
+    ``agent_id`` (4.4.4) makes the worker's own spill directory legal like its worktree: the MCP output
+    bound writes a large reply there and gives the worker the path.
+    """
     body = str(text or "")
     if not body.strip():
         return []
@@ -160,8 +172,8 @@ def classify_text(text: Any, *, worktree: Path | str | None = None, parhelion: P
         resolved = _resolved(raw, parhelion=ph, home=user_home)
         if resolved is None:
             continue
-        if wt is not None and _under(resolved, wt):
-            residue = residue.replace(raw, " ")  # the worker's own tree: legal, and not a bare token either
+        if (wt is not None and _under(resolved, wt)) or _own_spill(resolved, agent_id):
+            residue = residue.replace(raw, " ")  # the worker's own tree or spill: legal, not a bare token either
             continue
         category = _category_of_path(resolved, ph, user_home)
         if category:
@@ -176,13 +188,16 @@ def classify_text(text: Any, *, worktree: Path | str | None = None, parhelion: P
 
 
 def classify_tool(name: Any, args: Any, *, worktree: Path | str | None = None,
-                  parhelion: Path | str | None = None, home: Path | str | None = None) -> list[str]:
+                  parhelion: Path | str | None = None, home: Path | str | None = None,
+                  agent_id: str | None = None) -> list[str]:
     """Boundary classes of one tool call; empty for a platform tool or a worktree-local read."""
-    return classify_text(tool_text(name, args), worktree=worktree, parhelion=parhelion, home=home)
+    return classify_text(tool_text(name, args), worktree=worktree, parhelion=parhelion, home=home,
+                         agent_id=agent_id)
 
 
 def classify_acp_update(update: Any, *, worktree: Path | str | None = None,
-                        parhelion: Path | str | None = None, home: Path | str | None = None) -> list[str]:
+                        parhelion: Path | str | None = None, home: Path | str | None = None,
+                        agent_id: str | None = None) -> list[str]:
     """One ACP ``session/update`` row: ``tool_call``/``tool_call_update`` with ``rawInput``."""
     if not isinstance(update, dict):
         return []
@@ -190,17 +205,18 @@ def classify_acp_update(update: Any, *, worktree: Path | str | None = None,
         return []
     name = update.get("title") or update.get("name") or update.get("toolName") or ""
     raw = update.get("rawInput")
-    return classify_tool(name, raw, worktree=worktree, parhelion=parhelion, home=home)
+    return classify_tool(name, raw, worktree=worktree, parhelion=parhelion, home=home, agent_id=agent_id)
 
 
 def classify_dsh_event(event: Any, *, worktree: Path | str | None = None,
-                       parhelion: Path | str | None = None, home: Path | str | None = None) -> list[str]:
+                       parhelion: Path | str | None = None, home: Path | str | None = None,
+                       agent_id: str | None = None) -> list[str]:
     """One DSH native session event: ``tool/call`` with ``data.name``/``data.arguments``."""
     if not isinstance(event, dict) or str(event.get("type") or "") != "tool/call":
         return []
     data = event.get("data") if isinstance(event.get("data"), dict) else {}
     return classify_tool(data.get("name"), data.get("arguments"), worktree=worktree,
-                         parhelion=parhelion, home=home)
+                         parhelion=parhelion, home=home, agent_id=agent_id)
 
 
 def _alert_body(worker: str, category: str, ts: str) -> str:

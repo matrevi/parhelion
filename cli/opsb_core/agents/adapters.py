@@ -242,7 +242,8 @@ class AcpWorkerAdapter(BaseWorkerAdapter):
 
     def _on_update(self, update: dict[str, Any], on_event: EventCallback | None) -> None:
         """4.2 K boundary check on every ACP update, then the unchanged event forwarding."""
-        self._note_boundary(worker_boundary.classify_acp_update(update, worktree=self.worktree))
+        self._note_boundary(worker_boundary.classify_acp_update(update, worktree=self.worktree,
+                                                                agent_id=self.agent_id))
         self._forward_event(update, on_event)
 
     @staticmethod
@@ -380,7 +381,7 @@ class CodexWorkerAdapter(BaseWorkerAdapter):
             item = (msg.get("params") or {}).get("item") if isinstance(msg.get("params"), dict) else {}
             if isinstance(item, dict):
                 self._note_boundary(worker_boundary.classify_tool(
-                    item.get("type") or item.get("name"), item, worktree=self.worktree))
+                    item.get("type") or item.get("name"), item, worktree=self.worktree, agent_id=self.agent_id))
         self._forward_event(msg, on_event)
 
     @staticmethod

@@ -206,3 +206,16 @@ def test_live_hit_never_stops_the_worker(tmp_path):
             assert len([m for m in store.list_messages(limit=20) if m["kind"] == "platform"]) == 2
         finally:
             runner.stop()
+
+
+def test_own_spill_file_is_not_a_boundary_hit_but_another_seats_is(tmp_path):
+    """4.4.4: the output bound hands a worker the path of its own spilled reply; reading it is legal."""
+    ph = tmp_path / "ph"
+    own = ph / "workspaces" / "contest-1" / "state" / "spill" / "dee-48be00" / "r-kb_query.json"
+    other = ph / "workspaces" / "contest-1" / "state" / "spill" / "dee-000000" / "r.json"
+    cmd = f"python3 -c \"import json; json.load(open('{own}'))\""
+    assert worker_boundary.classify_text(cmd, parhelion=ph, agent_id="dee-48be00") == []
+    assert worker_boundary.classify_text(cmd, parhelion=ph) == ["platform_state"]  # no identity: unchanged
+    assert worker_boundary.classify_text(f"cat {other}", parhelion=ph, agent_id="dee-48be00") == ["platform_state"]
+    assert worker_boundary.classify_text(f"ls {ph}/workspaces/contest-1/state/guidance", parhelion=ph,
+                                         agent_id="dee-48be00") == ["platform_state"]
