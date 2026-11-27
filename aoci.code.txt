@@ -564,4 +564,4 @@ monitor.py[AW8M]: F:卡住引导的守护进程tick：给在线实现席位分�
 stuck.py[DW8M]: F:卡住检测：按账本实验行、门禁请求、编译错误签名与差距分诊把席位分为build_loop、wa_loop、scale_mismatch、plateau或no_candidate，纯函数供tick与回放共用 | R:code:cli/opsb_core/ledger/rows.py,code:cli/opsb_core/guidance/gap.py,code:cli/opsb_core/guidance/monitor.py,code:cli/opsb_core/replay/stuck_replay.py | A:classify,build_loop,wa_loop,plateau,progress,compile_signature | S:本地最好按基线SHA分开记，基线一换就算新最好；wa_loop只在跑过该用例并通过时中断，没跑它的运行跳过；scale_mismatch要前几个差距用例中至少scale_min_outliers个达到倍数阈值，且最近几次改动都小于10%；smoke通过不算可交候选
 
 ===/Users/winbeau/Developer/personal/parhelion/docs/v4.4/reports/===
-P30-P32.md[SW7S]: F:P30–P32交付报告：卡住检测、题目卷宗与引导卡的模块、数据来源、送达与记账，4.3冲刺回放（点名五题卡住占比27%、其余11%）、目标测试与无改动时失败的验证、端到端与待决 | R:code:docs/v4.4/stuck-guidance.md,code:cli/opsb_core/guidance/monitor.py,code:cli/opsb_core/replay/stuck_replay.py | A:- | S:卷宗原样引用知识库里的芯片专名，是否填guidance.generic_terms待决；合入后要重启守护进程
+P30-P32.md[SW7S]: F:P30–P32交付报告：卡住检测、题目卷宗与引导卡的模块、数据来源、送达与记账，4.3冲刺回放（点名五题卡住占比27%、其余11%）、目标测试与无改动时失败的验证、端到端与已定事项 | R:code:docs/v4.4/stuck-guidance.md,code:cli/opsb_core/guidance/monitor.py,code:cli/opsb_core/replay/stuck_replay.py | A:- | S:用户决定卷宗原样引用知识库里的芯片专名，generic_terms保持为空；合入后要重启守护进程
