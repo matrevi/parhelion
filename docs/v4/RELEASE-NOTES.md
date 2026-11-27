@@ -2,6 +2,12 @@
 
 > 设计：[00-OVERVIEW.md](00-OVERVIEW.md) · 详细设计：[10-DETAILED-INDEX.md](10-DETAILED-INDEX.md)
 
+## 4.4.7 — 提交时指向非假设条目也能关联假设
+
+- 引导卡用账本引用号（多半是 insight）指出 worker 自己未测的线索，worker 提交时把它当作 `hypothesis_id`。平台以前会用假设字段改写那一行，账本拒绝后错误被吞掉，这个 SHA 就没有假设，判题回来也无从判定；2026-11-27 这场有 15 次。现在 `hypothesis_id` 不是假设行时，平台为该 SHA 生成假设并在回复里说明，被指的行不动。
+- `parhelion_submit_gate` 的说明写明 `hypothesis_id` 要填假设条目。
+- 需要重启守护进程。
+
 ## 4.4.6 — 重启后席位可恢复，侦察回答只认侦察席自己写的
 
 - 重启守护进程不再让在线席位变成 stopped。stop_all 以前先停 runner 再查状态，被打断的回合已经自己写了 `stopped`，于是所有在线席位都被跳过，4.3.2「重启不丢冲刺」实际不成立。现在先读状态：管理员停掉的席位保持 stopped，其余改成可恢复的 error，跟进消息就能唤醒。
