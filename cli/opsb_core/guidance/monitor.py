@@ -45,6 +45,7 @@ class Context:
         self._gap: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
         self._errors: dict[str, dict[str, str]] | None = None
         self.scouts: set[str] = set()  # agent ids of doc-scout seats (any status)
+        self.live: set[str] = set()  # agent ids of the live seats this tick
 
     def rows(self, problem: str) -> list[dict[str, Any]]:
         if problem not in self._rows:
@@ -258,7 +259,7 @@ def scouting(manager: Any, ctx: Context, rec: dict[str, Any], found: dict[str, A
     """4.4 P34: the doc-scout step of one seat (``guidance.scout.step``)."""
     lead = lead_of(rows, str(rec["agent_id"]))
     made = _scout.step(manager, ctx.ws, ctx.s, ctx.now, rec, found, triage, exps, rows, ctx.scouts,
-                       lead_ref=(lead or {}).get("ref", ""))
+                       lead_ref=(lead or {}).get("ref", ""), live=ctx.live)
     if made and worktree is not None:
         _FINGERPRINTS.pop((str(worktree), str(rec.get("problem") or "")), None)
 
@@ -279,6 +280,7 @@ def tick(manager: Any, ws: Path | str, *, force: bool = False, now: datetime.dat
         ctx.scouts = {str(r["agent_id"]) for r in manager._store(root).list_agents(limit=-1)
                       if r.get("role_label") == "scout"}
         scout_recs = [r for r in every if r.get("problem") and r.get("role_label") == "scout"]
+        ctx.live = {str(r["agent_id"]) for r in every}
     except Exception as exc:
         _warn("tick", exc)
         return {"error": str(exc)[:200]}

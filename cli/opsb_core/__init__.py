@@ -1,3 +1,3 @@
 """opsb_core — Modular domain & service package for KernelC Contest Supervision."""
 
-__version__ = "4.4.4"
+__version__ = "4.4.5"

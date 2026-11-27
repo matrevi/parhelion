@@ -146,20 +146,24 @@ def pending_question(ws: Path | str, problem: str) -> str:
     return str(rows[-1].get("question") or "") if rows else ""
 
 
-def open_request(ws: Path | str, problem: str, agent_id: str) -> dict[str, Any] | None:
-    """The newest request for this seat that no scout answer has closed yet."""
+def open_request(ws: Path | str, problem: str, agent_id: str, live: set[str] | None = None) -> dict[str, Any] | None:
+    """The newest unanswered request of this seat, or of a seat of the problem that is gone (``live``
+    names the live seats): a replaced seat's question is answered to the seat that now works the problem."""
     rows = log(ws)
     done = {r.get("key") for r in rows if r.get("event") == "answered"}
     mine = [r for r in rows if r.get("event") == "requested" and r.get("problem") == problem
-            and r.get("agent_id") == agent_id and r.get("key") not in done]
+            and r.get("key") not in done
+            and (r.get("agent_id") == agent_id or (live is not None and r.get("agent_id") not in live))]
     return mine[-1] if mine else None
 
 
 def answers(rows: list[dict[str, Any]], scouts: set[str], since: str) -> list[dict[str, Any]]:
     """Scout insight and constraint rows written after ``since``, oldest first (the first is the lead)."""
     from ..ledger import view
+    # Only what the scout wrote: the platform also writes into a scout's ledger (a boundary constraint, for one),
+    # and the 4.4.4 run took that row for the answer and closed the request before the findings came.
     hit = [r for r in view.current(rows) if r.get("worker") in scouts and r.get("type") in ("insight", "constraint")
-           and str(r.get("ts") or "") >= since]
+           and r.get("source") != "platform" and str(r.get("ts") or "") >= since]
     return sorted(hit, key=view.order_key)
 
 
@@ -173,7 +177,8 @@ def mark_answered(ws: Path | str, key: str, refs: list[str], card_id: str) -> No
 
 def step(manager: Any, ws: Path, s: dict[str, Any], now: datetime.datetime, rec: dict[str, Any],
          found: dict[str, Any] | None, triage: dict[str, Any], exps: list[dict[str, Any]],
-         rows: list[dict[str, Any]], scouts: set[str], *, lead_ref: str = "") -> dict[str, Any] | None:
+         rows: list[dict[str, Any]], scouts: set[str], *, lead_ref: str = "",
+         live: set[str] | None = None) -> dict[str, Any] | None:
     """Raise a request for a seat that stays stuck; when a scout has answered, issue its card (returned)."""
     agent_id, problem = str(rec["agent_id"]), str(rec.get("problem") or "")
     card = (cards.read_seats(ws).get(agent_id) or {}).get("card")
@@ -183,7 +188,7 @@ def step(manager: Any, ws: Path, s: dict[str, Any], now: datetime.datetime, rec:
     if reason:
         request(manager, ws, problem, agent_id, reason,
                 question(problem, found or {}, triage, reason=reason, lead_ref=lead_ref), key, s, now=now)
-    pending = open_request(ws, problem, agent_id)
+    pending = open_request(ws, problem, agent_id, live)
     if not pending or not s.get("cards", True):
         return None
     found_rows = answers(rows, scouts, str(pending.get("ts") or ""))

@@ -220,3 +220,27 @@ def test_a_long_orchestrator_goal_survives_the_brief_cap(ws):
     assert 'NeighborListPbcFixedK, EdgeIndexCoalesce. Start with parhelion_sprint_start(mode="race", seats=3)' in text
     short = brief._clean_sprint_brief(ws, [], "Raise QuantScaleCalib")
     assert short.endswith("\n\nUser goal: Raise QuantScaleCalib")  # a short goal keeps its old place
+
+
+def test_platform_rows_are_not_an_answer_and_a_replaced_seat_gets_its_answer(ws):
+    """4.4.5: in the 4.4.4 run the scout's platform boundary row closed the request before its findings
+    came, and the requesting seat was replaced before any answer could reach it."""
+    availability.set_available(["deepseek"])
+    mgr = _Mgr(ws)
+    mgr.store.create_agent({"agent_id": "dee-new000", "driver": "deepseek", "problem": "Op", "worktree": str(ws)})
+    rec = mgr.store.get_agent("dee-new000")
+    key = scout.key_of("Op", "scale_mismatch", _triage(), "abc1234")
+    scout.request(mgr, ws, "Op", "dee-old000", "scale_mismatch", "Q", key, S, now=NOW)  # asked by a gone seat
+    led = lstore.Ledger(ws, "Op", "dee-scout1")
+    led.append("constraint", {"claim": "worker boundary: platform_state"})  # platform-written
+    rows = lstore.read_problem(ws, "Op")
+    exps = [{"type": "experiment", "sha": "abc1234", "ts": NOW.isoformat()}]
+    assert scout.step(mgr, ws, S, NOW, rec, None, _triage(), exps, rows, {"dee-scout1"}, live={"dee-new000"}) is None
+    assert "Doc scout findings\n- none recorded" in dossier.render_findings("Op", rows, {"dee-scout1"})
+    led.append("insight", {"claim": "docs: sort path for tall-skinny rows", "why": "guide 5.7.1"}, source="worker")
+    rows = lstore.read_problem(ws, "Op")
+    made = scout.step(mgr, ws, S, NOW, rec, None, _triage(), exps, rows, {"dee-scout1"}, live={"dee-new000"})
+    assert made and "dee-scout1/L-0002" in made["text"] and "L-0001" not in made["text"]
+    assert cards.read_seats(ws)["dee-new000"]["card"]["card_id"] == made["card_id"]
+    # without the live set, a request of another seat stays with that seat
+    assert scout.open_request(ws, "Op", "dee-zzz999") is None

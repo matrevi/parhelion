@@ -126,7 +126,7 @@ def render_findings(problem: str, rows: list[dict[str, Any]], scouts: set[str] |
     from ..ledger import view
     cur = view.current(rows)
     order = lambda r: view.order_key(r)  # noqa: E731
-    scouted = sorted((r for r in cur if r.get("worker") in (scouts or set())
+    scouted = sorted((r for r in cur if r.get("worker") in (scouts or set()) and r.get("source") != "platform"
                       and r.get("type") in ("insight", "constraint")), key=order, reverse=True)[:8]
     seen = {view.ref(r) for r in scouted}
     unexploited = [r for r in sorted(view.unexploited_insights(rows), key=order, reverse=True)
